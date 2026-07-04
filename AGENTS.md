@@ -86,6 +86,7 @@ go test ./...   # add -race when touching concurrent/orchestration code
 - **Contracts with other repos are frozen.** agentunnel's interface, the papercode server's
   API, and Fly's API are external contracts — treat them as fixed and coordinate changes with
   their owners. Do not edit other sub-projects from here.
+- After every phase completion, create a commit message and assign a commit tag (chore:, feat:).
 
 ---
 

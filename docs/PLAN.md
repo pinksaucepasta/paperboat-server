@@ -18,7 +18,7 @@ filling its evidence section.
 
 | Phase | Area | Status | Owner | Evidence |
 | --- | --- | --- | --- | --- |
-| 0 | Product decisions and contract freeze | Not started | TBD | None |
+| 0 | Product decisions and contract freeze | Blocked | Codex | Draft contract pack in `docs/contracts/`; pending user approval for required decisions. |
 | 1 | Repository foundation and service skeleton | Not started | TBD | None |
 | 2 | Persistence, migrations, config, and data catalogs | Not started | TBD | None |
 | 3 | Identity, sessions, authorization, and audit base | Not started | TBD | None |
@@ -288,7 +288,7 @@ Goal: resolve implementation blockers and freeze contracts before code makes the
 
 Tasks:
 
-- [ ] Read workspace `USERSTORY.md`, root `AGENTS.md`, `paperboat-server/AGENTS.md`,
+- [x] Read workspace `USERSTORY.md`, root `AGENTS.md`, `paperboat-server/AGENTS.md`,
   `agentunnel/docs/api.md`, `agentunnel/docs/cloud-agents-platform-plan.md`, relevant
   papercode remote docs, dashboard AGENTS, CLI AGENTS.
 - [ ] Confirm persistence backend selection.
@@ -307,6 +307,7 @@ Tasks:
 - [ ] Confirm whether custom Fly shapes ship in first release or remain catalog-compatible
   but disabled.
 - [ ] Write `docs/contracts/*.md` for approved API and provider contracts.
+- [x] Write initial draft contract pack in `docs/contracts/` for review.
 
 Acceptance criteria:
 
@@ -317,9 +318,9 @@ Acceptance criteria:
 
 Evidence:
 
-- Decision log:
-- Approved contract docs:
-- Review links:
+- Decision log: `docs/contracts/decisions.md`
+- Approved contract docs: pending approval; draft docs in `docs/contracts/`
+- Review links: pending
 
 ## Phase 1: Repository Foundation and Service Skeleton
 
