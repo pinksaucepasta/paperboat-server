@@ -21,7 +21,7 @@ filling its evidence section.
 | 0 | Product decisions and contract freeze | Blocked | Codex | Draft contract pack in `docs/contracts/`; pending user approval for required decisions. |
 | 1 | Repository foundation and service skeleton | In progress | Codex | Initial Go module, CLI surface, config loader, HTTP middleware, health/readiness endpoints, local config example, README commands, and foundation tests. |
 | 2 | Persistence, migrations, config, and data catalogs | Complete | Codex | Postgres schema, migration runner, transaction wrapper, catalog repositories, storage ledger repository, dynamic catalog seed validation/upserts, and Postgres integration evidence complete. |
-| 3 | Identity, sessions, authorization, and audit base | Not started | TBD | None |
+| 3 | Identity, sessions, authorization, and audit base | Implemented | Codex | WorkOS verifier abstraction, idempotent user/session creation, secure cookies with CSRF binding and rotation, `/api/me`, auth/entitlement/admin middleware foundations, audit writer/query base, and auth integration tests. |
 | 4 | Billing, entitlements, credits, and storage ledger | Not started | TBD | None |
 | 5 | GitHub OAuth and private config repo provisioning | Not started | TBD | None |
 | 6 | Project lifecycle and VM customization model | Not started | TBD | None |
@@ -226,6 +226,7 @@ dashboard, CLI, papercode, and agentunnel owners because contracts freeze once s
 - `GET /healthz`
 - `GET /readyz`
 - `GET /api/me`
+- `GET /api/auth/workos/state`
 - `POST /api/auth/workos/callback`
 - `POST /api/auth/logout`
 - `GET /api/auth/csrf`
@@ -400,33 +401,33 @@ Goal: WorkOS-backed auth, secure sessions, RBAC, and audit events.
 
 Tasks:
 
-- [ ] Implement WorkOS callback verification.
-- [ ] Map WorkOS identities to Paperboat users idempotently.
-- [ ] Implement secure HttpOnly session cookies with rotation and expiry.
-- [ ] Implement CSRF protection for cookie-authenticated writes.
-- [ ] Implement role model: user, support/admin, system worker.
-- [ ] Add authorization middleware for account-owned resources.
-- [ ] Add account gating helper that checks active entitlement before core feature access.
-- [ ] Add audit writer for auth, billing, project, provider, admin, and access events.
-- [ ] Add audit query repository and admin API foundation.
-- [ ] Add login/logout/session tests.
-- [ ] Add authorization tests for cross-user access denial.
-- [ ] Add audit tests proving required events are written once.
+- [x] Implement WorkOS callback verification.
+- [x] Map WorkOS identities to Paperboat users idempotently.
+- [x] Implement secure HttpOnly session cookies with rotation and expiry.
+- [x] Implement CSRF protection for cookie-authenticated writes.
+- [x] Implement role model: user, support/admin, system worker.
+- [x] Add authorization middleware for account-owned resources.
+- [x] Add account gating helper that checks active entitlement before core feature access.
+- [x] Add audit writer for auth, billing, project, provider, admin, and access events.
+- [x] Add audit query repository and admin API foundation.
+- [x] Add login/logout/session tests.
+- [x] Add authorization tests for cross-user access denial.
+- [x] Add audit tests proving required events are written once.
 
 Acceptance criteria:
 
-- [ ] Authenticated user can retrieve `GET /api/me`.
-- [ ] Unauthenticated requests cannot access project/billing APIs.
-- [ ] User cannot access another user's project or ledger.
-- [ ] Core dashboard APIs return payment-required style structured errors without active
+- [x] Authenticated user can retrieve `GET /api/me`.
+- [x] Unauthenticated requests cannot access project/billing APIs.
+- [x] User cannot access another user's project or ledger.
+- [x] Core dashboard APIs return payment-required style structured errors without active
   entitlement.
-- [ ] Auth events are audited without storing secrets.
+- [x] Auth events are audited without storing secrets.
 
 Evidence:
 
-- Auth test output:
-- Cross-user denial tests:
-- Audit sample:
+- Auth test output: `GOCACHE=/tmp/paperboat-go-build go test ./internal/httpapi ./internal/auth` passed; DB-backed auth integration tests are included and run when `PAPERBOAT_TEST_DATABASE_DSN` is set, matching the existing repository-test pattern. Full `GOCACHE=/tmp/paperboat-go-build go test ./...` passed with local port-bind permission for the pre-existing app shutdown test.
+- Cross-user denial tests: `TestProjectOwnershipDeniesCrossUserAccess` proves another user's project is rejected by the ownership helper while the requesting user's session remains valid.
+- Audit sample: `TestAuthLoginMeCSRFLogoutAndAudit` verifies `auth.login` and `auth.logout` audit events are written from the login/logout flow without token material in event metadata.
 
 ## Phase 4: Billing, Entitlements, Credits, and Storage Ledger
 

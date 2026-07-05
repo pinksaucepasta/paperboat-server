@@ -68,6 +68,8 @@ type Secrets struct {
 	SessionKeys        []string `json:"session_keys"`
 	EncryptionKey      string   `json:"encryption_key"`
 	WorkOSAPIKey       string   `json:"workos_api_key"`
+	WorkOSClientID     string   `json:"workos_client_id"`
+	WorkOSClientSecret string   `json:"workos_client_secret"`
 	PolarWebhookSecret string   `json:"polar_webhook_secret"`
 	FlyAPIToken        string   `json:"fly_api_token"`
 }
@@ -170,7 +172,7 @@ func (c Config) Validate() error {
 		if len(c.HTTP.AllowedOrigins) == 0 {
 			errs = append(errs, fmt.Errorf("http.allowed_origins is required in production"))
 		}
-		if c.Secrets.WorkOSAPIKey == "" || c.Secrets.PolarWebhookSecret == "" || c.Secrets.FlyAPIToken == "" {
+		if c.Secrets.WorkOSAPIKey == "" || c.Secrets.WorkOSClientID == "" || c.Secrets.WorkOSClientSecret == "" || c.Secrets.PolarWebhookSecret == "" || c.Secrets.FlyAPIToken == "" {
 			errs = append(errs, fmt.Errorf("production provider secrets are required"))
 		}
 		for _, secret := range append(c.Secrets.SessionKeys, c.Secrets.EncryptionKey) {
@@ -235,6 +237,12 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 		return err
 	}
 	if err := setSecret("PAPERBOAT_WORKOS_API_KEY", &c.Secrets.WorkOSAPIKey); err != nil {
+		return err
+	}
+	if err := setSecret("PAPERBOAT_WORKOS_CLIENT_ID", &c.Secrets.WorkOSClientID); err != nil {
+		return err
+	}
+	if err := setSecret("PAPERBOAT_WORKOS_CLIENT_SECRET", &c.Secrets.WorkOSClientSecret); err != nil {
 		return err
 	}
 	if err := setSecret("PAPERBOAT_POLAR_WEBHOOK_SECRET", &c.Secrets.PolarWebhookSecret); err != nil {

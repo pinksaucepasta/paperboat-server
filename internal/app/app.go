@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 
+	"github.com/pinksaucepasta/paperboat-server/internal/audit"
+	"github.com/pinksaucepasta/paperboat-server/internal/auth"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/httpapi"
@@ -34,11 +37,14 @@ func New(opts Options) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	auditWriter := audit.NewWriter(store)
+	authService := auth.NewService(store, auditWriter, workOSVerifier(opts.Config), opts.Config.Secrets.SessionKeys, publicURLSecure(opts.Config.HTTP.PublicBaseURL))
 	checker := readinessChecker{cfg: opts.Config, db: store}
 	router := httpapi.NewRouter(httpapi.Options{
 		Config:           opts.Config,
 		Logger:           opts.Logger,
 		ReadinessChecker: checker,
+		Auth:             authService,
 	})
 	return &App{
 		cfg:    opts.Config,
@@ -51,6 +57,22 @@ func New(opts Options) (*App, error) {
 		},
 		worker: workers.NewSupervisor(),
 	}, nil
+}
+
+func workOSVerifier(cfg config.Config) auth.WorkOSVerifier {
+	if cfg.Providers.FakeMode {
+		return auth.FakeWorkOSVerifier{}
+	}
+	return auth.HTTPWorkOSVerifier{
+		BaseURL:      cfg.Providers.WorkOS.BaseURL,
+		ClientID:     cfg.Secrets.WorkOSClientID,
+		ClientSecret: cfg.Secrets.WorkOSClientSecret,
+	}
+}
+
+func publicURLSecure(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https"
 }
 
 func (a *App) Run(ctx context.Context) error {

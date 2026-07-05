@@ -31,6 +31,16 @@ func TestMigrateRequiresPostgresIntegrationDSN(t *testing.T) {
 	if !applied {
 		t.Fatal("migration version 1 was not recorded")
 	}
+	var hasRole bool
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema = 'paperboat' AND table_name = 'users' AND column_name = 'role'
+	)`).Scan(&hasRole); err != nil {
+		t.Fatal(err)
+	}
+	if !hasRole {
+		t.Fatal("users.role migration was not applied")
+	}
 }
 
 func TestConcurrentMigrateCallsAreSerialized(t *testing.T) {

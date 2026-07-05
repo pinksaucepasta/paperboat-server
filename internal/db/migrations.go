@@ -16,6 +16,7 @@ type Migration struct {
 
 var Migrations = []Migration{
 	{Version: 1, Name: "phase_2_initial_postgres_schema", SQL: phase2SchemaSQL},
+	{Version: 2, Name: "phase_3_identity_roles", SQL: phase3IdentityRolesSQL},
 }
 
 func Migrate(ctx context.Context, d *DB) error {
@@ -509,4 +510,21 @@ CREATE INDEX IF NOT EXISTS idx_audit_events_resource ON audit_events(resource_ty
 CREATE INDEX IF NOT EXISTS idx_projects_user_id ON projects(user_id);
 CREATE INDEX IF NOT EXISTS idx_orchestration_jobs_state_next_run ON orchestration_jobs(state, next_run_at);
 CREATE INDEX IF NOT EXISTS idx_connection_events_project ON connection_events(project_id, created_at DESC);
+`
+
+const phase3IdentityRolesSQL = `
+SET LOCAL search_path TO paperboat;
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS role text NOT NULL DEFAULT 'user';
+
+DO $$
+BEGIN
+	IF NOT EXISTS (
+		SELECT 1 FROM pg_constraint
+		WHERE conname = 'users_role_valid'
+		  AND conrelid = 'paperboat.users'::regclass
+	) THEN
+		ALTER TABLE users ADD CONSTRAINT users_role_valid CHECK (role IN ('user', 'support', 'admin', 'system_worker'));
+	END IF;
+END $$;
 `

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pinksaucepasta/paperboat-server/internal/auth"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/observability"
 )
@@ -25,6 +26,7 @@ type Options struct {
 	Config           config.Config
 	Logger           *slog.Logger
 	ReadinessChecker ReadinessChecker
+	Auth             *auth.Service
 	OverrideHandler  http.Handler
 }
 
@@ -39,6 +41,9 @@ func NewRouter(opts Options) http.Handler {
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /healthz", health)
 		mux.HandleFunc("GET /readyz", ready(opts.ReadinessChecker))
+		if opts.Auth != nil {
+			registerAuthRoutes(mux, opts)
+		}
 		mux.HandleFunc("/", notImplemented)
 		handler = mux
 	}
@@ -76,6 +81,21 @@ func ready(checker ReadinessChecker) http.HandlerFunc {
 
 func notImplemented(w http.ResponseWriter, r *http.Request) {
 	writeError(w, r, http.StatusNotImplemented, "provider_unavailable", "This endpoint is not implemented in the current server phase.")
+}
+
+func registerAuthRoutes(mux *http.ServeMux, opts Options) {
+	mux.HandleFunc("GET /api/auth/workos/state", workOSState(opts.Auth))
+	mux.HandleFunc("POST /api/auth/workos/callback", workOSCallback(opts.Auth))
+	mux.Handle("POST /api/auth/logout", requireAuth(opts.Auth, logout(opts.Auth)))
+	mux.Handle("GET /api/auth/csrf", requireAuth(opts.Auth, csrf(opts.Auth)))
+	mux.Handle("GET /api/me", requireAuth(opts.Auth, me(opts.Auth)))
+	mux.Handle("GET /api/billing/entitlement", requireAuth(opts.Auth, http.HandlerFunc(paymentRequired)))
+	mux.Handle("GET /api/billing/usage", requireAuth(opts.Auth, http.HandlerFunc(paymentRequired)))
+	mux.Handle("POST /api/billing/checkout", requireAuth(opts.Auth, requireCSRF(opts.Auth, http.HandlerFunc(notImplemented))))
+	mux.Handle("POST /api/billing/customer-portal", requireAuth(opts.Auth, requireCSRF(opts.Auth, http.HandlerFunc(notImplemented))))
+	mux.Handle("/api/projects", requireAuth(opts.Auth, requireEntitlement(opts.Auth, http.HandlerFunc(notImplemented))))
+	mux.Handle("/api/projects/", requireAuth(opts.Auth, requireEntitlement(opts.Auth, http.HandlerFunc(notImplemented))))
+	mux.Handle("/api/admin/", requireAuth(opts.Auth, requireAdmin(http.HandlerFunc(notImplemented))))
 }
 
 func requestID(next http.Handler) http.Handler {

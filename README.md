@@ -8,7 +8,7 @@ authorization for agent access.
 It is a control-plane service — live agent/terminal traffic flows through **agentunnel**, not
 through this server. paperboat-server decides, authorizes, meters, and orchestrates.
 
-> **Status:** Phase 2 persistence in progress. See [AGENTS.md](AGENTS.md) for responsibilities
+> **Status:** Phase 3 identity/session foundation implemented. See [AGENTS.md](AGENTS.md) for responsibilities
 > and conventions, and the workspace `USERSTORY.md` for how this fits the platform.
 
 ## Stack
@@ -42,8 +42,11 @@ gofmt -w .
 ```
 
 The server currently implements foundation endpoints (`/healthz` and
-`/readyz`). Product APIs return structured `501` errors until their gated phases implement
-real behavior.
+`/readyz`) plus the Phase 3 auth/session foundation (`/api/auth/workos/state`,
+`/api/auth/workos/callback`, `/api/auth/csrf`, `/api/auth/logout`, and `/api/me`).
+Later product APIs are protected by
+the auth, CSRF, and entitlement middleware foundations and return structured errors until
+their gated phases implement real behavior.
 
 ## Configuration
 
@@ -64,6 +67,8 @@ Common environment overrides:
 - `PAPERBOAT_SESSION_KEYS` or `PAPERBOAT_SESSION_KEYS_FILE`
 - `PAPERBOAT_ENCRYPTION_KEY` or `PAPERBOAT_ENCRYPTION_KEY_FILE`
 - `PAPERBOAT_WORKOS_API_KEY` or `PAPERBOAT_WORKOS_API_KEY_FILE`
+- `PAPERBOAT_WORKOS_CLIENT_ID` or `PAPERBOAT_WORKOS_CLIENT_ID_FILE`
+- `PAPERBOAT_WORKOS_CLIENT_SECRET` or `PAPERBOAT_WORKOS_CLIENT_SECRET_FILE`
 - `PAPERBOAT_POLAR_WEBHOOK_SECRET` or `PAPERBOAT_POLAR_WEBHOOK_SECRET_FILE`
 - `PAPERBOAT_FLY_API_TOKEN` or `PAPERBOAT_FLY_API_TOKEN_FILE`
 
