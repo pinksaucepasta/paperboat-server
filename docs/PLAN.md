@@ -19,7 +19,7 @@ filling its evidence section.
 | Phase | Area | Status | Owner | Evidence |
 | --- | --- | --- | --- | --- |
 | 0 | Product decisions and contract freeze | Blocked | Codex | Draft contract pack in `docs/contracts/`; pending user approval for required decisions. |
-| 1 | Repository foundation and service skeleton | Not started | TBD | None |
+| 1 | Repository foundation and service skeleton | In progress | Codex | Initial Go module, CLI surface, config loader, HTTP middleware, health/readiness endpoints, local config example, README commands, and foundation tests. |
 | 2 | Persistence, migrations, config, and data catalogs | Not started | TBD | None |
 | 3 | Identity, sessions, authorization, and audit base | Not started | TBD | None |
 | 4 | Billing, entitlements, credits, and storage ledger | Not started | TBD | None |
@@ -328,35 +328,35 @@ Goal: create production Go service foundation with no business stubs.
 
 Tasks:
 
-- [ ] Initialize Go module with correct module path.
-- [ ] Add `cmd/paperboat-server` with `serve`, `migrate`, `seed-catalogs`, `reconcile`,
+- [x] Initialize Go module with correct module path.
+- [x] Add `cmd/paperboat-server` with `serve`, `migrate`, `seed-catalogs`, `reconcile`,
   and `admin` subcommands.
-- [ ] Add config loader with environment, file, and secret source support.
-- [ ] Add config validation that fails fast on missing required production settings.
-- [ ] Add redacted config dump for diagnostics.
-- [ ] Add HTTP router, request IDs, structured logging, panic recovery, timeout handling,
+- [x] Add config loader with environment, file, and secret source support.
+- [x] Add config validation that fails fast on missing required production settings.
+- [x] Add redacted config dump for diagnostics.
+- [x] Add HTTP router, request IDs, structured logging, panic recovery, timeout handling,
   body size limits, CORS allowlist, and secure headers.
-- [ ] Add health and readiness endpoints.
-- [ ] Add graceful shutdown for HTTP server and workers.
-- [ ] Add local development config examples with fake provider mode.
+- [x] Add health and readiness endpoints.
+- [x] Add graceful shutdown for HTTP server and workers.
+- [x] Add local development config examples with fake provider mode.
 - [ ] Add test harness with fake clock, fake providers, temp database, and HTTP client.
-- [ ] Add CI commands documented in README.
+- [x] Add CI commands documented in README.
 
 Acceptance criteria:
 
-- [ ] `go test ./...` passes.
-- [ ] `go vet ./...` passes.
-- [ ] `gofmt -w .` produces no diff.
-- [ ] `paperboat-server serve` starts with local config.
-- [ ] `GET /healthz` returns healthy before provider readiness.
-- [ ] `GET /readyz` reflects database and required provider readiness.
-- [ ] No production path returns placeholder data.
+- [x] `go test ./...` passes.
+- [x] `go vet ./...` passes.
+- [x] `gofmt -w .` produces no diff.
+- [x] `paperboat-server serve` starts with local config.
+- [x] `GET /healthz` returns healthy before provider readiness.
+- [x] `GET /readyz` reflects database and required provider readiness.
+- [x] No production path returns placeholder data.
 
 Evidence:
 
-- Test output:
-- Local smoke command:
-- Config validation examples:
+- Test output: `go test ./...` passed.
+- Local smoke command: `go run ./cmd/paperboat-server serve -config config/local.example.json`; `curl -i http://127.0.0.1:8080/healthz` returned `{"data":{"status":"healthy"}}`; `curl -i http://127.0.0.1:8080/readyz` returned `{"data":{"status":"ready"}}`.
+- Config validation examples: `internal/config/config_test.go` covers env overlays, `_FILE` secret loading, production fake-provider rejection, required production provider secrets, weak production secret rejection, and redacted diagnostics.
 
 ## Phase 2: Persistence, Migrations, Config, and Data Catalogs
 

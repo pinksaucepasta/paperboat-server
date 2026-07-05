@@ -8,10 +8,53 @@ authorization for agent access.
 It is a control-plane service — live agent/terminal traffic flows through **agentunnel**, not
 through this server. paperboat-server decides, authorizes, meters, and orchestrates.
 
-> **Status:** scaffolded, not yet implemented. See [AGENTS.md](AGENTS.md) for responsibilities
+> **Status:** Phase 1 foundation in progress. See [AGENTS.md](AGENTS.md) for responsibilities
 > and conventions, and the workspace `USERSTORY.md` for how this fits the platform.
 
 ## Stack
 
 Go — single binary, part of the platform's Go infra/control-plane side alongside agentunnel
 and paperboat-cli.
+
+## Local Development
+
+Run the service skeleton with fake providers:
+
+```sh
+go run ./cmd/paperboat-server serve -config config/local.example.json
+```
+
+Useful checks:
+
+```sh
+curl -i http://127.0.0.1:8080/healthz
+curl -i http://127.0.0.1:8080/readyz
+go test ./...
+go vet ./...
+gofmt -w .
+```
+
+The Phase 1 server intentionally implements only foundation endpoints (`/healthz` and
+`/readyz`). Product APIs return structured `501` errors until their gated phases implement
+real behavior.
+
+## Configuration
+
+Configuration can come from defaults, a JSON file, environment variables, and secret-file
+environment variables. Secret-file variables use the same name with `_FILE`, for example
+`PAPERBOAT_ENCRYPTION_KEY_FILE`.
+
+Common environment overrides:
+
+- `PAPERBOAT_ENV`
+- `PAPERBOAT_HTTP_ADDRESS`
+- `PAPERBOAT_PUBLIC_BASE_URL`
+- `PAPERBOAT_ALLOWED_ORIGINS`
+- `PAPERBOAT_DATABASE_DRIVER`
+- `PAPERBOAT_DATABASE_DSN`
+- `PAPERBOAT_FAKE_PROVIDERS`
+- `PAPERBOAT_SESSION_KEYS` or `PAPERBOAT_SESSION_KEYS_FILE`
+- `PAPERBOAT_ENCRYPTION_KEY` or `PAPERBOAT_ENCRYPTION_KEY_FILE`
+- `PAPERBOAT_WORKOS_API_KEY` or `PAPERBOAT_WORKOS_API_KEY_FILE`
+- `PAPERBOAT_POLAR_WEBHOOK_SECRET` or `PAPERBOAT_POLAR_WEBHOOK_SECRET_FILE`
+- `PAPERBOAT_FLY_API_TOKEN` or `PAPERBOAT_FLY_API_TOKEN_FILE`

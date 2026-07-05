@@ -1,0 +1,23 @@
+{
+  "environment": "development",
+  "http": {
+    "address": "127.0.0.1:8080",
+    "public_base_url": "http://127.0.0.1:8080",
+    "allowed_origins": ["http://localhost:3000", "http://127.0.0.1:3000"],
+    "read_header_timeout": 5000000000,
+    "request_timeout": 15000000000,
+    "shutdown_timeout": 10000000000,
+    "max_body_bytes": 1048576
+  },
+  "database": {
+    "driver": "memory",
+    "dsn": "memory://local"
+  },
+  "providers": {
+    "fake_mode": true
+  },
+  "secrets": {
+    "session_keys": ["development-session-key-change-me"],
+    "encryption_key": "development-encryption-key-change-me"
+  }
+}

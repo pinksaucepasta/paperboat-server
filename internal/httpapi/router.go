@@ -1,0 +1,344 @@
+package httpapi
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"log/slog"
+	"net/http"
+	"runtime/debug"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/pinksaucepasta/paperboat-server/internal/config"
+	"github.com/pinksaucepasta/paperboat-server/internal/observability"
+)
+
+type ReadinessChecker interface {
+	Ready(context.Context) error
+}
+
+type Options struct {
+	Config           config.Config
+	Logger           *slog.Logger
+	ReadinessChecker ReadinessChecker
+	OverrideHandler  http.Handler
+}
+
+func NewRouter(opts Options) http.Handler {
+	if opts.Logger == nil {
+		opts.Logger = slog.Default()
+	}
+	var handler http.Handler
+	if opts.OverrideHandler != nil {
+		handler = opts.OverrideHandler
+	} else {
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /healthz", health)
+		mux.HandleFunc("GET /readyz", ready(opts.ReadinessChecker))
+		mux.HandleFunc("/", notImplemented)
+		handler = mux
+	}
+	handler = secureHeaders(handler)
+	handler = cors(opts.Config.HTTP.AllowedOrigins, handler)
+	handler = bodyLimit(opts.Config.HTTP.MaxBodyBytes, handler)
+	handler = timeout(opts.Config.HTTP.RequestTimeout, opts.Logger, handler)
+	handler = recoverer(opts.Logger, handler)
+	handler = accessLog(opts.Logger, handler)
+	handler = requestID(handler)
+	return handler
+}
+
+func health(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]any{
+		"status": "healthy",
+	}})
+}
+
+func ready(checker ReadinessChecker) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if checker == nil {
+			writeError(w, r, http.StatusServiceUnavailable, "provider_unavailable", "Readiness checks are not configured.")
+			return
+		}
+		if err := checker.Ready(r.Context()); err != nil {
+			writeError(w, r, http.StatusServiceUnavailable, "provider_unavailable", "Service dependencies are not ready.")
+			return
+		}
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]any{
+			"status": "ready",
+		}})
+	}
+}
+
+func notImplemented(w http.ResponseWriter, r *http.Request) {
+	writeError(w, r, http.StatusNotImplemented, "provider_unavailable", "This endpoint is not implemented in the current server phase.")
+}
+
+func requestID(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID := strings.TrimSpace(r.Header.Get("Request-Id"))
+		if requestID == "" {
+			requestID = newRequestID()
+		}
+		w.Header().Set("Request-Id", requestID)
+		next.ServeHTTP(w, r.WithContext(observability.WithRequestID(r.Context(), requestID)))
+	})
+}
+
+func accessLog(logger *slog.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		observability.LoggerWithRequest(r.Context(), logger).Info("http_request",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", rec.status,
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
+	})
+}
+
+func recoverer(logger *slog.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if value := recover(); value != nil {
+				writePanicError(w, r, logger, value)
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+func timeout(duration time.Duration, logger *slog.Logger, next http.Handler) http.Handler {
+	if duration <= 0 {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isStreamingRequest(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), duration)
+		defer cancel()
+
+		tw := newTimeoutResponseWriter(w)
+		results := make(chan handlerResult, 1)
+		go func() {
+			defer func() {
+				if value := recover(); value != nil {
+					results <- handlerResult{panicValue: value}
+					return
+				}
+				results <- handlerResult{}
+			}()
+			next.ServeHTTP(tw, r.WithContext(ctx))
+		}()
+
+		select {
+		case result := <-results:
+			if result.panicValue != nil {
+				writePanicError(w, r, logger, result.panicValue)
+				return
+			}
+		case <-ctx.Done():
+			if !tw.markTimedOut() {
+				return
+			}
+			writeError(w, r, http.StatusServiceUnavailable, "provider_unavailable", "Request timed out.")
+		}
+	})
+}
+
+func isStreamingRequest(r *http.Request) bool {
+	for _, accept := range r.Header.Values("Accept") {
+		for _, part := range strings.Split(accept, ",") {
+			mediaType := strings.TrimSpace(strings.SplitN(part, ";", 2)[0])
+			if mediaType == "text/event-stream" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func bodyLimit(limit int64, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil && limit > 0 {
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func cors(allowedOrigins []string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" && slices.Contains(allowedOrigins, origin) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key, X-CSRF-Token")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func secureHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		next.ServeHTTP(w, r)
+	})
+}
+
+func writePanicError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, value any) {
+	observability.LoggerWithRequest(r.Context(), logger).Error("panic recovered", "panic", value, "stack", string(debug.Stack()))
+	writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *statusRecorder) Flush() {
+	if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (r *statusRecorder) FlushError() error {
+	if flusher, ok := r.ResponseWriter.(interface{ FlushError() error }); ok {
+		return flusher.FlushError()
+	}
+	r.Flush()
+	return nil
+}
+
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
+type handlerResult struct {
+	panicValue any
+}
+
+type timeoutResponseWriter struct {
+	dst      http.ResponseWriter
+	header   http.Header
+	mu       sync.Mutex
+	started  bool
+	timedOut bool
+}
+
+func newTimeoutResponseWriter(dst http.ResponseWriter) *timeoutResponseWriter {
+	return &timeoutResponseWriter{
+		dst:    dst,
+		header: make(http.Header),
+	}
+}
+
+func (w *timeoutResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *timeoutResponseWriter) WriteHeader(status int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.timedOut || w.started {
+		return
+	}
+	w.started = true
+	copyHeader(w.dst.Header(), w.header)
+	w.dst.WriteHeader(status)
+}
+
+func (w *timeoutResponseWriter) Write(b []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.timedOut {
+		return 0, context.DeadlineExceeded
+	}
+	if !w.started {
+		w.started = true
+		copyHeader(w.dst.Header(), w.header)
+	}
+	return w.dst.Write(b)
+}
+
+func (w *timeoutResponseWriter) Flush() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.timedOut {
+		return
+	}
+	w.started = true
+	copyHeader(w.dst.Header(), w.header)
+	if flusher, ok := w.dst.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *timeoutResponseWriter) markTimedOut() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.started {
+		w.timedOut = true
+		return false
+	}
+	w.timedOut = true
+	return true
+}
+
+func (w *timeoutResponseWriter) Unwrap() http.ResponseWriter {
+	return w.dst
+}
+
+var errFlusherUnsupported = errors.New("response writer does not support flushing")
+
+func (w *timeoutResponseWriter) FlushError() error {
+	if _, ok := w.dst.(http.Flusher); !ok {
+		return errFlusherUnsupported
+	}
+	w.Flush()
+	return nil
+}
+
+func copyHeader(dst, src http.Header) {
+	for key, values := range src {
+		dst.Del(key)
+		for _, value := range values {
+			dst.Add(key, value)
+		}
+	}
+}
+
+func requestIDFromContext(ctx context.Context) string {
+	return observability.RequestID(ctx)
+}
+
+func newRequestID() string {
+	var b [12]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "req_unknown"
+	}
+	return "req_" + hex.EncodeToString(b[:])
+}
