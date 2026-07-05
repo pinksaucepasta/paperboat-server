@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/auth"
+	"github.com/pinksaucepasta/paperboat-server/internal/billing"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/observability"
 )
@@ -27,6 +28,7 @@ type Options struct {
 	Logger           *slog.Logger
 	ReadinessChecker ReadinessChecker
 	Auth             *auth.Service
+	Billing          *billing.Service
 	OverrideHandler  http.Handler
 }
 
@@ -43,6 +45,9 @@ func NewRouter(opts Options) http.Handler {
 		mux.HandleFunc("GET /readyz", ready(opts.ReadinessChecker))
 		if opts.Auth != nil {
 			registerAuthRoutes(mux, opts)
+		}
+		if opts.Billing != nil {
+			mux.HandleFunc("POST /api/webhooks/polar", polarWebhook(opts.Billing, opts.Config.Secrets.PolarWebhookSecret, opts.Config.Billing.PolarWebhookTolerance))
 		}
 		mux.HandleFunc("/", notImplemented)
 		handler = mux
@@ -89,12 +94,23 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 	mux.Handle("POST /api/auth/logout", requireAuth(opts.Auth, logout(opts.Auth)))
 	mux.Handle("GET /api/auth/csrf", requireAuth(opts.Auth, csrf(opts.Auth)))
 	mux.Handle("GET /api/me", requireAuth(opts.Auth, me(opts.Auth)))
-	mux.Handle("GET /api/billing/entitlement", requireAuth(opts.Auth, http.HandlerFunc(paymentRequired)))
-	mux.Handle("GET /api/billing/usage", requireAuth(opts.Auth, http.HandlerFunc(paymentRequired)))
-	mux.Handle("POST /api/billing/checkout", requireAuth(opts.Auth, requireCSRF(opts.Auth, http.HandlerFunc(notImplemented))))
-	mux.Handle("POST /api/billing/customer-portal", requireAuth(opts.Auth, requireCSRF(opts.Auth, http.HandlerFunc(notImplemented))))
+	if opts.Billing != nil {
+		mux.Handle("GET /api/billing/entitlement", requireAuth(opts.Auth, billingEntitlement(opts.Billing)))
+		mux.Handle("GET /api/billing/usage", requireAuth(opts.Auth, billingUsage(opts.Billing)))
+		mux.Handle("POST /api/billing/checkout", requireAuth(opts.Auth, requireCSRF(opts.Auth, billingCheckout(opts.Billing))))
+		mux.Handle("POST /api/billing/customer-portal", requireAuth(opts.Auth, requireCSRF(opts.Auth, billingCustomerPortal(opts.Billing))))
+	} else {
+		mux.Handle("GET /api/billing/entitlement", requireAuth(opts.Auth, http.HandlerFunc(paymentRequired)))
+		mux.Handle("GET /api/billing/usage", requireAuth(opts.Auth, http.HandlerFunc(paymentRequired)))
+		mux.Handle("POST /api/billing/checkout", requireAuth(opts.Auth, requireCSRF(opts.Auth, http.HandlerFunc(notImplemented))))
+		mux.Handle("POST /api/billing/customer-portal", requireAuth(opts.Auth, requireCSRF(opts.Auth, http.HandlerFunc(notImplemented))))
+	}
 	mux.Handle("/api/projects", requireAuth(opts.Auth, requireEntitlement(opts.Auth, http.HandlerFunc(notImplemented))))
 	mux.Handle("/api/projects/", requireAuth(opts.Auth, requireEntitlement(opts.Auth, http.HandlerFunc(notImplemented))))
+	if opts.Billing != nil {
+		mux.Handle("POST /api/admin/users/{user_id}/adjust-credits", requireAuth(opts.Auth, requireCSRF(opts.Auth, requireAdmin(adminAdjustCredits(opts.Billing)))))
+		mux.Handle("POST /api/admin/users/{user_id}/adjust-storage", requireAuth(opts.Auth, requireCSRF(opts.Auth, requireAdmin(adminAdjustStorage(opts.Billing)))))
+	}
 	mux.Handle("/api/admin/", requireAuth(opts.Auth, requireAdmin(http.HandlerFunc(notImplemented))))
 }
 

@@ -11,11 +11,12 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 		"/run/secrets/encryption": []byte("secret-from-file\n"),
 	}
 	env := map[string]string{
-		"PAPERBOAT_ENV":                 "test",
-		"PAPERBOAT_HTTP_ADDRESS":        "127.0.0.1:9090",
-		"PAPERBOAT_CATALOG_SEED_FILE":   "/etc/paperboat/catalogs.json",
-		"PAPERBOAT_ENCRYPTION_KEY_FILE": "/run/secrets/encryption",
-		"PAPERBOAT_SESSION_KEYS":        "one,two",
+		"PAPERBOAT_ENV":                             "test",
+		"PAPERBOAT_HTTP_ADDRESS":                    "127.0.0.1:9090",
+		"PAPERBOAT_CATALOG_SEED_FILE":               "/etc/paperboat/catalogs.json",
+		"PAPERBOAT_POLAR_WEBHOOK_TOLERANCE_SECONDS": "120",
+		"PAPERBOAT_ENCRYPTION_KEY_FILE":             "/run/secrets/encryption",
+		"PAPERBOAT_SESSION_KEYS":                    "one,two",
 	}
 	cfg, err := Load(context.Background(), LoadOptions{
 		LookupEnv: func(key string) (string, bool) {
@@ -37,6 +38,9 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 	}
 	if cfg.Catalogs.SeedFile != "/etc/paperboat/catalogs.json" {
 		t.Fatalf("catalog seed file = %q", cfg.Catalogs.SeedFile)
+	}
+	if cfg.Billing.PolarWebhookTolerance.String() != "2m0s" {
+		t.Fatalf("polar webhook tolerance = %s", cfg.Billing.PolarWebhookTolerance)
 	}
 	if cfg.Secrets.EncryptionKey != "secret-from-file" {
 		t.Fatalf("encryption key was not loaded from secret file")

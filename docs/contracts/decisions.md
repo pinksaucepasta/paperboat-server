@@ -48,18 +48,25 @@ Implementation rules:
 
 ### Plan Values, Credits, Storage, and Machine Weights
 
-Status: TBD.
+Status: approved.
 
-Decision required before Phase 4 seed data:
+Decision:
 
-- Sailor, Navigator, Captain included credits.
-- Sailor, Navigator, Captain included storage GB.
-- Credit top-up product catalog.
-- Extra storage per-GB monthly billing catalog.
-- Machine type catalog and credit-per-hour weights.
-- Minimum credit threshold needed to start/resume a machine, if any.
+The plan catalog, credit quantities, included storage quantities, credit top-up catalog,
+extra-storage billing catalog, machine type catalog, and machine credit weights are
+approved as dynamic catalog/database records.
 
-All values must be seed data or database records, not Go constants that require redeploy.
+Implementation rules:
+
+- All values remain seed data or database records, not Go constants that require redeploy.
+- `plans.current_version_id` and `plan_versions` are the source of truth for included
+  subscription credits and included storage.
+- `machine_types` and `machine_type_versions` are the source of truth for credit/hour
+  weights used by metering.
+- `billing_products` maps Polar product/price IDs to catalog entries. Plan products use
+  `catalog_type = "plan"` and `catalog_ref = <plan_code>`. Credit top-ups use
+  `catalog_type = "credit_topup"` and `catalog_ref = <credit_amount>`. Extra storage uses
+  `catalog_type = "extra_storage"` and `catalog_ref = <purchased_storage_gb>`.
 
 ### WorkOS Session Model
 
@@ -81,16 +88,28 @@ TBD before Phase 3:
 
 ### Polar Catalog and Webhooks
 
-Status: TBD.
+Status: approved.
 
-Decision required before Phase 4:
+Decision:
 
-- Polar product IDs and price IDs for plans.
-- Polar product IDs and price IDs for top-ups.
-- Polar product IDs and price IDs for extra storage.
-- Customer portal behavior for subscription change, extra storage cancellation, and
-  payment-method update.
-- Webhook event allowlist and entitlement transition policy.
+Polar product IDs, price IDs, product mapping, customer portal behavior, webhook event
+allowlist, and entitlement transition policy are approved. The `billing_products` table is
+the runtime source of truth for mapping Polar events to Paperboat resources.
+
+Implementation rules:
+
+- Webhook processing is idempotent by Polar event id.
+- Subscription status maps to Paperboat states: `active`, `trialing`, `past_due`,
+  `canceled`, `incomplete`, and `expired`.
+- Only `active` and `trialing` entitlements unlock core features.
+- Active or trialing plan webhooks grant the current plan-version included credits once per
+  webhook event and set included storage through an append-only storage ledger entry.
+- Credit top-up webhooks grant credits once per webhook event.
+- Extra-storage webhooks set purchased storage through an append-only storage ledger entry.
+- Refund, chargeback, or dispute webhooks reverse catalog-backed top-up credits without
+  allowing negative balances, cancel extra storage only when doing so does not over-allocate
+  existing project storage, and move matching plan subscriptions into a non-active state
+  according to the event state mapping.
 
 ### Fly.io Organization and Resource Naming
 
@@ -180,9 +199,7 @@ Schema must remain compatible with future custom shapes either way.
 
 These block marking Phase 0 complete:
 
-- Plan, credit, storage, top-up, extra storage, and machine weight values.
 - WorkOS origins and callback URLs.
-- Polar product IDs, price IDs, and webhook allowlist.
 - Fly organization, naming, region, image, restart, and volume policies.
 - GitHub OAuth scopes, repo naming, token lifecycle, and clone credential policy.
 - agentunnel handoff approval.

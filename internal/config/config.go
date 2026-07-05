@@ -26,6 +26,7 @@ type Config struct {
 	HTTP        HTTPConfig  `json:"http"`
 	Database    Database    `json:"database"`
 	Catalogs    Catalogs    `json:"catalogs"`
+	Billing     Billing     `json:"billing"`
 	Providers   Providers   `json:"providers"`
 	Secrets     Secrets     `json:"secrets"`
 }
@@ -50,6 +51,10 @@ type Catalogs struct {
 	SeedFile string `json:"seed_file"`
 }
 
+type Billing struct {
+	PolarWebhookTolerance time.Duration `json:"polar_webhook_tolerance"`
+}
+
 type Providers struct {
 	FakeMode   bool           `json:"fake_mode"`
 	WorkOS     ProviderConfig `json:"workos"`
@@ -70,6 +75,7 @@ type Secrets struct {
 	WorkOSAPIKey       string   `json:"workos_api_key"`
 	WorkOSClientID     string   `json:"workos_client_id"`
 	WorkOSClientSecret string   `json:"workos_client_secret"`
+	PolarAPIKey        string   `json:"polar_api_key"`
 	PolarWebhookSecret string   `json:"polar_webhook_secret"`
 	FlyAPIToken        string   `json:"fly_api_token"`
 }
@@ -127,6 +133,9 @@ func Default() Config {
 		Catalogs: Catalogs{
 			SeedFile: "config/catalogs.example.json",
 		},
+		Billing: Billing{
+			PolarWebhookTolerance: 5 * time.Minute,
+		},
 		Providers: Providers{FakeMode: true},
 		Secrets: Secrets{
 			SessionKeys:   []string{"development-session-key-change-me"},
@@ -162,6 +171,9 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Catalogs.SeedFile) == "" {
 		errs = append(errs, fmt.Errorf("catalogs.seed_file is required"))
 	}
+	if c.Billing.PolarWebhookTolerance <= 0 {
+		errs = append(errs, fmt.Errorf("billing.polar_webhook_tolerance must be positive"))
+	}
 	if len(c.Secrets.SessionKeys) == 0 || c.Secrets.EncryptionKey == "" {
 		errs = append(errs, fmt.Errorf("session and encryption secrets are required"))
 	}
@@ -172,7 +184,7 @@ func (c Config) Validate() error {
 		if len(c.HTTP.AllowedOrigins) == 0 {
 			errs = append(errs, fmt.Errorf("http.allowed_origins is required in production"))
 		}
-		if c.Secrets.WorkOSAPIKey == "" || c.Secrets.WorkOSClientID == "" || c.Secrets.WorkOSClientSecret == "" || c.Secrets.PolarWebhookSecret == "" || c.Secrets.FlyAPIToken == "" {
+		if c.Secrets.WorkOSAPIKey == "" || c.Secrets.WorkOSClientID == "" || c.Secrets.WorkOSClientSecret == "" || c.Secrets.PolarAPIKey == "" || c.Secrets.PolarWebhookSecret == "" || c.Secrets.FlyAPIToken == "" {
 			errs = append(errs, fmt.Errorf("production provider secrets are required"))
 		}
 		for _, secret := range append(c.Secrets.SessionKeys, c.Secrets.EncryptionKey) {
@@ -233,6 +245,13 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 		}
 		c.HTTP.MaxBodyBytes = parsed
 	}
+	if v, ok := lookup("PAPERBOAT_POLAR_WEBHOOK_TOLERANCE_SECONDS"); ok {
+		parsed, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return fmt.Errorf("PAPERBOAT_POLAR_WEBHOOK_TOLERANCE_SECONDS: %w", err)
+		}
+		c.Billing.PolarWebhookTolerance = time.Duration(parsed) * time.Second
+	}
 	if err := setSecret("PAPERBOAT_ENCRYPTION_KEY", &c.Secrets.EncryptionKey); err != nil {
 		return err
 	}
@@ -243,6 +262,9 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 		return err
 	}
 	if err := setSecret("PAPERBOAT_WORKOS_CLIENT_SECRET", &c.Secrets.WorkOSClientSecret); err != nil {
+		return err
+	}
+	if err := setSecret("PAPERBOAT_POLAR_API_KEY", &c.Secrets.PolarAPIKey); err != nil {
 		return err
 	}
 	if err := setSecret("PAPERBOAT_POLAR_WEBHOOK_SECRET", &c.Secrets.PolarWebhookSecret); err != nil {

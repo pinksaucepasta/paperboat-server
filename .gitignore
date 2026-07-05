@@ -18,6 +18,7 @@ go.work.sum
 .env
 .env.*
 !.env.example
+config/*.local.json
 
 # OS & editor
 .DS_Store

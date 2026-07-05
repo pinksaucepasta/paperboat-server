@@ -40,13 +40,13 @@ Purpose:
 - Extra storage billing.
 - Customer portal.
 
-Pending approval:
+Approved:
 
 - Product and price IDs for Sailor, Navigator, Captain.
 - Product and price IDs for credit top-ups.
 - Product and price IDs for monthly extra storage.
 - Webhook event allowlist.
-- Refund, chargeback, cancellation, and downgrade behavior.
+- Customer portal behavior.
 
 Implementation constraints:
 
@@ -54,6 +54,9 @@ Implementation constraints:
 - Webhook processing records provider event id and processing state.
 - Credits and storage changes are ledger entries.
 - Dashboard usage display reads server-side ledger state only.
+- `billing_products` maps Polar products and prices to Paperboat catalog actions.
+- Refund, chargeback, cancellation, and downgrade behavior must be enforced through
+  ledger-backed transitions and may not mutate historical ledger entries.
 
 ## Fly.io
 
@@ -119,4 +122,3 @@ Phase 2 must seed these catalogs from approved dynamic sources:
 
 Seed files or provider-backed catalog sources must be environment-specific where values
 differ across local, staging, and production.
-

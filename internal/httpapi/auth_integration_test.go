@@ -15,6 +15,7 @@ import (
 
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/auth"
+	"github.com/pinksaucepasta/paperboat-server/internal/billing"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 )
@@ -147,6 +148,64 @@ VALUES ($1, $2, 'Other User Project', 'ready', $3)`, projectID, userB, "owner-te
 	}
 }
 
+func TestAdminBillingAdjustmentsRequireAdminAndWriteLedger(t *testing.T) {
+	store, router := newAuthIntegrationRouter(t)
+	adminCookies := loginCookies(t, router, "workos_admin:admin@example.com:Admin User")
+	targetCookies := loginCookies(t, router, "workos_target:target@example.com:Target User")
+	adminID := userIDByEmail(t, store, "admin@example.com")
+	targetID := userIDByEmail(t, store, "target@example.com")
+	if _, err := store.SQL().ExecContext(context.Background(), `UPDATE paperboat.users SET role = 'admin' WHERE id = $1`, adminID); err != nil {
+		t.Fatal(err)
+	}
+
+	denied := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/users/"+targetID+"/adjust-credits", strings.NewReader(`{"amount":"5","reason":"test"}`))
+	addCookies(req, targetCookies)
+	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, targetCookies))
+	req.Header.Set("Idempotency-Key", "admin-denied-"+targetID)
+	router.ServeHTTP(denied, req)
+	if denied.Code != http.StatusForbidden {
+		t.Fatalf("non-admin status = %d, body = %s", denied.Code, denied.Body.String())
+	}
+
+	credits := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/admin/users/"+targetID+"/adjust-credits", strings.NewReader(`{"amount":"7.5","reason":"support correction"}`))
+	addCookies(req, adminCookies)
+	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, adminCookies))
+	req.Header.Set("Idempotency-Key", "admin-credit-"+targetID)
+	router.ServeHTTP(credits, req)
+	if credits.Code != http.StatusOK {
+		t.Fatalf("credit adjustment status = %d, body = %s", credits.Code, credits.Body.String())
+	}
+
+	storage := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/admin/users/"+targetID+"/adjust-storage", strings.NewReader(`{"purchased_gb":3,"reason":"support correction"}`))
+	addCookies(req, adminCookies)
+	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, adminCookies))
+	req.Header.Set("Idempotency-Key", "admin-storage-"+targetID)
+	router.ServeHTTP(storage, req)
+	if storage.Code != http.StatusOK {
+		t.Fatalf("storage adjustment status = %d, body = %s", storage.Code, storage.Body.String())
+	}
+
+	var balance string
+	if err := store.SQL().QueryRowContext(context.Background(), `
+SELECT balance::text FROM paperboat.credit_accounts WHERE user_id = $1`, targetID).Scan(&balance); err != nil {
+		t.Fatal(err)
+	}
+	if balance != "7.500000" {
+		t.Fatalf("balance = %s", balance)
+	}
+	var purchased int
+	if err := store.SQL().QueryRowContext(context.Background(), `
+SELECT purchased_gb FROM paperboat.storage_accounts WHERE user_id = $1`, targetID).Scan(&purchased); err != nil {
+		t.Fatal(err)
+	}
+	if purchased != 3 {
+		t.Fatalf("purchased_gb = %d", purchased)
+	}
+}
+
 func newAuthIntegrationRouter(t *testing.T) (*db.DB, http.Handler) {
 	t.Helper()
 	dsn := os.Getenv("PAPERBOAT_TEST_DATABASE_DSN")
@@ -161,7 +220,9 @@ func newAuthIntegrationRouter(t *testing.T) (*db.DB, http.Handler) {
 	if err := db.Migrate(context.Background(), store); err != nil {
 		t.Fatal(err)
 	}
-	service := auth.NewService(store, audit.NewWriter(store), auth.FakeWorkOSVerifier{}, []string{"test-session-key"}, false)
+	auditWriter := audit.NewWriter(store)
+	service := auth.NewService(store, auditWriter, auth.FakeWorkOSVerifier{}, []string{"test-session-key"}, false)
+	billingService := billing.NewService(billing.NewRepository(store), billing.FakePolarClient{}, auditWriter)
 	cfg := config.Default()
 	return store, NewRouter(Options{
 		Config: cfg,
@@ -169,7 +230,8 @@ func newAuthIntegrationRouter(t *testing.T) (*db.DB, http.Handler) {
 		ReadinessChecker: readinessFunc(func(context.Context) error {
 			return nil
 		}),
-		Auth: service,
+		Auth:    service,
+		Billing: billingService,
 	})
 }
 

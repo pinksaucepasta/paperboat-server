@@ -10,6 +10,7 @@ import (
 
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/auth"
+	"github.com/pinksaucepasta/paperboat-server/internal/billing"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/httpapi"
@@ -39,12 +40,14 @@ func New(opts Options) (*App, error) {
 	}
 	auditWriter := audit.NewWriter(store)
 	authService := auth.NewService(store, auditWriter, workOSVerifier(opts.Config), opts.Config.Secrets.SessionKeys, publicURLSecure(opts.Config.HTTP.PublicBaseURL))
+	billingService := billing.NewService(billing.NewRepository(store), polarClient(opts.Config), auditWriter)
 	checker := readinessChecker{cfg: opts.Config, db: store}
 	router := httpapi.NewRouter(httpapi.Options{
 		Config:           opts.Config,
 		Logger:           opts.Logger,
 		ReadinessChecker: checker,
 		Auth:             authService,
+		Billing:          billingService,
 	})
 	return &App{
 		cfg:    opts.Config,
@@ -57,6 +60,16 @@ func New(opts Options) (*App, error) {
 		},
 		worker: workers.NewSupervisor(),
 	}, nil
+}
+
+func polarClient(cfg config.Config) billing.PolarClient {
+	if cfg.Providers.FakeMode {
+		return billing.FakePolarClient{}
+	}
+	return billing.HTTPPolarClient{
+		BaseURL: cfg.Providers.Polar.BaseURL,
+		APIKey:  cfg.Secrets.PolarAPIKey,
+	}
 }
 
 func workOSVerifier(cfg config.Config) auth.WorkOSVerifier {

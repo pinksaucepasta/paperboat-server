@@ -12,6 +12,7 @@ func (c Config) RedactedJSON() string {
 	redacted.Secrets.WorkOSAPIKey = redact(redacted.Secrets.WorkOSAPIKey)
 	redacted.Secrets.WorkOSClientID = redact(redacted.Secrets.WorkOSClientID)
 	redacted.Secrets.WorkOSClientSecret = redact(redacted.Secrets.WorkOSClientSecret)
+	redacted.Secrets.PolarAPIKey = redact(redacted.Secrets.PolarAPIKey)
 	redacted.Secrets.PolarWebhookSecret = redact(redacted.Secrets.PolarWebhookSecret)
 	redacted.Secrets.FlyAPIToken = redact(redacted.Secrets.FlyAPIToken)
 	b, err := json.MarshalIndent(redacted, "", "  ")

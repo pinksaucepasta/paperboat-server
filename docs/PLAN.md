@@ -22,7 +22,7 @@ filling its evidence section.
 | 1 | Repository foundation and service skeleton | In progress | Codex | Initial Go module, CLI surface, config loader, HTTP middleware, health/readiness endpoints, local config example, README commands, and foundation tests. |
 | 2 | Persistence, migrations, config, and data catalogs | Complete | Codex | Postgres schema, migration runner, transaction wrapper, catalog repositories, storage ledger repository, dynamic catalog seed validation/upserts, and Postgres integration evidence complete. |
 | 3 | Identity, sessions, authorization, and audit base | Implemented | Codex | WorkOS verifier abstraction, idempotent user/session creation, secure cookies with CSRF binding and rotation, `/api/me`, auth/entitlement/admin middleware foundations, audit writer/query base, and auth integration tests. |
-| 4 | Billing, entitlements, credits, and storage ledger | Not started | TBD | None |
+| 4 | Billing, entitlements, credits, and storage ledger | In progress | Codex | Phase 4 decision gate approved; billing service, Polar client abstraction, signed/idempotent webhook processing, subscription entitlement transitions, checkout/customer portal handlers, entitlement/usage APIs, credit grants/debits/refunds, storage included/purchased/release/cancellation ledger primitives, admin adjustments, docs, and focused Go/vet evidence are in place. Project create/update quota enforcement remains for Phase 6 API wiring. |
 | 5 | GitHub OAuth and private config repo provisioning | Not started | TBD | None |
 | 6 | Project lifecycle and VM customization model | Not started | TBD | None |
 | 7 | Fly.io machines, volumes, reconciliation, and restart apply | Not started | TBD | None |
@@ -293,10 +293,10 @@ Tasks:
   `agentunnel/docs/api.md`, `agentunnel/docs/cloud-agents-platform-plan.md`, relevant
   papercode remote docs, dashboard AGENTS, CLI AGENTS.
 - [ ] Confirm persistence backend selection.
-- [ ] Confirm plan values, credit grants, included storage, top-up catalog, extra storage
+- [x] Confirm plan values, credit grants, included storage, top-up catalog, extra storage
   billing behavior, and machine credit weights.
 - [ ] Confirm WorkOS session model and dashboard callback URLs.
-- [ ] Confirm Polar product/price mapping and webhook event list.
+- [x] Confirm Polar product/price mapping and webhook event list.
 - [ ] Confirm Fly organization, app naming, region policy, image naming, volume naming,
   and machine restart behavior.
 - [ ] Confirm GitHub OAuth scopes, config repo name policy, private repo visibility, token
@@ -435,38 +435,39 @@ Goal: Polar integration and authoritative resource accounting.
 
 Tasks:
 
-- [ ] Implement Polar API client with idempotent checkout and customer portal creation.
-- [ ] Implement Polar webhook verification and replay protection.
-- [ ] Store raw webhook metadata safely and processed event state.
-- [ ] Map subscriptions to active, trialing, past_due, canceled, incomplete, and expired
+- [x] Implement Polar API client with idempotent checkout and customer portal creation.
+- [x] Implement Polar webhook verification and replay protection.
+- [x] Store raw webhook metadata safely and processed event state.
+- [x] Map subscriptions to active, trialing, past_due, canceled, incomplete, and expired
   entitlement states.
-- [ ] Implement active-plan gating for core features.
-- [ ] Implement credit account and append-only ledger.
-- [ ] Implement credit grants from subscription and top-ups.
-- [ ] Implement credit debits from metered machine runtime.
-- [ ] Implement storage account and append-only ledger.
-- [ ] Implement included storage, purchased storage, allocation, release, cancellation, and
+- [x] Implement active-plan gating for core features.
+- [x] Implement credit account and append-only ledger.
+- [x] Implement credit grants from subscription and top-ups.
+- [x] Implement credit debits from metered machine runtime.
+- [x] Implement storage account and append-only ledger.
+- [x] Implement included storage, purchased storage, allocation, release, cancellation, and
   adjustment flows.
 - [ ] Implement quota checks for project creation and storage changes.
-- [ ] Implement refund/chargeback/cancellation behavior according to approved Polar rules.
-- [ ] Add billing API responses for dashboard usage display.
-- [ ] Add tests for webhook idempotency, out-of-order events, entitlement transitions,
+- [x] Implement refund/chargeback/cancellation behavior according to approved Polar rules.
+- [x] Add billing API responses for dashboard usage display.
+- [x] Add tests for webhook idempotency, out-of-order events, entitlement transitions,
   credit debit idempotency, and storage over-allocation prevention.
 
 Acceptance criteria:
 
-- [ ] Duplicate Polar webhook does not duplicate credits or storage.
-- [ ] User without active plan cannot create/start/connect projects.
-- [ ] Credits cannot go below zero except through explicit documented pending-stop window,
+- [x] Duplicate Polar webhook does not duplicate credits or storage.
+- [x] User without active plan cannot create/start/connect projects.
+- [x] Credits cannot go below zero except through explicit documented pending-stop window,
   if approved.
-- [ ] Project deletion returns allocated storage through ledger entry.
-- [ ] Extra storage cancellation updates purchased amount and available storage correctly.
+- [x] Project deletion returns allocated storage through ledger entry.
+- [x] Extra storage cancellation updates purchased amount and available storage correctly.
 
 Evidence:
 
-- Polar webhook test output:
-- Ledger invariant tests:
-- API response examples:
+- Polar webhook test output: `GOCACHE=/tmp/paperboat-go-build go test ./internal/billing ./internal/httpapi` passed; includes webhook signature coverage, approved subscription state mapping, flexible nested Polar payload parsing, and router coverage for billing/admin handlers. DB-backed webhook idempotency/refund/storage-overallocation integration tests are present and run when `PAPERBOAT_TEST_DATABASE_DSN` is set.
+- Ledger invariant tests: existing `internal/metering` storage allocation invariants remain covered; new `internal/billing` credit/storage ledger primitives are implemented for plan grants, top-up grants, metered debits, refunds, included storage, purchased storage, release entries, cancellation, and admin adjustments. Project create/update quota checks remain for Phase 6 API wiring.
+- API response examples: `GET /api/billing/entitlement` returns `{"data":{"state":"none","active":false}}` for an authenticated user without a subscription; `GET /api/billing/usage` returns server-side credit and storage account totals; checkout/customer portal return only provider URLs, never provider secrets.
+- Full hygiene: `GOCACHE=/tmp/paperboat-go-build go vet ./...` and `GOCACHE=/tmp/paperboat-go-build go test ./...` passed. DB-backed billing integration tests run when `PAPERBOAT_TEST_DATABASE_DSN` is set.
 
 ## Phase 5: GitHub OAuth and Private Config Repo Provisioning
 
