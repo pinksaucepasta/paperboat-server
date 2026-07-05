@@ -85,8 +85,13 @@ func TestRedactedJSONDoesNotExposeSecrets(t *testing.T) {
 	cfg := Default()
 	cfg.Secrets.EncryptionKey = "super-secret-encryption-key"
 	cfg.Secrets.FlyAPIToken = "fly-token-secret"
+	cfg.Secrets.GitHubClientID = "github-client-id-secret"
+	cfg.Secrets.GitHubClientSecret = "github-client-secret"
 	out := cfg.RedactedJSON()
-	if strings.Contains(out, "super-secret-encryption-key") || strings.Contains(out, "fly-token-secret") {
+	if strings.Contains(out, "super-secret-encryption-key") ||
+		strings.Contains(out, "fly-token-secret") ||
+		strings.Contains(out, "github-client-id-secret") ||
+		strings.Contains(out, "github-client-secret") {
 		t.Fatalf("redacted config leaked secrets: %s", out)
 	}
 	if !strings.Contains(out, "supe") || !strings.Contains(out, "cret") {

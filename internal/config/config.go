@@ -27,6 +27,7 @@ type Config struct {
 	Database    Database    `json:"database"`
 	Catalogs    Catalogs    `json:"catalogs"`
 	Billing     Billing     `json:"billing"`
+	GitHub      GitHub      `json:"github"`
 	Providers   Providers   `json:"providers"`
 	Secrets     Secrets     `json:"secrets"`
 }
@@ -55,6 +56,14 @@ type Billing struct {
 	PolarWebhookTolerance time.Duration `json:"polar_webhook_tolerance"`
 }
 
+type GitHub struct {
+	OAuthAuthorizeURL string   `json:"oauth_authorize_url"`
+	OAuthTokenURL     string   `json:"oauth_token_url"`
+	OAuthScopes       []string `json:"oauth_scopes"`
+	ConfigRepoName    string   `json:"config_repo_name"`
+	ConfigRepoBranch  string   `json:"config_repo_branch"`
+}
+
 type Providers struct {
 	FakeMode   bool           `json:"fake_mode"`
 	WorkOS     ProviderConfig `json:"workos"`
@@ -77,6 +86,8 @@ type Secrets struct {
 	WorkOSClientSecret string   `json:"workos_client_secret"`
 	PolarAPIKey        string   `json:"polar_api_key"`
 	PolarWebhookSecret string   `json:"polar_webhook_secret"`
+	GitHubClientID     string   `json:"github_client_id"`
+	GitHubClientSecret string   `json:"github_client_secret"`
 	FlyAPIToken        string   `json:"fly_api_token"`
 }
 
@@ -136,7 +147,19 @@ func Default() Config {
 		Billing: Billing{
 			PolarWebhookTolerance: 5 * time.Minute,
 		},
-		Providers: Providers{FakeMode: true},
+		Providers: Providers{
+			FakeMode: true,
+			GitHub: ProviderConfig{
+				BaseURL: "https://api.github.com",
+			},
+		},
+		GitHub: GitHub{
+			OAuthAuthorizeURL: "https://github.com/login/oauth/authorize",
+			OAuthTokenURL:     "https://github.com/login/oauth/access_token",
+			OAuthScopes:       []string{"repo"},
+			ConfigRepoName:    "paperboat-config",
+			ConfigRepoBranch:  "main",
+		},
 		Secrets: Secrets{
 			SessionKeys:   []string{"development-session-key-change-me"},
 			EncryptionKey: "development-encryption-key-change-me",
@@ -174,6 +197,15 @@ func (c Config) Validate() error {
 	if c.Billing.PolarWebhookTolerance <= 0 {
 		errs = append(errs, fmt.Errorf("billing.polar_webhook_tolerance must be positive"))
 	}
+	if strings.TrimSpace(c.GitHub.OAuthAuthorizeURL) == "" || strings.TrimSpace(c.GitHub.OAuthTokenURL) == "" {
+		errs = append(errs, fmt.Errorf("github oauth urls are required"))
+	}
+	if len(c.GitHub.OAuthScopes) == 0 {
+		errs = append(errs, fmt.Errorf("github.oauth_scopes is required"))
+	}
+	if strings.TrimSpace(c.GitHub.ConfigRepoName) == "" || strings.TrimSpace(c.GitHub.ConfigRepoBranch) == "" {
+		errs = append(errs, fmt.Errorf("github config repo name and branch are required"))
+	}
 	if len(c.Secrets.SessionKeys) == 0 || c.Secrets.EncryptionKey == "" {
 		errs = append(errs, fmt.Errorf("session and encryption secrets are required"))
 	}
@@ -184,7 +216,7 @@ func (c Config) Validate() error {
 		if len(c.HTTP.AllowedOrigins) == 0 {
 			errs = append(errs, fmt.Errorf("http.allowed_origins is required in production"))
 		}
-		if c.Secrets.WorkOSAPIKey == "" || c.Secrets.WorkOSClientID == "" || c.Secrets.WorkOSClientSecret == "" || c.Secrets.PolarAPIKey == "" || c.Secrets.PolarWebhookSecret == "" || c.Secrets.FlyAPIToken == "" {
+		if c.Secrets.WorkOSAPIKey == "" || c.Secrets.WorkOSClientID == "" || c.Secrets.WorkOSClientSecret == "" || c.Secrets.PolarAPIKey == "" || c.Secrets.PolarWebhookSecret == "" || c.Secrets.GitHubClientID == "" || c.Secrets.GitHubClientSecret == "" || c.Secrets.FlyAPIToken == "" {
 			errs = append(errs, fmt.Errorf("production provider secrets are required"))
 		}
 		for _, secret := range append(c.Secrets.SessionKeys, c.Secrets.EncryptionKey) {
@@ -223,6 +255,10 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_DATABASE_DRIVER", &c.Database.Driver)
 	setString("PAPERBOAT_DATABASE_DSN", &c.Database.DSN)
 	setString("PAPERBOAT_CATALOG_SEED_FILE", &c.Catalogs.SeedFile)
+	setString("PAPERBOAT_GITHUB_OAUTH_AUTHORIZE_URL", &c.GitHub.OAuthAuthorizeURL)
+	setString("PAPERBOAT_GITHUB_OAUTH_TOKEN_URL", &c.GitHub.OAuthTokenURL)
+	setString("PAPERBOAT_GITHUB_CONFIG_REPO_NAME", &c.GitHub.ConfigRepoName)
+	setString("PAPERBOAT_GITHUB_CONFIG_REPO_BRANCH", &c.GitHub.ConfigRepoBranch)
 	setString("PAPERBOAT_WORKOS_BASE_URL", &c.Providers.WorkOS.BaseURL)
 	setString("PAPERBOAT_POLAR_BASE_URL", &c.Providers.Polar.BaseURL)
 	setString("PAPERBOAT_GITHUB_BASE_URL", &c.Providers.GitHub.BaseURL)
@@ -230,6 +266,9 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_AGENTUNNEL_BASE_URL", &c.Providers.Agentunnel.BaseURL)
 	if v, ok := lookup("PAPERBOAT_ALLOWED_ORIGINS"); ok {
 		c.HTTP.AllowedOrigins = splitCSV(v)
+	}
+	if v, ok := lookup("PAPERBOAT_GITHUB_OAUTH_SCOPES"); ok {
+		c.GitHub.OAuthScopes = splitCSV(v)
 	}
 	if v, ok := lookup("PAPERBOAT_FAKE_PROVIDERS"); ok {
 		parsed, err := strconv.ParseBool(v)
@@ -268,6 +307,12 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 		return err
 	}
 	if err := setSecret("PAPERBOAT_POLAR_WEBHOOK_SECRET", &c.Secrets.PolarWebhookSecret); err != nil {
+		return err
+	}
+	if err := setSecret("PAPERBOAT_GITHUB_CLIENT_ID", &c.Secrets.GitHubClientID); err != nil {
+		return err
+	}
+	if err := setSecret("PAPERBOAT_GITHUB_CLIENT_SECRET", &c.Secrets.GitHubClientSecret); err != nil {
 		return err
 	}
 	if err := setSecret("PAPERBOAT_FLY_API_TOKEN", &c.Secrets.FlyAPIToken); err != nil {

@@ -13,6 +13,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
+	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
 	"github.com/pinksaucepasta/paperboat-server/internal/httpapi"
 	"github.com/pinksaucepasta/paperboat-server/internal/workers"
 )
@@ -41,6 +42,7 @@ func New(opts Options) (*App, error) {
 	auditWriter := audit.NewWriter(store)
 	authService := auth.NewService(store, auditWriter, workOSVerifier(opts.Config), opts.Config.Secrets.SessionKeys, publicURLSecure(opts.Config.HTTP.PublicBaseURL))
 	billingService := billing.NewService(billing.NewRepository(store), polarClient(opts.Config), auditWriter)
+	githubService := pbgithub.NewService(store, auditWriter, githubClient(opts.Config), opts.Config)
 	checker := readinessChecker{cfg: opts.Config, db: store}
 	router := httpapi.NewRouter(httpapi.Options{
 		Config:           opts.Config,
@@ -48,6 +50,7 @@ func New(opts Options) (*App, error) {
 		ReadinessChecker: checker,
 		Auth:             authService,
 		Billing:          billingService,
+		GitHub:           githubService,
 	})
 	return &App{
 		cfg:    opts.Config,
@@ -60,6 +63,16 @@ func New(opts Options) (*App, error) {
 		},
 		worker: workers.NewSupervisor(),
 	}, nil
+}
+
+func githubClient(cfg config.Config) pbgithub.Client {
+	if cfg.Providers.FakeMode {
+		return &pbgithub.FakeClient{}
+	}
+	return pbgithub.HTTPClient{
+		BaseURL:  cfg.Providers.GitHub.BaseURL,
+		TokenURL: cfg.GitHub.OAuthTokenURL,
+	}
 }
 
 func polarClient(cfg config.Config) billing.PolarClient {

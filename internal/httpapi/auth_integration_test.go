@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -206,6 +207,27 @@ SELECT purchased_gb FROM paperboat.storage_accounts WHERE user_id = $1`, targetI
 	}
 }
 
+func TestSafeIntegrationTestDSNRequiresTestLikeDatabaseName(t *testing.T) {
+	for _, dsn := range []string{
+		"postgres://user:pass@localhost/paperboat_test?sslmode=disable",
+		"postgres://user:pass@localhost/paperboat_dev?sslmode=disable",
+		"postgres://user:pass@localhost/paperboat_local?sslmode=disable",
+	} {
+		if !safeIntegrationTestDSN(dsn) {
+			t.Fatalf("dsn %q should be considered safe for integration tests", dsn)
+		}
+	}
+	for _, dsn := range []string{
+		"postgres://user:pass@localhost/paperboat_prod?sslmode=disable",
+		"postgres://user:pass@localhost/postgres?sslmode=disable",
+		"not a dsn",
+	} {
+		if safeIntegrationTestDSN(dsn) {
+			t.Fatalf("dsn %q should not be considered safe for integration tests", dsn)
+		}
+	}
+}
+
 func newAuthIntegrationRouter(t *testing.T) (*db.DB, http.Handler) {
 	t.Helper()
 	dsn := os.Getenv("PAPERBOAT_TEST_DATABASE_DSN")
@@ -220,6 +242,7 @@ func newAuthIntegrationRouter(t *testing.T) (*db.DB, http.Handler) {
 	if err := db.Migrate(context.Background(), store); err != nil {
 		t.Fatal(err)
 	}
+	resetIntegrationTables(t, store)
 	auditWriter := audit.NewWriter(store)
 	service := auth.NewService(store, auditWriter, auth.FakeWorkOSVerifier{}, []string{"test-session-key"}, false)
 	billingService := billing.NewService(billing.NewRepository(store), billing.FakePolarClient{}, auditWriter)
@@ -233,6 +256,49 @@ func newAuthIntegrationRouter(t *testing.T) (*db.DB, http.Handler) {
 		Auth:    service,
 		Billing: billingService,
 	})
+}
+
+func resetIntegrationTables(t *testing.T, store *db.DB) {
+	t.Helper()
+	dsn := os.Getenv("PAPERBOAT_TEST_DATABASE_DSN")
+	if !safeIntegrationTestDSN(dsn) && os.Getenv("PAPERBOAT_ALLOW_DESTRUCTIVE_TEST_DB_RESET") != "true" {
+		t.Fatalf("refusing to truncate paperboat schema for unsafe PAPERBOAT_TEST_DATABASE_DSN; use a database name containing test/dev/local or set PAPERBOAT_ALLOW_DESTRUCTIVE_TEST_DB_RESET=true")
+	}
+	if _, err := store.SQL().ExecContext(context.Background(), `
+DO $$
+DECLARE
+	tables text;
+BEGIN
+	SELECT string_agg(format('%I.%I', schemaname, tablename), ', ')
+	INTO tables
+	FROM pg_tables
+	WHERE schemaname = 'paperboat'
+	  AND tablename <> 'schema_migrations';
+
+	IF tables IS NOT NULL THEN
+		EXECUTE 'TRUNCATE TABLE ' || tables || ' CASCADE';
+	END IF;
+END $$;`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func safeIntegrationTestDSN(dsn string) bool {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return false
+	}
+	database := strings.Trim(strings.TrimSpace(u.Path), "/")
+	if database == "" {
+		return false
+	}
+	name := strings.ToLower(database)
+	for _, marker := range []string{"test", "dev", "local"} {
+		if strings.Contains(name, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func loginCookies(t *testing.T, router http.Handler, code string) []*http.Cookie {

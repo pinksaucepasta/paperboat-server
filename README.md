@@ -8,7 +8,7 @@ authorization for agent access.
 It is a control-plane service — live agent/terminal traffic flows through **agentunnel**, not
 through this server. paperboat-server decides, authorizes, meters, and orchestrates.
 
-> **Status:** Phase 3 identity/session foundation implemented. See [AGENTS.md](AGENTS.md) for responsibilities
+> **Status:** Phase 5 GitHub OAuth/config-repo foundation is in progress. See [AGENTS.md](AGENTS.md) for responsibilities
 > and conventions, and the workspace `USERSTORY.md` for how this fits the platform.
 
 ## Stack
@@ -42,11 +42,28 @@ gofmt -w .
 ```
 
 The server currently implements foundation endpoints (`/healthz` and
-`/readyz`) plus the Phase 3 auth/session foundation (`/api/auth/workos/state`,
-`/api/auth/workos/callback`, `/api/auth/csrf`, `/api/auth/logout`, and `/api/me`).
-Later product APIs are protected by
-the auth, CSRF, and entitlement middleware foundations and return structured errors until
-their gated phases implement real behavior.
+`/readyz`), auth/session APIs, billing/usage APIs, and the Phase 5 GitHub endpoints
+(`/api/github/status`, `/api/github/oauth/start`, `/api/github/oauth/callback`, and
+`/api/github/config-repo/provision`). Later product APIs are protected by the auth, CSRF,
+and entitlement middleware foundations and return structured errors until their gated
+phases implement real behavior.
+
+For direct server OAuth testing through ngrok, set the GitHub OAuth app callback URL to:
+
+```text
+https://unified-camel-humorous.ngrok-free.app/api/github/oauth/callback
+```
+
+Run the server with:
+
+```sh
+PAPERBOAT_PUBLIC_BASE_URL='https://unified-camel-humorous.ngrok-free.app' \
+PAPERBOAT_FAKE_PROVIDERS=false \
+PAPERBOAT_GITHUB_BASE_URL='https://api.github.com' \
+PAPERBOAT_GITHUB_CLIENT_ID='...' \
+PAPERBOAT_GITHUB_CLIENT_SECRET='...' \
+go run ./cmd/paperboat-server serve -config config/local.example.json
+```
 
 ## Configuration
 
@@ -63,6 +80,11 @@ Common environment overrides:
 - `PAPERBOAT_DATABASE_DRIVER`
 - `PAPERBOAT_DATABASE_DSN`
 - `PAPERBOAT_CATALOG_SEED_FILE`
+- `PAPERBOAT_GITHUB_OAUTH_AUTHORIZE_URL`
+- `PAPERBOAT_GITHUB_OAUTH_TOKEN_URL`
+- `PAPERBOAT_GITHUB_OAUTH_SCOPES`
+- `PAPERBOAT_GITHUB_CONFIG_REPO_NAME`
+- `PAPERBOAT_GITHUB_CONFIG_REPO_BRANCH`
 - `PAPERBOAT_FAKE_PROVIDERS`
 - `PAPERBOAT_SESSION_KEYS` or `PAPERBOAT_SESSION_KEYS_FILE`
 - `PAPERBOAT_ENCRYPTION_KEY` or `PAPERBOAT_ENCRYPTION_KEY_FILE`
@@ -72,6 +94,8 @@ Common environment overrides:
 - `PAPERBOAT_POLAR_API_KEY` or `PAPERBOAT_POLAR_API_KEY_FILE`
 - `PAPERBOAT_POLAR_WEBHOOK_SECRET` or `PAPERBOAT_POLAR_WEBHOOK_SECRET_FILE`
 - `PAPERBOAT_POLAR_WEBHOOK_TOLERANCE_SECONDS`
+- `PAPERBOAT_GITHUB_CLIENT_ID` or `PAPERBOAT_GITHUB_CLIENT_ID_FILE`
+- `PAPERBOAT_GITHUB_CLIENT_SECRET` or `PAPERBOAT_GITHUB_CLIENT_SECRET_FILE`
 - `PAPERBOAT_FLY_API_TOKEN` or `PAPERBOAT_FLY_API_TOKEN_FILE`
 
 Postgres tables live in the dedicated `paperboat` schema. The migration policy is

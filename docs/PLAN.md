@@ -23,7 +23,7 @@ filling its evidence section.
 | 2 | Persistence, migrations, config, and data catalogs | Complete | Codex | Postgres schema, migration runner, transaction wrapper, catalog repositories, storage ledger repository, dynamic catalog seed validation/upserts, and Postgres integration evidence complete. |
 | 3 | Identity, sessions, authorization, and audit base | Implemented | Codex | WorkOS verifier abstraction, idempotent user/session creation, secure cookies with CSRF binding and rotation, `/api/me`, auth/entitlement/admin middleware foundations, audit writer/query base, and auth integration tests. |
 | 4 | Billing, entitlements, credits, and storage ledger | In progress | Codex | Phase 4 decision gate approved; billing service, Polar client abstraction, signed/idempotent webhook processing, subscription entitlement transitions, checkout/customer portal handlers, entitlement/usage APIs, credit grants/debits/refunds, storage included/purchased/release/cancellation ledger primitives, admin adjustments, docs, and focused Go/vet evidence are in place. Project create/update quota enforcement remains for Phase 6 API wiring. |
-| 5 | GitHub OAuth and private config repo provisioning | Not started | TBD | None |
+| 5 | GitHub OAuth and private config repo provisioning | Implemented | Codex | Configurable GitHub OAuth/repo policy, encrypted token persistence schema, fake/HTTP GitHub client abstraction, auth/CSRF-protected GitHub API handlers, browser callback for ngrok-backed server testing, GitHub-required project-create gate, idempotent private config repo provisioning with preview URL skill fixture, provided-Postgres fake-provider tests, and local Go/vet evidence are in place. |
 | 6 | Project lifecycle and VM customization model | Not started | TBD | None |
 | 7 | Fly.io machines, volumes, reconciliation, and restart apply | Not started | TBD | None |
 | 8 | Metering workers, idle detection, credit exhaustion, and enforcement | Not started | TBD | None |
@@ -475,32 +475,35 @@ Goal: GitHub connection and per-user config repo setup.
 
 Tasks:
 
-- [ ] Implement GitHub OAuth start/callback with state and CSRF protection.
-- [ ] Store GitHub token material encrypted with rotation metadata.
-- [ ] Validate required scopes before project creation.
-- [ ] Implement private config repo existence check.
-- [ ] Create private config repo if missing.
-- [ ] Initialize config repo with required default files, including preview URL skill
+- [x] Implement GitHub OAuth start/callback with state and CSRF protection.
+- [x] Store GitHub token material encrypted with rotation metadata.
+- [x] Validate required scopes before project creation.
+- [x] Implement private config repo existence check.
+- [x] Create private config repo if missing.
+- [x] Initialize config repo with required default files, including preview URL skill
   placement required by the product story.
-- [ ] Store repo owner/name/default branch/clone URL metadata.
-- [ ] Add credential handoff model for VM config sync daemon without logging secrets.
-- [ ] Add repo provisioning idempotency key and retry behavior.
-- [ ] Add tests with fake GitHub for OAuth, scope denial, repo already exists, repo
+- [x] Store repo owner/name/default branch/clone URL metadata.
+- [x] Add credential handoff model for VM config sync daemon without logging secrets.
+- [x] Add repo provisioning idempotency key and retry behavior.
+- [x] Add tests with fake GitHub for OAuth, scope denial, repo already exists, repo
   creation failure, and retry recovery.
 
 Acceptance criteria:
 
-- [ ] First project creation blocks with structured GitHub-required state when GitHub is
+- [x] First project creation blocks with structured GitHub-required state when GitHub is
   not connected.
-- [ ] Repo provisioning is idempotent across retries.
-- [ ] Config repo is private.
-- [ ] Token values never appear in logs, API responses, or audit event details.
+- [x] Repo provisioning is idempotent across retries.
+- [x] Config repo is private.
+- [x] Token values never appear in logs, API responses, or audit event details.
 
 Evidence:
 
-- GitHub fake-provider tests:
-- Repo initialization fixture:
-- Secret redaction test:
+- GitHub fake-provider tests: `internal/httpapi/github_integration_test.go` covers OAuth success, missing-scope denial, GitHub-required state, project-create GitHub gating after entitlement, idempotent repo provisioning, repo creation retry recovery, and repo initialization with a fake GitHub client. These DB-backed tests run when `PAPERBOAT_TEST_DATABASE_DSN` is set.
+- Repo initialization fixture: service initializes `README.md`, `.paperboat/preview-url-skill.md`, and `.paperboat/config-sync.json` in the private config repo.
+- Secret redaction test: `TestGitHubOAuthProvisionAndSecretRedaction` asserts the fake token is absent from API responses and audit metadata.
+- Ngrok smoke test: with `PAPERBOAT_PUBLIC_BASE_URL=https://unified-camel-humorous.ngrok-free.app`, `GET https://unified-camel-humorous.ngrok-free.app/healthz` returned healthy through the tunnel; `GET /api/github/oauth/callback?code=test&state=test` reached the server and returned structured `unauthenticated`, proving the callback route is exposed and session-gated.
+- Provided-Postgres evidence: `set -a; source .env.local; set +a; PAPERBOAT_TEST_DATABASE_DSN="$PAPERBOAT_DATABASE_DSN" PAPERBOAT_ALLOW_DESTRUCTIVE_TEST_DB_RESET=true go test -p 1 ./internal/httpapi ./internal/db ./internal/catalog ./internal/metering ./internal/billing` passed after migrations against the provided database URL.
+- Local hygiene: `go test ./...` and `go vet ./...` passed.
 
 ## Phase 6: Project Lifecycle and VM Customization Model
 
