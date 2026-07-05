@@ -12,7 +12,9 @@ import (
 	"syscall"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/app"
+	"github.com/pinksaucepasta/paperboat-server/internal/catalog"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
+	"github.com/pinksaucepasta/paperboat-server/internal/db"
 )
 
 func main() {
@@ -31,7 +33,11 @@ func run(args []string, stdout, stderr io.Writer) error {
 	switch args[1] {
 	case "serve":
 		return runServe(args[2:], stdout, stderr)
-	case "migrate", "seed-catalogs", "reconcile", "admin":
+	case "migrate":
+		return runMigrate(args[2:], stdout, stderr)
+	case "seed-catalogs":
+		return runSeedCatalogs(args[2:], stdout, stderr)
+	case "reconcile", "admin":
 		return fmt.Errorf("%s: command is defined for the production CLI surface but blocked until its phase implementation", args[1])
 	case "help", "-h", "--help":
 		printUsage(stdout)
@@ -39,6 +45,66 @@ func run(args []string, stdout, stderr io.Writer) error {
 	default:
 		return fmt.Errorf("unknown command %q", args[1])
 	}
+}
+
+func runMigrate(args []string, stdout, stderr io.Writer) error {
+	cfg, err := loadCommandConfig(args, stderr)
+	if err != nil {
+		return err
+	}
+	store, err := db.Open(cfg.Database)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	if err := db.Migrate(context.Background(), store); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(stdout, "database migrations applied")
+	return err
+}
+
+func runSeedCatalogs(args []string, stdout, stderr io.Writer) error {
+	cfg, err := loadCommandConfig(args, stderr)
+	if err != nil {
+		return err
+	}
+	seed, err := catalog.LoadFile(cfg.Catalogs.SeedFile)
+	if err != nil {
+		return err
+	}
+	store, err := db.Open(cfg.Database)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	if err := catalog.Apply(context.Background(), store, seed); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(stdout, "catalog seed applied")
+	return err
+}
+
+func loadCommandConfig(args []string, stderr io.Writer) (config.Config, error) {
+	fs := flag.NewFlagSet("command", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	configPath := fs.String("config", "", "path to JSON config file")
+	if err := fs.Parse(args); err != nil {
+		return config.Config{}, err
+	}
+	cfg, err := config.Load(context.Background(), config.LoadOptions{
+		Environment: os.Getenv("PAPERBOAT_ENV"),
+		FilePath:    *configPath,
+		LookupEnv:   os.LookupEnv,
+		ReadFile:    os.ReadFile,
+	})
+	if err != nil {
+		return config.Config{}, err
+	}
+	if err := cfg.Validate(); err != nil {
+		return config.Config{}, err
+	}
+	return cfg, nil
 }
 
 func runServe(args []string, stdout, stderr io.Writer) error {

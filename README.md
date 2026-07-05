@@ -8,7 +8,7 @@ authorization for agent access.
 It is a control-plane service — live agent/terminal traffic flows through **agentunnel**, not
 through this server. paperboat-server decides, authorizes, meters, and orchestrates.
 
-> **Status:** Phase 1 foundation in progress. See [AGENTS.md](AGENTS.md) for responsibilities
+> **Status:** Phase 2 persistence in progress. See [AGENTS.md](AGENTS.md) for responsibilities
 > and conventions, and the workspace `USERSTORY.md` for how this fits the platform.
 
 ## Stack
@@ -24,6 +24,13 @@ Run the service skeleton with fake providers:
 go run ./cmd/paperboat-server serve -config config/local.example.json
 ```
 
+Apply Postgres migrations and seed dynamic catalogs:
+
+```sh
+PAPERBOAT_DATABASE_DSN='postgres://...' go run ./cmd/paperboat-server migrate -config config/local.example.json
+PAPERBOAT_DATABASE_DSN='postgres://...' go run ./cmd/paperboat-server seed-catalogs -config config/local.example.json
+```
+
 Useful checks:
 
 ```sh
@@ -34,7 +41,7 @@ go vet ./...
 gofmt -w .
 ```
 
-The Phase 1 server intentionally implements only foundation endpoints (`/healthz` and
+The server currently implements foundation endpoints (`/healthz` and
 `/readyz`). Product APIs return structured `501` errors until their gated phases implement
 real behavior.
 
@@ -52,9 +59,13 @@ Common environment overrides:
 - `PAPERBOAT_ALLOWED_ORIGINS`
 - `PAPERBOAT_DATABASE_DRIVER`
 - `PAPERBOAT_DATABASE_DSN`
+- `PAPERBOAT_CATALOG_SEED_FILE`
 - `PAPERBOAT_FAKE_PROVIDERS`
 - `PAPERBOAT_SESSION_KEYS` or `PAPERBOAT_SESSION_KEYS_FILE`
 - `PAPERBOAT_ENCRYPTION_KEY` or `PAPERBOAT_ENCRYPTION_KEY_FILE`
 - `PAPERBOAT_WORKOS_API_KEY` or `PAPERBOAT_WORKOS_API_KEY_FILE`
 - `PAPERBOAT_POLAR_WEBHOOK_SECRET` or `PAPERBOAT_POLAR_WEBHOOK_SECRET_FILE`
 - `PAPERBOAT_FLY_API_TOKEN` or `PAPERBOAT_FLY_API_TOKEN_FILE`
+
+Postgres tables live in the dedicated `paperboat` schema. The migration policy is
+forward-only for production releases.

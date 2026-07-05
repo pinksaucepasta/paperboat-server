@@ -1,0 +1,97 @@
+{
+  "plans": [
+    {
+      "code": "sailor",
+      "name": "Sailor",
+      "included_credits": "0",
+      "included_storage_gb": 0,
+      "active": false,
+      "metadata": {
+        "decision_status": "pending_phase_4_values"
+      }
+    },
+    {
+      "code": "navigator",
+      "name": "Navigator",
+      "included_credits": "0",
+      "included_storage_gb": 0,
+      "active": false,
+      "metadata": {
+        "decision_status": "pending_phase_4_values"
+      }
+    },
+    {
+      "code": "captain",
+      "name": "Captain",
+      "included_credits": "0",
+      "included_storage_gb": 0,
+      "active": false,
+      "metadata": {
+        "decision_status": "pending_phase_4_values"
+      }
+    }
+  ],
+  "machine_types": [
+    {
+      "code": "standard-1x",
+      "name": "Standard 1x",
+      "vcpu": 4,
+      "memory_mb": 8192,
+      "credit_weight": "1",
+      "custom_shape_allowed": false,
+      "active": true,
+      "metadata": {}
+    },
+    {
+      "code": "standard-2x",
+      "name": "Standard 2x",
+      "vcpu": 8,
+      "memory_mb": 16384,
+      "credit_weight": "2",
+      "custom_shape_allowed": false,
+      "active": true,
+      "metadata": {}
+    }
+  ],
+  "presets": [
+    {
+      "code": "preview-url-skill",
+      "name": "Preview URL Skill",
+      "description": "Default agent guidance for emitting Paperboat preview URLs.",
+      "active": true,
+      "manifest": {
+        "kind": "paperboat.vm_preset",
+        "version": 1,
+        "files": []
+      }
+    }
+  ],
+  "idle_timeouts": [
+    {
+      "code": "15m",
+      "duration_seconds": 900,
+      "active": true
+    },
+    {
+      "code": "30m",
+      "duration_seconds": 1800,
+      "active": true
+    }
+  ],
+  "regions": [
+    {
+      "code": "iad",
+      "name": "Ashburn, Virginia",
+      "enabled": true,
+      "placement_policy": {}
+    }
+  ],
+  "billing_products": [],
+  "feature_flags": [
+    {
+      "code": "custom-machine-shapes",
+      "enabled": false,
+      "config": {}
+    }
+  ]
+}

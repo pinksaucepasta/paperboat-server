@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
+	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/httpapi"
 	"github.com/pinksaucepasta/paperboat-server/internal/workers"
 )
@@ -20,6 +21,7 @@ type Options struct {
 type App struct {
 	cfg    config.Config
 	logger *slog.Logger
+	db     *db.DB
 	server *http.Server
 	worker *workers.Supervisor
 }
@@ -28,7 +30,11 @@ func New(opts Options) (*App, error) {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
-	checker := readinessChecker{cfg: opts.Config}
+	store, err := db.Open(opts.Config.Database)
+	if err != nil {
+		return nil, err
+	}
+	checker := readinessChecker{cfg: opts.Config, db: store}
 	router := httpapi.NewRouter(httpapi.Options{
 		Config:           opts.Config,
 		Logger:           opts.Logger,
@@ -37,6 +43,7 @@ func New(opts Options) (*App, error) {
 	return &App{
 		cfg:    opts.Config,
 		logger: opts.Logger,
+		db:     store,
 		server: &http.Server{
 			Addr:              opts.Config.HTTP.Address,
 			Handler:           router,
@@ -75,16 +82,20 @@ func (a *App) Run(ctx context.Context) error {
 	if err := a.server.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shutdown http server: %w", err)
 	}
+	if err := a.db.Close(); err != nil {
+		return fmt.Errorf("close database: %w", err)
+	}
 	return runErr
 }
 
 type readinessChecker struct {
 	cfg config.Config
+	db  *db.DB
 }
 
-func (r readinessChecker) Ready(context.Context) error {
-	if r.cfg.Database.Driver == "" || r.cfg.Database.DSN == "" {
-		return errors.New("database is not configured")
+func (r readinessChecker) Ready(ctx context.Context) error {
+	if err := r.db.Ping(ctx); err != nil {
+		return fmt.Errorf("database is not ready: %w", err)
 	}
 	if r.cfg.Providers.FakeMode {
 		return nil

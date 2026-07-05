@@ -30,16 +30,21 @@ the per-VM papercode server.
 
 ### Persistence Backend
 
-Status: TBD.
+Status: approved.
 
-Decision required before Phase 2:
+Decision:
 
-- Option A: SQLite-first single-node backend, with repository boundaries and migration
-  rules that allow a later Postgres implementation.
-- Option B: Postgres from first production release.
+Postgres ships from the first production release. Phase 2 migrations create Paperboat
+objects inside a dedicated `paperboat` schema so the service does not collide with
+provider-managed or pre-existing `public` schema tables.
 
-Current plan default remains documentation-only: repository interfaces must support the
-selected backend, and migrations/tests must prove the selected backend.
+Implementation rules:
+
+- `paperboat-server migrate` applies forward-only migrations.
+- Runtime repositories use explicit transaction boundaries and set their transaction
+  search path to the `paperboat` schema.
+- Dynamic catalogs are seeded with `paperboat-server seed-catalogs`; catalog values remain
+  data, not Go constants.
 
 ### Plan Values, Credits, Storage, and Machine Weights
 
@@ -175,7 +180,6 @@ Schema must remain compatible with future custom shapes either way.
 
 These block marking Phase 0 complete:
 
-- Persistence backend approval.
 - Plan, credit, storage, top-up, extra storage, and machine weight values.
 - WorkOS origins and callback URLs.
 - Polar product IDs, price IDs, and webhook allowlist.
@@ -185,4 +189,3 @@ These block marking Phase 0 complete:
 - papercode AccessEndpoint descriptor approval.
 - paperboat-cli descriptor approval.
 - Custom Fly shape release decision.
-

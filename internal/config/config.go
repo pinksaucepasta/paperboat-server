@@ -25,6 +25,7 @@ type Config struct {
 	Environment Environment `json:"environment"`
 	HTTP        HTTPConfig  `json:"http"`
 	Database    Database    `json:"database"`
+	Catalogs    Catalogs    `json:"catalogs"`
 	Providers   Providers   `json:"providers"`
 	Secrets     Secrets     `json:"secrets"`
 }
@@ -43,6 +44,10 @@ type HTTPConfig struct {
 type Database struct {
 	Driver string `json:"driver"`
 	DSN    string `json:"dsn"`
+}
+
+type Catalogs struct {
+	SeedFile string `json:"seed_file"`
 }
 
 type Providers struct {
@@ -114,8 +119,11 @@ func Default() Config {
 			MaxBodyBytes:      1 << 20,
 		},
 		Database: Database{
-			Driver: "memory",
-			DSN:    "memory://local",
+			Driver: "postgres",
+			DSN:    "postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable",
+		},
+		Catalogs: Catalogs{
+			SeedFile: "config/catalogs.example.json",
 		},
 		Providers: Providers{FakeMode: true},
 		Secrets: Secrets{
@@ -146,6 +154,11 @@ func (c Config) Validate() error {
 	}
 	if c.Database.Driver == "" || c.Database.DSN == "" {
 		errs = append(errs, fmt.Errorf("database.driver and database.dsn are required"))
+	} else if c.Database.Driver != "postgres" && c.Database.Driver != "pgx" {
+		errs = append(errs, fmt.Errorf("database.driver must be postgres"))
+	}
+	if strings.TrimSpace(c.Catalogs.SeedFile) == "" {
+		errs = append(errs, fmt.Errorf("catalogs.seed_file is required"))
 	}
 	if len(c.Secrets.SessionKeys) == 0 || c.Secrets.EncryptionKey == "" {
 		errs = append(errs, fmt.Errorf("session and encryption secrets are required"))
@@ -195,6 +208,7 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_PUBLIC_BASE_URL", &c.HTTP.PublicBaseURL)
 	setString("PAPERBOAT_DATABASE_DRIVER", &c.Database.Driver)
 	setString("PAPERBOAT_DATABASE_DSN", &c.Database.DSN)
+	setString("PAPERBOAT_CATALOG_SEED_FILE", &c.Catalogs.SeedFile)
 	setString("PAPERBOAT_WORKOS_BASE_URL", &c.Providers.WorkOS.BaseURL)
 	setString("PAPERBOAT_POLAR_BASE_URL", &c.Providers.Polar.BaseURL)
 	setString("PAPERBOAT_GITHUB_BASE_URL", &c.Providers.GitHub.BaseURL)

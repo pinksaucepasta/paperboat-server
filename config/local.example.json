@@ -10,8 +10,11 @@
     "max_body_bytes": 1048576
   },
   "database": {
-    "driver": "memory",
-    "dsn": "memory://local"
+    "driver": "postgres",
+    "dsn": "postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable"
+  },
+  "catalogs": {
+    "seed_file": "config/catalogs.example.json"
   },
   "providers": {
     "fake_mode": true

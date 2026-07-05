@@ -13,6 +13,7 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 	env := map[string]string{
 		"PAPERBOAT_ENV":                 "test",
 		"PAPERBOAT_HTTP_ADDRESS":        "127.0.0.1:9090",
+		"PAPERBOAT_CATALOG_SEED_FILE":   "/etc/paperboat/catalogs.json",
 		"PAPERBOAT_ENCRYPTION_KEY_FILE": "/run/secrets/encryption",
 		"PAPERBOAT_SESSION_KEYS":        "one,two",
 	}
@@ -34,6 +35,9 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 	if cfg.HTTP.Address != "127.0.0.1:9090" {
 		t.Fatalf("address = %q", cfg.HTTP.Address)
 	}
+	if cfg.Catalogs.SeedFile != "/etc/paperboat/catalogs.json" {
+		t.Fatalf("catalog seed file = %q", cfg.Catalogs.SeedFile)
+	}
 	if cfg.Secrets.EncryptionKey != "secret-from-file" {
 		t.Fatalf("encryption key was not loaded from secret file")
 	}
@@ -51,6 +55,22 @@ func TestProductionValidationRejectsFakeProvidersAndWeakSecrets(t *testing.T) {
 	}
 	got := err.Error()
 	for _, want := range []string{"fake_mode", "production provider secrets", "production secrets"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in validation error %q", want, got)
+		}
+	}
+}
+
+func TestValidationRequiresPostgresAndCatalogSeedFile(t *testing.T) {
+	cfg := Default()
+	cfg.Database.Driver = "memory"
+	cfg.Catalogs.SeedFile = ""
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	got := err.Error()
+	for _, want := range []string{"database.driver", "catalogs.seed_file"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected %q in validation error %q", want, got)
 		}

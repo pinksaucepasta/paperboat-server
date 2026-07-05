@@ -20,7 +20,7 @@ filling its evidence section.
 | --- | --- | --- | --- | --- |
 | 0 | Product decisions and contract freeze | Blocked | Codex | Draft contract pack in `docs/contracts/`; pending user approval for required decisions. |
 | 1 | Repository foundation and service skeleton | In progress | Codex | Initial Go module, CLI surface, config loader, HTTP middleware, health/readiness endpoints, local config example, README commands, and foundation tests. |
-| 2 | Persistence, migrations, config, and data catalogs | Not started | TBD | None |
+| 2 | Persistence, migrations, config, and data catalogs | Complete | Codex | Postgres schema, migration runner, transaction wrapper, catalog repositories, storage ledger repository, dynamic catalog seed validation/upserts, and Postgres integration evidence complete. |
 | 3 | Identity, sessions, authorization, and audit base | Not started | TBD | None |
 | 4 | Billing, entitlements, credits, and storage ledger | Not started | TBD | None |
 | 5 | GitHub OAuth and private config repo provisioning | Not started | TBD | None |
@@ -364,34 +364,35 @@ Goal: durable data model, migrations, and dynamic catalogs.
 
 Tasks:
 
-- [ ] Implement selected database driver and transaction wrapper.
-- [ ] Add migration runner with up/down or forward-only policy documented.
-- [ ] Create tables for users, sessions, identities, audit, catalogs, billing, projects,
+- [x] Implement selected database driver and transaction wrapper.
+- [x] Add migration runner with up/down or forward-only policy documented.
+- [x] Create tables for users, sessions, identities, audit, catalogs, billing, projects,
   Fly resources, metering, access sessions, jobs, provider events, and reconciliation.
-- [ ] Add optimistic locking or version columns to mutable aggregate records.
-- [ ] Add unique idempotency keys for project creation, webhook events, provider jobs, and
+- [x] Add optimistic locking or version columns to mutable aggregate records.
+- [x] Add unique idempotency keys for project creation, webhook events, provider jobs, and
   ledger operations.
-- [ ] Add repository interfaces and concrete implementations.
-- [ ] Add dynamic seed loader for plans, machine types, presets, timeout options, regions,
+- [x] Add repository interfaces and concrete implementations.
+- [x] Add dynamic seed loader for plans, machine types, presets, timeout options, regions,
   billing products, and feature flags.
-- [ ] Add catalog versioning so historical usage references immutable values.
-- [ ] Add config schema validation tests.
-- [ ] Add migration tests from empty database to current schema.
-- [ ] Add repository transaction tests for rollback and concurrency invariants.
+- [x] Add catalog versioning so historical usage references immutable values.
+- [x] Add config schema validation tests.
+- [x] Add migration tests from empty database to current schema.
+- [x] Add repository transaction tests for rollback and concurrency invariants.
 
 Acceptance criteria:
 
-- [ ] Database can be created from scratch with one command.
-- [ ] Catalog changes are upserts, not code changes.
-- [ ] Plan/machine/preset values can be changed without recompiling.
-- [ ] Ledger tables are append-only in normal application flows.
-- [ ] Concurrent allocation tests prevent over-allocation of storage.
+- [x] Database can be created from scratch with one command.
+- [x] Catalog changes are upserts, not code changes.
+- [x] Plan/machine/preset values can be changed without recompiling.
+- [x] Ledger tables are append-only in normal application flows.
+- [x] Concurrent allocation tests prevent over-allocation of storage.
 
 Evidence:
 
-- Migration command output:
-- Repository test output:
-- Catalog seed sample:
+- Migration command output: `PAPERBOAT_DATABASE_DSN=<provided-postgres-dsn> go run ./cmd/paperboat-server migrate -config config/local.example.json` returned `database migrations applied`.
+- Repository test output: `PAPERBOAT_TEST_DATABASE_DSN=<provided-postgres-dsn> go test ./internal/db ./internal/catalog ./internal/metering` passed.
+- Catalog seed sample: `config/catalogs.example.json`; `PAPERBOAT_DATABASE_DSN=<provided-postgres-dsn> go run ./cmd/paperboat-server seed-catalogs -config config/local.example.json` returned `catalog seed applied`.
+- Local hygiene: `go test ./...` and `go vet ./...` passed.
 
 ## Phase 3: Identity, Sessions, Authorization, and Audit Base
 
