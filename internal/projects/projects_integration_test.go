@@ -111,6 +111,7 @@ WHERE project_id = $1`, project.ID, input.StorageGB); err != nil {
 	trimmedInput.IdempotencyKey = "create-project-trimmed-url-key"
 	trimmedInput.Name = ""
 	trimmedInput.RepositoryURL = " https://github.com/paperboat/spaced.git "
+	trimmedInput.StorageGB = 4
 	trimmedProject, _, err := service.Create(ctx, trimmedInput)
 	if err != nil {
 		t.Fatal(err)

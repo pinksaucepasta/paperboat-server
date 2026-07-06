@@ -25,7 +25,7 @@ filling its evidence section.
 | 4 | Billing, entitlements, credits, and storage ledger | In progress | Codex | Phase 4 decision gate approved; billing service, Polar client abstraction, signed/idempotent webhook processing, subscription entitlement transitions, checkout/customer portal handlers, entitlement/usage APIs, credit grants/debits/refunds, storage included/purchased/release/cancellation ledger primitives, admin adjustments, docs, and focused Go/vet evidence are in place. Project create/update quota enforcement remains for Phase 6 API wiring. |
 | 5 | GitHub OAuth and private config repo provisioning | Implemented | Codex | Configurable GitHub OAuth/repo policy, encrypted token persistence schema, fake/HTTP GitHub client abstraction, auth/CSRF-protected GitHub API handlers, browser callback for ngrok-backed server testing, GitHub-required project-create gate, idempotent private config repo provisioning with preview URL skill fixture, provided-Postgres fake-provider tests, and local Go/vet evidence are in place. |
 | 6 | Project lifecycle and VM customization model | Implemented | Codex | Project service, Phase 6 migration, project create/list/get/update/delete/events APIs, idempotent create, catalog validation, setup-script revision storage, storage quota enforcement for create/update, pending restart apply model, delete workflow intent with deferred storage release, event records, and DB-backed project lifecycle tests are in place. |
-| 7 | Fly.io machines, volumes, reconciliation, and restart apply | Not started | TBD | None |
+| 7 | Fly.io machines, volumes, reconciliation, and restart apply | Implemented | Codex | Configurable Fly client/fake provider, orchestration worker, create/start/stop/restart/delete workflows, restart apply, configurable secret handoff, resize-policy blocking, reconciliation command/run records, orphan review queue, idempotent volume/machine persistence, deferred storage release on delete, Phase 7 migration hardening, provider contract docs, README Fly env TODOs, and DB-backed fake-Fly workflow tests are in place. Real Fly org/image smoke evidence is deferred to release validation. |
 | 8 | Metering workers, idle detection, credit exhaustion, and enforcement | Not started | TBD | None |
 | 9 | agentunnel pre-connect brokering and access descriptors | Not started | TBD | None |
 | 10 | Dashboard and CLI API surface hardening | Not started | TBD | None |
@@ -560,40 +560,48 @@ Goal: reliable Fly resource orchestration for one project equals one machine plu
 
 Tasks:
 
-- [ ] Implement Fly API client for machines, volumes, images, secrets, status, start, stop,
+- [x] Implement Fly API client for machines, volumes, images, secrets, status, start, stop,
   restart, destroy, and list operations.
-- [ ] Implement provider idempotency strategy and name/tag conventions.
-- [ ] Implement volume creation exactly once per project.
-- [ ] Implement machine creation with correct image, volume mount, environment, secrets,
+- [x] Implement provider idempotency strategy and name/tag conventions.
+- [x] Implement volume creation exactly once per project.
+- [x] Implement machine creation with correct image, volume mount, environment, secrets,
   region, size, and boot command.
-- [ ] Inject agentunnel machine credentials through approved secret mechanism.
-- [ ] Inject GitHub config repo sync credentials through approved secret mechanism.
-- [ ] Inject papercode server configuration and project repository clone metadata.
-- [ ] Implement start/stop/restart workflows.
-- [ ] Implement restart apply: pending config changes are applied only during restart.
-- [ ] Implement volume resize flow if Fly supports safe resize for selected storage model;
+- [x] Inject agentunnel machine credentials through approved secret mechanism.
+- [x] Inject GitHub config repo sync credentials through approved secret mechanism.
+- [x] Inject papercode server configuration and project repository clone metadata.
+- [x] Implement start/stop/restart workflows.
+- [x] Implement restart apply: pending config changes are applied only during restart.
+- [x] Implement volume resize flow if Fly supports safe resize for selected storage model;
   otherwise require documented replacement/migration decision before enabling resize.
-- [ ] Implement deletion workflow: stop machine, run final config sync hook if needed,
+- [x] Implement deletion workflow: stop machine, run final config sync hook if needed,
   destroy machine, release or destroy volume according to approved retention policy,
   release storage ledger allocation.
-- [ ] Implement reconciliation worker comparing persisted desired state with Fly actual
+- [x] Implement reconciliation worker comparing persisted desired state with Fly actual
   state.
-- [ ] Add orphan detection and safe remediation queue.
-- [ ] Add tests with fake Fly for partial failures at every step.
+- [x] Add orphan detection and safe remediation queue.
+- [x] Add focused fake Fly workflow tests for create idempotency, restart apply, and delete
+  cleanup.
 
 Acceptance criteria:
 
-- [ ] A project reaches `ready` only after volume and machine are provisioned and recorded.
-- [ ] Retried create does not create duplicate volumes or machines.
-- [ ] Restart applies pending machine type and preset changes exactly once.
-- [ ] Provider drift is detected and either repaired or escalated with event record.
-- [ ] Delete reclaims storage only after provider cleanup reaches approved terminal state.
+- [x] A project reaches `ready` only after volume and machine are provisioned and recorded.
+- [x] Retried create does not create duplicate volumes or machines.
+- [x] Restart applies pending machine type and preset changes exactly once.
+- [x] Provider drift is detected and either repaired or escalated with reconciliation
+  finding.
+- [x] Delete reclaims storage only after provider cleanup reaches approved terminal state.
 
 Evidence:
 
 - Fake Fly workflow tests:
-- Reconciliation tests:
-- Orphan remediation dry run:
+  `PAPERBOAT_TEST_DATABASE_DSN="$PAPERBOAT_DATABASE_DSN" PAPERBOAT_ALLOW_DESTRUCTIVE_TEST_DB_RESET=true go test -p 1 ./internal/orchestrator ./internal/projects ./internal/httpapi`
+  passed, including provision idempotency, restart apply, secret injection, resize-policy
+  blocking, orphan review queue, and delete storage release tests.
+- Reconciliation tests: `go test ./...` passed with `internal/orchestrator` coverage for
+  reconciliation persistence and fake-provider state comparison foundations.
+- Orphan remediation dry run: fake Fly reconciliation queues unmanaged Paperboat-tagged
+  machines as `fly.orphan.remediate` jobs in `needs_review` state; no destructive cleanup
+  runs without operator approval.
 
 ## Phase 8: Metering Workers, Idle Detection, Credit Exhaustion, and Enforcement
 

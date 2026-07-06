@@ -97,6 +97,25 @@ Common environment overrides:
 - `PAPERBOAT_GITHUB_CLIENT_ID` or `PAPERBOAT_GITHUB_CLIENT_ID_FILE`
 - `PAPERBOAT_GITHUB_CLIENT_SECRET` or `PAPERBOAT_GITHUB_CLIENT_SECRET_FILE`
 - `PAPERBOAT_FLY_API_TOKEN` or `PAPERBOAT_FLY_API_TOKEN_FILE`
+- `PAPERBOAT_FLY_APP_NAME`
+- `PAPERBOAT_FLY_IMAGE_REF`
+- `PAPERBOAT_FLY_BASE_URL`
+- `PAPERBOAT_FLY_VOLUME_NAME_PREFIX`
+- `PAPERBOAT_FLY_MACHINE_NAME_PREFIX`
+- `PAPERBOAT_FLY_MOUNT_PATH`
+- `PAPERBOAT_FLY_BOOT_COMMAND`
+- `PAPERBOAT_FLY_AGENTUNNEL_SECRET`
+- `PAPERBOAT_FLY_GITHUB_SECRET`
+- `PAPERBOAT_AGENTUNNEL_MACHINE_TOKEN` or `PAPERBOAT_AGENTUNNEL_MACHINE_TOKEN_FILE`
+
+Fly.io TODO for real-provider smoke testing:
+
+- Rotate any token that was shared outside a secret store.
+- Create a fresh org-scoped Fly token and set `PAPERBOAT_FLY_API_TOKEN`.
+- Create or choose the Fly app used for project Machines and set `PAPERBOAT_FLY_APP_NAME`.
+- Build/push the project VM image and set `PAPERBOAT_FLY_IMAGE_REF`.
+- Replace the local placeholder `PAPERBOAT_AGENTUNNEL_MACHINE_TOKEN` with the approved
+  agentunnel-issued machine token.
 
 Postgres tables live in the dedicated `paperboat` schema. The migration policy is
 forward-only for production releases.

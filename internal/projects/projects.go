@@ -33,6 +33,7 @@ var (
 	ErrCatalogUnavailable     = errors.New("catalog entry is disabled or unavailable")
 	ErrNotFound               = errors.New("project not found")
 	ErrDeleted                = errors.New("project is deleted")
+	ErrInvalidState           = errors.New("project state does not allow this operation")
 	ErrInsufficientStorage    = metering.ErrInsufficientStorage
 )
 
@@ -182,6 +183,33 @@ func (s *Service) Delete(ctx context.Context, userID, projectID string) (Project
 		return Project{}, err
 	}
 	_ = s.audit.Write(ctx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "project.delete_requested", ResourceType: "project", ResourceID: projectID, IdempotencyKey: "project.delete_requested:" + projectID, Metadata: map[string]any{"storage_release_deferred": true}})
+	return project, nil
+}
+
+func (s *Service) Start(ctx context.Context, userID, projectID string) (Project, error) {
+	project, err := s.repo.QueueLifecycleJob(ctx, userID, projectID, "project.start", "starting")
+	if err != nil {
+		return Project{}, err
+	}
+	_ = s.audit.Write(ctx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "project.start_requested", ResourceType: "project", ResourceID: projectID, IdempotencyKey: "project.start_requested:" + projectID + ":" + project.UpdatedAt.Format(time.RFC3339Nano)})
+	return project, nil
+}
+
+func (s *Service) Stop(ctx context.Context, userID, projectID string) (Project, error) {
+	project, err := s.repo.QueueLifecycleJob(ctx, userID, projectID, "project.stop", "stopping")
+	if err != nil {
+		return Project{}, err
+	}
+	_ = s.audit.Write(ctx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "project.stop_requested", ResourceType: "project", ResourceID: projectID, IdempotencyKey: "project.stop_requested:" + projectID + ":" + project.UpdatedAt.Format(time.RFC3339Nano)})
+	return project, nil
+}
+
+func (s *Service) Restart(ctx context.Context, userID, projectID string) (Project, error) {
+	project, err := s.repo.QueueLifecycleJob(ctx, userID, projectID, "project.restart", "restarting")
+	if err != nil {
+		return Project{}, err
+	}
+	_ = s.audit.Write(ctx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "project.restart_requested", ResourceType: "project", ResourceID: projectID, IdempotencyKey: "project.restart_requested:" + projectID + ":" + project.UpdatedAt.Format(time.RFC3339Nano)})
 	return project, nil
 }
 
@@ -738,6 +766,39 @@ ON CONFLICT (idempotency_key) DO NOTHING`, newID("job"), projectID, "project.del
 			return err
 		}
 		return insertEvent(ctx, tx, projectID, "project.delete_queued", "Project deletion was queued.", map[string]any{"storage_release": "after_provider_cleanup"})
+	})
+	if err != nil {
+		return Project{}, err
+	}
+	return r.Get(ctx, userID, projectID)
+}
+
+func (r *Repository) QueueLifecycleJob(ctx context.Context, userID, projectID, jobType, nextState string) (Project, error) {
+	err := r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		var state string
+		if err := tx.QueryRow(ctx, `SELECT state FROM projects WHERE id = $1 AND user_id = $2 FOR UPDATE`, projectID, userID).Scan(&state); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if state == "deleted" || state == "deleting" {
+			return ErrDeleted
+		}
+		if state == "creating" || state == "provisioning_storage" || state == "provisioning_machine" || state == "failed" || state == "suspended" {
+			return ErrInvalidState
+		}
+		if _, err := tx.Exec(ctx, `UPDATE projects SET state = $3, version = version + 1, updated_at = now() WHERE id = $1 AND user_id = $2`, projectID, userID, nextState); err != nil {
+			return err
+		}
+		payload, _ := json.Marshal(map[string]string{"previous_state": state})
+		if _, err := tx.Exec(ctx, `
+INSERT INTO orchestration_jobs (id, job_type, aggregate_type, aggregate_id, idempotency_key, state, payload)
+VALUES ($1, $2, 'project', $3, $4, 'queued', $5::jsonb)
+ON CONFLICT (idempotency_key) DO UPDATE SET state = 'queued', payload = EXCLUDED.payload, next_run_at = now(), updated_at = now()`, newID("job"), jobType, projectID, jobType+":"+projectID, string(payload)); err != nil {
+			return err
+		}
+		return insertEvent(ctx, tx, projectID, jobType+"_queued", "Project lifecycle operation was queued.", map[string]any{"state": nextState})
 	})
 	if err != nil {
 		return Project{}, err

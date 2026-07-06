@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,6 +16,8 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/catalog"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
+	"github.com/pinksaucepasta/paperboat-server/internal/fly"
+	"github.com/pinksaucepasta/paperboat-server/internal/orchestrator"
 )
 
 func main() {
@@ -37,7 +40,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runMigrate(args[2:], stdout, stderr)
 	case "seed-catalogs":
 		return runSeedCatalogs(args[2:], stdout, stderr)
-	case "reconcile", "admin":
+	case "reconcile":
+		return runReconcile(args[2:], stdout, stderr)
+	case "admin":
 		return fmt.Errorf("%s: command is defined for the production CLI surface but blocked until its phase implementation", args[1])
 	case "help", "-h", "--help":
 		printUsage(stdout)
@@ -45,6 +50,34 @@ func run(args []string, stdout, stderr io.Writer) error {
 	default:
 		return fmt.Errorf("unknown command %q", args[1])
 	}
+}
+
+func runReconcile(args []string, stdout, stderr io.Writer) error {
+	cfg, err := loadCommandConfig(args, stderr)
+	if err != nil {
+		return err
+	}
+	store, err := db.Open(cfg.Database)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	var flyClient fly.Client
+	if cfg.Providers.FakeMode {
+		flyClient = fly.NewFakeClient()
+	} else {
+		flyClient = fly.HTTPClient{BaseURL: cfg.Providers.Fly.BaseURL, APIToken: cfg.Secrets.FlyAPIToken, AppName: cfg.Fly.AppName}
+	}
+	run, err := orchestrator.NewService(store, flyClient, cfg).Reconcile(context.Background())
+	if err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(run, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(stdout, string(b))
+	return err
 }
 
 func runMigrate(args []string, stdout, stderr io.Writer) error {

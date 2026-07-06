@@ -70,12 +70,15 @@ Pending approval:
 
 - Organization slug.
 - App naming policy.
-- Machine naming and tagging policy.
-- Volume naming and tagging policy.
+- Machine naming and tagging policy. Current implementation reads the machine name prefix
+  from `fly.machine_name_prefix` and tags resources with `paperboat_project_id` and
+  `managed_by=paperboat-server`.
+- Volume naming and tagging policy. Current implementation reads the volume name prefix
+  from `fly.volume_name_prefix` and uses the same managed tags.
 - Default region and region allowlist.
 - Machine image naming policy.
-- Restart behavior for pending config apply.
-- Volume resize versus replacement policy.
+- Production machine image naming policy.
+- Fly volume resize versus replacement policy for increasing/decreasing project storage.
 
 Implementation constraints:
 
@@ -83,6 +86,17 @@ Implementation constraints:
 - Persist desired intent before provider calls.
 - Do not mark storage released until approved cleanup terminal state is reached.
 - Do not trust client-reported runtime for billing.
+- Machine image ref, app name, mount path, boot command, and provider secret names are
+  configuration values, not code constants.
+- Restart apply updates the provider machine and clears `pending_restart_apply` only after
+  the provider update succeeds.
+- Agentunnel machine token and GitHub config sync token are injected into the provider
+  machine spec through configurable Fly secret names and are never returned by HTTP APIs or
+  written to project/audit event metadata.
+- Until a Fly volume resize or replacement policy is approved, restart apply blocks storage
+  changes with a project event and leaves `pending_restart_apply` intact.
+- Reconciliation queues orphan Paperboat-tagged Fly machines into `orchestration_jobs` with
+  `state='needs_review'`; destructive remediation requires an explicit operator action.
 
 ## GitHub
 

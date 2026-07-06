@@ -16,11 +16,33 @@
   "catalogs": {
     "seed_file": "config/catalogs.example.json"
   },
+  "github": {
+    "oauth_authorize_url": "https://github.com/login/oauth/authorize",
+    "oauth_token_url": "https://github.com/login/oauth/access_token",
+    "oauth_scopes": ["repo"],
+    "config_repo_name": "paperboat-config",
+    "config_repo_branch": "main"
+  },
+  "fly": {
+    "app_name": "paperboat-projects-dev",
+    "image_ref": "registry.example.invalid/paperboat/project-vm:dev",
+    "volume_name_prefix": "pbvol",
+    "machine_name_prefix": "pbvm",
+    "mount_path": "/workspace",
+    "boot_command": ["/usr/local/bin/paperboat-entrypoint"],
+    "agentunnel_secret": "AGENTUNNEL_MACHINE_TOKEN",
+    "github_secret": "PAPERBOAT_GITHUB_CONFIG_TOKEN"
+  },
   "providers": {
-    "fake_mode": true
+    "fake_mode": true,
+    "fly": {
+      "base_url": "https://api.machines.dev",
+      "ready": true
+    }
   },
   "secrets": {
     "session_keys": ["development-session-key-change-me"],
-    "encryption_key": "development-encryption-key-change-me"
+    "encryption_key": "development-encryption-key-change-me",
+    "agentunnel_machine_token": "development-agentunnel-token-change-me"
   }
 }

@@ -28,6 +28,7 @@ type Config struct {
 	Catalogs    Catalogs    `json:"catalogs"`
 	Billing     Billing     `json:"billing"`
 	GitHub      GitHub      `json:"github"`
+	Fly         Fly         `json:"fly"`
 	Providers   Providers   `json:"providers"`
 	Secrets     Secrets     `json:"secrets"`
 }
@@ -64,6 +65,17 @@ type GitHub struct {
 	ConfigRepoBranch  string   `json:"config_repo_branch"`
 }
 
+type Fly struct {
+	AppName           string   `json:"app_name"`
+	ImageRef          string   `json:"image_ref"`
+	VolumeNamePrefix  string   `json:"volume_name_prefix"`
+	MachineNamePrefix string   `json:"machine_name_prefix"`
+	MountPath         string   `json:"mount_path"`
+	BootCommand       []string `json:"boot_command"`
+	AgentunnelSecret  string   `json:"agentunnel_secret"`
+	GitHubSecret      string   `json:"github_secret"`
+}
+
 type Providers struct {
 	FakeMode   bool           `json:"fake_mode"`
 	WorkOS     ProviderConfig `json:"workos"`
@@ -79,16 +91,17 @@ type ProviderConfig struct {
 }
 
 type Secrets struct {
-	SessionKeys        []string `json:"session_keys"`
-	EncryptionKey      string   `json:"encryption_key"`
-	WorkOSAPIKey       string   `json:"workos_api_key"`
-	WorkOSClientID     string   `json:"workos_client_id"`
-	WorkOSClientSecret string   `json:"workos_client_secret"`
-	PolarAPIKey        string   `json:"polar_api_key"`
-	PolarWebhookSecret string   `json:"polar_webhook_secret"`
-	GitHubClientID     string   `json:"github_client_id"`
-	GitHubClientSecret string   `json:"github_client_secret"`
-	FlyAPIToken        string   `json:"fly_api_token"`
+	SessionKeys            []string `json:"session_keys"`
+	EncryptionKey          string   `json:"encryption_key"`
+	WorkOSAPIKey           string   `json:"workos_api_key"`
+	WorkOSClientID         string   `json:"workos_client_id"`
+	WorkOSClientSecret     string   `json:"workos_client_secret"`
+	PolarAPIKey            string   `json:"polar_api_key"`
+	PolarWebhookSecret     string   `json:"polar_webhook_secret"`
+	GitHubClientID         string   `json:"github_client_id"`
+	GitHubClientSecret     string   `json:"github_client_secret"`
+	FlyAPIToken            string   `json:"fly_api_token"`
+	AgentunnelMachineToken string   `json:"agentunnel_machine_token"`
 }
 
 type LoadOptions struct {
@@ -160,6 +173,16 @@ func Default() Config {
 			ConfigRepoName:    "paperboat-config",
 			ConfigRepoBranch:  "main",
 		},
+		Fly: Fly{
+			AppName:           "paperboat-projects-dev",
+			ImageRef:          "registry.example.invalid/paperboat/project-vm:dev",
+			VolumeNamePrefix:  "pbvol",
+			MachineNamePrefix: "pbvm",
+			MountPath:         "/workspace",
+			BootCommand:       []string{"/usr/local/bin/paperboat-entrypoint"},
+			AgentunnelSecret:  "AGENTUNNEL_MACHINE_TOKEN",
+			GitHubSecret:      "PAPERBOAT_GITHUB_CONFIG_TOKEN",
+		},
 		Secrets: Secrets{
 			SessionKeys:   []string{"development-session-key-change-me"},
 			EncryptionKey: "development-encryption-key-change-me",
@@ -206,6 +229,15 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.GitHub.ConfigRepoName) == "" || strings.TrimSpace(c.GitHub.ConfigRepoBranch) == "" {
 		errs = append(errs, fmt.Errorf("github config repo name and branch are required"))
 	}
+	if strings.TrimSpace(c.Fly.AppName) == "" || strings.TrimSpace(c.Fly.ImageRef) == "" || strings.TrimSpace(c.Fly.VolumeNamePrefix) == "" || strings.TrimSpace(c.Fly.MachineNamePrefix) == "" || strings.TrimSpace(c.Fly.MountPath) == "" {
+		errs = append(errs, fmt.Errorf("fly app, image, naming prefixes, and mount path are required"))
+	}
+	if len(c.Fly.BootCommand) == 0 {
+		errs = append(errs, fmt.Errorf("fly.boot_command is required"))
+	}
+	if strings.TrimSpace(c.Fly.AgentunnelSecret) == "" || strings.TrimSpace(c.Fly.GitHubSecret) == "" {
+		errs = append(errs, fmt.Errorf("fly secret names are required"))
+	}
 	if len(c.Secrets.SessionKeys) == 0 || c.Secrets.EncryptionKey == "" {
 		errs = append(errs, fmt.Errorf("session and encryption secrets are required"))
 	}
@@ -216,7 +248,7 @@ func (c Config) Validate() error {
 		if len(c.HTTP.AllowedOrigins) == 0 {
 			errs = append(errs, fmt.Errorf("http.allowed_origins is required in production"))
 		}
-		if c.Secrets.WorkOSAPIKey == "" || c.Secrets.WorkOSClientID == "" || c.Secrets.WorkOSClientSecret == "" || c.Secrets.PolarAPIKey == "" || c.Secrets.PolarWebhookSecret == "" || c.Secrets.GitHubClientID == "" || c.Secrets.GitHubClientSecret == "" || c.Secrets.FlyAPIToken == "" {
+		if c.Secrets.WorkOSAPIKey == "" || c.Secrets.WorkOSClientID == "" || c.Secrets.WorkOSClientSecret == "" || c.Secrets.PolarAPIKey == "" || c.Secrets.PolarWebhookSecret == "" || c.Secrets.GitHubClientID == "" || c.Secrets.GitHubClientSecret == "" || c.Secrets.FlyAPIToken == "" || c.Secrets.AgentunnelMachineToken == "" {
 			errs = append(errs, fmt.Errorf("production provider secrets are required"))
 		}
 		for _, secret := range append(c.Secrets.SessionKeys, c.Secrets.EncryptionKey) {
@@ -259,6 +291,13 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_GITHUB_OAUTH_TOKEN_URL", &c.GitHub.OAuthTokenURL)
 	setString("PAPERBOAT_GITHUB_CONFIG_REPO_NAME", &c.GitHub.ConfigRepoName)
 	setString("PAPERBOAT_GITHUB_CONFIG_REPO_BRANCH", &c.GitHub.ConfigRepoBranch)
+	setString("PAPERBOAT_FLY_APP_NAME", &c.Fly.AppName)
+	setString("PAPERBOAT_FLY_IMAGE_REF", &c.Fly.ImageRef)
+	setString("PAPERBOAT_FLY_VOLUME_NAME_PREFIX", &c.Fly.VolumeNamePrefix)
+	setString("PAPERBOAT_FLY_MACHINE_NAME_PREFIX", &c.Fly.MachineNamePrefix)
+	setString("PAPERBOAT_FLY_MOUNT_PATH", &c.Fly.MountPath)
+	setString("PAPERBOAT_FLY_AGENTUNNEL_SECRET", &c.Fly.AgentunnelSecret)
+	setString("PAPERBOAT_FLY_GITHUB_SECRET", &c.Fly.GitHubSecret)
 	setString("PAPERBOAT_WORKOS_BASE_URL", &c.Providers.WorkOS.BaseURL)
 	setString("PAPERBOAT_POLAR_BASE_URL", &c.Providers.Polar.BaseURL)
 	setString("PAPERBOAT_GITHUB_BASE_URL", &c.Providers.GitHub.BaseURL)
@@ -269,6 +308,9 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	}
 	if v, ok := lookup("PAPERBOAT_GITHUB_OAUTH_SCOPES"); ok {
 		c.GitHub.OAuthScopes = splitCSV(v)
+	}
+	if v, ok := lookup("PAPERBOAT_FLY_BOOT_COMMAND"); ok {
+		c.Fly.BootCommand = splitCSV(v)
 	}
 	if v, ok := lookup("PAPERBOAT_FAKE_PROVIDERS"); ok {
 		parsed, err := strconv.ParseBool(v)
@@ -316,6 +358,9 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 		return err
 	}
 	if err := setSecret("PAPERBOAT_FLY_API_TOKEN", &c.Secrets.FlyAPIToken); err != nil {
+		return err
+	}
+	if err := setSecret("PAPERBOAT_AGENTUNNEL_MACHINE_TOKEN", &c.Secrets.AgentunnelMachineToken); err != nil {
 		return err
 	}
 	if v, ok := lookup("PAPERBOAT_SESSION_KEYS"); ok {

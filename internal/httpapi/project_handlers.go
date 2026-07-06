@@ -138,6 +138,51 @@ func projectsDelete(service *projects.Service) http.HandlerFunc {
 	}
 }
 
+func projectsStart(service *projects.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		project, err := service.Start(r.Context(), p.User.ID, r.PathValue("project_id"))
+		if writeProjectError(w, r, err) {
+			return
+		}
+		writeJSON(w, http.StatusAccepted, SuccessResponse{Data: project})
+	}
+}
+
+func projectsStop(service *projects.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		project, err := service.Stop(r.Context(), p.User.ID, r.PathValue("project_id"))
+		if writeProjectError(w, r, err) {
+			return
+		}
+		writeJSON(w, http.StatusAccepted, SuccessResponse{Data: project})
+	}
+}
+
+func projectsRestart(service *projects.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		project, err := service.Restart(r.Context(), p.User.ID, r.PathValue("project_id"))
+		if writeProjectError(w, r, err) {
+			return
+		}
+		writeJSON(w, http.StatusAccepted, SuccessResponse{Data: project})
+	}
+}
+
 func projectsEvents(service *projects.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := principalFromContext(r.Context())
@@ -176,6 +221,8 @@ func writeProjectError(w http.ResponseWriter, r *http.Request, err error) bool {
 		writeError(w, r, http.StatusNotFound, "project_not_found", "Project was not found.")
 	case errors.Is(err, projects.ErrDeleted):
 		writeError(w, r, http.StatusConflict, "project_deleted", "Deleted projects cannot be changed.")
+	case errors.Is(err, projects.ErrInvalidState):
+		writeError(w, r, http.StatusConflict, "invalid_project_state", "Project state does not allow this operation.")
 	default:
 		writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
 	}

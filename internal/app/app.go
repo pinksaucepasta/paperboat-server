@@ -13,8 +13,10 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
+	"github.com/pinksaucepasta/paperboat-server/internal/fly"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
 	"github.com/pinksaucepasta/paperboat-server/internal/httpapi"
+	"github.com/pinksaucepasta/paperboat-server/internal/orchestrator"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 	"github.com/pinksaucepasta/paperboat-server/internal/workers"
 )
@@ -45,6 +47,7 @@ func New(opts Options) (*App, error) {
 	billingService := billing.NewService(billing.NewRepository(store), polarClient(opts.Config), auditWriter)
 	githubService := pbgithub.NewService(store, auditWriter, githubClient(opts.Config), opts.Config)
 	projectService := projects.NewService(store, auditWriter, opts.Config)
+	orchestratorService := orchestrator.NewService(store, flyClient(opts.Config), opts.Config)
 	checker := readinessChecker{cfg: opts.Config, db: store}
 	router := httpapi.NewRouter(httpapi.Options{
 		Config:           opts.Config,
@@ -64,8 +67,19 @@ func New(opts Options) (*App, error) {
 			Handler:           router,
 			ReadHeaderTimeout: opts.Config.HTTP.ReadHeaderTimeout,
 		},
-		worker: workers.NewSupervisor(),
+		worker: workers.NewSupervisor(orchestratorService.Worker(2 * opts.Config.HTTP.RequestTimeout / 15)),
 	}, nil
+}
+
+func flyClient(cfg config.Config) fly.Client {
+	if cfg.Providers.FakeMode {
+		return fly.NewFakeClient()
+	}
+	return fly.HTTPClient{
+		BaseURL:  cfg.Providers.Fly.BaseURL,
+		APIToken: cfg.Secrets.FlyAPIToken,
+		AppName:  cfg.Fly.AppName,
+	}
 }
 
 func githubClient(cfg config.Config) pbgithub.Client {

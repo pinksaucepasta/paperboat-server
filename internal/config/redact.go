@@ -17,6 +17,7 @@ func (c Config) RedactedJSON() string {
 	redacted.Secrets.GitHubClientID = redact(redacted.Secrets.GitHubClientID)
 	redacted.Secrets.GitHubClientSecret = redact(redacted.Secrets.GitHubClientSecret)
 	redacted.Secrets.FlyAPIToken = redact(redacted.Secrets.FlyAPIToken)
+	redacted.Secrets.AgentunnelMachineToken = redact(redacted.Secrets.AgentunnelMachineToken)
 	b, err := json.MarshalIndent(redacted, "", "  ")
 	if err != nil {
 		return "{}"
