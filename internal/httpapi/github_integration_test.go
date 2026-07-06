@@ -20,6 +20,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
+	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 )
 
 func TestGitHubOAuthProvisionAndSecretRedaction(t *testing.T) {
@@ -243,8 +244,11 @@ func TestProjectCreateValidatesGitHubScopesBeforePhase6Handler(t *testing.T) {
 	req.Header.Set(auth.CSRFHeaderName, csrf)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotImplemented {
+	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "idempotency_key_required") {
+		t.Fatalf("expected idempotency_key_required, body = %s", rec.Body.String())
 	}
 }
 
@@ -317,6 +321,7 @@ func newGitHubIntegrationRouter(t *testing.T, tokenScopes []string) (*db.DB, htt
 		User:  pbgithub.GitHubUser{Login: "paperboat-test-user"},
 	}
 	githubService := pbgithub.NewService(store, auditWriter, fake, cfg)
+	projectService := projects.NewService(store, auditWriter, cfg)
 	return store, NewRouter(Options{
 		Config:           cfg,
 		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -324,6 +329,7 @@ func newGitHubIntegrationRouter(t *testing.T, tokenScopes []string) (*db.DB, htt
 		Auth:             authService,
 		Billing:          billingService,
 		GitHub:           githubService,
+		Projects:         projectService,
 	}), fake
 }
 

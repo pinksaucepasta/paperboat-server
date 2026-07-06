@@ -18,6 +18,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
 	"github.com/pinksaucepasta/paperboat-server/internal/observability"
+	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 )
 
 type ReadinessChecker interface {
@@ -31,6 +32,7 @@ type Options struct {
 	Auth             *auth.Service
 	Billing          *billing.Service
 	GitHub           *pbgithub.Service
+	Projects         *projects.Service
 	OverrideHandler  http.Handler
 }
 
@@ -113,10 +115,21 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 		mux.Handle("GET /api/github/oauth/callback", requireAuth(opts.Auth, githubOAuthBrowserCallback(opts.Auth, opts.GitHub)))
 		mux.Handle("POST /api/github/oauth/callback", requireAuth(opts.Auth, requireCSRF(opts.Auth, githubOAuthCallback(opts.Auth, opts.GitHub))))
 		mux.Handle("POST /api/github/config-repo/provision", requireAuth(opts.Auth, requireCSRF(opts.Auth, githubProvisionConfigRepo(opts.GitHub))))
-		mux.Handle("POST /api/projects", requireAuth(opts.Auth, requireEntitlement(opts.Auth, requireGitHubConnection(opts.GitHub, http.HandlerFunc(notImplemented)))))
+		if opts.Projects != nil {
+			mux.Handle("GET /api/projects", requireAuth(opts.Auth, requireEntitlement(opts.Auth, projectsList(opts.Projects))))
+			mux.Handle("POST /api/projects", requireAuth(opts.Auth, requireEntitlement(opts.Auth, requireGitHubConnection(opts.GitHub, projectsCreate(opts.Projects)))))
+			mux.Handle("GET /api/projects/{project_id}", requireAuth(opts.Auth, requireEntitlement(opts.Auth, projectsGet(opts.Projects))))
+			mux.Handle("PATCH /api/projects/{project_id}", requireAuth(opts.Auth, requireEntitlement(opts.Auth, projectsUpdate(opts.Projects))))
+			mux.Handle("DELETE /api/projects/{project_id}", requireAuth(opts.Auth, requireEntitlement(opts.Auth, projectsDelete(opts.Projects))))
+			mux.Handle("GET /api/projects/{project_id}/events", requireAuth(opts.Auth, requireEntitlement(opts.Auth, projectsEvents(opts.Projects))))
+		} else {
+			mux.Handle("POST /api/projects", requireAuth(opts.Auth, requireEntitlement(opts.Auth, requireGitHubConnection(opts.GitHub, http.HandlerFunc(notImplemented)))))
+		}
 	}
-	mux.Handle("/api/projects", requireAuth(opts.Auth, requireEntitlement(opts.Auth, http.HandlerFunc(notImplemented))))
-	mux.Handle("/api/projects/", requireAuth(opts.Auth, requireEntitlement(opts.Auth, http.HandlerFunc(notImplemented))))
+	if opts.Projects == nil {
+		mux.Handle("/api/projects", requireAuth(opts.Auth, requireEntitlement(opts.Auth, http.HandlerFunc(notImplemented))))
+		mux.Handle("/api/projects/", requireAuth(opts.Auth, requireEntitlement(opts.Auth, http.HandlerFunc(notImplemented))))
+	}
 	if opts.Billing != nil {
 		mux.Handle("POST /api/admin/users/{user_id}/adjust-credits", requireAuth(opts.Auth, requireCSRF(opts.Auth, requireAdmin(adminAdjustCredits(opts.Billing)))))
 		mux.Handle("POST /api/admin/users/{user_id}/adjust-storage", requireAuth(opts.Auth, requireCSRF(opts.Auth, requireAdmin(adminAdjustStorage(opts.Billing)))))

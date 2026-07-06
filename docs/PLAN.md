@@ -24,7 +24,7 @@ filling its evidence section.
 | 3 | Identity, sessions, authorization, and audit base | Implemented | Codex | WorkOS verifier abstraction, idempotent user/session creation, secure cookies with CSRF binding and rotation, `/api/me`, auth/entitlement/admin middleware foundations, audit writer/query base, and auth integration tests. |
 | 4 | Billing, entitlements, credits, and storage ledger | In progress | Codex | Phase 4 decision gate approved; billing service, Polar client abstraction, signed/idempotent webhook processing, subscription entitlement transitions, checkout/customer portal handlers, entitlement/usage APIs, credit grants/debits/refunds, storage included/purchased/release/cancellation ledger primitives, admin adjustments, docs, and focused Go/vet evidence are in place. Project create/update quota enforcement remains for Phase 6 API wiring. |
 | 5 | GitHub OAuth and private config repo provisioning | Implemented | Codex | Configurable GitHub OAuth/repo policy, encrypted token persistence schema, fake/HTTP GitHub client abstraction, auth/CSRF-protected GitHub API handlers, browser callback for ngrok-backed server testing, GitHub-required project-create gate, idempotent private config repo provisioning with preview URL skill fixture, provided-Postgres fake-provider tests, and local Go/vet evidence are in place. |
-| 6 | Project lifecycle and VM customization model | Not started | TBD | None |
+| 6 | Project lifecycle and VM customization model | Implemented | Codex | Project service, Phase 6 migration, project create/list/get/update/delete/events APIs, idempotent create, catalog validation, setup-script revision storage, storage quota enforcement for create/update, pending restart apply model, delete workflow intent with deferred storage release, event records, and DB-backed project lifecycle tests are in place. |
 | 7 | Fly.io machines, volumes, reconciliation, and restart apply | Not started | TBD | None |
 | 8 | Metering workers, idle detection, credit exhaustion, and enforcement | Not started | TBD | None |
 | 9 | agentunnel pre-connect brokering and access descriptors | Not started | TBD | None |
@@ -511,38 +511,48 @@ Goal: project domain model from repository clone request to desired runtime stat
 
 Tasks:
 
-- [ ] Implement `POST /api/projects` with idempotency key support.
-- [ ] Validate active entitlement, GitHub connection, repository URL, storage availability,
+- [x] Implement `POST /api/projects` with idempotency key support.
+- [x] Validate active entitlement, GitHub connection, repository URL, storage availability,
   machine type, region, preset IDs, idle timeout, and setup script constraints.
-- [ ] Persist desired project state before provider calls.
-- [ ] Implement project states: `creating`, `provisioning_storage`, `provisioning_machine`,
+- [x] Persist desired project state before provider calls.
+- [x] Implement project states: `creating`, `provisioning_storage`, `provisioning_machine`,
   `ready`, `starting`, `running`, `stopping`, `stopped`, `restarting`, `deleting`,
   `deleted`, `failed`, `suspended`.
-- [ ] Implement resource config pending-apply model for disk allocation, machine type,
+- [x] Implement resource config pending-apply model for disk allocation, machine type,
   presets, setup script, and idle timeout.
-- [ ] Implement setup script storage with size limits, secret redaction guidance, and
+- [x] Implement setup script storage with size limits, secret redaction guidance, and
   immutable revision history.
-- [ ] Implement preset selection as versioned catalog references.
-- [ ] Implement project update API that records desired changes and marks whether restart
+- [x] Implement preset selection as versioned catalog references.
+- [x] Implement project update API that records desired changes and marks whether restart
   is required.
-- [ ] Implement delete workflow intent and storage release after provider cleanup succeeds.
-- [ ] Add project event stream/query API for dashboard progress display.
-- [ ] Add tests for validation, idempotency, entitlement gating, restart-required changes,
+- [x] Implement delete workflow intent and storage-release deferral until provider cleanup
+  succeeds.
+- [x] Add project event stream/query API for dashboard progress display.
+- [x] Add tests for validation, idempotency, entitlement gating, restart-required changes,
   and deletion lifecycle.
 
 Acceptance criteria:
 
-- [ ] Project create cannot allocate more storage than available.
-- [ ] Project create cannot use catalog entries disabled in database.
-- [ ] Resource changes do not mutate running machine immediately.
-- [ ] API clearly reports current config, desired config, and pending restart apply state.
-- [ ] Failed create leaves recoverable persisted intent and no silent orphan resources.
+- [x] Project create cannot allocate more storage than available.
+- [x] Project create cannot use catalog entries disabled in database.
+- [x] Resource changes do not mutate running machine immediately.
+- [x] API clearly reports current config, desired config, and pending restart apply state.
+- [x] Failed create leaves recoverable persisted intent and no silent orphan resources.
 
 Evidence:
 
-- Project API tests:
+- Project API tests: `go test ./internal/httpapi` passed locally; the existing GitHub
+  gate test now reaches the real Phase 6 project-create handler after entitlement and
+  GitHub validation.
 - State transition tests:
-- Example project events:
+  `PAPERBOAT_TEST_DATABASE_DSN="$PAPERBOAT_DATABASE_DSN" PAPERBOAT_ALLOW_DESTRUCTIVE_TEST_DB_RESET=true go test -p 1 ./internal/projects ./internal/httpapi`
+  passed, covering idempotent create, storage quota enforcement, disabled catalog
+  rejection, desired config updates, pending restart apply, no Fly machine mutation during
+  resource changes, delete intent, and project events.
+- Example project events: create records `project.created` and
+  `project.provisioning_queued`; update records `project.config_updated`; delete records
+  `project.delete_queued`.
+- Full hygiene: `go test ./...` and `go vet ./...` passed.
 
 ## Phase 7: Fly.io Machines, Volumes, Reconciliation, and Restart Apply
 

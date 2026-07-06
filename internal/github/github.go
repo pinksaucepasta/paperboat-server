@@ -3,10 +3,7 @@ package github
 import (
 	"bytes"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/rand"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -22,6 +19,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
+	"github.com/pinksaucepasta/paperboat-server/internal/secrets"
 )
 
 type OAuthToken struct {
@@ -158,13 +156,13 @@ func (s *Service) CompleteOAuth(ctx context.Context, userID, code, redirectURI s
 	if err != nil {
 		return Status{}, err
 	}
-	accessCiphertext, err := encrypt(s.cfg.Secrets.EncryptionKey, token.AccessToken)
+	accessCiphertext, err := secrets.Encrypt(s.cfg.Secrets.EncryptionKey, token.AccessToken)
 	if err != nil {
 		return Status{}, err
 	}
 	var refreshCiphertext []byte
 	if token.RefreshToken != "" {
-		refreshCiphertext, err = encrypt(s.cfg.Secrets.EncryptionKey, token.RefreshToken)
+		refreshCiphertext, err = secrets.Encrypt(s.cfg.Secrets.EncryptionKey, token.RefreshToken)
 		if err != nil {
 			return Status{}, err
 		}
@@ -294,7 +292,7 @@ func (s *Service) CredentialForConfigSync(ctx context.Context, userID string) ([
 	if err != nil {
 		return nil, err
 	}
-	return encrypt(s.cfg.Secrets.EncryptionKey, token)
+	return secrets.Encrypt(s.cfg.Secrets.EncryptionKey, token)
 }
 
 func (s *Service) EnsureConnected(ctx context.Context, userID string) error {
@@ -336,7 +334,7 @@ LIMIT 1`, userID).Scan(&ciphertext, &login, (*stringArray)(&scopes))
 	if missing := missingScopes(scopes, s.cfg.GitHub.OAuthScopes); len(missing) > 0 {
 		return "", "", ErrMissingScopes
 	}
-	token, err := decrypt(s.cfg.Secrets.EncryptionKey, ciphertext)
+	token, err := secrets.Decrypt(s.cfg.Secrets.EncryptionKey, ciphertext)
 	return token, login, err
 }
 
@@ -706,47 +704,6 @@ func splitScopes(raw string) []string {
 		return []string{}
 	}
 	return fields
-}
-
-func encrypt(key string, plaintext string) ([]byte, error) {
-	if plaintext == "" {
-		return nil, errors.New("cannot encrypt empty secret")
-	}
-	sum := sha256.Sum256([]byte(key))
-	block, err := aes.NewCipher(sum[:])
-	if err != nil {
-		return nil, err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, err
-	}
-	return append(nonce, gcm.Seal(nil, nonce, []byte(plaintext), nil)...), nil
-}
-
-func decrypt(key string, ciphertext []byte) (string, error) {
-	sum := sha256.Sum256([]byte(key))
-	block, err := aes.NewCipher(sum[:])
-	if err != nil {
-		return "", err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", err
-	}
-	if len(ciphertext) < gcm.NonceSize() {
-		return "", errors.New("ciphertext too short")
-	}
-	nonce, encrypted := ciphertext[:gcm.NonceSize()], ciphertext[gcm.NonceSize():]
-	plaintext, err := gcm.Open(nil, nonce, encrypted, nil)
-	if err != nil {
-		return "", err
-	}
-	return string(plaintext), nil
 }
 
 func base64Encode(b []byte) string {

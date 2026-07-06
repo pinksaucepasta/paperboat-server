@@ -15,6 +15,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
 	"github.com/pinksaucepasta/paperboat-server/internal/httpapi"
+	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 	"github.com/pinksaucepasta/paperboat-server/internal/workers"
 )
 
@@ -43,6 +44,7 @@ func New(opts Options) (*App, error) {
 	authService := auth.NewService(store, auditWriter, workOSVerifier(opts.Config), opts.Config.Secrets.SessionKeys, publicURLSecure(opts.Config.HTTP.PublicBaseURL))
 	billingService := billing.NewService(billing.NewRepository(store), polarClient(opts.Config), auditWriter)
 	githubService := pbgithub.NewService(store, auditWriter, githubClient(opts.Config), opts.Config)
+	projectService := projects.NewService(store, auditWriter, opts.Config)
 	checker := readinessChecker{cfg: opts.Config, db: store}
 	router := httpapi.NewRouter(httpapi.Options{
 		Config:           opts.Config,
@@ -51,6 +53,7 @@ func New(opts Options) (*App, error) {
 		Auth:             authService,
 		Billing:          billingService,
 		GitHub:           githubService,
+		Projects:         projectService,
 	})
 	return &App{
 		cfg:    opts.Config,
