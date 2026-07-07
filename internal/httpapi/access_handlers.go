@@ -62,6 +62,8 @@ func writeAccessError(w http.ResponseWriter, r *http.Request, err error) bool {
 		writeError(w, r, http.StatusServiceUnavailable, "tunnel_unavailable", "The tunnel is not available yet.")
 	case errors.Is(err, agentunnel.ErrCredentialIssuerUnavailable):
 		writeError(w, r, http.StatusNotImplemented, "credential_issuer_unavailable", "CLI papercode credential issuance is not available yet.")
+	case errors.Is(err, agentunnel.ErrGitHubRequired):
+		writeError(w, r, http.StatusConflict, "github_config_not_ready", "GitHub config is not ready for this project.")
 	default:
 		writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
 	}

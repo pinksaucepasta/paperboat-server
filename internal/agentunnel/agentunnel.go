@@ -30,6 +30,7 @@ var (
 	ErrInsufficientCredit          = projects.ErrInsufficientCredits
 	ErrTunnelUnavailable           = errors.New("agentunnel resource is unavailable")
 	ErrCredentialIssuerUnavailable = errors.New("papercode credential issuer is unavailable")
+	ErrGitHubRequired              = errors.New("github config is not ready")
 )
 
 type Client interface {
@@ -62,6 +63,56 @@ type TunnelStatus struct {
 	SSHPort          int    `json:"ssh_port,omitempty"`
 	HTTPBaseURL      string `json:"http_base_url,omitempty"`
 	WebSocketBaseURL string `json:"websocket_base_url,omitempty"`
+}
+
+type CredentialIssuer interface {
+	CheckCLI(ctx context.Context, input CredentialInput) error
+	IssueCLI(ctx context.Context, input CredentialInput) (CLICredentials, error)
+}
+
+type CredentialInput struct {
+	UserID    string
+	ProjectID string
+	ExpiresAt time.Time
+}
+
+type CLICredentials struct {
+	TerminalAuth map[string]any
+	UploadAuth   map[string]any
+}
+
+type DisabledCredentialIssuer struct{}
+
+func (DisabledCredentialIssuer) CheckCLI(context.Context, CredentialInput) error {
+	return ErrCredentialIssuerUnavailable
+}
+
+func (DisabledCredentialIssuer) IssueCLI(context.Context, CredentialInput) (CLICredentials, error) {
+	return CLICredentials{}, ErrCredentialIssuerUnavailable
+}
+
+type FakeCredentialIssuer struct{}
+
+func (FakeCredentialIssuer) CheckCLI(context.Context, CredentialInput) error {
+	return nil
+}
+
+func (FakeCredentialIssuer) IssueCLI(_ context.Context, input CredentialInput) (CLICredentials, error) {
+	scopes := []string{"terminal:operate"}
+	return CLICredentials{
+		TerminalAuth: map[string]any{
+			"method":     "websocket_ticket",
+			"ticket":     "pct_" + input.ProjectID,
+			"expires_at": input.ExpiresAt,
+			"scopes":     scopes,
+		},
+		UploadAuth: map[string]any{
+			"method":     "bearer",
+			"token":      "pat_" + input.ProjectID,
+			"expires_at": input.ExpiresAt,
+			"scopes":     scopes,
+		},
+	}, nil
 }
 
 type FakeClient struct {
@@ -322,19 +373,32 @@ type Service struct {
 	repo                     *Repository
 	projects                 *projects.Service
 	client                   Client
+	credentials              CredentialIssuer
 	audit                    *audit.Writer
 	minimumStartCreditWindow time.Duration
 	ttl                      time.Duration
 }
 
 func NewService(store *db.DB, projectService *projects.Service, client Client, auditWriter *audit.Writer, cfg config.Config) *Service {
+	issuer := CredentialIssuer(DisabledCredentialIssuer{})
+	if cfg.Providers.FakeMode {
+		issuer = FakeCredentialIssuer{}
+	}
+	return NewServiceWithCredentials(store, projectService, client, issuer, auditWriter, cfg)
+}
+
+func NewServiceWithCredentials(store *db.DB, projectService *projects.Service, client Client, issuer CredentialIssuer, auditWriter *audit.Writer, cfg config.Config) *Service {
 	if client == nil {
 		client = FakeClient{BaseURL: cfg.Providers.Agentunnel.BaseURL}
+	}
+	if issuer == nil {
+		issuer = DisabledCredentialIssuer{}
 	}
 	return &Service{
 		repo:                     NewRepository(store, cfg.Secrets.EncryptionKey),
 		projects:                 projectService,
 		client:                   client,
+		credentials:              issuer,
 		audit:                    auditWriter,
 		minimumStartCreditWindow: cfg.Metering.MinimumStartCreditWindow,
 		ttl:                      defaultAccessTTL,
@@ -389,9 +453,23 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 		_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, "", "denied", "credits_exhausted", nil)
 		return ConnectResponse{}, err
 	}
+	expires := time.Now().UTC().Add(s.ttl)
+	var credentials CLICredentials
 	if input.Kind == ConnectCLI {
-		_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, "", "denied", "credential_issuer_unavailable", nil)
-		return ConnectResponse{}, ErrCredentialIssuerUnavailable
+		if err := s.repo.EnsureGitHubConfigReady(ctx, input.UserID); err != nil {
+			_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, "", "denied", "github_config_not_ready", nil)
+			return ConnectResponse{}, err
+		}
+		credentialInput := CredentialInput{UserID: input.UserID, ProjectID: input.ProjectID, ExpiresAt: expires}
+		if err := s.credentials.CheckCLI(ctx, credentialInput); err != nil {
+			_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, "", "denied", "credential_issuer_unavailable", nil)
+			return ConnectResponse{}, err
+		}
+		credentials, err = s.credentials.IssueCLI(ctx, credentialInput)
+		if err != nil {
+			_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, "", "denied", "credential_issuer_unavailable", nil)
+			return ConnectResponse{}, err
+		}
 	}
 	resource, ok, err := s.repo.Resource(ctx, input.ProjectID)
 	if err != nil {
@@ -437,7 +515,6 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 		}
 	}
 	if !status.Ready {
-		expires := time.Now().UTC().Add(s.ttl)
 		response := ConnectResponse{ProjectID: project.ID, ProjectState: project.State, Connectable: false, ExpiresAt: expires, Status: status.Status, Reason: status.Reason}
 		if resumeQueued {
 			response.Status = firstNonEmpty(status.Status, "starting")
@@ -446,8 +523,7 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 		_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, "", "denied", "tunnel_not_ready", map[string]any{"status": status.Status, "reason": status.Reason})
 		return response, nil
 	}
-	expires := time.Now().UTC().Add(s.ttl)
-	response := buildResponse(input.Kind, project, resource, expires)
+	response := buildResponse(input.Kind, project, resource, expires, credentials)
 	session, err := s.repo.CreateAccessSession(ctx, input.UserID, input.ProjectID, string(input.Kind), response, expires)
 	if err != nil {
 		return ConnectResponse{}, err
@@ -506,6 +582,14 @@ func (s *Service) Status(ctx context.Context, userID, projectID string) (Connect
 	response.Status = status.Status
 	response.Reason = status.Reason
 	response.Terminal = terminalStatusDescriptor(status)
+	if terminalProjectState(project.State) {
+		response.Connectable = false
+		response.Reason = firstNonEmpty(response.Reason, "project_state_"+project.State)
+	}
+	if err := s.repo.EnsureConnectCredits(ctx, userID, projectID, s.minimumStartCreditWindow); err != nil {
+		response.Connectable = false
+		response.Reason = "credits_exhausted"
+	}
 	return response, nil
 }
 
@@ -518,7 +602,7 @@ func terminalProjectState(state string) bool {
 	}
 }
 
-func buildResponse(kind ConnectKind, project projects.Project, resource ResourceDescriptor, expires time.Time) ConnectResponse {
+func buildResponse(kind ConnectKind, project projects.Project, resource ResourceDescriptor, expires time.Time, credentials CLICredentials) ConnectResponse {
 	base := ConnectResponse{ProjectID: project.ID, ProjectState: project.State, Connectable: true, ExpiresAt: expires}
 	switch kind {
 	case ConnectPapercode:
@@ -551,6 +635,9 @@ func buildResponse(kind ConnectKind, project projects.Project, resource Resource
 			"terminal_id":        "term-1",
 			"cwd":                "/workspace",
 		}
+		if credentials.TerminalAuth != nil {
+			base.Terminal["auth"] = credentials.TerminalAuth
+		}
 		base.Environment = map[string]any{
 			"environment_id": project.ID,
 			"display_name":   project.Name,
@@ -561,6 +648,9 @@ func buildResponse(kind ConnectKind, project projects.Project, resource Resource
 			"http_base_url":      resource.HTTPBaseURL,
 			"max_bytes":          10485760,
 			"allowed_mime_types": []string{"image/png", "image/jpeg", "image/webp"},
+		}
+		if credentials.UploadAuth != nil {
+			base.PapercodeUpload["auth"] = credentials.UploadAuth
 		}
 	default:
 		base.Descriptors = []any{map[string]any{
@@ -705,6 +795,27 @@ WHERE p.id = $1 AND p.user_id = $2`, projectID, userID, int(window.Seconds())).S
 	}
 	if !enough {
 		return ErrInsufficientCredit
+	}
+	return nil
+}
+
+func (r *Repository) EnsureGitHubConfigReady(ctx context.Context, userID string) error {
+	var ready bool
+	err := r.db.SQL().QueryRowContext(ctx, `
+SELECT EXISTS (
+	SELECT 1
+	FROM paperboat.github_oauth_tokens t
+	JOIN paperboat.github_config_repositories cr ON cr.user_id = t.user_id
+	WHERE t.user_id = $1
+	  AND t.revoked_at IS NULL
+	  AND (t.expires_at IS NULL OR t.expires_at > now())
+	  AND cr.provisioned_at IS NOT NULL
+)`, userID).Scan(&ready)
+	if err != nil {
+		return err
+	}
+	if !ready {
+		return ErrGitHubRequired
 	}
 	return nil
 }

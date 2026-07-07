@@ -172,8 +172,10 @@ Proposed response data shape:
 
 Runtime status:
 
-- `cli-connect` must return `credential_issuer_unavailable` until Phase 1 implements
-  credentials that the VM papercode server can actually validate.
+- In fake-provider mode, `cli-connect` issues short-lived scoped terminal/upload auth
+  metadata for local orchestration coverage.
+- In real-provider mode, `cli-connect` must fail closed with
+  `credential_issuer_unavailable` unless a papercode-valid credential issuer is configured.
 - Do not return random, placeholder, unpersisted, or server-local-only token strings in
   `terminal.auth` or `upload.auth`.
 

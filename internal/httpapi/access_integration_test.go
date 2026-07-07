@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -65,6 +66,50 @@ func TestAccessConnectIssuesPapercodeDescriptorAndRecordsSession(t *testing.T) {
 	}
 }
 
+func TestPapercodeConnectDoesNotRequireConfigRepoReadiness(t *testing.T) {
+	store, router, projectID := newAccessIntegrationRouter(t, "papercode-no-config@example.com")
+	cookies := loginCookies(t, router, "workos_seed_papercode-no-config@example.com:papercode-no-config@example.com:Papercode No Config")
+	userID := userIDByEmail(t, store, "papercode-no-config@example.com")
+	if _, err := store.SQL().ExecContext(context.Background(), `DELETE FROM paperboat.github_config_repositories WHERE user_id = $1`, userID); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/papercode-connect", nil)
+	addCookies(req, cookies)
+	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("connect status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"access_endpoint"`) {
+		t.Fatalf("unexpected descriptor body: %s", rec.Body.String())
+	}
+}
+
+func TestConnectionStatusDoesNotRequireConfigRepoReadiness(t *testing.T) {
+	store, router, projectID := newAccessIntegrationRouter(t, "status-no-config@example.com")
+	cookies := loginCookies(t, router, "workos_seed_status-no-config@example.com:status-no-config@example.com:Status No Config")
+	userID := userIDByEmail(t, store, "status-no-config@example.com")
+	if _, err := store.SQL().ExecContext(context.Background(), `DELETE FROM paperboat.github_config_repositories WHERE user_id = $1`, userID); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/connection-status", nil)
+	addCookies(req, cookies)
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"connectable":true`) {
+		t.Fatalf("expected connectable status, body = %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "github_config_not_ready") {
+		t.Fatalf("status leaked CLI-only readiness reason: %s", rec.Body.String())
+	}
+}
+
 func TestAccessConnectRequiresEntitlementBeforeProviderSideEffects(t *testing.T) {
 	store, router, projectID := newAccessIntegrationRouter(t, "no-entitlement@example.com")
 	cookies := loginCookies(t, router, "workos_seed_no-entitlement@example.com:no-entitlement@example.com:No Entitlement")
@@ -90,9 +135,74 @@ func TestAccessConnectRequiresEntitlementBeforeProviderSideEffects(t *testing.T)
 	}
 }
 
+func TestCLIConnectIssuesPapercodeDescriptorWithScopedAuth(t *testing.T) {
+	store, router, projectID := newAccessIntegrationRouter(t, "cli-ready@example.com")
+	cookies := loginCookies(t, router, "workos_seed_cli-ready@example.com:cli-ready@example.com:CLI Ready")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/cli-connect", nil)
+	addCookies(req, cookies)
+	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("connect status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"terminal"`) ||
+		!strings.Contains(rec.Body.String(), `"papercode_websocket"`) ||
+		!strings.Contains(rec.Body.String(), `"websocket_ticket"`) ||
+		!strings.Contains(rec.Body.String(), `"upload"`) ||
+		strings.Contains(rec.Body.String(), "agentunnel-machine-token") {
+		t.Fatalf("unexpected body = %s", rec.Body.String())
+	}
+	var sessions int
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT count(*) FROM paperboat.access_sessions WHERE project_id = $1 AND session_type = 'cli'`, projectID).Scan(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	if sessions != 1 {
+		t.Fatalf("cli access sessions = %d, want 1", sessions)
+	}
+}
+
+func TestCLIConnectRequiresGitHubConfigBeforeProviderSideEffects(t *testing.T) {
+	store, router, projectID := newAccessIntegrationRouter(t, "github-not-ready@example.com")
+	cookies := loginCookies(t, router, "workos_seed_github-not-ready@example.com:github-not-ready@example.com:GitHub Not Ready")
+	userID := userIDByEmail(t, store, "github-not-ready@example.com")
+	if _, err := store.SQL().ExecContext(context.Background(), `DELETE FROM paperboat.github_config_repositories WHERE user_id = $1`, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(context.Background(), `DELETE FROM paperboat.agentunnel_resources WHERE project_id = $1`, projectID); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/cli-connect", nil)
+	addCookies(req, cookies)
+	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("connect status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "github_config_not_ready") {
+		t.Fatalf("unexpected body = %s", rec.Body.String())
+	}
+	var resources int
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT count(*) FROM paperboat.agentunnel_resources WHERE project_id = $1`, projectID).Scan(&resources); err != nil {
+		t.Fatal(err)
+	}
+	if resources != 0 {
+		t.Fatalf("agentunnel resources = %d, want 0 before github/config readiness", resources)
+	}
+}
+
 func TestCLIConnectRequiresCredentialIssuerBeforeProviderSideEffects(t *testing.T) {
-	store, router, projectID := newAccessIntegrationRouter(t, "cli-unavailable@example.com")
+	store, router, projectID := newAccessIntegrationRouterWithAccessService(t, "cli-unavailable@example.com", agentunnel.FakeClient{BaseURL: "https://agentunnel.example"}, agentunnel.DisabledCredentialIssuer{})
 	cookies := loginCookies(t, router, "workos_seed_cli-unavailable@example.com:cli-unavailable@example.com:CLI Unavailable")
+	if _, err := store.SQL().ExecContext(context.Background(), `DELETE FROM paperboat.agentunnel_resources WHERE project_id = $1`, projectID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(context.Background(), `UPDATE paperboat.projects SET state = 'stopped' WHERE id = $1`, projectID); err != nil {
+		t.Fatal(err)
+	}
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/cli-connect", nil)
@@ -110,7 +220,48 @@ func TestCLIConnectRequiresCredentialIssuerBeforeProviderSideEffects(t *testing.
 		t.Fatal(err)
 	}
 	if resources != 0 {
-		t.Fatalf("agentunnel resources = %d, want 0 before credential issuer is available", resources)
+		t.Fatalf("agentunnel resources = %d, want 0 before credential issuer readiness", resources)
+	}
+	var jobs int
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT count(*) FROM paperboat.orchestration_jobs WHERE aggregate_id = $1 AND job_type = 'project.start'`, projectID).Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+	if jobs != 0 {
+		t.Fatalf("start jobs = %d, want 0 before credential issuer readiness", jobs)
+	}
+}
+
+func TestCLIConnectRequiresCredentialIssueBeforeProviderSideEffects(t *testing.T) {
+	store, router, projectID := newAccessIntegrationRouterWithAccessService(t, "cli-issue-fails@example.com", agentunnel.FakeClient{BaseURL: "https://agentunnel.example"}, failingIssueCredentialIssuer{})
+	cookies := loginCookies(t, router, "workos_seed_cli-issue-fails@example.com:cli-issue-fails@example.com:CLI Issue Fails")
+	if _, err := store.SQL().ExecContext(context.Background(), `DELETE FROM paperboat.agentunnel_resources WHERE project_id = $1`, projectID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(context.Background(), `UPDATE paperboat.projects SET state = 'stopped' WHERE id = $1`, projectID); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/cli-connect", nil)
+	addCookies(req, cookies)
+	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("connect status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resources int
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT count(*) FROM paperboat.agentunnel_resources WHERE project_id = $1`, projectID).Scan(&resources); err != nil {
+		t.Fatal(err)
+	}
+	if resources != 0 {
+		t.Fatalf("agentunnel resources = %d, want 0 before credential issuance succeeds", resources)
+	}
+	var jobs int
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT count(*) FROM paperboat.orchestration_jobs WHERE aggregate_id = $1 AND job_type = 'project.start'`, projectID).Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+	if jobs != 0 {
+		t.Fatalf("start jobs = %d, want 0 before credential issuance succeeds", jobs)
 	}
 }
 
@@ -208,6 +359,10 @@ func newAccessIntegrationRouter(t *testing.T, email string) (*db.DB, http.Handle
 }
 
 func newAccessIntegrationRouterWithClient(t *testing.T, email string, client agentunnel.Client) (*db.DB, http.Handler, string) {
+	return newAccessIntegrationRouterWithAccessService(t, email, client, nil)
+}
+
+func newAccessIntegrationRouterWithAccessService(t *testing.T, email string, client agentunnel.Client, issuer agentunnel.CredentialIssuer) (*db.DB, http.Handler, string) {
 	t.Helper()
 	dsn := os.Getenv("PAPERBOAT_TEST_DATABASE_DSN")
 	if dsn == "" {
@@ -233,6 +388,9 @@ func newAccessIntegrationRouterWithClient(t *testing.T, email string, client age
 	githubService := pbgithub.NewService(store, auditWriter, &pbgithub.FakeClient{}, cfg)
 	projectService := projects.NewService(store, auditWriter, cfg)
 	accessService := agentunnel.NewService(store, projectService, client, auditWriter, cfg)
+	if issuer != nil {
+		accessService = agentunnel.NewServiceWithCredentials(store, projectService, client, issuer, auditWriter, cfg)
+	}
 	router := NewRouter(Options{
 		Config:           cfg,
 		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -247,6 +405,7 @@ func newAccessIntegrationRouterWithClient(t *testing.T, email string, client age
 	userID := userIDByEmail(t, store, email)
 	grantActiveSubscription(t, store, userID)
 	grantAccessCreditsAndStorage(t, store, userID)
+	grantGitHubConfigReady(t, store, userID)
 	project, _, err := projectService.Create(context.Background(), projects.CreateInput{
 		UserID:          userID,
 		IdempotencyKey:  "access-project-" + email,
@@ -265,6 +424,24 @@ func newAccessIntegrationRouterWithClient(t *testing.T, email string, client age
 	applyAccessProjectConfig(t, store, project.ID)
 	_ = cookies
 	return store, router, project.ID
+}
+
+func grantGitHubConfigReady(t *testing.T, store *db.DB, userID string) {
+	t.Helper()
+	if _, err := store.SQL().ExecContext(context.Background(), `
+INSERT INTO paperboat.github_oauth_tokens (id, user_id, token_ciphertext, scopes, provider_account_login, last_validated_at)
+VALUES ($1, $2, '\x00'::bytea, ARRAY['repo']::text[], 'paperboat-test-user', now())
+ON CONFLICT (user_id) DO UPDATE SET revoked_at = NULL, expires_at = NULL, last_validated_at = now()`,
+		"ght_access_"+userID, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(context.Background(), `
+INSERT INTO paperboat.github_config_repositories (id, user_id, provider_repo_id, owner, name, default_branch, clone_url, html_url, private, provisioned_at)
+VALUES ($1, $2, $3, 'paperboat-test-user', 'paperboat-config', 'main', 'https://github.com/paperboat-test-user/paperboat-config.git', 'https://github.com/paperboat-test-user/paperboat-config', true, now())
+ON CONFLICT (user_id) DO UPDATE SET provisioned_at = now()`,
+		"ghcr_access_"+userID, userID, "repo_access_"+userID); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func seedAccessCatalogs(t *testing.T, store *db.DB) {
@@ -338,4 +515,14 @@ func (offlineAccessClient) EnsureProjectResources(context.Context, agentunnel.Pr
 
 func (offlineAccessClient) Status(context.Context, agentunnel.ResourceDescriptor) (agentunnel.TunnelStatus, error) {
 	return agentunnel.TunnelStatus{Ready: false, Status: "offline", Reason: "CLIENT_OFFLINE"}, nil
+}
+
+type failingIssueCredentialIssuer struct{}
+
+func (failingIssueCredentialIssuer) CheckCLI(context.Context, agentunnel.CredentialInput) error {
+	return nil
+}
+
+func (failingIssueCredentialIssuer) IssueCLI(context.Context, agentunnel.CredentialInput) (agentunnel.CLICredentials, error) {
+	return agentunnel.CLICredentials{}, errors.New("credential issuer transient failure")
 }
