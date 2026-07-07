@@ -35,17 +35,20 @@ var (
 	ErrDeleted                = errors.New("project is deleted")
 	ErrInvalidState           = errors.New("project state does not allow this operation")
 	ErrInsufficientStorage    = metering.ErrInsufficientStorage
+	ErrInsufficientCredits    = errors.New("insufficient credits to start project")
 )
 
 type Service struct {
-	repo  *Repository
-	audit *audit.Writer
+	repo                     *Repository
+	audit                    *audit.Writer
+	minimumStartCreditWindow time.Duration
 }
 
 func NewService(store *db.DB, auditWriter *audit.Writer, cfg config.Config) *Service {
 	return &Service{
-		repo:  NewRepository(store, cfg.Secrets.EncryptionKey),
-		audit: auditWriter,
+		repo:                     NewRepository(store, cfg.Secrets.EncryptionKey),
+		audit:                    auditWriter,
+		minimumStartCreditWindow: cfg.Metering.MinimumStartCreditWindow,
 	}
 }
 
@@ -187,10 +190,14 @@ func (s *Service) Delete(ctx context.Context, userID, projectID string) (Project
 }
 
 func (s *Service) Start(ctx context.Context, userID, projectID string) (Project, error) {
+	if err := s.repo.EnsureStartCredits(ctx, userID, projectID, s.minimumStartCreditWindow, false); err != nil {
+		return Project{}, err
+	}
 	project, err := s.repo.QueueLifecycleJob(ctx, userID, projectID, "project.start", "starting")
 	if err != nil {
 		return Project{}, err
 	}
+	_ = s.repo.RecordActivity(ctx, projectID, time.Now().UTC(), "connect_session", map[string]any{"trigger": "project.start"})
 	_ = s.audit.Write(ctx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "project.start_requested", ResourceType: "project", ResourceID: projectID, IdempotencyKey: "project.start_requested:" + projectID + ":" + project.UpdatedAt.Format(time.RFC3339Nano)})
 	return project, nil
 }
@@ -205,10 +212,14 @@ func (s *Service) Stop(ctx context.Context, userID, projectID string) (Project, 
 }
 
 func (s *Service) Restart(ctx context.Context, userID, projectID string) (Project, error) {
+	if err := s.repo.EnsureStartCredits(ctx, userID, projectID, s.minimumStartCreditWindow, true); err != nil {
+		return Project{}, err
+	}
 	project, err := s.repo.QueueLifecycleJob(ctx, userID, projectID, "project.restart", "restarting")
 	if err != nil {
 		return Project{}, err
 	}
+	_ = s.repo.RecordActivity(ctx, projectID, time.Now().UTC(), "connect_session", map[string]any{"trigger": "project.restart"})
 	_ = s.audit.Write(ctx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "project.restart_requested", ResourceType: "project", ResourceID: projectID, IdempotencyKey: "project.restart_requested:" + projectID + ":" + project.UpdatedAt.Format(time.RFC3339Nano)})
 	return project, nil
 }
@@ -804,6 +815,67 @@ ON CONFLICT (idempotency_key) DO UPDATE SET state = 'queued', payload = EXCLUDED
 		return Project{}, err
 	}
 	return r.Get(ctx, userID, projectID)
+}
+
+func (r *Repository) EnsureStartCredits(ctx context.Context, userID, projectID string, window time.Duration, useDesiredConfig bool) error {
+	if window <= 0 {
+		return fmt.Errorf("minimum start credit window must be positive")
+	}
+	var enough bool
+	err := r.db.SQL().QueryRowContext(ctx, `
+SELECT coalesce(ca.balance, 0)::numeric >= ((($3::numeric / 3600.0) * mtv.credit_weight)::numeric(18,6))
+FROM paperboat.projects p
+JOIN paperboat.project_runtime_configs prc ON prc.project_id = p.id
+JOIN paperboat.machine_type_versions mtv ON mtv.id = CASE WHEN $4 THEN prc.machine_type_version_id ELSE prc.applied_machine_type_version_id END
+LEFT JOIN paperboat.credit_accounts ca ON ca.user_id = p.user_id
+WHERE p.id = $1 AND p.user_id = $2`, projectID, userID, int(window.Seconds()), useDesiredConfig).Scan(&enough)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if !enough {
+		return ErrInsufficientCredits
+	}
+	return nil
+}
+
+func (r *Repository) RecordActivity(ctx context.Context, projectID string, at time.Time, source string, metadata map[string]any) error {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return fmt.Errorf("activity source is required")
+	}
+	if !validActivitySource(source) {
+		return fmt.Errorf("activity source %q is not accepted", source)
+	}
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	b, err := json.Marshal(metadata)
+	if err != nil {
+		return err
+	}
+	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		_, err := tx.Exec(ctx, `
+INSERT INTO project_activity_markers (project_id, last_activity_at, source, metadata)
+VALUES ($1, $2, $3, $4::jsonb)
+ON CONFLICT (project_id) DO UPDATE
+SET last_activity_at = greatest(project_activity_markers.last_activity_at, EXCLUDED.last_activity_at),
+    source = EXCLUDED.source,
+    metadata = EXCLUDED.metadata,
+    updated_at = now()`, projectID, at, source, string(b))
+		return err
+	})
+}
+
+func validActivitySource(source string) bool {
+	switch source {
+	case "connect_session", "agentunnel_connection", "papercode_activity", "cli_activity", "vm_heartbeat":
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *Repository) Events(ctx context.Context, userID, projectID string) ([]Event, error) {

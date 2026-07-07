@@ -304,6 +304,9 @@ func TestRestartBlocksPendingStorageResizeUntilPolicyApproved(t *testing.T) {
 	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.projects SET state = 'running' WHERE id = $1`, project.ID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.credit_accounts (id, user_id, balance) VALUES ('cred_orch_resize', 'usr_orch_resize', 0.1)`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := projectService.Restart(ctx, "usr_orch_resize", project.ID); err != nil {
 		t.Fatal(err)
 	}

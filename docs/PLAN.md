@@ -25,8 +25,8 @@ filling its evidence section.
 | 4 | Billing, entitlements, credits, and storage ledger | In progress | Codex | Phase 4 decision gate approved; billing service, Polar client abstraction, signed/idempotent webhook processing, subscription entitlement transitions, checkout/customer portal handlers, entitlement/usage APIs, credit grants/debits/refunds, storage included/purchased/release/cancellation ledger primitives, admin adjustments, docs, and focused Go/vet evidence are in place. Project create/update quota enforcement remains for Phase 6 API wiring. |
 | 5 | GitHub OAuth and private config repo provisioning | Implemented | Codex | Configurable GitHub OAuth/repo policy, encrypted token persistence schema, fake/HTTP GitHub client abstraction, auth/CSRF-protected GitHub API handlers, browser callback for ngrok-backed server testing, GitHub-required project-create gate, idempotent private config repo provisioning with preview URL skill fixture, provided-Postgres fake-provider tests, and local Go/vet evidence are in place. |
 | 6 | Project lifecycle and VM customization model | Implemented | Codex | Project service, Phase 6 migration, project create/list/get/update/delete/events APIs, idempotent create, catalog validation, setup-script revision storage, storage quota enforcement for create/update, pending restart apply model, delete workflow intent with deferred storage release, event records, and DB-backed project lifecycle tests are in place. |
-| 7 | Fly.io machines, volumes, reconciliation, and restart apply | Implemented | Codex | Configurable Fly client/fake provider, orchestration worker, create/start/stop/restart/delete workflows, restart apply, configurable secret handoff, resize-policy blocking, reconciliation command/run records, orphan review queue, idempotent volume/machine persistence, deferred storage release on delete, Phase 7 migration hardening, provider contract docs, README Fly env TODOs, and DB-backed fake-Fly workflow tests are in place. Real Fly org/image smoke evidence is deferred to release validation. |
-| 8 | Metering workers, idle detection, credit exhaustion, and enforcement | Not started | TBD | None |
+| 7 | Fly.io machines, volumes, reconciliation, and restart apply | Implemented | Codex | Official Fly Go SDK client/fake provider, app creation from configured org slug, orchestration worker, create/start/stop/restart/delete workflows, restart apply, process-scoped secret handoff, resize-policy blocking, reconciliation command/run records, orphan review queue, idempotent volume/machine persistence, deferred storage release on delete, Phase 7 migration hardening, provider contract docs, README Fly env TODOs, and DB-backed fake-Fly workflow tests are in place. Real Fly org/image smoke evidence is deferred to release validation. |
+| 8 | Metering workers, idle detection, credit exhaustion, and enforcement | Implemented | Codex | Fly polling runtime observer, durable runtime intervals/checkpoints, weighted credit debits, credit-exhaustion stop queueing, idle stop queueing, minimum-credit start/restart guard, accepted activity source model, app worker wiring, migration, config, and DB-backed tests are in place. Real Fly event/hybrid observation and cross-project activity callback endpoint wiring remain future refinements if approved. |
 | 9 | agentunnel pre-connect brokering and access descriptors | Not started | TBD | None |
 | 10 | Dashboard and CLI API surface hardening | Not started | TBD | None |
 | 11 | Security, privacy, abuse controls, and secret handling | Not started | TBD | None |
@@ -560,8 +560,8 @@ Goal: reliable Fly resource orchestration for one project equals one machine plu
 
 Tasks:
 
-- [x] Implement Fly API client for machines, volumes, images, secrets, status, start, stop,
-  restart, destroy, and list operations.
+- [x] Implement Fly SDK client for app creation, machines, volumes, secrets, status,
+  start, stop, restart, destroy, and list operations.
 - [x] Implement provider idempotency strategy and name/tag conventions.
 - [x] Implement volume creation exactly once per project.
 - [x] Implement machine creation with correct image, volume mount, environment, secrets,
@@ -597,6 +597,9 @@ Evidence:
   `PAPERBOAT_TEST_DATABASE_DSN="$PAPERBOAT_DATABASE_DSN" PAPERBOAT_ALLOW_DESTRUCTIVE_TEST_DB_RESET=true go test -p 1 ./internal/orchestrator ./internal/projects ./internal/httpapi`
   passed, including provision idempotency, restart apply, secret injection, resize-policy
   blocking, orphan review queue, and delete storage release tests.
+- Fly SDK package evidence: `go test ./internal/fly ./internal/app ./internal/config`
+  passed with app creation wiring, SDK machine config mapping, not-found mapping, and
+  process-scoped secret isolation coverage.
 - Reconciliation tests: `go test ./...` passed with `internal/orchestrator` coverage for
   reconciliation persistence and fake-provider state comparison foundations.
 - Orphan remediation dry run: fake Fly reconciliation queues unmanaged Paperboat-tagged
@@ -609,38 +612,68 @@ Goal: trusted runtime metering and automatic lifecycle control.
 
 Tasks:
 
-- [ ] Implement runtime observation source approved in Phase 0: Fly events, polling, or
+- [x] Implement runtime observation source approved in Phase 0: Fly events, polling, or
   hybrid.
-- [ ] Persist machine runtime intervals with start, stop, observed state, source, and
+- [x] Persist machine runtime intervals with start, stop, observed state, source, and
   confidence.
-- [ ] Debit credits by runtime interval multiplied by catalog machine weight snapshot.
-- [ ] Support multiple concurrent running machines debiting in parallel.
-- [ ] Implement idempotent metering checkpoints so restarts do not double-charge.
-- [ ] Implement credit exhaustion detector.
-- [ ] Stop running machines when credits are exhausted.
-- [ ] Prevent starting machines when credits are insufficient by approved threshold.
-- [ ] Implement activity tracking for human and agent events.
-- [ ] Define accepted activity inputs: connect sessions, agentunnel connection events,
+- [x] Debit credits by runtime interval multiplied by catalog machine weight snapshot.
+- [x] Support multiple concurrent running machines debiting in parallel.
+- [x] Implement idempotent metering checkpoints so restarts do not double-charge.
+- [x] Implement credit exhaustion detector.
+- [x] Stop running machines when credits are exhausted.
+- [x] Prevent starting machines when credits are insufficient by approved threshold.
+- [x] Implement activity tracking for human and agent events.
+- [x] Define accepted activity inputs: connect sessions, agentunnel connection events,
   papercode activity callbacks, CLI activity callbacks, VM heartbeat, or approved
   provider source.
-- [ ] Implement per-project idle timeout using catalog option selected by user.
-- [ ] Auto-stop idle machines.
-- [ ] Add tests for concurrent debit, worker restart, out-of-order provider state,
+- [x] Implement per-project idle timeout using catalog option selected by user.
+- [x] Auto-stop idle machines.
+- [x] Add tests for concurrent debit, worker restart, out-of-order provider state,
   credit exhaustion stop, and idle auto-stop.
+
+TODO for later refinements if the approved integration path changes:
+
+- Replace or extend the current Fly-polling-only runtime observer if Phase 0 approves a
+  Fly-events or hybrid source of truth. The current implementation is production-safe as a
+  conservative polling baseline, but it is not meant to block a later approved event-fed
+  observer.
+- Wire external Phase 9/10 callback endpoints to `project_activity_markers` once
+  agentunnel, papercode, CLI, and VM heartbeat contracts are approved. The accepted source
+  names are defined now: `connect_session`, `agentunnel_connection`,
+  `papercode_activity`, `cli_activity`, and `vm_heartbeat`.
+- Apply the minimum-credit guard to Phase 9 connect-triggered resume paths when those
+  endpoints are implemented. The current project start/restart guard uses the configured
+  `metering.minimum_start_credit_window` threshold.
 
 Acceptance criteria:
 
-- [ ] Runtime is never computed from client-reported billing totals.
-- [ ] Two running 2x machines debit credits independently and concurrently.
-- [ ] Worker restart resumes from last checkpoint without duplicate debit.
-- [ ] Machine stops when credits run out.
-- [ ] Idle timeout changes affect next evaluation using project setting.
+- [x] Runtime is never computed from client-reported billing totals.
+- [x] Two running 2x machines debit credits independently and concurrently.
+- [x] Worker restart resumes from last checkpoint without duplicate debit.
+- [x] Machine stops when credits run out.
+- [x] Idle timeout changes affect next evaluation using project setting.
 
 Evidence:
 
-- Metering invariant tests:
-- Exhaustion stop tests:
-- Idle worker tests:
+- Metering invariant tests: `go test ./...` and `go vet ./...` passed. With the local
+  configured Postgres DSN, `PAPERBOAT_TEST_DATABASE_DSN="$PAPERBOAT_DATABASE_DSN" go test
+  -p 1 ./internal/metering ./internal/db` passed, including migration version 6.
+- Concurrent debit tests: `TestRuntimeMeteringDebitsWeightedConcurrentMachines` verifies
+  independent 1x and 2x running machines debit a shared user credit account by weighted
+  runtime.
+- Idempotent checkpoint tests: `TestRuntimeMeteringCheckpointIsIdempotent` verifies a
+  repeated worker pass at the same checkpoint does not double-debit credits.
+- Provider state tests: `TestRuntimeMeteringClosesIntervalOnStoppedProviderState`
+  verifies a stopped Fly observation closes the open runtime interval and updates project
+  state from provider truth.
+- Exhaustion stop tests: `TestRuntimeMeteringQueuesStopOnCreditExhaustion` verifies
+  insufficient credits fail the checkpoint and queue a `project.stop` orchestration job.
+- Start guard tests: `TestStartRequiresMinimumCreditsAndRecordsActivity` verifies a
+  project cannot start without enough credits for the configured start window, and that
+  successful start records a server-owned activity marker.
+- Idle worker tests: `TestRuntimeMeteringQueuesIdleStop` verifies the selected
+  per-project idle timeout queues an automatic stop once the project is idle past the
+  catalog duration.
 
 ## Phase 9: agentunnel Pre-Connect Brokering and Access Descriptors
 

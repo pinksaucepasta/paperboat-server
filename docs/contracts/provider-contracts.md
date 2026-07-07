@@ -84,6 +84,9 @@ Implementation constraints:
 
 - Provider operations are idempotent and reconciled.
 - Persist desired intent before provider calls.
+- The server uses the official Fly Go SDK for app, machine, volume, and secret
+  operations; the configured Fly app is created on demand using `fly.org_slug` before
+  provisioning machines or volumes.
 - Do not mark storage released until approved cleanup terminal state is reached.
 - Do not trust client-reported runtime for billing.
 - Machine image ref, app name, mount path, boot command, and provider secret names are
@@ -91,8 +94,10 @@ Implementation constraints:
 - Restart apply updates the provider machine and clears `pending_restart_apply` only after
   the provider update succeeds.
 - Agentunnel machine token and GitHub config sync token are injected into the provider
-  machine spec through configurable Fly secret names and are never returned by HTTP APIs or
-  written to project/audit event metadata.
+  machine spec through configurable Fly secret names. Machine process config explicitly
+  opts out of app-wide secret inheritance and references only the required secret names.
+  Secret values are never returned by HTTP APIs or written to project/audit event
+  metadata.
 - Until a Fly volume resize or replacement policy is approved, restart apply blocks storage
   changes with a project event and leaves `pending_restart_apply` intact.
 - Reconciliation queues orphan Paperboat-tagged Fly machines into `orchestration_jobs` with

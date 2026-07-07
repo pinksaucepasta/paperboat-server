@@ -1,41 +1,17 @@
 package fly
 
 import (
-	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
-	"net/http/httptest"
-	"strings"
+	"os"
 	"testing"
+
+	flygo "github.com/superfly/fly-go"
+	"github.com/superfly/fly-go/flaps"
 )
 
-func TestHTTPClientCreateMachineUsesFlyRequestShape(t *testing.T) {
-	var payload map[string]any
-	secretValues := map[string]string{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/secrets/") {
-			var body map[string]string
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Fatal(err)
-			}
-			secretValues[strings.TrimPrefix(r.URL.Path, "/v1/apps/app/secrets/")] = body["value"]
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		if r.URL.Path != "/v1/apps/app/machines" {
-			t.Fatalf("path = %q", r.URL.Path)
-		}
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatal(err)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"mach_1","name":"pbvm-prj","state":"stopped","region":"iad","config":{"image":"registry.example/app:test","metadata":{"paperboat_project_id":"prj_1","managed_by":"paperboat-server","paperboat_config_hash":"hash"}}}`))
-	}))
-	defer server.Close()
-
-	client := HTTPClient{BaseURL: server.URL, APIToken: "token", AppName: "app"}
-	machine, err := client.CreateMachine(context.Background(), MachineSpec{
+func TestSDKMachineConfigUsesFlySDKShape(t *testing.T) {
+	cfg := sdkMachineConfig(MachineSpec{
 		Name: "pbvm-prj", ImageRef: "registry.example/app:test", Region: "iad",
 		Size:     MachineSize{VCPU: 4, MemoryMB: 8192},
 		VolumeID: "vol_1", MountPath: "/workspace",
@@ -45,76 +21,123 @@ func TestHTTPClientCreateMachineUsesFlyRequestShape(t *testing.T) {
 		ConfigHash: "hash",
 		Tags:       map[string]string{"paperboat_project_id": "prj_1", "managed_by": "paperboat-server"},
 	})
-	if err != nil {
-		t.Fatal(err)
+	if cfg.Image != "registry.example/app:test" {
+		t.Fatalf("image = %q", cfg.Image)
 	}
-	if machine.ID != "mach_1" || machine.Tags["paperboat_project_id"] != "prj_1" {
-		t.Fatalf("machine response = %#v", machine)
+	if cfg.Guest == nil || cfg.Guest.CPUKind != "shared" || cfg.Guest.CPUs != 4 || cfg.Guest.MemoryMB != 8192 {
+		t.Fatalf("guest = %#v", cfg.Guest)
 	}
-	if _, ok := payload["Name"]; ok {
-		t.Fatalf("payload used Go field names: %#v", payload)
+	if cfg.Mounts[0].Volume != "vol_1" || cfg.Mounts[0].Path != "/workspace" {
+		t.Fatalf("mounts = %#v", cfg.Mounts)
 	}
-	if payload["name"] != "pbvm-prj" || payload["region"] != "iad" {
-		t.Fatalf("top-level payload = %#v", payload)
+	if cfg.Init.Cmd[0] != "/entrypoint" {
+		t.Fatalf("init = %#v", cfg.Init)
 	}
-	config, ok := payload["config"].(map[string]any)
-	if !ok {
-		t.Fatalf("payload missing config object: %#v", payload)
+	if cfg.Metadata["paperboat_config_hash"] != "hash" || cfg.Metadata["paperboat_project_id"] != "prj_1" {
+		t.Fatalf("metadata = %#v", cfg.Metadata)
 	}
-	if config["image"] != "registry.example/app:test" {
-		t.Fatalf("config.image = %#v", config["image"])
+	if _, ok := cfg.Env["SECRET"]; ok {
+		t.Fatalf("secret value leaked into env: %#v", cfg.Env)
 	}
-	if _, ok := config["VolumeID"]; ok {
-		t.Fatalf("config used Go field names: %#v", config)
+	if len(cfg.Processes) != 1 || !cfg.Processes[0].IgnoreAppSecrets {
+		t.Fatalf("process secret isolation = %#v", cfg.Processes)
 	}
-	mounts := config["mounts"].([]any)
-	if mounts[0].(map[string]any)["volume"] != "vol_1" {
-		t.Fatalf("mounts = %#v", mounts)
-	}
-	secrets := config["secrets"].([]any)
-	if secrets[0].(map[string]any)["env_var"] != "SECRET" || secrets[0].(map[string]any)["name"] != "secret-name" {
-		t.Fatalf("config.secrets = %#v", secrets)
-	}
-	env := config["env"].(map[string]any)
-	if env["SECRET"] != nil {
-		t.Fatalf("env leaked secret value: %#v", env)
-	}
-	if secretValues["secret-name"] != "value" {
-		t.Fatalf("secret endpoint values = %#v", secretValues)
+	if len(cfg.Processes[0].Secrets) != 1 || cfg.Processes[0].Secrets[0].EnvVar != "SECRET" || cfg.Processes[0].Secrets[0].Name != "secret-name" {
+		t.Fatalf("process secrets = %#v", cfg.Processes[0].Secrets)
 	}
 }
 
-func TestHTTPClientMapsNotFound(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.NotFound(w, r)
-	}))
-	defer server.Close()
-
-	client := HTTPClient{BaseURL: server.URL, APIToken: "token", AppName: "app"}
-	if _, err := client.GetMachine(context.Background(), "missing"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("GetMachine error = %v, want ErrNotFound", err)
+func TestSDKMachineConfigAlwaysIgnoresAppSecrets(t *testing.T) {
+	cfg := sdkMachineConfig(MachineSpec{
+		Name:     "pbvm-prj",
+		ImageRef: "registry.example/app:test",
+		Region:   "iad",
+		Size:     MachineSize{VCPU: 1, MemoryMB: 256},
+	})
+	if len(cfg.Processes) != 1 || !cfg.Processes[0].IgnoreAppSecrets {
+		t.Fatalf("process secret isolation = %#v", cfg.Processes)
 	}
-	if err := client.DestroyVolume(context.Background(), "missing"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("DestroyVolume error = %v, want ErrNotFound", err)
+	if len(cfg.Processes[0].Secrets) != 0 {
+		t.Fatalf("process secrets = %#v, want none", cfg.Processes[0].Secrets)
 	}
 }
 
-func TestHTTPClientListVolumes(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/volumes") {
-			t.Fatalf("path = %q", r.URL.Path)
+func TestSDKMappingReadsMachineMetadata(t *testing.T) {
+	machine := machineFromSDK(&flygo.Machine{
+		ID:     "mach_1",
+		Name:   "pbvm-prj",
+		State:  "stopped",
+		Region: "iad",
+		Config: &flygo.MachineConfig{
+			Image: "registry.example/app:test",
+			Metadata: map[string]string{
+				"paperboat_project_id":  "prj_1",
+				"managed_by":            "paperboat-server",
+				"paperboat_config_hash": "hash",
+			},
+		},
+	})
+	if machine.ID != "mach_1" || machine.ImageRef != "registry.example/app:test" || machine.ConfigHash != "hash" {
+		t.Fatalf("machine = %#v", machine)
+	}
+	if machine.Tags["managed_by"] != "paperboat-server" {
+		t.Fatalf("tags = %#v", machine.Tags)
+	}
+}
+
+func TestSDKErrorMapsNotFound(t *testing.T) {
+	err := &flaps.FlapsError{ResponseStatusCode: http.StatusNotFound}
+	if !errors.Is(mapSDKError(err), ErrNotFound) {
+		t.Fatalf("error = %v, want ErrNotFound", mapSDKError(err))
+	}
+}
+
+func TestWithFlapsBaseURLOverridesAndRestoresEnv(t *testing.T) {
+	const key = "FLY_FLAPS_BASE_URL"
+	previous, hadPrevious := os.LookupEnv(key)
+	t.Cleanup(func() {
+		if hadPrevious {
+			_ = os.Setenv(key, previous)
+			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`[{"id":"vol_1","name":"pbvol-prj","size_gb":8,"region":"iad","state":"created"}]`))
-	}))
-	defer server.Close()
-
-	client := HTTPClient{BaseURL: server.URL, APIToken: "token", AppName: "app"}
-	volumes, err := client.ListVolumes(context.Background())
+		_ = os.Unsetenv(key)
+	})
+	if err := os.Setenv(key, "https://old.example.test"); err != nil {
+		t.Fatal(err)
+	}
+	restore, err := withFlapsBaseURL(" https://fly.example.test ")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(volumes) != 1 || volumes[0].ID != "vol_1" || volumes[0].SizeGB != 8 {
-		t.Fatalf("volumes = %#v", volumes)
+	if got := os.Getenv(key); got != "https://fly.example.test" {
+		t.Fatalf("%s = %q", key, got)
+	}
+	restore()
+	if got := os.Getenv(key); got != "https://old.example.test" {
+		t.Fatalf("restored %s = %q", key, got)
+	}
+}
+
+func TestWithFlapsBaseURLLeavesEnvUnsetWhenBlank(t *testing.T) {
+	const key = "FLY_FLAPS_BASE_URL"
+	previous, hadPrevious := os.LookupEnv(key)
+	t.Cleanup(func() {
+		if hadPrevious {
+			_ = os.Setenv(key, previous)
+			return
+		}
+		_ = os.Unsetenv(key)
+	})
+	_ = os.Unsetenv(key)
+	restore, err := withFlapsBaseURL("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := os.LookupEnv(key); ok {
+		t.Fatalf("%s should remain unset", key)
+	}
+	restore()
+	if _, ok := os.LookupEnv(key); ok {
+		t.Fatalf("%s should remain unset after restore", key)
 	}
 }

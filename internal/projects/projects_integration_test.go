@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
@@ -288,6 +289,130 @@ WHERE project_id = $1`, project.ID, 8); err != nil {
 	}
 	if len(events) < 3 {
 		t.Fatalf("events = %#v, want create/update/delete events", events)
+	}
+}
+
+func TestStartRequiresMinimumCreditsAndRecordsActivity(t *testing.T) {
+	store := newProjectTestDB(t)
+	ctx := context.Background()
+	seedProjectCatalogs(t, store)
+	insertProjectUser(t, store, "usr_project_start_credits", 20)
+	cfg := projectTestConfig()
+	cfg.Metering.MinimumStartCreditWindow = 5 * time.Minute
+	service := NewService(store, audit.NewWriter(store), cfg)
+
+	project, _, err := service.Create(ctx, CreateInput{
+		UserID:          "usr_project_start_credits",
+		IdempotencyKey:  "start-credit-create-key",
+		RepositoryURL:   "https://github.com/paperboat/example.git",
+		StorageGB:       8,
+		MachineTypeCode: "standard-1x",
+		RegionCode:      "iad",
+		PresetCodes:     []string{"codex"},
+		IdleTimeoutCode: "15m",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.projects SET state = 'stopped' WHERE id = $1`, project.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `
+UPDATE paperboat.project_runtime_configs
+SET applied_config_hash = desired_config_hash,
+    applied_storage_gb = $2,
+    applied_machine_type_version_id = machine_type_version_id,
+    applied_preset_version_ids = preset_version_ids,
+    applied_setup_script_ref = setup_script_ref,
+    applied_idle_timeout_option_id = idle_timeout_option_id,
+    applied_region_id = region_id,
+    pending_restart_apply = false
+WHERE project_id = $1`, project.ID, 8); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Start(ctx, "usr_project_start_credits", project.ID); !errors.Is(err, ErrInsufficientCredits) {
+		t.Fatalf("start without credits error = %v, want ErrInsufficientCredits", err)
+	}
+	var jobs int
+	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.orchestration_jobs WHERE job_type = 'project.start' AND aggregate_id = $1 AND state = 'queued'`, project.ID).Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+	if jobs != 0 {
+		t.Fatalf("queued start jobs without credits = %d, want 0", jobs)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.credit_accounts (id, user_id, balance) VALUES ('cred_start_guard', 'usr_project_start_credits', 0.1)`); err != nil {
+		t.Fatal(err)
+	}
+	started, err := service.Start(ctx, "usr_project_start_credits", project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.State != "starting" {
+		t.Fatalf("started state = %q, want starting", started.State)
+	}
+	var source string
+	if err := store.SQL().QueryRowContext(ctx, `SELECT source FROM paperboat.project_activity_markers WHERE project_id = $1`, project.ID).Scan(&source); err != nil {
+		t.Fatal(err)
+	}
+	if source != "connect_session" {
+		t.Fatalf("activity source = %q, want connect_session", source)
+	}
+}
+
+func TestRestartRequiresCreditsForDesiredMachineType(t *testing.T) {
+	store := newProjectTestDB(t)
+	ctx := context.Background()
+	seedProjectCatalogs(t, store)
+	insertProjectUser(t, store, "usr_project_restart_credits", 20)
+	cfg := projectTestConfig()
+	cfg.Metering.MinimumStartCreditWindow = 5 * time.Minute
+	service := NewService(store, audit.NewWriter(store), cfg)
+
+	project, _, err := service.Create(ctx, CreateInput{
+		UserID:          "usr_project_restart_credits",
+		IdempotencyKey:  "restart-credit-create-key",
+		RepositoryURL:   "https://github.com/paperboat/example.git",
+		StorageGB:       8,
+		MachineTypeCode: "standard-1x",
+		RegionCode:      "iad",
+		PresetCodes:     []string{"codex"},
+		IdleTimeoutCode: "15m",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.projects SET state = 'running' WHERE id = $1`, project.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `
+UPDATE paperboat.project_runtime_configs
+SET applied_config_hash = desired_config_hash,
+    applied_storage_gb = $2,
+    applied_machine_type_version_id = machine_type_version_id,
+    applied_preset_version_ids = preset_version_ids,
+    applied_setup_script_ref = setup_script_ref,
+    applied_idle_timeout_option_id = idle_timeout_option_id,
+    applied_region_id = region_id,
+    pending_restart_apply = false
+WHERE project_id = $1`, project.ID, 8); err != nil {
+		t.Fatal(err)
+	}
+	nextMachineType := "standard-2x"
+	if _, err := service.Update(ctx, UpdateInput{UserID: "usr_project_restart_credits", ProjectID: project.ID, MachineTypeCode: &nextMachineType}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.credit_accounts (id, user_id, balance) VALUES ('cred_restart_guard', 'usr_project_restart_credits', 0.1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Restart(ctx, "usr_project_restart_credits", project.ID); !errors.Is(err, ErrInsufficientCredits) {
+		t.Fatalf("restart with insufficient desired credits error = %v, want ErrInsufficientCredits", err)
+	}
+	var jobs int
+	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.orchestration_jobs WHERE job_type = 'project.restart' AND aggregate_id = $1 AND state = 'queued'`, project.ID).Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+	if jobs != 0 {
+		t.Fatalf("queued restart jobs with insufficient desired credits = %d, want 0", jobs)
 	}
 }
 

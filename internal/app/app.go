@@ -16,6 +16,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
 	"github.com/pinksaucepasta/paperboat-server/internal/httpapi"
+	"github.com/pinksaucepasta/paperboat-server/internal/metering"
 	"github.com/pinksaucepasta/paperboat-server/internal/orchestrator"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 	"github.com/pinksaucepasta/paperboat-server/internal/workers"
@@ -43,11 +44,14 @@ func New(opts Options) (*App, error) {
 		return nil, err
 	}
 	auditWriter := audit.NewWriter(store)
+	billingRepo := billing.NewRepository(store)
+	flyProvider := flyClient(opts.Config)
 	authService := auth.NewService(store, auditWriter, workOSVerifier(opts.Config), opts.Config.Secrets.SessionKeys, publicURLSecure(opts.Config.HTTP.PublicBaseURL))
-	billingService := billing.NewService(billing.NewRepository(store), polarClient(opts.Config), auditWriter)
+	billingService := billing.NewService(billingRepo, polarClient(opts.Config), auditWriter)
 	githubService := pbgithub.NewService(store, auditWriter, githubClient(opts.Config), opts.Config)
 	projectService := projects.NewService(store, auditWriter, opts.Config)
-	orchestratorService := orchestrator.NewService(store, flyClient(opts.Config), opts.Config)
+	orchestratorService := orchestrator.NewService(store, flyProvider, opts.Config)
+	meteringService := metering.NewRuntimeService(store, flyProvider, billingRepo)
 	checker := readinessChecker{cfg: opts.Config, db: store}
 	router := httpapi.NewRouter(httpapi.Options{
 		Config:           opts.Config,
@@ -67,7 +71,10 @@ func New(opts Options) (*App, error) {
 			Handler:           router,
 			ReadHeaderTimeout: opts.Config.HTTP.ReadHeaderTimeout,
 		},
-		worker: workers.NewSupervisor(orchestratorService.Worker(2 * opts.Config.HTTP.RequestTimeout / 15)),
+		worker: workers.NewSupervisor(
+			orchestratorService.Worker(2*opts.Config.HTTP.RequestTimeout/15),
+			meteringService.Worker(opts.Config.HTTP.RequestTimeout),
+		),
 	}, nil
 }
 
@@ -75,10 +82,11 @@ func flyClient(cfg config.Config) fly.Client {
 	if cfg.Providers.FakeMode {
 		return fly.NewFakeClient()
 	}
-	return fly.HTTPClient{
-		BaseURL:  cfg.Providers.Fly.BaseURL,
+	return &fly.SDKClient{
 		APIToken: cfg.Secrets.FlyAPIToken,
 		AppName:  cfg.Fly.AppName,
+		OrgSlug:  cfg.Fly.OrgSlug,
+		BaseURL:  cfg.Providers.Fly.BaseURL,
 	}
 }
 

@@ -728,10 +728,14 @@ func (r *Repository) RecordProjectEvent(ctx context.Context, projectID, eventTyp
 }
 
 func mapProviderState(state string) string {
-	if state == "running" {
+	if isProviderRunning(state) {
 		return "running"
 	}
 	return "stopped"
+}
+
+func isProviderRunning(state string) bool {
+	return state == "running" || state == "started"
 }
 
 func insertEvent(ctx context.Context, tx *db.Tx, projectID, eventType, message string, metadata map[string]any) error {

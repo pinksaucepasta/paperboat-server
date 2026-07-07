@@ -27,6 +27,7 @@ type Config struct {
 	Database    Database    `json:"database"`
 	Catalogs    Catalogs    `json:"catalogs"`
 	Billing     Billing     `json:"billing"`
+	Metering    Metering    `json:"metering"`
 	GitHub      GitHub      `json:"github"`
 	Fly         Fly         `json:"fly"`
 	Providers   Providers   `json:"providers"`
@@ -57,6 +58,10 @@ type Billing struct {
 	PolarWebhookTolerance time.Duration `json:"polar_webhook_tolerance"`
 }
 
+type Metering struct {
+	MinimumStartCreditWindow time.Duration `json:"minimum_start_credit_window"`
+}
+
 type GitHub struct {
 	OAuthAuthorizeURL string   `json:"oauth_authorize_url"`
 	OAuthTokenURL     string   `json:"oauth_token_url"`
@@ -67,6 +72,7 @@ type GitHub struct {
 
 type Fly struct {
 	AppName           string   `json:"app_name"`
+	OrgSlug           string   `json:"org_slug"`
 	ImageRef          string   `json:"image_ref"`
 	VolumeNamePrefix  string   `json:"volume_name_prefix"`
 	MachineNamePrefix string   `json:"machine_name_prefix"`
@@ -160,6 +166,9 @@ func Default() Config {
 		Billing: Billing{
 			PolarWebhookTolerance: 5 * time.Minute,
 		},
+		Metering: Metering{
+			MinimumStartCreditWindow: 5 * time.Minute,
+		},
 		Providers: Providers{
 			FakeMode: true,
 			GitHub: ProviderConfig{
@@ -175,6 +184,7 @@ func Default() Config {
 		},
 		Fly: Fly{
 			AppName:           "paperboat-projects-dev",
+			OrgSlug:           "personal",
 			ImageRef:          "registry.example.invalid/paperboat/project-vm:dev",
 			VolumeNamePrefix:  "pbvol",
 			MachineNamePrefix: "pbvm",
@@ -220,6 +230,9 @@ func (c Config) Validate() error {
 	if c.Billing.PolarWebhookTolerance <= 0 {
 		errs = append(errs, fmt.Errorf("billing.polar_webhook_tolerance must be positive"))
 	}
+	if c.Metering.MinimumStartCreditWindow <= 0 {
+		errs = append(errs, fmt.Errorf("metering.minimum_start_credit_window must be positive"))
+	}
 	if strings.TrimSpace(c.GitHub.OAuthAuthorizeURL) == "" || strings.TrimSpace(c.GitHub.OAuthTokenURL) == "" {
 		errs = append(errs, fmt.Errorf("github oauth urls are required"))
 	}
@@ -231,6 +244,9 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Fly.AppName) == "" || strings.TrimSpace(c.Fly.ImageRef) == "" || strings.TrimSpace(c.Fly.VolumeNamePrefix) == "" || strings.TrimSpace(c.Fly.MachineNamePrefix) == "" || strings.TrimSpace(c.Fly.MountPath) == "" {
 		errs = append(errs, fmt.Errorf("fly app, image, naming prefixes, and mount path are required"))
+	}
+	if c.Environment == EnvironmentProduction && strings.TrimSpace(c.Fly.OrgSlug) == "" {
+		errs = append(errs, fmt.Errorf("fly.org_slug is required in production"))
 	}
 	if len(c.Fly.BootCommand) == 0 {
 		errs = append(errs, fmt.Errorf("fly.boot_command is required"))
@@ -292,6 +308,7 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_GITHUB_CONFIG_REPO_NAME", &c.GitHub.ConfigRepoName)
 	setString("PAPERBOAT_GITHUB_CONFIG_REPO_BRANCH", &c.GitHub.ConfigRepoBranch)
 	setString("PAPERBOAT_FLY_APP_NAME", &c.Fly.AppName)
+	setString("PAPERBOAT_FLY_ORG_SLUG", &c.Fly.OrgSlug)
 	setString("PAPERBOAT_FLY_IMAGE_REF", &c.Fly.ImageRef)
 	setString("PAPERBOAT_FLY_VOLUME_NAME_PREFIX", &c.Fly.VolumeNamePrefix)
 	setString("PAPERBOAT_FLY_MACHINE_NAME_PREFIX", &c.Fly.MachineNamePrefix)
@@ -318,6 +335,13 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 			return fmt.Errorf("PAPERBOAT_FAKE_PROVIDERS: %w", err)
 		}
 		c.Providers.FakeMode = parsed
+	}
+	if v, ok := lookup("PAPERBOAT_MINIMUM_START_CREDIT_WINDOW"); ok {
+		parsed, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("PAPERBOAT_MINIMUM_START_CREDIT_WINDOW: %w", err)
+		}
+		c.Metering.MinimumStartCreditWindow = parsed
 	}
 	if v, ok := lookup("PAPERBOAT_MAX_BODY_BYTES"); ok {
 		parsed, err := strconv.ParseInt(v, 10, 64)

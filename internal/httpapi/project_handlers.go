@@ -217,6 +217,8 @@ func writeProjectError(w http.ResponseWriter, r *http.Request, err error) bool {
 		writeError(w, r, http.StatusBadRequest, "catalog_unavailable", "One or more selected catalog entries are unavailable.")
 	case errors.Is(err, projects.ErrInsufficientStorage), errors.Is(err, metering.ErrInsufficientStorage):
 		writeError(w, r, http.StatusConflict, "insufficient_storage", "Project storage allocation exceeds available storage.")
+	case errors.Is(err, projects.ErrInsufficientCredits):
+		writeError(w, r, http.StatusConflict, "credits_exhausted", "Credits are too low to start this project.")
 	case errors.Is(err, projects.ErrNotFound):
 		writeError(w, r, http.StatusNotFound, "project_not_found", "Project was not found.")
 	case errors.Is(err, projects.ErrDeleted):

@@ -87,3 +87,7 @@ func (tx *Tx) Exec(ctx context.Context, query string, args ...any) (sql.Result, 
 func (tx *Tx) QueryRow(ctx context.Context, query string, args ...any) *sql.Row {
 	return tx.tx.QueryRowContext(ctx, query, args...)
 }
+
+func (tx *Tx) Query(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return tx.tx.QueryContext(ctx, query, args...)
+}

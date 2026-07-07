@@ -66,7 +66,7 @@ func runReconcile(args []string, stdout, stderr io.Writer) error {
 	if cfg.Providers.FakeMode {
 		flyClient = fly.NewFakeClient()
 	} else {
-		flyClient = fly.HTTPClient{BaseURL: cfg.Providers.Fly.BaseURL, APIToken: cfg.Secrets.FlyAPIToken, AppName: cfg.Fly.AppName}
+		flyClient = &fly.SDKClient{APIToken: cfg.Secrets.FlyAPIToken, AppName: cfg.Fly.AppName, OrgSlug: cfg.Fly.OrgSlug}
 	}
 	run, err := orchestrator.NewService(store, flyClient, cfg).Reconcile(context.Background())
 	if err != nil {

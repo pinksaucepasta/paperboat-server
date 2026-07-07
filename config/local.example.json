@@ -16,6 +16,9 @@
   "catalogs": {
     "seed_file": "config/catalogs.example.json"
   },
+  "metering": {
+    "minimum_start_credit_window": 300000000000
+  },
   "github": {
     "oauth_authorize_url": "https://github.com/login/oauth/authorize",
     "oauth_token_url": "https://github.com/login/oauth/access_token",
@@ -25,6 +28,7 @@
   },
   "fly": {
     "app_name": "paperboat-projects-dev",
+    "org_slug": "personal",
     "image_ref": "registry.example.invalid/paperboat/project-vm:dev",
     "volume_name_prefix": "pbvol",
     "machine_name_prefix": "pbvm",
