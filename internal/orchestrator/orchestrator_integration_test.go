@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -51,6 +52,23 @@ func TestProvisionProjectIsIdempotentAndReachesReady(t *testing.T) {
 	}
 	if len(fakeFly.Volumes) != 1 || len(fakeFly.Machines) != 1 {
 		t.Fatalf("fake Fly resources = %d volumes, %d machines; want one each", len(fakeFly.Volumes), len(fakeFly.Machines))
+	}
+	var spec fly.MachineSpec
+	for _, value := range fakeFly.MachineSpecs {
+		spec = value
+	}
+	if !hasSecret(spec.Secrets, orchestratorTestConfig().Fly.AgentunnelSecret, "fake-agentunnel-token-"+project.ID) {
+		t.Fatalf("initial provision did not inject project-scoped agentunnel token: %#v", spec.Secrets)
+	}
+	if spec.Env["PAPERBOAT_AGENTUNNEL_CLIENT_ID"] != "cli_"+project.ID || spec.Env["PAPERBOAT_AGENTUNNEL_TUNNEL_ID"] != "tun_"+project.ID {
+		t.Fatalf("initial provision did not inject agentunnel route env: %#v", spec.Env)
+	}
+	var resources int
+	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.agentunnel_resources WHERE project_id = $1 AND client_id = $2 AND tunnel_id = $3 AND metadata ? 'machine_token_ciphertext'`, project.ID, "cli_"+project.ID, "tun_"+project.ID).Scan(&resources); err != nil {
+		t.Fatal(err)
+	}
+	if resources != 1 {
+		t.Fatalf("agentunnel resources = %d, want 1", resources)
 	}
 	if err := service.provisionProject(ctx, project.ID); err != nil {
 		t.Fatal(err)
@@ -262,6 +280,57 @@ func TestProvisionInjectsConfiguredMachineSecrets(t *testing.T) {
 	}
 }
 
+func TestProvisionPrefersProjectScopedAgentunnelToken(t *testing.T) {
+	store := newOrchestratorTestDB(t)
+	ctx := context.Background()
+	seedOrchestratorCatalogs(t, store)
+	insertOrchestratorUser(t, store, "usr_orch_project_token", 20)
+
+	cfg := orchestratorTestConfig()
+	cfg.Secrets.AgentunnelMachineToken = "fallback-agentunnel-machine-token"
+	cfg.Providers.Agentunnel.BaseURL = "https://agentunnel.example"
+	projectService := projects.NewService(store, audit.NewWriter(store), cfg)
+	project, _, err := projectService.Create(ctx, projects.CreateInput{
+		UserID:          "usr_orch_project_token",
+		IdempotencyKey:  "orch-project-token",
+		RepositoryURL:   "https://github.com/paperboat/example.git",
+		StorageGB:       8,
+		MachineTypeCode: "standard-1x",
+		RegionCode:      "iad",
+		PresetCodes:     []string{"codex"},
+		IdleTimeoutCode: "15m",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertAgentunnelToken(t, store, project.ID, "project-agentunnel-machine-token")
+
+	fakeFly := fly.NewFakeClient()
+	service := NewService(store, fakeFly, cfg)
+	if err := service.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var spec fly.MachineSpec
+	for _, value := range fakeFly.MachineSpecs {
+		spec = value
+	}
+	if !hasSecret(spec.Secrets, cfg.Fly.AgentunnelSecret, "project-agentunnel-machine-token") {
+		t.Fatalf("project agentunnel secret was not injected: %#v", spec.Secrets)
+	}
+	if hasSecret(spec.Secrets, cfg.Fly.AgentunnelSecret, "fallback-agentunnel-machine-token") {
+		t.Fatalf("fallback agentunnel secret was injected despite project token: %#v", spec.Secrets)
+	}
+	if spec.Env["PAPERBOAT_AGENTUNNEL_SERVER_URL"] != "https://agentunnel.example" ||
+		spec.Env["PAPERBOAT_AGENTUNNEL_CLIENT_ID"] != "cli_"+project.ID ||
+		spec.Env["PAPERBOAT_AGENTUNNEL_TUNNEL_ID"] != "tun_"+project.ID ||
+		spec.Env["PAPERBOAT_PAPERCODE_LOCAL_URL"] != cfg.Providers.Agentunnel.PapercodeLocalURL {
+		t.Fatalf("agentunnel env was not injected correctly: %#v", spec.Env)
+	}
+	if strings.Contains(fmt.Sprint(spec.Env), "project-agentunnel-machine-token") {
+		t.Fatalf("agentunnel env leaked machine token: %#v", spec.Env)
+	}
+}
+
 func TestRestartBlocksPendingStorageResizeUntilPolicyApproved(t *testing.T) {
 	store := newOrchestratorTestDB(t)
 	ctx := context.Background()
@@ -382,6 +451,20 @@ func insertGitHubToken(t *testing.T, store *db.DB, userID, token string) {
 	if _, err := store.SQL().ExecContext(context.Background(), `
 INSERT INTO paperboat.github_oauth_tokens (id, user_id, token_ciphertext, scopes, provider_account_login, last_validated_at)
 VALUES ($1, $2, $3, ARRAY['repo'], $4, now())`, "ght_"+userID, userID, ciphertext, "gh_"+userID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func insertAgentunnelToken(t *testing.T, store *db.DB, projectID, token string) {
+	t.Helper()
+	ciphertext, err := secrets.Encrypt(orchestratorTestConfig().Secrets.EncryptionKey, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := fmt.Sprintf(`{"resource_kind":"http_tunnel","machine_token_ciphertext":%q}`, hex.EncodeToString(ciphertext))
+	if _, err := store.SQL().ExecContext(context.Background(), `
+INSERT INTO paperboat.agentunnel_resources (id, project_id, tunnel_id, client_id, resource_id, metadata)
+VALUES ($1, $2, $3, $4, $5, $6::jsonb)`, "agr_"+projectID, projectID, "tun_"+projectID, "cli_"+projectID, "tun_"+projectID, metadata); err != nil {
 		t.Fatal(err)
 	}
 }

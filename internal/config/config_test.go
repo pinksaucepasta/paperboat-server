@@ -11,13 +11,16 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 		"/run/secrets/encryption": []byte("secret-from-file\n"),
 	}
 	env := map[string]string{
-		"PAPERBOAT_ENV":                             "test",
-		"PAPERBOAT_HTTP_ADDRESS":                    "127.0.0.1:9090",
-		"PAPERBOAT_CATALOG_SEED_FILE":               "/etc/paperboat/catalogs.json",
-		"PAPERBOAT_POLAR_WEBHOOK_TOLERANCE_SECONDS": "120",
-		"PAPERBOAT_ENCRYPTION_KEY_FILE":             "/run/secrets/encryption",
-		"PAPERBOAT_AGENTUNNEL_API_KEY":              "agentunnel-api-key-from-env",
-		"PAPERBOAT_SESSION_KEYS":                    "one,two",
+		"PAPERBOAT_ENV":                               "test",
+		"PAPERBOAT_HTTP_ADDRESS":                      "127.0.0.1:9090",
+		"PAPERBOAT_CATALOG_SEED_FILE":                 "/etc/paperboat/catalogs.json",
+		"PAPERBOAT_POLAR_WEBHOOK_TOLERANCE_SECONDS":   "120",
+		"PAPERBOAT_ENCRYPTION_KEY_FILE":               "/run/secrets/encryption",
+		"PAPERBOAT_AGENTUNNEL_API_KEY":                "agentunnel-api-key-from-env",
+		"PAPERBOAT_AGENTUNNEL_PAPERCODE_LOCAL_URL":    "http://127.0.0.1:4999",
+		"PAPERBOAT_AGENTUNNEL_ROUTE_EXPIRES_IN":       "12h",
+		"PAPERBOAT_AGENTUNNEL_ROUTE_SUBDOMAIN_PREFIX": "pc",
+		"PAPERBOAT_SESSION_KEYS":                      "one,two",
 	}
 	cfg, err := Load(context.Background(), LoadOptions{
 		LookupEnv: func(key string) (string, bool) {
@@ -48,6 +51,9 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 	}
 	if cfg.Secrets.AgentunnelAPIKey != "agentunnel-api-key-from-env" {
 		t.Fatalf("agentunnel api key was not loaded from env")
+	}
+	if cfg.Providers.Agentunnel.PapercodeLocalURL != "http://127.0.0.1:4999" || cfg.Providers.Agentunnel.RouteExpiresIn.String() != "12h0m0s" || cfg.Providers.Agentunnel.RouteSubdomainPrefix != "pc" {
+		t.Fatalf("agentunnel route config was not loaded from env: %#v", cfg.Providers.Agentunnel)
 	}
 	if got := strings.Join(cfg.Secrets.SessionKeys, ","); got != "one,two" {
 		t.Fatalf("session keys = %q", got)

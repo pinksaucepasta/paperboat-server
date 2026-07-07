@@ -92,8 +92,11 @@ type Providers struct {
 }
 
 type ProviderConfig struct {
-	BaseURL string `json:"base_url"`
-	Ready   bool   `json:"ready"`
+	BaseURL              string        `json:"base_url"`
+	Ready                bool          `json:"ready"`
+	PapercodeLocalURL    string        `json:"papercode_local_url,omitempty"`
+	RouteExpiresIn       time.Duration `json:"route_expires_in,omitempty"`
+	RouteSubdomainPrefix string        `json:"route_subdomain_prefix,omitempty"`
 }
 
 type Secrets struct {
@@ -175,6 +178,11 @@ func Default() Config {
 			GitHub: ProviderConfig{
 				BaseURL: "https://api.github.com",
 			},
+			Agentunnel: ProviderConfig{
+				PapercodeLocalURL:    "http://127.0.0.1:4099",
+				RouteExpiresIn:       30 * 24 * time.Hour,
+				RouteSubdomainPrefix: "pb",
+			},
 		},
 		GitHub: GitHub{
 			OAuthAuthorizeURL: "https://github.com/login/oauth/authorize",
@@ -234,6 +242,17 @@ func (c Config) Validate() error {
 	if c.Metering.MinimumStartCreditWindow <= 0 {
 		errs = append(errs, fmt.Errorf("metering.minimum_start_credit_window must be positive"))
 	}
+	if strings.TrimSpace(c.Providers.Agentunnel.PapercodeLocalURL) == "" {
+		errs = append(errs, fmt.Errorf("agentunnel.papercode_local_url is required"))
+	} else if u, err := url.Parse(c.Providers.Agentunnel.PapercodeLocalURL); err != nil || u.Scheme == "" || u.Host == "" {
+		errs = append(errs, fmt.Errorf("agentunnel.papercode_local_url must be a valid absolute URL"))
+	}
+	if c.Providers.Agentunnel.RouteExpiresIn <= 0 {
+		errs = append(errs, fmt.Errorf("agentunnel.route_expires_in must be positive"))
+	}
+	if strings.TrimSpace(c.Providers.Agentunnel.RouteSubdomainPrefix) == "" {
+		errs = append(errs, fmt.Errorf("agentunnel.route_subdomain_prefix is required"))
+	}
 	if strings.TrimSpace(c.GitHub.OAuthAuthorizeURL) == "" || strings.TrimSpace(c.GitHub.OAuthTokenURL) == "" {
 		errs = append(errs, fmt.Errorf("github oauth urls are required"))
 	}
@@ -265,7 +284,7 @@ func (c Config) Validate() error {
 		if len(c.HTTP.AllowedOrigins) == 0 {
 			errs = append(errs, fmt.Errorf("http.allowed_origins is required in production"))
 		}
-		if c.Secrets.WorkOSAPIKey == "" || c.Secrets.WorkOSClientID == "" || c.Secrets.WorkOSClientSecret == "" || c.Secrets.PolarAPIKey == "" || c.Secrets.PolarWebhookSecret == "" || c.Secrets.GitHubClientID == "" || c.Secrets.GitHubClientSecret == "" || c.Secrets.FlyAPIToken == "" || c.Secrets.AgentunnelAPIKey == "" || c.Secrets.AgentunnelMachineToken == "" {
+		if c.Secrets.WorkOSAPIKey == "" || c.Secrets.WorkOSClientID == "" || c.Secrets.WorkOSClientSecret == "" || c.Secrets.PolarAPIKey == "" || c.Secrets.PolarWebhookSecret == "" || c.Secrets.GitHubClientID == "" || c.Secrets.GitHubClientSecret == "" || c.Secrets.FlyAPIToken == "" || c.Secrets.AgentunnelAPIKey == "" {
 			errs = append(errs, fmt.Errorf("production provider secrets are required"))
 		}
 		for _, secret := range append(c.Secrets.SessionKeys, c.Secrets.EncryptionKey) {
@@ -321,6 +340,8 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_GITHUB_BASE_URL", &c.Providers.GitHub.BaseURL)
 	setString("PAPERBOAT_FLY_BASE_URL", &c.Providers.Fly.BaseURL)
 	setString("PAPERBOAT_AGENTUNNEL_BASE_URL", &c.Providers.Agentunnel.BaseURL)
+	setString("PAPERBOAT_AGENTUNNEL_PAPERCODE_LOCAL_URL", &c.Providers.Agentunnel.PapercodeLocalURL)
+	setString("PAPERBOAT_AGENTUNNEL_ROUTE_SUBDOMAIN_PREFIX", &c.Providers.Agentunnel.RouteSubdomainPrefix)
 	if v, ok := lookup("PAPERBOAT_ALLOWED_ORIGINS"); ok {
 		c.HTTP.AllowedOrigins = splitCSV(v)
 	}
@@ -329,6 +350,13 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	}
 	if v, ok := lookup("PAPERBOAT_FLY_BOOT_COMMAND"); ok {
 		c.Fly.BootCommand = splitCSV(v)
+	}
+	if v, ok := lookup("PAPERBOAT_AGENTUNNEL_ROUTE_EXPIRES_IN"); ok {
+		parsed, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("parse PAPERBOAT_AGENTUNNEL_ROUTE_EXPIRES_IN: %w", err)
+		}
+		c.Providers.Agentunnel.RouteExpiresIn = parsed
 	}
 	if v, ok := lookup("PAPERBOAT_FAKE_PROVIDERS"); ok {
 		parsed, err := strconv.ParseBool(v)

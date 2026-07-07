@@ -42,6 +42,13 @@
     "fly": {
       "base_url": "https://api.machines.dev",
       "ready": true
+    },
+    "agentunnel": {
+      "base_url": "https://agentunnel.example",
+      "ready": true,
+      "papercode_local_url": "http://127.0.0.1:4099",
+      "route_expires_in": 2592000000000000,
+      "route_subdomain_prefix": "pb"
     }
   },
   "secrets": {

@@ -119,8 +119,13 @@ Fly.io TODO for real-provider smoke testing:
 - Build/push the project VM image and set `PAPERBOAT_FLY_IMAGE_REF`.
 - Set `PAPERBOAT_AGENTUNNEL_API_KEY` to a server-side agentunnel API key with the approved
   control-plane scope.
-- Replace the local placeholder `PAPERBOAT_AGENTUNNEL_MACHINE_TOKEN` with the approved
-  agentunnel-issued machine token.
+- Set `PAPERBOAT_AGENTUNNEL_BASE_URL`, `PAPERBOAT_AGENTUNNEL_PAPERCODE_LOCAL_URL`,
+  `PAPERBOAT_AGENTUNNEL_ROUTE_EXPIRES_IN`, and
+  `PAPERBOAT_AGENTUNNEL_ROUTE_SUBDOMAIN_PREFIX` for papercode HTTP/WSS route
+  reconciliation.
+- Do not configure a shared production `PAPERBOAT_AGENTUNNEL_MACHINE_TOKEN`; project VM
+  tokens are issued through agentunnel client provisioning and injected per machine. The
+  env var remains only as a local development fallback.
 
 Postgres tables live in the dedicated `paperboat` schema. The migration policy is
 forward-only for production releases.

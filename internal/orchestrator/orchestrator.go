@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pinksaucepasta/paperboat-server/internal/agentunnel"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
@@ -20,13 +21,29 @@ import (
 var ErrVolumeResizeRequiresApproval = errors.New("volume resize requires approved Fly resize or replacement policy")
 
 type Service struct {
-	repo *Repository
-	fly  fly.Client
-	cfg  config.Config
+	repo           *Repository
+	fly            fly.Client
+	cfg            config.Config
+	agentunnel     agentunnel.Client
+	agentunnelRepo *agentunnel.Repository
 }
 
 func NewService(store *db.DB, flyClient fly.Client, cfg config.Config) *Service {
-	return &Service{repo: NewRepository(store, cfg.Secrets.EncryptionKey), fly: flyClient, cfg: cfg}
+	var agentunnelClient agentunnel.Client
+	if cfg.Providers.FakeMode {
+		agentunnelClient = agentunnel.FakeClient{BaseURL: cfg.Providers.Agentunnel.BaseURL}
+	}
+	return NewServiceWithAgentunnel(store, flyClient, cfg, agentunnelClient)
+}
+
+func NewServiceWithAgentunnel(store *db.DB, flyClient fly.Client, cfg config.Config, agentunnelClient agentunnel.Client) *Service {
+	return &Service{
+		repo:           NewRepository(store, cfg.Secrets.EncryptionKey),
+		fly:            flyClient,
+		cfg:            cfg,
+		agentunnel:     agentunnelClient,
+		agentunnelRepo: agentunnel.NewRepository(store, cfg.Secrets.EncryptionKey),
+	}
 }
 
 func (s *Service) RunOnce(ctx context.Context) error {
@@ -106,6 +123,9 @@ func (s *Service) provisionProject(ctx context.Context, projectID string) error 
 	if err != nil {
 		return err
 	}
+	if err := s.ensureAgentunnelResource(ctx, &intent); err != nil {
+		return err
+	}
 	volume, err := s.ensureVolume(ctx, intent)
 	if err != nil {
 		return err
@@ -114,6 +134,42 @@ func (s *Service) provisionProject(ctx context.Context, projectID string) error 
 		return err
 	}
 	return s.repo.MarkReady(ctx, intent)
+}
+
+func (s *Service) ensureAgentunnelResource(ctx context.Context, intent *ProjectIntent) error {
+	if strings.TrimSpace(intent.AgentunnelToken) != "" {
+		return nil
+	}
+	if s.agentunnel == nil {
+		if strings.TrimSpace(s.cfg.Secrets.AgentunnelMachineToken) != "" {
+			return nil
+		}
+		return errors.New("agentunnel project resource is required before machine provisioning")
+	}
+	resource, err := s.agentunnel.EnsureProjectResources(ctx, agentunnel.ProjectRef{ID: intent.ID, Name: intent.ID})
+	if err != nil {
+		return fmt.Errorf("ensure agentunnel project resources: %w", err)
+	}
+	resource, err = s.agentunnelRepo.UpsertResource(ctx, intent.ID, resource)
+	if err != nil {
+		return fmt.Errorf("store agentunnel project resources: %w", err)
+	}
+	intent.AgentunnelToken = resource.MachineToken
+	intent.AgentunnelClientID = resource.ClientID
+	intent.AgentunnelTunnelID = resource.TunnelID
+	if strings.TrimSpace(intent.AgentunnelToken) == "" {
+		reloaded, err := s.repo.agentunnelResource(ctx, intent.ID)
+		if err != nil {
+			return fmt.Errorf("reload agentunnel project resources: %w", err)
+		}
+		intent.AgentunnelToken = reloaded.MachineToken
+		intent.AgentunnelClientID = reloaded.ClientID
+		intent.AgentunnelTunnelID = reloaded.TunnelID
+	}
+	if strings.TrimSpace(intent.AgentunnelToken) == "" {
+		return errors.New("agentunnel project resource did not include a machine token")
+	}
+	return nil
 }
 
 func (s *Service) startProject(ctx context.Context, projectID string) error {
@@ -290,6 +346,18 @@ func (s *Service) machineSpec(intent ProjectIntent, volumeID string) fly.Machine
 		"PAPERBOAT_SETUP_SCRIPT_REF":   intent.SetupScriptRef,
 		"PAPERBOAT_DESIRED_CONFIG_SHA": intent.DesiredConfigHash,
 	}
+	if strings.TrimSpace(s.cfg.Providers.Agentunnel.BaseURL) != "" {
+		env["PAPERBOAT_AGENTUNNEL_SERVER_URL"] = s.cfg.Providers.Agentunnel.BaseURL
+	}
+	if strings.TrimSpace(s.cfg.Providers.Agentunnel.PapercodeLocalURL) != "" {
+		env["PAPERBOAT_PAPERCODE_LOCAL_URL"] = s.cfg.Providers.Agentunnel.PapercodeLocalURL
+	}
+	if strings.TrimSpace(intent.AgentunnelClientID) != "" {
+		env["PAPERBOAT_AGENTUNNEL_CLIENT_ID"] = intent.AgentunnelClientID
+	}
+	if strings.TrimSpace(intent.AgentunnelTunnelID) != "" {
+		env["PAPERBOAT_AGENTUNNEL_TUNNEL_ID"] = intent.AgentunnelTunnelID
+	}
 	return fly.MachineSpec{
 		Name:       providerName(s.cfg.Fly.MachineNamePrefix, intent.ID),
 		ImageRef:   s.cfg.Fly.ImageRef,
@@ -307,11 +375,12 @@ func (s *Service) machineSpec(intent ProjectIntent, volumeID string) fly.Machine
 
 func (s *Service) projectSecrets(intent ProjectIntent) []fly.MachineSecret {
 	var out []fly.MachineSecret
-	if strings.TrimSpace(s.cfg.Secrets.AgentunnelMachineToken) != "" {
+	agentunnelToken := firstNonEmpty(intent.AgentunnelToken, s.cfg.Secrets.AgentunnelMachineToken)
+	if strings.TrimSpace(agentunnelToken) != "" {
 		out = append(out, fly.MachineSecret{
 			EnvVar: s.cfg.Fly.AgentunnelSecret,
 			Name:   providerName("pbsecret-agentunnel", intent.ID),
-			Value:  s.cfg.Secrets.AgentunnelMachineToken,
+			Value:  agentunnelToken,
 		})
 	}
 	if strings.TrimSpace(intent.GitHubConfigToken) != "" {
@@ -377,6 +446,9 @@ type ProjectIntent struct {
 	DesiredConfigHash   string
 	PendingRestartApply bool
 	GitHubConfigToken   string
+	AgentunnelToken     string
+	AgentunnelClientID  string
+	AgentunnelTunnelID  string
 }
 
 type MachineRecord struct {
@@ -486,6 +558,13 @@ GROUP BY p.id, pr.project_id, psa.project_id, prc.project_id, mt.code, mtv.vcpu,
 		return ProjectIntent{}, err
 	}
 	intent.GitHubConfigToken = token
+	agentunnelResource, err := r.agentunnelResource(ctx, intent.ID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return ProjectIntent{}, err
+	}
+	intent.AgentunnelToken = agentunnelResource.MachineToken
+	intent.AgentunnelClientID = agentunnelResource.ClientID
+	intent.AgentunnelTunnelID = agentunnelResource.TunnelID
 	return intent, nil
 }
 
@@ -501,6 +580,33 @@ LIMIT 1`, userID).Scan(&ciphertext)
 		return "", err
 	}
 	return secrets.Decrypt(r.encryptionKey, ciphertext)
+}
+
+type agentunnelResource struct {
+	TunnelID     string
+	ClientID     string
+	MachineToken string
+}
+
+func (r *Repository) agentunnelResource(ctx context.Context, projectID string) (agentunnelResource, error) {
+	var resource agentunnelResource
+	var encoded string
+	err := r.db.SQL().QueryRowContext(ctx, `
+SELECT tunnel_id, client_id, metadata->>'machine_token_ciphertext'
+FROM paperboat.agentunnel_resources
+WHERE project_id = $1`, projectID).Scan(&resource.TunnelID, &resource.ClientID, &encoded)
+	if err != nil {
+		return agentunnelResource{}, err
+	}
+	if strings.TrimSpace(encoded) == "" {
+		return resource, nil
+	}
+	ciphertext, err := hex.DecodeString(encoded)
+	if err != nil {
+		return agentunnelResource{}, err
+	}
+	resource.MachineToken, err = secrets.Decrypt(r.encryptionKey, ciphertext)
+	return resource, err
 }
 
 func (r *Repository) ProjectMachine(ctx context.Context, projectID string) (MachineRecord, error) {
@@ -742,6 +848,15 @@ func insertEvent(ctx context.Context, tx *db.Tx, projectID, eventType, message s
 	b, _ := json.Marshal(metadata)
 	_, err := tx.Exec(ctx, `INSERT INTO project_events (id, project_id, event_type, message, metadata) VALUES ($1, $2, $3, $4, $5::jsonb)`, newID("pevt"), projectID, eventType, message, string(b))
 	return err
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func newID(prefix string) string {

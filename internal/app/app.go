@@ -51,8 +51,9 @@ func New(opts Options) (*App, error) {
 	billingService := billing.NewService(billingRepo, polarClient(opts.Config), auditWriter)
 	githubService := pbgithub.NewService(store, auditWriter, githubClient(opts.Config), opts.Config)
 	projectService := projects.NewService(store, auditWriter, opts.Config)
-	agentunnelService := agentunnel.NewService(store, projectService, agentunnelClient(opts.Config), auditWriter, opts.Config)
-	orchestratorService := orchestrator.NewService(store, flyProvider, opts.Config)
+	agentunnelProvider := agentunnelClient(opts.Config)
+	agentunnelService := agentunnel.NewService(store, projectService, agentunnelProvider, auditWriter, opts.Config)
+	orchestratorService := orchestrator.NewServiceWithAgentunnel(store, flyProvider, opts.Config, agentunnelProvider)
 	meteringService := metering.NewRuntimeService(store, flyProvider, billingRepo)
 	checker := readinessChecker{cfg: opts.Config, db: store}
 	router := httpapi.NewRouter(httpapi.Options{
@@ -108,8 +109,11 @@ func agentunnelClient(cfg config.Config) agentunnel.Client {
 		return agentunnel.FakeClient{BaseURL: cfg.Providers.Agentunnel.BaseURL}
 	}
 	return agentunnel.HTTPClient{
-		BaseURL: cfg.Providers.Agentunnel.BaseURL,
-		APIKey:  cfg.Secrets.AgentunnelAPIKey,
+		BaseURL:              cfg.Providers.Agentunnel.BaseURL,
+		APIKey:               cfg.Secrets.AgentunnelAPIKey,
+		PapercodeLocalURL:    cfg.Providers.Agentunnel.PapercodeLocalURL,
+		RouteExpiresIn:       cfg.Providers.Agentunnel.RouteExpiresIn,
+		RouteSubdomainPrefix: cfg.Providers.Agentunnel.RouteSubdomainPrefix,
 	}
 }
 

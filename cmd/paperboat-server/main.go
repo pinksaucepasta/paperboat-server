@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/pinksaucepasta/paperboat-server/internal/agentunnel"
 	"github.com/pinksaucepasta/paperboat-server/internal/app"
 	"github.com/pinksaucepasta/paperboat-server/internal/catalog"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
@@ -66,9 +67,9 @@ func runReconcile(args []string, stdout, stderr io.Writer) error {
 	if cfg.Providers.FakeMode {
 		flyClient = fly.NewFakeClient()
 	} else {
-		flyClient = &fly.SDKClient{APIToken: cfg.Secrets.FlyAPIToken, AppName: cfg.Fly.AppName, OrgSlug: cfg.Fly.OrgSlug}
+		flyClient = &fly.SDKClient{APIToken: cfg.Secrets.FlyAPIToken, AppName: cfg.Fly.AppName, OrgSlug: cfg.Fly.OrgSlug, BaseURL: cfg.Providers.Fly.BaseURL}
 	}
-	run, err := orchestrator.NewService(store, flyClient, cfg).Reconcile(context.Background())
+	run, err := orchestrator.NewServiceWithAgentunnel(store, flyClient, cfg, commandAgentunnelClient(cfg)).Reconcile(context.Background())
 	if err != nil {
 		return err
 	}
@@ -78,6 +79,19 @@ func runReconcile(args []string, stdout, stderr io.Writer) error {
 	}
 	_, err = fmt.Fprintln(stdout, string(b))
 	return err
+}
+
+func commandAgentunnelClient(cfg config.Config) agentunnel.Client {
+	if cfg.Providers.FakeMode {
+		return agentunnel.FakeClient{BaseURL: cfg.Providers.Agentunnel.BaseURL}
+	}
+	return agentunnel.HTTPClient{
+		BaseURL:              cfg.Providers.Agentunnel.BaseURL,
+		APIKey:               cfg.Secrets.AgentunnelAPIKey,
+		PapercodeLocalURL:    cfg.Providers.Agentunnel.PapercodeLocalURL,
+		RouteExpiresIn:       cfg.Providers.Agentunnel.RouteExpiresIn,
+		RouteSubdomainPrefix: cfg.Providers.Agentunnel.RouteSubdomainPrefix,
+	}
 }
 
 func runMigrate(args []string, stdout, stderr io.Writer) error {
