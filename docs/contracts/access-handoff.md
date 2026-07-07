@@ -13,8 +13,11 @@ Live data path:
 papercode / paperboat-cli / dashboard
   -> agentunnel route
   -> project VM
-  -> papercode server / SSH / preview service
+  -> papercode server / preview service
 ```
+
+SSH, if enabled, is optional debug/operator access only. It is not the
+production CLI handoff and must not be returned from `cli-connect`.
 
 Control path:
 
@@ -123,6 +126,8 @@ Pending approval:
 Purpose:
 
 - Return CLI-safe connection metadata for terminal attach and image paste upload.
+- The CLI is a headless papercode terminal client: it attaches over the
+  tunneled papercode HTTP/WebSocket route, not over SSH.
 
 Proposed response data shape:
 
@@ -131,27 +136,53 @@ Proposed response data shape:
   "project_id": "prj_...",
   "connectable": true,
   "expires_at": "2026-07-05T12:00:00Z",
-  "terminal": {
-    "kind": "agentunnel_ssh",
-    "host": "ssh.agentunnel.example",
-    "port": 25432,
-    "username": "paperboat",
-    "connection_id": "acs_..."
+  "environment": {
+    "environment_id": "env_...",
+    "display_name": "Project name",
+    "project_root": "/workspace"
   },
-  "papercode_upload": {
+  "terminal": {
+    "kind": "papercode_websocket",
     "http_base_url": "https://...",
+    "websocket_base_url": "wss://...",
+    "auth": {
+      "method": "websocket_ticket",
+      "ticket": "pct_...",
+      "expires_at": "2026-07-05T12:00:00Z",
+      "scopes": ["terminal:operate"]
+    },
+    "thread_id": "paperboat-cli",
+    "terminal_id": "term-1",
+    "cwd": "/workspace"
+  },
+  "upload": {
+    "kind": "papercode_file_upload",
+    "http_base_url": "https://...",
+    "auth": {
+      "method": "bearer",
+      "token": "pat_...",
+      "expires_at": "2026-07-05T12:00:00Z",
+      "scopes": ["terminal:operate"]
+    },
     "max_bytes": 10485760,
     "allowed_mime_types": ["image/png", "image/jpeg", "image/webp"]
   }
 }
 ```
 
+Runtime status:
+
+- `cli-connect` must return `credential_issuer_unavailable` until Phase 1 implements
+  credentials that the VM papercode server can actually validate.
+- Do not return random, placeholder, unpersisted, or server-local-only token strings in
+  `terminal.auth` or `upload.auth`.
+
 Pending approval:
 
-- Whether CLI opens SSH directly to agentunnel TCP route or uses a stronger
-  desktop-mediated/local bridge.
-- SSH username policy.
-- Upload endpoint path and auth method on the VM papercode server.
+- Exact papercode credential issuance flow: bootstrap token, bearer access
+  token, DPoP access token, or WebSocket ticket.
+- Whether terminal ids are stable per project/user or re-created per CLI run.
+- Upload endpoint path on the VM papercode server.
 - Image size and MIME policy source.
 
 ## agentunnel Adapter Boundary

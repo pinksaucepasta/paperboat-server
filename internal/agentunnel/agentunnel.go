@@ -22,11 +22,12 @@ import (
 const defaultAccessTTL = 5 * time.Minute
 
 var (
-	ErrNotFound           = projects.ErrNotFound
-	ErrDeleted            = projects.ErrDeleted
-	ErrInvalidState       = projects.ErrInvalidState
-	ErrInsufficientCredit = projects.ErrInsufficientCredits
-	ErrTunnelUnavailable  = errors.New("agentunnel resource is unavailable")
+	ErrNotFound                    = projects.ErrNotFound
+	ErrDeleted                     = projects.ErrDeleted
+	ErrInvalidState                = projects.ErrInvalidState
+	ErrInsufficientCredit          = projects.ErrInsufficientCredits
+	ErrTunnelUnavailable           = errors.New("agentunnel resource is unavailable")
+	ErrCredentialIssuerUnavailable = errors.New("papercode credential issuer is unavailable")
 )
 
 type Client interface {
@@ -240,7 +241,7 @@ type ConnectResponse struct {
 	Environment     map[string]any `json:"environment,omitempty"`
 	AccessEndpoint  map[string]any `json:"access_endpoint,omitempty"`
 	Terminal        map[string]any `json:"terminal,omitempty"`
-	PapercodeUpload map[string]any `json:"papercode_upload,omitempty"`
+	PapercodeUpload map[string]any `json:"upload,omitempty"`
 	Status          string         `json:"status,omitempty"`
 	Reason          string         `json:"reason,omitempty"`
 }
@@ -264,6 +265,10 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 	if err := s.repo.EnsureConnectCredits(ctx, input.UserID, input.ProjectID, s.minimumStartCreditWindow); err != nil {
 		_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, "", "denied", "credits_exhausted", nil)
 		return ConnectResponse{}, err
+	}
+	if input.Kind == ConnectCLI {
+		_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, "", "denied", "credential_issuer_unavailable", nil)
+		return ConnectResponse{}, ErrCredentialIssuerUnavailable
 	}
 	resource, ok, err := s.repo.Resource(ctx, input.ProjectID)
 	if err != nil {
@@ -380,13 +385,20 @@ func buildResponse(kind ConnectKind, project projects.Project, resource Resource
 		}
 	case ConnectCLI:
 		base.Terminal = map[string]any{
-			"kind":          "agentunnel_ssh",
-			"host":          resource.SSHHost,
-			"port":          resource.SSHPort,
-			"username":      "paperboat",
-			"connection_id": resource.TunnelID,
+			"kind":               "papercode_websocket",
+			"http_base_url":      resource.HTTPBaseURL,
+			"websocket_base_url": resource.WebSocketBaseURL,
+			"thread_id":          "paperboat-cli",
+			"terminal_id":        "term-1",
+			"cwd":                "/workspace",
+		}
+		base.Environment = map[string]any{
+			"environment_id": project.ID,
+			"display_name":   project.Name,
+			"project_root":   "/workspace",
 		}
 		base.PapercodeUpload = map[string]any{
+			"kind":               "papercode_file_upload",
 			"http_base_url":      resource.HTTPBaseURL,
 			"max_bytes":          10485760,
 			"allowed_mime_types": []string{"image/png", "image/jpeg", "image/webp"},
@@ -410,13 +422,13 @@ func applyStatusResource(resource ResourceDescriptor, status TunnelStatus) Resou
 }
 
 func terminalStatusDescriptor(status TunnelStatus) map[string]any {
-	if status.SSHHost == "" && status.SSHPort == 0 {
+	if status.HTTPBaseURL == "" && status.WebSocketBaseURL == "" {
 		return nil
 	}
 	return map[string]any{
-		"kind": "agentunnel_ssh",
-		"host": status.SSHHost,
-		"port": status.SSHPort,
+		"kind":               "papercode_websocket",
+		"http_base_url":      status.HTTPBaseURL,
+		"websocket_base_url": status.WebSocketBaseURL,
 	}
 }
 

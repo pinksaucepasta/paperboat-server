@@ -6,6 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 )
 
 func TestHTTPClientStatusUsesConnectInfoEnvelope(t *testing.T) {
@@ -69,5 +72,19 @@ func TestHTTPClientStatusMapsNotReady(t *testing.T) {
 	}
 	if status.Ready || status.Status != "offline" || status.Reason != "CLIENT_OFFLINE" {
 		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestBuildCLIResponseDoesNotInventUnvalidatedAuth(t *testing.T) {
+	resp := buildResponse(ConnectCLI, projects.Project{ID: "prj_1", Name: "Demo"}, ResourceDescriptor{
+		HTTPBaseURL:      "https://agentunnel.example/projects/prj_1",
+		WebSocketBaseURL: "wss://agentunnel.example/projects/prj_1",
+	}, time.Now().UTC().Add(time.Minute))
+
+	if _, ok := resp.Terminal["auth"]; ok {
+		t.Fatalf("terminal descriptor should not include unvalidated auth: %#v", resp.Terminal)
+	}
+	if _, ok := resp.PapercodeUpload["auth"]; ok {
+		t.Fatalf("upload descriptor should not include unvalidated auth: %#v", resp.PapercodeUpload)
 	}
 }

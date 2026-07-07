@@ -90,6 +90,30 @@ func TestAccessConnectRequiresEntitlementBeforeProviderSideEffects(t *testing.T)
 	}
 }
 
+func TestCLIConnectRequiresCredentialIssuerBeforeProviderSideEffects(t *testing.T) {
+	store, router, projectID := newAccessIntegrationRouter(t, "cli-unavailable@example.com")
+	cookies := loginCookies(t, router, "workos_seed_cli-unavailable@example.com:cli-unavailable@example.com:CLI Unavailable")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/cli-connect", nil)
+	addCookies(req, cookies)
+	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("connect status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "credential_issuer_unavailable") {
+		t.Fatalf("unexpected body = %s", rec.Body.String())
+	}
+	var resources int
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT count(*) FROM paperboat.agentunnel_resources WHERE project_id = $1`, projectID).Scan(&resources); err != nil {
+		t.Fatal(err)
+	}
+	if resources != 0 {
+		t.Fatalf("agentunnel resources = %d, want 0 before credential issuer is available", resources)
+	}
+}
+
 func TestAccessConnectDeniesWrongOwnerAndRecordsDenial(t *testing.T) {
 	store, router, projectID := newAccessIntegrationRouter(t, "owner@example.com")
 	otherCookies := loginCookies(t, router, "workos_other:other@example.com:Other User")
@@ -124,7 +148,7 @@ func TestAccessConnectDoesNotStartWhenTunnelUnavailable(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/cli-connect", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/papercode-connect", nil)
 	addCookies(req, cookies)
 	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
 	router.ServeHTTP(rec, req)
@@ -156,7 +180,7 @@ func TestAccessConnectQueuesStartWhenStoppedTunnelIsOffline(t *testing.T) {
 	insertAccessResource(t, store, projectID)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/cli-connect", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/papercode-connect", nil)
 	addCookies(req, cookies)
 	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
 	router.ServeHTTP(rec, req)
