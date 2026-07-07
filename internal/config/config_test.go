@@ -16,6 +16,7 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 		"PAPERBOAT_CATALOG_SEED_FILE":               "/etc/paperboat/catalogs.json",
 		"PAPERBOAT_POLAR_WEBHOOK_TOLERANCE_SECONDS": "120",
 		"PAPERBOAT_ENCRYPTION_KEY_FILE":             "/run/secrets/encryption",
+		"PAPERBOAT_AGENTUNNEL_API_KEY":              "agentunnel-api-key-from-env",
 		"PAPERBOAT_SESSION_KEYS":                    "one,two",
 	}
 	cfg, err := Load(context.Background(), LoadOptions{
@@ -44,6 +45,9 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 	}
 	if cfg.Secrets.EncryptionKey != "secret-from-file" {
 		t.Fatalf("encryption key was not loaded from secret file")
+	}
+	if cfg.Secrets.AgentunnelAPIKey != "agentunnel-api-key-from-env" {
+		t.Fatalf("agentunnel api key was not loaded from env")
 	}
 	if got := strings.Join(cfg.Secrets.SessionKeys, ","); got != "one,two" {
 		t.Fatalf("session keys = %q", got)
@@ -85,11 +89,13 @@ func TestRedactedJSONDoesNotExposeSecrets(t *testing.T) {
 	cfg := Default()
 	cfg.Secrets.EncryptionKey = "super-secret-encryption-key"
 	cfg.Secrets.FlyAPIToken = "fly-token-secret"
+	cfg.Secrets.AgentunnelAPIKey = "agentunnel-api-key-secret"
 	cfg.Secrets.GitHubClientID = "github-client-id-secret"
 	cfg.Secrets.GitHubClientSecret = "github-client-secret"
 	out := cfg.RedactedJSON()
 	if strings.Contains(out, "super-secret-encryption-key") ||
 		strings.Contains(out, "fly-token-secret") ||
+		strings.Contains(out, "agentunnel-api-key-secret") ||
 		strings.Contains(out, "github-client-id-secret") ||
 		strings.Contains(out, "github-client-secret") {
 		t.Fatalf("redacted config leaked secrets: %s", out)

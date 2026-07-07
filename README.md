@@ -107,6 +107,7 @@ Common environment overrides:
 - `PAPERBOAT_FLY_BOOT_COMMAND`
 - `PAPERBOAT_FLY_AGENTUNNEL_SECRET`
 - `PAPERBOAT_FLY_GITHUB_SECRET`
+- `PAPERBOAT_AGENTUNNEL_API_KEY` or `PAPERBOAT_AGENTUNNEL_API_KEY_FILE`
 - `PAPERBOAT_AGENTUNNEL_MACHINE_TOKEN` or `PAPERBOAT_AGENTUNNEL_MACHINE_TOKEN_FILE`
 
 Fly.io TODO for real-provider smoke testing:
@@ -116,6 +117,8 @@ Fly.io TODO for real-provider smoke testing:
 - Set `PAPERBOAT_FLY_ORG_SLUG` and `PAPERBOAT_FLY_APP_NAME`; the Fly SDK client creates
   the configured app if it does not already exist.
 - Build/push the project VM image and set `PAPERBOAT_FLY_IMAGE_REF`.
+- Set `PAPERBOAT_AGENTUNNEL_API_KEY` to a server-side agentunnel API key with the approved
+  control-plane scope.
 - Replace the local placeholder `PAPERBOAT_AGENTUNNEL_MACHINE_TOKEN` with the approved
   agentunnel-issued machine token.
 

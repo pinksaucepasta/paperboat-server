@@ -47,6 +47,7 @@
   "secrets": {
     "session_keys": ["development-session-key-change-me"],
     "encryption_key": "development-encryption-key-change-me",
+    "agentunnel_api_key": "development-agentunnel-api-key-change-me",
     "agentunnel_machine_token": "development-agentunnel-token-change-me"
   }
 }

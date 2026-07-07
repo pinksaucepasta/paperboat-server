@@ -107,6 +107,7 @@ type Secrets struct {
 	GitHubClientID         string   `json:"github_client_id"`
 	GitHubClientSecret     string   `json:"github_client_secret"`
 	FlyAPIToken            string   `json:"fly_api_token"`
+	AgentunnelAPIKey       string   `json:"agentunnel_api_key"`
 	AgentunnelMachineToken string   `json:"agentunnel_machine_token"`
 }
 
@@ -264,7 +265,7 @@ func (c Config) Validate() error {
 		if len(c.HTTP.AllowedOrigins) == 0 {
 			errs = append(errs, fmt.Errorf("http.allowed_origins is required in production"))
 		}
-		if c.Secrets.WorkOSAPIKey == "" || c.Secrets.WorkOSClientID == "" || c.Secrets.WorkOSClientSecret == "" || c.Secrets.PolarAPIKey == "" || c.Secrets.PolarWebhookSecret == "" || c.Secrets.GitHubClientID == "" || c.Secrets.GitHubClientSecret == "" || c.Secrets.FlyAPIToken == "" || c.Secrets.AgentunnelMachineToken == "" {
+		if c.Secrets.WorkOSAPIKey == "" || c.Secrets.WorkOSClientID == "" || c.Secrets.WorkOSClientSecret == "" || c.Secrets.PolarAPIKey == "" || c.Secrets.PolarWebhookSecret == "" || c.Secrets.GitHubClientID == "" || c.Secrets.GitHubClientSecret == "" || c.Secrets.FlyAPIToken == "" || c.Secrets.AgentunnelAPIKey == "" || c.Secrets.AgentunnelMachineToken == "" {
 			errs = append(errs, fmt.Errorf("production provider secrets are required"))
 		}
 		for _, secret := range append(c.Secrets.SessionKeys, c.Secrets.EncryptionKey) {
@@ -382,6 +383,9 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 		return err
 	}
 	if err := setSecret("PAPERBOAT_FLY_API_TOKEN", &c.Secrets.FlyAPIToken); err != nil {
+		return err
+	}
+	if err := setSecret("PAPERBOAT_AGENTUNNEL_API_KEY", &c.Secrets.AgentunnelAPIKey); err != nil {
 		return err
 	}
 	if err := setSecret("PAPERBOAT_AGENTUNNEL_MACHINE_TOKEN", &c.Secrets.AgentunnelMachineToken); err != nil {

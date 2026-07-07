@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/pinksaucepasta/paperboat-server/internal/agentunnel"
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/auth"
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
@@ -50,6 +51,7 @@ func New(opts Options) (*App, error) {
 	billingService := billing.NewService(billingRepo, polarClient(opts.Config), auditWriter)
 	githubService := pbgithub.NewService(store, auditWriter, githubClient(opts.Config), opts.Config)
 	projectService := projects.NewService(store, auditWriter, opts.Config)
+	agentunnelService := agentunnel.NewService(store, projectService, agentunnelClient(opts.Config), auditWriter, opts.Config)
 	orchestratorService := orchestrator.NewService(store, flyProvider, opts.Config)
 	meteringService := metering.NewRuntimeService(store, flyProvider, billingRepo)
 	checker := readinessChecker{cfg: opts.Config, db: store}
@@ -61,6 +63,7 @@ func New(opts Options) (*App, error) {
 		Billing:          billingService,
 		GitHub:           githubService,
 		Projects:         projectService,
+		Agentunnel:       agentunnelService,
 	})
 	return &App{
 		cfg:    opts.Config,
@@ -97,6 +100,16 @@ func githubClient(cfg config.Config) pbgithub.Client {
 	return pbgithub.HTTPClient{
 		BaseURL:  cfg.Providers.GitHub.BaseURL,
 		TokenURL: cfg.GitHub.OAuthTokenURL,
+	}
+}
+
+func agentunnelClient(cfg config.Config) agentunnel.Client {
+	if cfg.Providers.FakeMode {
+		return agentunnel.FakeClient{BaseURL: cfg.Providers.Agentunnel.BaseURL}
+	}
+	return agentunnel.HTTPClient{
+		BaseURL: cfg.Providers.Agentunnel.BaseURL,
+		APIKey:  cfg.Secrets.AgentunnelAPIKey,
 	}
 }
 

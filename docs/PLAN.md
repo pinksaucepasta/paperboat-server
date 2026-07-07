@@ -27,7 +27,7 @@ filling its evidence section.
 | 6 | Project lifecycle and VM customization model | Implemented | Codex | Project service, Phase 6 migration, project create/list/get/update/delete/events APIs, idempotent create, catalog validation, setup-script revision storage, storage quota enforcement for create/update, pending restart apply model, delete workflow intent with deferred storage release, event records, and DB-backed project lifecycle tests are in place. |
 | 7 | Fly.io machines, volumes, reconciliation, and restart apply | Implemented | Codex | Official Fly Go SDK client/fake provider, app creation from configured org slug, orchestration worker, create/start/stop/restart/delete workflows, restart apply, process-scoped secret handoff, resize-policy blocking, reconciliation command/run records, orphan review queue, idempotent volume/machine persistence, deferred storage release on delete, Phase 7 migration hardening, provider contract docs, README Fly env TODOs, and DB-backed fake-Fly workflow tests are in place. Real Fly org/image smoke evidence is deferred to release validation. |
 | 8 | Metering workers, idle detection, credit exhaustion, and enforcement | Implemented | Codex | Fly polling runtime observer, durable runtime intervals/checkpoints, weighted credit debits, credit-exhaustion stop queueing, idle stop queueing, minimum-credit start/restart guard, accepted activity source model, app worker wiring, migration, config, and DB-backed tests are in place. Real Fly event/hybrid observation and cross-project activity callback endpoint wiring remain future refinements if approved. |
-| 9 | agentunnel pre-connect brokering and access descriptors | Not started | TBD | None |
+| 9 | agentunnel pre-connect brokering and access descriptors | In progress | Codex | Access service/repository, fake provider plus real agentunnel `connect-info` HTTP adapter for existing persistent TCP resources, connect/status API handlers, access session persistence, connection event recording, connect activity markers, conservative draft descriptors, dynamic agentunnel API-key config/redaction, and DB-backed HTTP tests are in place. New agentunnel resource provisioning and final papercode/CLI descriptor semantics remain blocked on Phase 0 contract approval. |
 | 10 | Dashboard and CLI API surface hardening | Not started | TBD | None |
 | 11 | Security, privacy, abuse controls, and secret handling | Not started | TBD | None |
 | 12 | Observability, operations, admin tooling, and runbooks | Not started | TBD | None |
@@ -682,19 +682,26 @@ in agentunnel.
 
 Tasks:
 
-- [ ] Implement approved agentunnel admin/API client.
+- [ ] Implement approved agentunnel admin/API client. Partial: real `connect-info`
+  status adapter exists for already-provisioned persistent TCP resources; provisioning calls
+  remain approval-gated.
 - [ ] Provision or look up agentunnel client identity for each project machine.
 - [ ] Provision or look up persistent TCP/SSH tunnel records needed for the project.
 - [ ] Provision preview URL support and metadata records.
 - [ ] Implement pre-connect checks: authenticated user, active entitlement, project
   ownership, project not deleted/suspended, credits sufficient, machine start/resume
-  allowed, tunnel resource exists, access policy permits request.
-- [ ] Start or resume machine on connect when allowed.
+  allowed, tunnel resource exists, access policy permits request. Partial: server-owned
+  checks are implemented; final agentunnel access-policy check remains approval-gated.
+- [x] Start or resume machine on connect when allowed.
 - [ ] Wait for machine and agentunnel readiness with bounded timeout and useful statuses.
-- [ ] Issue short-lived access session record.
-- [ ] Return approved descriptor for papercode AccessEndpoint.
-- [ ] Return approved descriptor for paperboat-cli.
-- [ ] Record connection events and denial reasons.
+  Partial: current implementation performs a bounded request-scoped status check; final
+  poll/wait semantics remain approval-gated.
+- [x] Issue short-lived access session record.
+- [ ] Return approved descriptor for papercode AccessEndpoint. Partial: conservative draft
+  descriptor exists behind the current endpoint.
+- [ ] Return approved descriptor for paperboat-cli. Partial: conservative draft descriptor
+  exists behind the current endpoint.
+- [x] Record connection events and denial reasons.
 - [ ] Revoke access sessions on user logout, entitlement loss, project deletion, machine
   stop, or admin action where contract supports revocation.
 - [ ] Add fake agentunnel tests for happy path, not ready, wrong owner, suspended tunnel,
@@ -711,9 +718,17 @@ Acceptance criteria:
 
 Evidence:
 
-- agentunnel contract tests:
-- Descriptor examples:
-- Denial event examples:
+- agentunnel adapter tests: `go test ./internal/agentunnel` covers `connect-info`
+  envelope translation, bearer API-key use, and offline/not-ready status mapping.
+- HTTP/DB access tests:
+  `PAPERBOAT_TEST_DATABASE_DSN="$PAPERBOAT_DATABASE_DSN" PAPERBOAT_ALLOW_DESTRUCTIVE_TEST_DB_RESET=true go test -p 1 ./internal/httpapi ./internal/agentunnel`
+  passed, covering papercode descriptor/session/event creation, payment-required guard
+  before provider side effects, and wrong-owner denial event recording.
+- Descriptor examples: conservative draft shapes are implemented in `internal/agentunnel`
+  and match `docs/contracts/access-handoff.md` pending approval.
+- Denial event examples: `connection_events` records `project_not_found`,
+  `invalid_project_state`, `credits_exhausted`, `start_failed`, `tunnel_unavailable`, and
+  `tunnel_not_ready` reasons without secret metadata.
 
 ## Phase 10: Dashboard and CLI API Surface Hardening
 
