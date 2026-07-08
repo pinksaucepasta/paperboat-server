@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+IFS=',' read -r -a presets <<< "${PAPERBOAT_PRESET_CODES:-}"
+presets_dir="${PAPERBOAT_PRESETS_DIR:-/etc/paperboat/presets.d}"
+
+for preset in "${presets[@]:-}"; do
+  preset="$(printf '%s' "$preset" | xargs)"
+  [ -n "$preset" ] || continue
+  script="$presets_dir/$preset.sh"
+  if [ ! -x "$script" ]; then
+    printf '{"ts":"%s","component":"presets","level":"warn","message":"preset not installed","preset":"%s"}\n' \
+      "$(date -Iseconds)" "$preset" >&2
+    continue
+  fi
+  "$script"
+done
+
+setup_script_env="${PAPERBOAT_SETUP_SCRIPT_ENV:-PAPERBOAT_SETUP_SCRIPT}"
+if [ -n "${!setup_script_env:-}" ]; then
+  bash -lc "${!setup_script_env}"
+fi

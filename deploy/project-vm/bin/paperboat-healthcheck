@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readiness_file="${PAPERBOAT_READINESS_FILE:-${PAPERBOAT_RUNTIME_DIR:-/var/lib/paperboat}/readiness.json}"
+
+if [ ! -f "$readiness_file" ]; then
+  exit 1
+fi
+
+grep -q '"state":"ready"' "$readiness_file"

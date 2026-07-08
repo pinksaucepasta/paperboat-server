@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+runtime_dir="${PAPERBOAT_RUNTIME_DIR:-/var/lib/paperboat}"
+log_dir="${PAPERBOAT_LOG_DIR:-/var/log/paperboat}"
+workspace="${PAPERBOAT_WORKSPACE:-/workspace}"
+readiness_file="${PAPERBOAT_READINESS_FILE:-$runtime_dir/readiness.json}"
+bin_dir="${PAPERBOAT_BIN_DIR:-/usr/local/bin}"
+child_pids=()
+
+mkdir -p "$runtime_dir" "$log_dir" "$workspace"
+export GIT_ASKPASS="${PAPERBOAT_GIT_ASKPASS:-$bin_dir/paperboat-git-askpass}"
+export GIT_TERMINAL_PROMPT=0
+
+log() {
+  printf '{"ts":"%s","component":"entrypoint","level":"%s","message":"%s"}\n' \
+    "$(date -Iseconds)" "$1" "$2" >&2
+}
+
+write_readiness() {
+  local state="$1"
+  local reason="${2:-}"
+  cat > "$readiness_file" <<EOF
+{"state":"$state","reason":"$reason","updated_at":"$(date -Iseconds)"}
+EOF
+}
+
+require_env() {
+  local name="$1"
+  if [ -z "${!name:-}" ]; then
+    log error "missing required env $name"
+    write_readiness failed "missing:$name"
+    exit 64
+  fi
+}
+
+require_env PAPERBOAT_PROJECT_ID
+require_env PAPERBOAT_REPOSITORY_URL
+require_env PAPERBOAT_AGENTUNNEL_SERVER_URL
+require_env PAPERBOAT_AGENTUNNEL_CLIENT_ID
+require_env PAPERBOAT_AGENTUNNEL_TUNNEL_ID
+require_env "${PAPERBOAT_AGENTUNNEL_TOKEN_ENV:-AGENTUNNEL_MACHINE_TOKEN}"
+
+write_readiness starting ""
+
+log info "preparing workspace"
+"${PAPERBOAT_PREPARE_WORKSPACE_COMMAND:-$bin_dir/paperboat-prepare-workspace}"
+
+log info "syncing config repo"
+"${PAPERBOAT_CONFIG_SYNC_COMMAND:-$bin_dir/paperboat-config-sync}" restore
+
+log info "applying presets"
+"${PAPERBOAT_PRESET_APPLY_COMMAND:-$bin_dir/paperboat-apply-presets}"
+
+log info "starting papercode"
+"${PAPERBOAT_PAPERCODE_COMMAND:-$bin_dir/paperboat-start-papercode}" &
+papercode_pid=$!
+child_pids+=("$papercode_pid")
+
+cleanup() {
+  log info "shutting down"
+  if [ "${#child_pids[@]}" -gt 0 ]; then
+    kill "${child_pids[@]}" 2>/dev/null || true
+    wait "${child_pids[@]}" 2>/dev/null || true
+  fi
+  "${PAPERBOAT_CONFIG_SYNC_COMMAND:-$bin_dir/paperboat-config-sync}" save || true
+}
+trap cleanup TERM INT EXIT
+
+"${PAPERBOAT_WAIT_HTTP_COMMAND:-$bin_dir/paperboat-wait-http}" "${PAPERBOAT_PAPERCODE_LOCAL_URL:-http://127.0.0.1:4099}" 60
+
+log info "starting agentunnel"
+"${PAPERBOAT_AGENTUNNEL_COMMAND:-$bin_dir/paperboat-start-agentunnel}" &
+agentunnel_pid=$!
+child_pids+=("$agentunnel_pid")
+
+"${PAPERBOAT_WAIT_AGENTUNNEL_COMMAND:-$bin_dir/paperboat-wait-agentunnel}" 60
+
+log info "starting activity reporter"
+"${PAPERBOAT_ACTIVITY_COMMAND:-$bin_dir/paperboat-activity-reporter}" &
+activity_pid=$!
+child_pids+=("$activity_pid")
+
+write_readiness ready ""
+log info "runtime ready"
+
+while :; do
+  for child_pid in "$papercode_pid" "$agentunnel_pid" "$activity_pid"; do
+    if ! kill -0 "$child_pid" 2>/dev/null; then
+      wait "$child_pid" 2>/dev/null || status=$?
+      status="${status:-1}"
+      write_readiness failed "process_exit:$status"
+      exit "$status"
+    fi
+  done
+  sleep 1
+done

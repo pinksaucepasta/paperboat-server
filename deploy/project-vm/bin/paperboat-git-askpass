@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+prompt="${1:-}"
+allowed_hosts="${PAPERBOAT_GITHUB_TOKEN_ALLOWED_HOSTS:-github.com}"
+token_env="${PAPERBOAT_GITHUB_TOKEN_ENV:-PAPERBOAT_GITHUB_CONFIG_TOKEN}"
+
+prompt_host() {
+  local value="$prompt"
+  value="${value#*\'}"
+  value="${value%%\'*}"
+  value="${value#http://}"
+  value="${value#https://}"
+  value="${value#*@}"
+  value="${value%%/*}"
+  value="${value%%:*}"
+  printf '%s' "$value"
+}
+
+host_allowed() {
+  local host="$1"
+  local allowed
+  IFS=',' read -r -a allowed <<< "$allowed_hosts"
+  for allowed in "${allowed[@]:-}"; do
+    allowed="$(printf '%s' "$allowed" | xargs)"
+    if [ -n "$allowed" ] && [ "$host" = "$allowed" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+host="$(prompt_host)"
+if ! host_allowed "$host"; then
+  printf '\n'
+  exit 0
+fi
+
+case "$prompt" in
+  *Username*)
+    printf '%s\n' "${PAPERBOAT_GITHUB_USERNAME:-x-access-token}"
+    ;;
+  *Password*)
+    printf '%s\n' "${!token_env:-}"
+    ;;
+  *)
+    printf '\n'
+    ;;
+esac

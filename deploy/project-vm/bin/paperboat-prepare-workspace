@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+workspace="${PAPERBOAT_WORKSPACE:-/workspace}"
+repo_url="${PAPERBOAT_REPOSITORY_URL:?PAPERBOAT_REPOSITORY_URL is required}"
+branch="${PAPERBOAT_DEFAULT_BRANCH:-}"
+
+mkdir -p "$workspace"
+
+if [ ! -d "$workspace/.git" ]; then
+  tmp="$workspace/.paperboat-clone"
+  rm -rf "$tmp"
+  if [ -n "$branch" ]; then
+    git clone --branch "$branch" --single-branch "$repo_url" "$tmp"
+  else
+    git clone "$repo_url" "$tmp"
+  fi
+  find "$tmp" -mindepth 1 -maxdepth 1 -exec mv {} "$workspace/" \;
+  rmdir "$tmp"
+fi
+
+mkdir -p "$workspace/.paperboat"

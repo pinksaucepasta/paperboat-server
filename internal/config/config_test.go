@@ -20,6 +20,7 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 		"PAPERBOAT_AGENTUNNEL_PAPERCODE_LOCAL_URL":    "http://127.0.0.1:4999",
 		"PAPERBOAT_AGENTUNNEL_ROUTE_EXPIRES_IN":       "12h",
 		"PAPERBOAT_AGENTUNNEL_ROUTE_SUBDOMAIN_PREFIX": "pc",
+		"PAPERBOAT_FLY_SETUP_SCRIPT_SECRET":           "PAPERBOAT_SETUP_SCRIPT_FROM_ENV",
 		"PAPERBOAT_SESSION_KEYS":                      "one,two",
 	}
 	cfg, err := Load(context.Background(), LoadOptions{
@@ -57,6 +58,9 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 	}
 	if got := strings.Join(cfg.Secrets.SessionKeys, ","); got != "one,two" {
 		t.Fatalf("session keys = %q", got)
+	}
+	if cfg.Fly.SetupScriptSecret != "PAPERBOAT_SETUP_SCRIPT_FROM_ENV" {
+		t.Fatalf("setup script secret env name = %q", cfg.Fly.SetupScriptSecret)
 	}
 }
 

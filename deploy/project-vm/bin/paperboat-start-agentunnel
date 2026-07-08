@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+config_dir="${PAPERBOAT_AGENTUNNEL_CONFIG_DIR:-/var/lib/paperboat/agentunnel}"
+token_env="${PAPERBOAT_AGENTUNNEL_TOKEN_ENV:-AGENTUNNEL_MACHINE_TOKEN}"
+mkdir -p "$config_dir"
+chmod 700 "$config_dir"
+
+if [ -n "${PAPERBOAT_AGENTUNNEL_FORWARD_COMMAND:-}" ]; then
+  exec bash -lc "$PAPERBOAT_AGENTUNNEL_FORWARD_COMMAND"
+fi
+
+cat > "$config_dir/client.json" <<EOF
+{
+  "server_url": "${PAPERBOAT_AGENTUNNEL_SERVER_URL:?PAPERBOAT_AGENTUNNEL_SERVER_URL is required}",
+  "client_token": "${!token_env:?agentunnel token env is required}",
+  "machine_id": "${PAPERBOAT_AGENTUNNEL_CLIENT_ID:?PAPERBOAT_AGENTUNNEL_CLIENT_ID is required}"
+}
+EOF
+chmod 600 "$config_dir/client.json"
+
+exec agentunnel client run --config "$config_dir/client.json"

@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+mode="${1:-restore}"
+workspace="${PAPERBOAT_WORKSPACE:-/workspace}"
+config_dir="$workspace/.paperboat/config"
+repo_url="${PAPERBOAT_CONFIG_REPO_URL:-}"
+branch="${PAPERBOAT_CONFIG_REPO_BRANCH:-main}"
+
+log() {
+  printf '{"ts":"%s","component":"config-sync","level":"%s","message":"%s"}\n' \
+    "$(date -Iseconds)" "$1" "$2" >&2
+}
+
+if [ -z "$repo_url" ]; then
+  log info "config repo not configured"
+  exit 0
+fi
+
+mkdir -p "$config_dir"
+
+case "$mode" in
+  restore)
+    if [ ! -d "$config_dir/.git" ]; then
+      git clone --branch "$branch" --single-branch "$repo_url" "$config_dir"
+    else
+      git -C "$config_dir" fetch origin "$branch"
+      git -C "$config_dir" reset --hard "origin/$branch"
+    fi
+    ;;
+  save)
+    git -C "$config_dir" add -A
+    if git -C "$config_dir" diff --cached --quiet; then
+      log info "no config changes"
+      exit 0
+    fi
+    git -C "$config_dir" config user.name "${PAPERBOAT_CONFIG_GIT_AUTHOR_NAME:-Paperboat Config Sync}"
+    git -C "$config_dir" config user.email "${PAPERBOAT_CONFIG_GIT_AUTHOR_EMAIL:-config-sync@paperboat.local}"
+    git -C "$config_dir" commit -m "Sync Paperboat VM config for ${PAPERBOAT_PROJECT_ID:-project}"
+    git -C "$config_dir" fetch origin "$branch"
+    git -C "$config_dir" rebase "origin/$branch"
+    git -C "$config_dir" push origin "HEAD:$branch"
+    ;;
+  *)
+    log error "unknown config sync mode $mode"
+    exit 64
+    ;;
+esac

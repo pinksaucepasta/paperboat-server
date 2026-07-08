@@ -80,6 +80,7 @@ type Fly struct {
 	BootCommand       []string `json:"boot_command"`
 	AgentunnelSecret  string   `json:"agentunnel_secret"`
 	GitHubSecret      string   `json:"github_secret"`
+	SetupScriptSecret string   `json:"setup_script_secret"`
 }
 
 type Providers struct {
@@ -201,6 +202,7 @@ func Default() Config {
 			BootCommand:       []string{"/usr/local/bin/paperboat-entrypoint"},
 			AgentunnelSecret:  "AGENTUNNEL_MACHINE_TOKEN",
 			GitHubSecret:      "PAPERBOAT_GITHUB_CONFIG_TOKEN",
+			SetupScriptSecret: "PAPERBOAT_SETUP_SCRIPT",
 		},
 		Secrets: Secrets{
 			SessionKeys:   []string{"development-session-key-change-me"},
@@ -262,8 +264,8 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.GitHub.ConfigRepoName) == "" || strings.TrimSpace(c.GitHub.ConfigRepoBranch) == "" {
 		errs = append(errs, fmt.Errorf("github config repo name and branch are required"))
 	}
-	if strings.TrimSpace(c.Fly.AppName) == "" || strings.TrimSpace(c.Fly.ImageRef) == "" || strings.TrimSpace(c.Fly.VolumeNamePrefix) == "" || strings.TrimSpace(c.Fly.MachineNamePrefix) == "" || strings.TrimSpace(c.Fly.MountPath) == "" {
-		errs = append(errs, fmt.Errorf("fly app, image, naming prefixes, and mount path are required"))
+	if strings.TrimSpace(c.Fly.AppName) == "" || strings.TrimSpace(c.Fly.ImageRef) == "" || strings.TrimSpace(c.Fly.VolumeNamePrefix) == "" || strings.TrimSpace(c.Fly.MachineNamePrefix) == "" || strings.TrimSpace(c.Fly.MountPath) == "" || strings.TrimSpace(c.Fly.AgentunnelSecret) == "" || strings.TrimSpace(c.Fly.GitHubSecret) == "" || strings.TrimSpace(c.Fly.SetupScriptSecret) == "" {
+		errs = append(errs, fmt.Errorf("fly app, image, naming prefixes, mount path, and secret env names are required"))
 	}
 	if c.Environment == EnvironmentProduction && strings.TrimSpace(c.Fly.OrgSlug) == "" {
 		errs = append(errs, fmt.Errorf("fly.org_slug is required in production"))
@@ -335,6 +337,7 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_FLY_MOUNT_PATH", &c.Fly.MountPath)
 	setString("PAPERBOAT_FLY_AGENTUNNEL_SECRET", &c.Fly.AgentunnelSecret)
 	setString("PAPERBOAT_FLY_GITHUB_SECRET", &c.Fly.GitHubSecret)
+	setString("PAPERBOAT_FLY_SETUP_SCRIPT_SECRET", &c.Fly.SetupScriptSecret)
 	setString("PAPERBOAT_WORKOS_BASE_URL", &c.Providers.WorkOS.BaseURL)
 	setString("PAPERBOAT_POLAR_BASE_URL", &c.Providers.Polar.BaseURL)
 	setString("PAPERBOAT_GITHUB_BASE_URL", &c.Providers.GitHub.BaseURL)

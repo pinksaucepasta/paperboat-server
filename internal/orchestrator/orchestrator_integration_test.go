@@ -34,6 +34,7 @@ func TestProvisionProjectIsIdempotentAndReachesReady(t *testing.T) {
 		RegionCode:      "iad",
 		PresetCodes:     []string{"codex"},
 		IdleTimeoutCode: "15m",
+		SetupScript:     "echo setup from revision",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -236,6 +237,7 @@ func TestProvisionInjectsConfiguredMachineSecrets(t *testing.T) {
 	ctx := context.Background()
 	seedOrchestratorCatalogs(t, store)
 	insertOrchestratorUser(t, store, "usr_orch_secrets", 20)
+	grantOrchestratorGitHubConfig(t, store, "usr_orch_secrets")
 	insertGitHubToken(t, store, "usr_orch_secrets", "github-config-token")
 
 	cfg := orchestratorTestConfig()
@@ -268,6 +270,26 @@ func TestProvisionInjectsConfiguredMachineSecrets(t *testing.T) {
 	}
 	if !hasSecret(spec.Secrets, cfg.Fly.GitHubSecret, "github-config-token") {
 		t.Fatalf("github config token was not injected: %#v", spec.Secrets)
+	}
+	if !hasSecret(spec.Secrets, cfg.Fly.SetupScriptSecret, "echo setup from revision") {
+		t.Fatalf("setup script secret was not injected: %#v", spec.Secrets)
+	}
+	if spec.Env["PAPERBOAT_CONFIG_REPO_URL"] != "https://github.com/paperboat-test-user/paperboat-config.git" ||
+		spec.Env["PAPERBOAT_CONFIG_REPO_BRANCH"] != "main" {
+		t.Fatalf("github config repo env was not injected: %#v", spec.Env)
+	}
+	if strings.Contains(fmt.Sprint(spec.Env), "github-config-token") {
+		t.Fatalf("github config token leaked into env: %#v", spec.Env)
+	}
+	if strings.Contains(fmt.Sprint(spec.Env), "echo setup from revision") {
+		t.Fatalf("setup script leaked into env: %#v", spec.Env)
+	}
+	if spec.Env["PAPERBOAT_SETUP_SCRIPT_ENV"] != cfg.Fly.SetupScriptSecret {
+		t.Fatalf("setup script env name was not injected: %#v", spec.Env)
+	}
+	if spec.Env["PAPERBOAT_AGENTUNNEL_TOKEN_ENV"] != cfg.Fly.AgentunnelSecret ||
+		spec.Env["PAPERBOAT_GITHUB_TOKEN_ENV"] != cfg.Fly.GitHubSecret {
+		t.Fatalf("secret env names were not injected: %#v", spec.Env)
 	}
 	events, err := projectService.Events(ctx, "usr_orch_secrets", project.ID)
 	if err != nil {
@@ -527,6 +549,28 @@ func insertOrchestratorUser(t *testing.T, store *db.DB, userID string, includedG
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(context.Background(), `INSERT INTO paperboat.storage_accounts (id, user_id, included_gb) VALUES ($1, $2, $3)`, "stor_"+userID, userID, includedGB); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func grantOrchestratorGitHubConfig(t *testing.T, store *db.DB, userID string) {
+	t.Helper()
+	ciphertext, err := secrets.Encrypt(orchestratorTestConfig().Secrets.EncryptionKey, "github-config-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(context.Background(), `
+INSERT INTO paperboat.github_oauth_tokens (id, user_id, token_ciphertext, scopes, provider_account_login, last_validated_at)
+VALUES ($1, $2, $3, ARRAY['repo']::text[], 'paperboat-test-user', now())
+ON CONFLICT (user_id) DO UPDATE SET token_ciphertext = EXCLUDED.token_ciphertext, revoked_at = NULL, expires_at = NULL, last_validated_at = now()`,
+		"ght_orch_"+userID, userID, ciphertext); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(context.Background(), `
+INSERT INTO paperboat.github_config_repositories (id, user_id, provider_repo_id, owner, name, default_branch, clone_url, html_url, private, provisioned_at)
+VALUES ($1, $2, $3, 'paperboat-test-user', 'paperboat-config', 'main', 'https://github.com/paperboat-test-user/paperboat-config.git', 'https://github.com/paperboat-test-user/paperboat-config', true, now())
+ON CONFLICT (user_id) DO UPDATE SET clone_url = EXCLUDED.clone_url, default_branch = EXCLUDED.default_branch, provisioned_at = now()`,
+		"ghcr_orch_"+userID, userID, "repo_orch_"+userID); err != nil {
 		t.Fatal(err)
 	}
 }

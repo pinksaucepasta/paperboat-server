@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+url="${1:?url is required}"
+timeout="${2:-60}"
+deadline=$((SECONDS + timeout))
+
+while [ "$SECONDS" -lt "$deadline" ]; do
+  if curl -fsS "$url" >/dev/null 2>&1; then
+    exit 0
+  fi
+  sleep 1
+done
+
+printf 'timed out waiting for %s\n' "$url" >&2
+exit 1

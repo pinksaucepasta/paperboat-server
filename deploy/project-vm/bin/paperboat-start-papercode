@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+local_url="${PAPERBOAT_PAPERCODE_LOCAL_URL:-http://127.0.0.1:4099}"
+host_port="${local_url#http://}"
+host_port="${host_port#https://}"
+host="${host_port%%:*}"
+port="${host_port##*:}"
+
+export T3CODE_HOST="${PAPERBOAT_PAPERCODE_HOST:-$host}"
+export T3CODE_PORT="${PAPERBOAT_PAPERCODE_PORT:-$port}"
+export T3CODE_HOME="${PAPERBOAT_PAPERCODE_BASE_DIR:-/workspace/.paperboat/papercode}"
+export T3CODE_NO_BROWSER=1
+export T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD=1
+
+exec node /opt/papercode-server/dist/bin.mjs --no-browser "${PAPERBOAT_WORKSPACE:-/workspace}"

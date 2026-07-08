@@ -338,13 +338,22 @@ func (s *Service) findProviderMachine(ctx context.Context, name string, intent P
 
 func (s *Service) machineSpec(intent ProjectIntent, volumeID string) fly.MachineSpec {
 	env := map[string]string{
-		"PAPERBOAT_PROJECT_ID":         intent.ID,
-		"PAPERBOAT_REPOSITORY_URL":     intent.RepositoryURL,
-		"PAPERBOAT_DEFAULT_BRANCH":     intent.DefaultBranch,
-		"PAPERBOAT_PRESET_CODES":       strings.Join(intent.PresetCodes, ","),
-		"PAPERBOAT_IDLE_TIMEOUT_CODE":  intent.IdleTimeoutCode,
-		"PAPERBOAT_SETUP_SCRIPT_REF":   intent.SetupScriptRef,
-		"PAPERBOAT_DESIRED_CONFIG_SHA": intent.DesiredConfigHash,
+		"PAPERBOAT_PROJECT_ID":           intent.ID,
+		"PAPERBOAT_REPOSITORY_URL":       intent.RepositoryURL,
+		"PAPERBOAT_DEFAULT_BRANCH":       intent.DefaultBranch,
+		"PAPERBOAT_PRESET_CODES":         strings.Join(intent.PresetCodes, ","),
+		"PAPERBOAT_IDLE_TIMEOUT_CODE":    intent.IdleTimeoutCode,
+		"PAPERBOAT_AGENTUNNEL_TOKEN_ENV": s.cfg.Fly.AgentunnelSecret,
+		"PAPERBOAT_GITHUB_TOKEN_ENV":     s.cfg.Fly.GitHubSecret,
+		"PAPERBOAT_SETUP_SCRIPT_REF":     intent.SetupScriptRef,
+		"PAPERBOAT_SETUP_SCRIPT_ENV":     s.cfg.Fly.SetupScriptSecret,
+		"PAPERBOAT_DESIRED_CONFIG_SHA":   intent.DesiredConfigHash,
+	}
+	if strings.TrimSpace(intent.GitHubConfigRepoURL) != "" {
+		env["PAPERBOAT_CONFIG_REPO_URL"] = intent.GitHubConfigRepoURL
+	}
+	if strings.TrimSpace(intent.GitHubConfigRepoBranch) != "" {
+		env["PAPERBOAT_CONFIG_REPO_BRANCH"] = intent.GitHubConfigRepoBranch
 	}
 	if strings.TrimSpace(s.cfg.Providers.Agentunnel.BaseURL) != "" {
 		env["PAPERBOAT_AGENTUNNEL_SERVER_URL"] = s.cfg.Providers.Agentunnel.BaseURL
@@ -390,6 +399,13 @@ func (s *Service) projectSecrets(intent ProjectIntent) []fly.MachineSecret {
 			Value:  intent.GitHubConfigToken,
 		})
 	}
+	if strings.TrimSpace(intent.SetupScript) != "" {
+		out = append(out, fly.MachineSecret{
+			EnvVar: s.cfg.Fly.SetupScriptSecret,
+			Name:   providerName("pbsecret-setup", intent.ID),
+			Value:  intent.SetupScript,
+		})
+	}
 	return out
 }
 
@@ -431,24 +447,27 @@ type Job struct {
 }
 
 type ProjectIntent struct {
-	ID                  string
-	RepositoryURL       string
-	DefaultBranch       string
-	UserID              string
-	StorageGB           int
-	MachineTypeCode     string
-	VCPU                int
-	MemoryMB            int
-	RegionCode          string
-	PresetCodes         []string
-	IdleTimeoutCode     string
-	SetupScriptRef      string
-	DesiredConfigHash   string
-	PendingRestartApply bool
-	GitHubConfigToken   string
-	AgentunnelToken     string
-	AgentunnelClientID  string
-	AgentunnelTunnelID  string
+	ID                     string
+	RepositoryURL          string
+	DefaultBranch          string
+	UserID                 string
+	StorageGB              int
+	MachineTypeCode        string
+	VCPU                   int
+	MemoryMB               int
+	RegionCode             string
+	PresetCodes            []string
+	IdleTimeoutCode        string
+	SetupScriptRef         string
+	SetupScript            string
+	DesiredConfigHash      string
+	PendingRestartApply    bool
+	GitHubConfigToken      string
+	GitHubConfigRepoURL    string
+	GitHubConfigRepoBranch string
+	AgentunnelToken        string
+	AgentunnelClientID     string
+	AgentunnelTunnelID     string
 }
 
 type MachineRecord struct {
@@ -558,6 +577,17 @@ GROUP BY p.id, pr.project_id, psa.project_id, prc.project_id, mt.code, mtv.vcpu,
 		return ProjectIntent{}, err
 	}
 	intent.GitHubConfigToken = token
+	configRepoURL, configRepoBranch, err := r.githubConfigRepo(ctx, intent.UserID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return ProjectIntent{}, err
+	}
+	intent.GitHubConfigRepoURL = configRepoURL
+	intent.GitHubConfigRepoBranch = configRepoBranch
+	setupScript, err := r.setupScript(ctx, intent.ID, intent.SetupScriptRef)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return ProjectIntent{}, err
+	}
+	intent.SetupScript = setupScript
 	agentunnelResource, err := r.agentunnelResource(ctx, intent.ID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return ProjectIntent{}, err
@@ -576,6 +606,31 @@ FROM paperboat.github_oauth_tokens
 WHERE user_id = $1 AND revoked_at IS NULL
 ORDER BY updated_at DESC
 LIMIT 1`, userID).Scan(&ciphertext)
+	if err != nil {
+		return "", err
+	}
+	return secrets.Decrypt(r.encryptionKey, ciphertext)
+}
+
+func (r *Repository) githubConfigRepo(ctx context.Context, userID string) (string, string, error) {
+	var cloneURL, branch string
+	err := r.db.SQL().QueryRowContext(ctx, `
+SELECT clone_url, default_branch
+FROM paperboat.github_config_repositories
+WHERE user_id = $1 AND provisioned_at IS NOT NULL
+LIMIT 1`, userID).Scan(&cloneURL, &branch)
+	return cloneURL, branch, err
+}
+
+func (r *Repository) setupScript(ctx context.Context, projectID, setupScriptRef string) (string, error) {
+	if strings.TrimSpace(setupScriptRef) == "" {
+		return "", nil
+	}
+	var ciphertext []byte
+	err := r.db.SQL().QueryRowContext(ctx, `
+SELECT script_ciphertext
+FROM paperboat.project_setup_script_revisions
+WHERE project_id = $1 AND id = $2`, projectID, setupScriptRef).Scan(&ciphertext)
 	if err != nil {
 		return "", err
 	}
