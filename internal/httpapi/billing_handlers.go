@@ -42,6 +42,17 @@ func billingUsage(service *billing.Service) http.Handler {
 	})
 }
 
+func billingPlanProducts(service *billing.Service) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		products, err := service.ListPlanProducts(r.Context())
+		if err != nil {
+			writeError(w, r, http.StatusInternalServerError, "internal_error", "Billing plans could not be loaded.")
+			return
+		}
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: products})
+	})
+}
+
 func billingCheckout(service *billing.Service) http.Handler {
 	type request struct {
 		ProductCode string `json:"product_code"`

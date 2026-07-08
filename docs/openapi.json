@@ -1,0 +1,386 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Paperboat Server API",
+    "version": "0.10.0",
+    "description": "Production control-plane HTTP API for Paperboat dashboard and CLI clients."
+  },
+  "servers": [
+    {
+      "url": "{base_url}",
+      "variables": {
+        "base_url": {
+          "default": "http://127.0.0.1:8080"
+        }
+      }
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "cookieSession": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "paperboat_session"
+      },
+      "csrfHeader": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-CSRF-Token"
+      }
+    },
+    "schemas": {
+      "SuccessResponse": {
+        "type": "object",
+        "required": ["data"],
+        "properties": {
+          "data": {}
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/APIError"
+          }
+        }
+      },
+      "APIError": {
+        "type": "object",
+        "required": ["code", "message", "request_id", "details"],
+        "properties": {
+          "code": {
+            "type": "string",
+            "examples": ["machine_not_ready"]
+          },
+          "message": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "details": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "Project": {
+        "type": "object",
+        "required": ["id", "name", "state", "repository", "current_config", "desired_config", "pending_restart_apply", "restart_required", "setup_script_revisions", "created_at", "updated_at"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "state": {
+            "type": "string",
+            "enum": ["creating", "provisioning_storage", "provisioning_machine", "ready", "starting", "running", "stopping", "stopped", "restarting", "deleting", "deleted", "failed", "suspended"]
+          },
+          "repository": { "$ref": "#/components/schemas/ProjectRepository" },
+          "current_config": { "$ref": "#/components/schemas/ProjectConfig" },
+          "desired_config": { "$ref": "#/components/schemas/ProjectConfig" },
+          "pending_restart_apply": { "type": "boolean" },
+          "restart_required": { "type": "boolean" },
+          "setup_script_revisions": { "type": "integer" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ProjectRepository": {
+        "type": "object",
+        "required": ["provider", "source_url", "default_branch"],
+        "properties": {
+          "provider": { "type": "string" },
+          "source_url": { "type": "string" },
+          "default_branch": { "type": "string" }
+        }
+      },
+      "ProjectConfig": {
+        "type": "object",
+        "required": ["storage_gb", "machine_type_code", "region_code", "preset_codes", "idle_timeout_code", "config_hash"],
+        "properties": {
+          "storage_gb": { "type": "integer" },
+          "machine_type_code": { "type": "string" },
+          "region_code": { "type": "string" },
+          "preset_codes": { "type": "array", "items": { "type": "string" } },
+          "idle_timeout_code": { "type": "string" },
+          "setup_script_ref": { "type": "string" },
+          "config_hash": { "type": "string" }
+        }
+      },
+      "ProjectEvent": {
+        "type": "object",
+        "required": ["id", "type", "message", "metadata", "created_at"],
+        "properties": {
+          "id": { "type": "string" },
+          "type": { "type": "string" },
+          "message": { "type": "string" },
+          "metadata": { "type": "object", "additionalProperties": true },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "CatalogPlan": {
+        "type": "object",
+        "required": ["code", "name", "active", "included_credits", "included_storage_gb", "version"],
+        "properties": {
+          "code": { "type": "string" },
+          "name": { "type": "string" },
+          "active": { "type": "boolean" },
+          "included_credits": { "type": "string" },
+          "included_storage_gb": { "type": "integer" },
+          "version": { "type": "integer" }
+        }
+      },
+      "CatalogMachineType": {
+        "type": "object",
+        "required": ["code", "name", "vcpu", "memory_mb", "credit_weight", "custom_shape_allowed", "active", "version"],
+        "properties": {
+          "code": { "type": "string" },
+          "name": { "type": "string" },
+          "vcpu": { "type": "integer" },
+          "memory_mb": { "type": "integer" },
+          "credit_weight": { "type": "string" },
+          "custom_shape_allowed": { "type": "boolean" },
+          "active": { "type": "boolean" },
+          "version": { "type": "integer" }
+        }
+      },
+      "CatalogPreset": {
+        "type": "object",
+        "required": ["code", "name", "description", "active", "version"],
+        "properties": {
+          "code": { "type": "string" },
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "active": { "type": "boolean" },
+          "version": { "type": "integer" }
+        }
+      },
+      "CatalogIdleTimeout": {
+        "type": "object",
+        "required": ["code", "duration_seconds", "active", "version"],
+        "properties": {
+          "code": { "type": "string" },
+          "duration_seconds": { "type": "integer" },
+          "active": { "type": "boolean" },
+          "version": { "type": "integer" }
+        }
+      },
+      "CatalogRegion": {
+        "type": "object",
+        "required": ["code", "name", "enabled", "version"],
+        "properties": {
+          "code": { "type": "string" },
+          "name": { "type": "string" },
+          "enabled": { "type": "boolean" },
+          "version": { "type": "integer" }
+        }
+      }
+    },
+    "responses": {
+      "Error": {
+        "description": "Structured API error.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      }
+    },
+    "parameters": {
+      "ProjectID": {
+        "name": "project_id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" }
+      },
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "schema": { "type": "string" }
+      }
+    }
+  },
+  "security": [
+    {
+      "cookieSession": []
+    }
+  ],
+  "paths": {
+    "/healthz": {
+      "get": {
+        "summary": "Health check",
+        "security": [],
+        "responses": {
+          "200": { "description": "Service process is healthy.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "summary": "Readiness check",
+        "security": [],
+        "responses": {
+          "200": { "description": "Dependencies are ready.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "503": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/me": {
+      "get": {
+        "summary": "Current user and entitlement state",
+        "responses": {
+          "200": { "description": "Current authenticated user.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "401": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/auth/workos/state": {
+      "get": {
+        "summary": "Create a WorkOS OAuth state token",
+        "security": [],
+        "responses": {
+          "200": { "description": "WorkOS login state.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }
+        }
+      }
+    },
+    "/api/auth/workos/callback": {
+      "post": {
+        "summary": "Complete WorkOS login",
+        "security": [],
+        "responses": {
+          "200": { "description": "Session created.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "400": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "summary": "Log out current session",
+        "security": [{ "cookieSession": [] }, { "csrfHeader": [] }],
+        "responses": {
+          "200": { "description": "Session revoked.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "401": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/auth/csrf": {
+      "get": {
+        "summary": "Read CSRF token for browser writes",
+        "responses": {
+          "200": { "description": "CSRF token.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "401": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/billing/entitlement": { "get": { "summary": "Current billing entitlement", "responses": { "200": { "description": "Entitlement.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "401": { "$ref": "#/components/responses/Error" } } } },
+    "/api/billing/usage": { "get": { "summary": "Credit and storage usage", "responses": { "200": { "description": "Usage.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "401": { "$ref": "#/components/responses/Error" } } } },
+    "/api/billing/plan-products": { "get": { "summary": "Billable plan products", "responses": { "200": { "description": "Plan products.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "401": { "$ref": "#/components/responses/Error" } } } },
+    "/api/billing/checkout": {
+      "post": {
+        "summary": "Create a Polar checkout session",
+        "security": [{ "cookieSession": [] }, { "csrfHeader": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "responses": {
+          "200": { "description": "Checkout URL.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "400": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/billing/customer-portal": {
+      "post": {
+        "summary": "Create a Polar customer portal session",
+        "security": [{ "cookieSession": [] }, { "csrfHeader": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "responses": {
+          "200": { "description": "Customer portal URL.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "400": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/webhooks/polar": { "post": { "summary": "Polar webhook receiver", "security": [], "responses": { "200": { "description": "Webhook processed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "400": { "$ref": "#/components/responses/Error" } } } },
+    "/api/catalog/plans": { "get": { "summary": "Plan catalog", "responses": { "200": { "description": "Plans.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } } } } },
+    "/api/catalog/machine-types": { "get": { "summary": "Machine type catalog", "responses": { "200": { "description": "Machine types.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } } } } },
+    "/api/catalog/presets": { "get": { "summary": "VM preset catalog", "responses": { "200": { "description": "Presets.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } } } } },
+    "/api/catalog/idle-timeouts": { "get": { "summary": "Idle timeout catalog", "responses": { "200": { "description": "Idle timeouts.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } } } } },
+    "/api/catalog/regions": { "get": { "summary": "Region catalog", "responses": { "200": { "description": "Regions.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } } } } },
+    "/api/github/status": { "get": { "summary": "GitHub connection status", "responses": { "200": { "description": "GitHub status.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "401": { "$ref": "#/components/responses/Error" } } } },
+    "/api/github/oauth/start": { "post": { "summary": "Start GitHub OAuth", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "responses": { "200": { "description": "OAuth URL and state.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "400": { "$ref": "#/components/responses/Error" } } } },
+    "/api/github/oauth/callback": { "post": { "summary": "Complete GitHub OAuth", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "responses": { "200": { "description": "GitHub connected.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "400": { "$ref": "#/components/responses/Error" } } } },
+    "/api/github/config-repo/provision": { "post": { "summary": "Provision private config repo", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }], "responses": { "200": { "description": "Config repo metadata.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "400": { "$ref": "#/components/responses/Error" } } } },
+    "/api/projects": {
+      "get": {
+        "summary": "List projects",
+        "responses": {
+          "200": {
+            "description": "Projects.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "post": {
+        "summary": "Create project",
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "responses": {
+          "201": {
+            "description": "Project created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "409": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/projects/{project_id}": {
+      "parameters": [{ "$ref": "#/components/parameters/ProjectID" }],
+      "get": {
+        "summary": "Get project",
+        "responses": {
+          "200": { "description": "Project.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "404": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "patch": {
+        "summary": "Update desired project configuration",
+        "responses": {
+          "200": { "description": "Updated project.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "409": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "delete": {
+        "summary": "Queue project deletion",
+        "responses": {
+          "202": { "description": "Delete accepted.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "409": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/projects/{project_id}/start": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "post": { "summary": "Queue project start", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "responses": { "202": { "description": "Start accepted.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "409": { "$ref": "#/components/responses/Error" } } } },
+    "/api/projects/{project_id}/stop": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "post": { "summary": "Queue project stop", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "responses": { "202": { "description": "Stop accepted.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "409": { "$ref": "#/components/responses/Error" } } } },
+    "/api/projects/{project_id}/restart": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "post": { "summary": "Queue project restart", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "responses": { "202": { "description": "Restart accepted.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "409": { "$ref": "#/components/responses/Error" } } } },
+    "/api/projects/{project_id}/keep-alive": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "post": { "summary": "Temporarily prevent idle stop", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "responses": { "200": { "description": "Keep-alive updated.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "400": { "$ref": "#/components/responses/Error" } } } },
+    "/api/projects/{project_id}/activity": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "post": { "summary": "Record papercode or CLI activity", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "responses": { "202": { "description": "Activity accepted.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "400": { "$ref": "#/components/responses/Error" } } } },
+    "/api/projects/{project_id}/events": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "get": { "summary": "List project events", "responses": { "200": { "description": "Project events.", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessResponse" }], "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/ProjectEvent" } } } } } } }, "404": { "$ref": "#/components/responses/Error" } } } },
+    "/api/projects/{project_id}/connect": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "post": { "summary": "Create generic access descriptor", "responses": { "200": { "description": "Access descriptor.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "409": { "$ref": "#/components/responses/Error" } } } },
+    "/api/projects/{project_id}/cli-connect": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "post": { "summary": "Create CLI access descriptor", "responses": { "200": { "description": "CLI descriptor.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "409": { "$ref": "#/components/responses/Error" } } } },
+    "/api/projects/{project_id}/papercode-connect": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "post": { "summary": "Create papercode access descriptor", "responses": { "200": { "description": "Papercode descriptor.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "409": { "$ref": "#/components/responses/Error" } } } },
+    "/api/projects/{project_id}/connection-status": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "get": { "summary": "Read project connection status", "responses": { "200": { "description": "Connection status.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "404": { "$ref": "#/components/responses/Error" } } } },
+    "/api/machine/activity-heartbeat": { "post": { "summary": "VM heartbeat callback", "security": [], "responses": { "202": { "description": "Heartbeat accepted.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "400": { "$ref": "#/components/responses/Error" } } } },
+    "/api/admin/users/{user_id}/adjust-credits": { "post": { "summary": "Admin credit adjustment", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "parameters": [{ "name": "user_id", "in": "path", "required": true, "schema": { "type": "string" } }, { "$ref": "#/components/parameters/IdempotencyKey" }], "responses": { "200": { "description": "Credit adjustment applied.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "403": { "$ref": "#/components/responses/Error" } } } },
+    "/api/admin/users/{user_id}/adjust-storage": { "post": { "summary": "Admin storage adjustment", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "parameters": [{ "name": "user_id", "in": "path", "required": true, "schema": { "type": "string" } }, { "$ref": "#/components/parameters/IdempotencyKey" }], "responses": { "200": { "description": "Storage adjustment applied.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "403": { "$ref": "#/components/responses/Error" } } } }
+  }
+}

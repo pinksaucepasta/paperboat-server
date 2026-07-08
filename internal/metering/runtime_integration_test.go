@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -442,6 +443,12 @@ VALUES ($1, $2, 'polar', $3, 'canceled', $4)`, "sub_entitlement_"+suffix, userID
 	if err := billingRepo.GrantCredits(ctx, userID, "grant_entitlement_"+suffix, "grant-entitlement-"+suffix, "test", suffix, "10", nil); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.SQL().ExecContext(ctx, `
+INSERT INTO paperboat.access_sessions (id, user_id, project_id, session_type, state, descriptor, expires_at, idempotency_key)
+VALUES ($1, $2, $3, 'papercode', 'active', '{}'::jsonb, $4, $5)`,
+		"acs_entitlement_"+suffix, userID, "prj_entitlement_"+suffix, nowPlusHour(), "access-entitlement-"+suffix); err != nil {
+		t.Fatal(err)
+	}
 	flyClient := fly.NewFakeClient()
 	flyClient.Machines["mach_entitlement_"+suffix] = fly.Machine{ID: "mach_entitlement_" + suffix, State: "running"}
 	service := metering.NewRuntimeService(store, flyClient, billingRepo)
@@ -451,6 +458,7 @@ VALUES ($1, $2, 'polar', $3, 'canceled', $4)`, "sub_entitlement_"+suffix, userID
 		t.Fatal(err)
 	}
 	assertQueuedStop(t, store, "prj_entitlement_"+suffix, "project.stop.entitlement_lost:prj_entitlement_"+suffix)
+	assertRuntimeAccessSessionRevoked(t, store, "acs_entitlement_"+suffix, "entitlement_lost")
 }
 
 func openRuntimeTestDB(t *testing.T) *db.DB {
@@ -468,6 +476,26 @@ func openRuntimeTestDB(t *testing.T) *db.DB {
 		t.Fatal(err)
 	}
 	return store
+}
+
+func nowPlusHour() time.Time {
+	return time.Now().UTC().Add(time.Hour)
+}
+
+func assertRuntimeAccessSessionRevoked(t *testing.T, store *db.DB, sessionID, reason string) {
+	t.Helper()
+	var state string
+	var revoked bool
+	var descriptor string
+	if err := store.SQL().QueryRowContext(context.Background(), `
+SELECT state, revoked_at IS NOT NULL, descriptor::text
+FROM paperboat.access_sessions
+WHERE id = $1`, sessionID).Scan(&state, &revoked, &descriptor); err != nil {
+		t.Fatal(err)
+	}
+	if state != "revoked" || !revoked || !strings.Contains(descriptor, `"revocation_reason": "`+reason+`"`) {
+		t.Fatalf("session state=%q revoked=%v descriptor=%s, want revoked with reason %q", state, revoked, descriptor, reason)
+	}
 }
 
 func seedMeteredProject(t *testing.T, store *db.DB, suffix, label, machineID, machineCode, weight string, idleSeconds int) string {

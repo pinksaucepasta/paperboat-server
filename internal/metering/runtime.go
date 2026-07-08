@@ -831,6 +831,18 @@ func queueSystemStopTx(ctx context.Context, tx *db.Tx, projectID, reason string,
 	if _, err := tx.Exec(ctx, `UPDATE projects SET state = 'stopping', version = version + 1, updated_at = now() WHERE id = $1 AND state NOT IN ('deleted', 'deleting', 'stopping', 'stopped')`, projectID); err != nil {
 		return err
 	}
+	if _, err := tx.Exec(ctx, `
+UPDATE access_sessions
+SET state = 'revoked',
+    revoked_at = now(),
+    updated_at = now(),
+    version = version + 1,
+    descriptor = jsonb_set(descriptor, '{revocation_reason}', to_jsonb($2::text), true)
+WHERE project_id = $1
+  AND state = 'active'
+  AND revoked_at IS NULL`, projectID, reason); err != nil {
+		return err
+	}
 	payload := fmt.Sprintf(`{"previous_state":"running","reason":%q}`, reason)
 	key := "project.stop." + reason + ":" + projectID
 	jobID := newID("job")

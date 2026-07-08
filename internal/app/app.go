@@ -118,6 +118,11 @@ func agentunnelClient(cfg config.Config) agentunnel.Client {
 		PapercodeLocalURL:    cfg.Providers.Agentunnel.PapercodeLocalURL,
 		RouteExpiresIn:       cfg.Providers.Agentunnel.RouteExpiresIn,
 		RouteSubdomainPrefix: cfg.Providers.Agentunnel.RouteSubdomainPrefix,
+		SSHLocalHost:         cfg.Providers.Agentunnel.SSHLocalHost,
+		SSHLocalPort:         cfg.Providers.Agentunnel.SSHLocalPort,
+		SSHRemotePortStart:   cfg.Providers.Agentunnel.SSHRemotePortStart,
+		SSHRemotePortEnd:     cfg.Providers.Agentunnel.SSHRemotePortEnd,
+		AccessPolicyID:       cfg.Providers.Agentunnel.AccessPolicyID,
 	}
 }
 

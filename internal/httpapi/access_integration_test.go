@@ -46,6 +46,13 @@ func TestAccessConnectIssuesPapercodeDescriptorAndRecordsSession(t *testing.T) {
 	if sessions != 1 {
 		t.Fatalf("access sessions = %d, want 1", sessions)
 	}
+	var previewURL string
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT public_url FROM paperboat.preview_url_records WHERE project_id = $1 AND preview_key = 'papercode'`, projectID).Scan(&previewURL); err != nil {
+		t.Fatal(err)
+	}
+	if previewURL == "" {
+		t.Fatal("preview URL record was not persisted")
+	}
 	retry := httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/papercode-connect", nil)
 	addCookies(req, cookies)
@@ -387,6 +394,85 @@ func TestCLIConnectIssuesPapercodeDescriptorWithScopedAuth(t *testing.T) {
 	}
 	if sessions != 1 {
 		t.Fatalf("cli access sessions = %d, want 1", sessions)
+	}
+}
+
+func TestLogoutRevokesActiveAccessSessions(t *testing.T) {
+	store, router, projectID := newAccessIntegrationRouter(t, "logout-revokes@example.com")
+	cookies := loginCookies(t, router, "workos_seed_logout-revokes@example.com:logout-revokes@example.com:Logout Revokes")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/papercode-connect", nil)
+	addCookies(req, cookies)
+	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("connect status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
+	addCookies(req, cookies)
+	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("logout status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	assertAccessSessionState(t, store, projectID, "revoked", "logout")
+}
+
+func TestProjectStopRevokesActiveAccessSessions(t *testing.T) {
+	client := &recordingAccessClient{Client: agentunnel.FakeClient{BaseURL: "https://agentunnel.example"}}
+	store, router, projectID := newAccessIntegrationRouterWithClient(t, "stop-revokes@example.com", client)
+	cookies := loginCookies(t, router, "workos_seed_stop-revokes@example.com:stop-revokes@example.com:Stop Revokes")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/papercode-connect", nil)
+	addCookies(req, cookies)
+	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("connect status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/stop", nil)
+	addCookies(req, cookies)
+	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("stop status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	assertAccessSessionState(t, store, projectID, "revoked", "machine_stop")
+	if client.cleanupAction != "suspend" || client.cleanupReason != "machine_stop" {
+		t.Fatalf("cleanup action=%q reason=%q, want suspend/machine_stop", client.cleanupAction, client.cleanupReason)
+	}
+}
+
+func TestProjectDeleteRevokesActiveAccessSessions(t *testing.T) {
+	client := &recordingAccessClient{Client: agentunnel.FakeClient{BaseURL: "https://agentunnel.example"}}
+	store, router, projectID := newAccessIntegrationRouterWithClient(t, "delete-revokes@example.com", client)
+	cookies := loginCookies(t, router, "workos_seed_delete-revokes@example.com:delete-revokes@example.com:Delete Revokes")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/papercode-connect", nil)
+	addCookies(req, cookies)
+	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("connect status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodDelete, "/api/projects/"+projectID, nil)
+	addCookies(req, cookies)
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("delete status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	assertAccessSessionState(t, store, projectID, "revoked", "project_delete")
+	if client.cleanupAction != "close" || client.cleanupReason != "project_delete" {
+		t.Fatalf("cleanup action=%q reason=%q, want close/project_delete", client.cleanupAction, client.cleanupReason)
 	}
 }
 
@@ -735,6 +821,27 @@ ON CONFLICT (project_id) DO NOTHING`, "agr_"+projectID, projectID, "tun_"+projec
 	}
 }
 
+func assertAccessSessionState(t *testing.T, store *db.DB, projectID, wantState, wantReason string) {
+	t.Helper()
+	var state string
+	var revoked bool
+	var descriptor string
+	if err := store.SQL().QueryRowContext(context.Background(), `
+SELECT state, revoked_at IS NOT NULL, descriptor::text
+FROM paperboat.access_sessions
+WHERE project_id = $1
+ORDER BY created_at DESC
+LIMIT 1`, projectID).Scan(&state, &revoked, &descriptor); err != nil {
+		t.Fatal(err)
+	}
+	if state != wantState || !revoked {
+		t.Fatalf("access session state = %q revoked=%v, want %q revoked=true", state, revoked, wantState)
+	}
+	if !strings.Contains(descriptor, `"revocation_reason": "`+wantReason+`"`) && !strings.Contains(descriptor, `"revocation_reason":"`+wantReason+`"`) {
+		t.Fatalf("descriptor missing revocation reason %q: %s", wantReason, descriptor)
+	}
+}
+
 func seedHeartbeatMachineCredential(t *testing.T, store *db.DB, projectID, machineID, token string) {
 	t.Helper()
 	ciphertext, err := secrets.Encrypt("test-access-encryption-key-for-phase-nine", token)
@@ -766,6 +873,22 @@ func (offlineAccessClient) EnsureProjectResources(context.Context, agentunnel.Pr
 
 func (offlineAccessClient) Status(context.Context, agentunnel.ResourceDescriptor) (agentunnel.TunnelStatus, error) {
 	return agentunnel.TunnelStatus{Ready: false, Status: "offline", Reason: "CLIENT_OFFLINE"}, nil
+}
+
+func (offlineAccessClient) CleanupProjectResources(context.Context, agentunnel.ResourceDescriptor, string, string) error {
+	return nil
+}
+
+type recordingAccessClient struct {
+	agentunnel.Client
+	cleanupAction string
+	cleanupReason string
+}
+
+func (c *recordingAccessClient) CleanupProjectResources(ctx context.Context, resource agentunnel.ResourceDescriptor, action, reason string) error {
+	c.cleanupAction = action
+	c.cleanupReason = reason
+	return c.Client.CleanupProjectResources(ctx, resource, action, reason)
 }
 
 type failingIssueCredentialIssuer struct{}

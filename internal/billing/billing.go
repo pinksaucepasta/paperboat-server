@@ -88,6 +88,14 @@ type Usage struct {
 	AvailableStorageGB int    `json:"available_storage_gb"`
 }
 
+type PlanProduct struct {
+	Code              string `json:"code"`
+	PlanCode          string `json:"plan_code"`
+	PlanName          string `json:"plan_name"`
+	IncludedCredits   string `json:"included_credits"`
+	IncludedStorageGB int    `json:"included_storage_gb"`
+}
+
 type Product struct {
 	Code              string
 	CatalogType       string
@@ -236,6 +244,34 @@ WHERE code = $1 AND provider = 'polar' AND active`, code).Scan(&product.Code, &p
 		return Product{}, fmt.Errorf("query billing product: %w", err)
 	}
 	return product, nil
+}
+
+func (r *Repository) ListPlanProducts(ctx context.Context) ([]PlanProduct, error) {
+	rows, err := r.db.SQL().QueryContext(ctx, `
+SELECT bp.code, p.code, p.name, pv.included_credits::text, pv.included_storage_gb
+FROM paperboat.billing_products bp
+JOIN paperboat.plans p ON p.code = bp.catalog_ref
+JOIN paperboat.plan_versions pv ON pv.id = p.current_version_id
+WHERE bp.provider = 'polar'
+  AND bp.catalog_type = 'plan'
+  AND bp.active
+ORDER BY p.sort_order, p.code, bp.code`)
+	if err != nil {
+		return nil, fmt.Errorf("query billing plan products: %w", err)
+	}
+	defer rows.Close()
+	var products []PlanProduct
+	for rows.Next() {
+		var product PlanProduct
+		if err := rows.Scan(&product.Code, &product.PlanCode, &product.PlanName, &product.IncludedCredits, &product.IncludedStorageGB); err != nil {
+			return nil, fmt.Errorf("scan billing plan product: %w", err)
+		}
+		products = append(products, product)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate billing plan products: %w", err)
+	}
+	return products, nil
 }
 
 func (r *Repository) ProductByProviderIDs(ctx context.Context, tx *db.Tx, providerProductID, providerPriceID string) (Product, error) {
@@ -397,6 +433,10 @@ func (s *Service) Entitlement(ctx context.Context, userID string) (Entitlement, 
 
 func (s *Service) Usage(ctx context.Context, userID string) (Usage, error) {
 	return s.repo.Usage(ctx, userID)
+}
+
+func (s *Service) ListPlanProducts(ctx context.Context) ([]PlanProduct, error) {
+	return s.repo.ListPlanProducts(ctx)
 }
 
 func (s *Service) CreateCheckout(ctx context.Context, userID, email, productCode, idempotencyKey, successURL string) (CheckoutSession, error) {

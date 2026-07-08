@@ -3,6 +3,7 @@ package agentunnel
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -54,7 +55,7 @@ func TestHTTPClientStatusUsesConnectInfoEnvelope(t *testing.T) {
 func TestHTTPClientEnsureProjectResourcesCreatesClientAndHTTPTunnel(t *testing.T) {
 	var paths []string
 	var authHeaders []string
-	var createBody map[string]any
+	var httpCreateBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.Method+" "+r.URL.Path)
 		authHeaders = append(authHeaders, r.Header.Get("Authorization"))
@@ -70,7 +71,7 @@ func TestHTTPClientEnsureProjectResourcesCreatesClientAndHTTPTunnel(t *testing.T
 				},
 			})
 		case "/api/http-tunnels":
-			if err := json.NewDecoder(r.Body).Decode(&createBody); err != nil {
+			if err := json.NewDecoder(r.Body).Decode(&httpCreateBody); err != nil {
 				t.Fatal(err)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -93,6 +94,10 @@ func TestHTTPClientEnsureProjectResourcesCreatesClientAndHTTPTunnel(t *testing.T
 		PapercodeLocalURL:    "http://127.0.0.1:4099",
 		RouteExpiresIn:       time.Hour,
 		RouteSubdomainPrefix: "pb",
+		SSHLocalHost:         "127.0.0.1",
+		SSHLocalPort:         22,
+		SSHRemotePortStart:   25000,
+		SSHRemotePortEnd:     25999,
 	}).EnsureProjectResources(context.Background(), ProjectRef{ID: "prj_1", Name: "Demo"})
 	if err != nil {
 		t.Fatal(err)
@@ -105,10 +110,10 @@ func TestHTTPClientEnsureProjectResourcesCreatesClientAndHTTPTunnel(t *testing.T
 			t.Fatalf("authorization header = %q", got)
 		}
 	}
-	if createBody["client_id"] != "cli_prj_1" || createBody["local_url"] != "http://127.0.0.1:4099" || createBody["subdomain"] != "pb-prj-1" {
-		t.Fatalf("create body = %#v", createBody)
+	if httpCreateBody["client_id"] != "cli_prj_1" || httpCreateBody["local_url"] != "http://127.0.0.1:4099" || httpCreateBody["subdomain"] != "pb-prj-1" {
+		t.Fatalf("http create body = %#v", httpCreateBody)
 	}
-	if resource.TunnelID != "tun_http_1" || resource.ClientID != "cli_prj_1" {
+	if resource.TunnelID != "tun_http_1" || resource.ClientID != "cli_prj_1" || resource.ResourceID != "tun_http_1" {
 		t.Fatalf("resource ids = %#v", resource)
 	}
 	if resource.MachineToken != "clt_project_machine_token" {
@@ -120,6 +125,31 @@ func TestHTTPClientEnsureProjectResourcesCreatesClientAndHTTPTunnel(t *testing.T
 	resourceJSON := strings.ToLower(mustJSONForTest(resource))
 	if strings.Contains(resourceJSON, "api-key") || strings.Contains(resourceJSON, "project_machine_token") {
 		t.Fatalf("resource leaked secret: %#v", resource)
+	}
+}
+
+func TestHTTPClientCleanupProjectResourcesCallsMachineCleanup(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/clients/cli_prj_1/machine-cleanup" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer agentunnel-api-key" {
+			t.Fatalf("authorization header = %q", r.Header.Get("Authorization"))
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "data": map[string]any{"client_status": "revoked"}})
+	}))
+	defer server.Close()
+
+	err := (HTTPClient{BaseURL: server.URL, APIKey: "agentunnel-api-key"}).CleanupProjectResources(context.Background(), ResourceDescriptor{ClientID: "cli_prj_1"}, "close", "project_delete")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["action"] != "close" || body["reason"] != "project_delete" {
+		t.Fatalf("cleanup body = %#v", body)
 	}
 }
 
@@ -178,6 +208,68 @@ func TestHTTPClientStatusMapsNotReady(t *testing.T) {
 	}
 }
 
+func TestHTTPClientStatusMapsSuspendedTunnel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": true,
+			"data": map[string]any{
+				"tunnel_id":         "tun_123",
+				"status":            "suspended",
+				"forwarding_status": "suspended",
+				"can_connect":       false,
+				"reason_code":       "TUNNEL_SUSPENDED",
+			},
+		})
+	}))
+	defer server.Close()
+
+	status, err := (HTTPClient{BaseURL: server.URL}).Status(context.Background(), ResourceDescriptor{TunnelID: "tun_123"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Ready || status.Status != "suspended" || status.Reason != "TUNNEL_SUSPENDED" {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestHTTPClientStatusMapsProviderEnvelopeError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": false,
+			"error": map[string]any{
+				"code":    "REMOTE_PORT_IN_USE",
+				"message": "remote port is already reserved",
+			},
+		})
+	}))
+	defer server.Close()
+
+	_, err := (HTTPClient{BaseURL: server.URL}).Status(context.Background(), ResourceDescriptor{TunnelID: "tun_123"})
+	if !errors.Is(err, ErrProvider) {
+		t.Fatalf("status error = %v, want ErrProvider", err)
+	}
+}
+
+func TestHTTPClientStatusMapsExpiredProviderToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": false,
+			"error": map[string]any{
+				"code":    "TOKEN_REVOKED",
+				"message": "client token was revoked",
+			},
+		})
+	}))
+	defer server.Close()
+
+	_, err := (HTTPClient{BaseURL: server.URL}).Status(context.Background(), ResourceDescriptor{TunnelID: "tun_123"})
+	if !errors.Is(err, ErrProvider) {
+		t.Fatalf("status error = %v, want ErrProvider", err)
+	}
+}
+
 func TestBuildCLIResponseDoesNotInventUnvalidatedAuth(t *testing.T) {
 	resp := buildResponse(ConnectCLI, projects.Project{ID: "prj_1", Name: "Demo"}, ResourceDescriptor{
 		HTTPBaseURL:      "https://agentunnel.example/projects/prj_1",
@@ -192,12 +284,74 @@ func TestBuildCLIResponseDoesNotInventUnvalidatedAuth(t *testing.T) {
 	}
 }
 
+func TestWaitForReadyPollsUntilTunnelReady(t *testing.T) {
+	client := &sequenceStatusClient{statuses: []TunnelStatus{
+		{Ready: false, Status: "starting", Reason: "CLIENT_STARTING"},
+		{Ready: true, Status: "online"},
+	}}
+	service := &Service{
+		client:              client,
+		connectReadyTimeout: 50 * time.Millisecond,
+		connectPollInterval: time.Millisecond,
+	}
+	status, err := service.waitForReady(context.Background(), ResourceDescriptor{TunnelID: "tun_wait"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Ready || status.Status != "online" {
+		t.Fatalf("status = %#v", status)
+	}
+	if client.calls != 2 {
+		t.Fatalf("status calls = %d, want 2", client.calls)
+	}
+}
+
+func TestWaitForReadyReturnsLastNotReadyStatusOnTimeout(t *testing.T) {
+	client := &sequenceStatusClient{statuses: []TunnelStatus{{Ready: false, Status: "offline", Reason: "CLIENT_OFFLINE"}}}
+	service := &Service{
+		client:              client,
+		connectReadyTimeout: 3 * time.Millisecond,
+		connectPollInterval: time.Millisecond,
+	}
+	status, err := service.waitForReady(context.Background(), ResourceDescriptor{TunnelID: "tun_wait"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Ready || status.Status != "offline" || status.Reason != "CLIENT_OFFLINE" {
+		t.Fatalf("status = %#v", status)
+	}
+	if client.calls < 2 {
+		t.Fatalf("status calls = %d, want repeated polling", client.calls)
+	}
+}
+
 func TestRecordActivityRejectsUnapprovedSource(t *testing.T) {
 	repo := &Repository{}
 	err := repo.RecordActivity(context.Background(), "prj_activity", "browser_ping", nil)
 	if err == nil || !strings.Contains(err.Error(), "not accepted") {
 		t.Fatalf("RecordActivity error = %v, want source rejection", err)
 	}
+}
+
+type sequenceStatusClient struct {
+	statuses []TunnelStatus
+	calls    int
+}
+
+func (c *sequenceStatusClient) EnsureProjectResources(context.Context, ProjectRef) (ResourceDescriptor, error) {
+	return ResourceDescriptor{}, ErrTunnelUnavailable
+}
+
+func (c *sequenceStatusClient) Status(context.Context, ResourceDescriptor) (TunnelStatus, error) {
+	c.calls++
+	if c.calls <= len(c.statuses) {
+		return c.statuses[c.calls-1], nil
+	}
+	return c.statuses[len(c.statuses)-1], nil
+}
+
+func (c *sequenceStatusClient) CleanupProjectResources(context.Context, ResourceDescriptor, string, string) error {
+	return nil
 }
 
 func mustJSONForTest(value any) string {

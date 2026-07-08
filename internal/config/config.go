@@ -99,6 +99,13 @@ type ProviderConfig struct {
 	PapercodeLocalURL    string        `json:"papercode_local_url,omitempty"`
 	RouteExpiresIn       time.Duration `json:"route_expires_in,omitempty"`
 	RouteSubdomainPrefix string        `json:"route_subdomain_prefix,omitempty"`
+	ConnectReadyTimeout  time.Duration `json:"connect_ready_timeout,omitempty"`
+	ConnectPollInterval  time.Duration `json:"connect_poll_interval,omitempty"`
+	SSHLocalHost         string        `json:"ssh_local_host,omitempty"`
+	SSHLocalPort         int           `json:"ssh_local_port,omitempty"`
+	SSHRemotePortStart   int           `json:"ssh_remote_port_start,omitempty"`
+	SSHRemotePortEnd     int           `json:"ssh_remote_port_end,omitempty"`
+	AccessPolicyID       string        `json:"access_policy_id,omitempty"`
 }
 
 type Secrets struct {
@@ -186,6 +193,12 @@ func Default() Config {
 				PapercodeLocalURL:    "http://127.0.0.1:4099",
 				RouteExpiresIn:       30 * 24 * time.Hour,
 				RouteSubdomainPrefix: "pb",
+				ConnectReadyTimeout:  2 * time.Second,
+				ConnectPollInterval:  100 * time.Millisecond,
+				SSHLocalHost:         "127.0.0.1",
+				SSHLocalPort:         22,
+				SSHRemotePortStart:   25000,
+				SSHRemotePortEnd:     25999,
 			},
 		},
 		GitHub: GitHub{
@@ -260,6 +273,18 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Providers.Agentunnel.RouteSubdomainPrefix) == "" {
 		errs = append(errs, fmt.Errorf("agentunnel.route_subdomain_prefix is required"))
+	}
+	if c.Providers.Agentunnel.ConnectReadyTimeout <= 0 {
+		errs = append(errs, fmt.Errorf("agentunnel.connect_ready_timeout must be positive"))
+	}
+	if c.Providers.Agentunnel.ConnectPollInterval <= 0 || c.Providers.Agentunnel.ConnectPollInterval > c.Providers.Agentunnel.ConnectReadyTimeout {
+		errs = append(errs, fmt.Errorf("agentunnel.connect_poll_interval must be positive and no greater than connect_ready_timeout"))
+	}
+	if strings.TrimSpace(c.Providers.Agentunnel.SSHLocalHost) == "" || c.Providers.Agentunnel.SSHLocalPort <= 0 || c.Providers.Agentunnel.SSHLocalPort > 65535 {
+		errs = append(errs, fmt.Errorf("agentunnel ssh local host and port must be valid"))
+	}
+	if c.Providers.Agentunnel.SSHRemotePortStart <= 0 || c.Providers.Agentunnel.SSHRemotePortEnd < c.Providers.Agentunnel.SSHRemotePortStart || c.Providers.Agentunnel.SSHRemotePortEnd > 65535 {
+		errs = append(errs, fmt.Errorf("agentunnel ssh remote port range must be valid"))
 	}
 	if strings.TrimSpace(c.GitHub.OAuthAuthorizeURL) == "" || strings.TrimSpace(c.GitHub.OAuthTokenURL) == "" {
 		errs = append(errs, fmt.Errorf("github oauth urls are required"))
@@ -351,6 +376,8 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_AGENTUNNEL_BASE_URL", &c.Providers.Agentunnel.BaseURL)
 	setString("PAPERBOAT_AGENTUNNEL_PAPERCODE_LOCAL_URL", &c.Providers.Agentunnel.PapercodeLocalURL)
 	setString("PAPERBOAT_AGENTUNNEL_ROUTE_SUBDOMAIN_PREFIX", &c.Providers.Agentunnel.RouteSubdomainPrefix)
+	setString("PAPERBOAT_AGENTUNNEL_SSH_LOCAL_HOST", &c.Providers.Agentunnel.SSHLocalHost)
+	setString("PAPERBOAT_AGENTUNNEL_ACCESS_POLICY_ID", &c.Providers.Agentunnel.AccessPolicyID)
 	if v, ok := lookup("PAPERBOAT_ALLOWED_ORIGINS"); ok {
 		c.HTTP.AllowedOrigins = splitCSV(v)
 	}
@@ -366,6 +393,41 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 			return fmt.Errorf("parse PAPERBOAT_AGENTUNNEL_ROUTE_EXPIRES_IN: %w", err)
 		}
 		c.Providers.Agentunnel.RouteExpiresIn = parsed
+	}
+	if v, ok := lookup("PAPERBOAT_AGENTUNNEL_CONNECT_READY_TIMEOUT"); ok {
+		parsed, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("parse PAPERBOAT_AGENTUNNEL_CONNECT_READY_TIMEOUT: %w", err)
+		}
+		c.Providers.Agentunnel.ConnectReadyTimeout = parsed
+	}
+	if v, ok := lookup("PAPERBOAT_AGENTUNNEL_CONNECT_POLL_INTERVAL"); ok {
+		parsed, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("parse PAPERBOAT_AGENTUNNEL_CONNECT_POLL_INTERVAL: %w", err)
+		}
+		c.Providers.Agentunnel.ConnectPollInterval = parsed
+	}
+	if v, ok := lookup("PAPERBOAT_AGENTUNNEL_SSH_LOCAL_PORT"); ok {
+		parsed, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("parse PAPERBOAT_AGENTUNNEL_SSH_LOCAL_PORT: %w", err)
+		}
+		c.Providers.Agentunnel.SSHLocalPort = parsed
+	}
+	if v, ok := lookup("PAPERBOAT_AGENTUNNEL_SSH_REMOTE_PORT_START"); ok {
+		parsed, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("parse PAPERBOAT_AGENTUNNEL_SSH_REMOTE_PORT_START: %w", err)
+		}
+		c.Providers.Agentunnel.SSHRemotePortStart = parsed
+	}
+	if v, ok := lookup("PAPERBOAT_AGENTUNNEL_SSH_REMOTE_PORT_END"); ok {
+		parsed, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("parse PAPERBOAT_AGENTUNNEL_SSH_REMOTE_PORT_END: %w", err)
+		}
+		c.Providers.Agentunnel.SSHRemotePortEnd = parsed
 	}
 	if v, ok := lookup("PAPERBOAT_FAKE_PROVIDERS"); ok {
 		parsed, err := strconv.ParseBool(v)

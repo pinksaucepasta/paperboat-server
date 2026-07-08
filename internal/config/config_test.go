@@ -20,6 +20,13 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 		"PAPERBOAT_AGENTUNNEL_PAPERCODE_LOCAL_URL":    "http://127.0.0.1:4999",
 		"PAPERBOAT_AGENTUNNEL_ROUTE_EXPIRES_IN":       "12h",
 		"PAPERBOAT_AGENTUNNEL_ROUTE_SUBDOMAIN_PREFIX": "pc",
+		"PAPERBOAT_AGENTUNNEL_CONNECT_READY_TIMEOUT":  "7s",
+		"PAPERBOAT_AGENTUNNEL_CONNECT_POLL_INTERVAL":  "250ms",
+		"PAPERBOAT_AGENTUNNEL_SSH_LOCAL_HOST":         "127.0.0.2",
+		"PAPERBOAT_AGENTUNNEL_SSH_LOCAL_PORT":         "2222",
+		"PAPERBOAT_AGENTUNNEL_SSH_REMOTE_PORT_START":  "26000",
+		"PAPERBOAT_AGENTUNNEL_SSH_REMOTE_PORT_END":    "26999",
+		"PAPERBOAT_AGENTUNNEL_ACCESS_POLICY_ID":       "apol_test",
 		"PAPERBOAT_FLY_SETUP_SCRIPT_SECRET":           "PAPERBOAT_SETUP_SCRIPT_FROM_ENV",
 		"PAPERBOAT_SESSION_KEYS":                      "one,two",
 	}
@@ -53,7 +60,16 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 	if cfg.Secrets.AgentunnelAPIKey != "agentunnel-api-key-from-env" {
 		t.Fatalf("agentunnel api key was not loaded from env")
 	}
-	if cfg.Providers.Agentunnel.PapercodeLocalURL != "http://127.0.0.1:4999" || cfg.Providers.Agentunnel.RouteExpiresIn.String() != "12h0m0s" || cfg.Providers.Agentunnel.RouteSubdomainPrefix != "pc" {
+	if cfg.Providers.Agentunnel.PapercodeLocalURL != "http://127.0.0.1:4999" ||
+		cfg.Providers.Agentunnel.RouteExpiresIn.String() != "12h0m0s" ||
+		cfg.Providers.Agentunnel.RouteSubdomainPrefix != "pc" ||
+		cfg.Providers.Agentunnel.ConnectReadyTimeout.String() != "7s" ||
+		cfg.Providers.Agentunnel.ConnectPollInterval.String() != "250ms" ||
+		cfg.Providers.Agentunnel.SSHLocalHost != "127.0.0.2" ||
+		cfg.Providers.Agentunnel.SSHLocalPort != 2222 ||
+		cfg.Providers.Agentunnel.SSHRemotePortStart != 26000 ||
+		cfg.Providers.Agentunnel.SSHRemotePortEnd != 26999 ||
+		cfg.Providers.Agentunnel.AccessPolicyID != "apol_test" {
 		t.Fatalf("agentunnel route config was not loaded from env: %#v", cfg.Providers.Agentunnel)
 	}
 	if got := strings.Join(cfg.Secrets.SessionKeys, ","); got != "one,two" {

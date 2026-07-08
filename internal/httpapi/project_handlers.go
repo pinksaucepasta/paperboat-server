@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/pinksaucepasta/paperboat-server/internal/agentunnel"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 )
@@ -197,7 +198,7 @@ func projectsUpdate(service *projects.Service) http.HandlerFunc {
 	}
 }
 
-func projectsDelete(service *projects.Service) http.HandlerFunc {
+func projectsDelete(service *projects.Service, access *agentunnel.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := principalFromContext(r.Context())
 		if !ok {
@@ -207,6 +208,12 @@ func projectsDelete(service *projects.Service) http.HandlerFunc {
 		project, err := service.Delete(r.Context(), p.User.ID, r.PathValue("project_id"))
 		if writeProjectError(w, r, err) {
 			return
+		}
+		if access != nil {
+			if err := access.RevokeProjectSessions(r.Context(), project.ID, "project_delete"); err != nil {
+				writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
+				return
+			}
 		}
 		writeJSON(w, http.StatusAccepted, SuccessResponse{Data: project})
 	}
@@ -227,7 +234,7 @@ func projectsStart(service *projects.Service) http.HandlerFunc {
 	}
 }
 
-func projectsStop(service *projects.Service) http.HandlerFunc {
+func projectsStop(service *projects.Service, access *agentunnel.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := principalFromContext(r.Context())
 		if !ok {
@@ -237,6 +244,12 @@ func projectsStop(service *projects.Service) http.HandlerFunc {
 		project, err := service.Stop(r.Context(), p.User.ID, r.PathValue("project_id"))
 		if writeProjectError(w, r, err) {
 			return
+		}
+		if access != nil {
+			if err := access.RevokeProjectSessions(r.Context(), project.ID, "machine_stop"); err != nil {
+				writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
+				return
+			}
 		}
 		writeJSON(w, http.StatusAccepted, SuccessResponse{Data: project})
 	}

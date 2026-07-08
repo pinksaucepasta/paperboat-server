@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"net/http"
 	"net/url"
 	"strings"
@@ -29,6 +30,7 @@ var (
 	ErrInvalidState                = projects.ErrInvalidState
 	ErrInsufficientCredit          = projects.ErrInsufficientCredits
 	ErrTunnelUnavailable           = errors.New("agentunnel resource is unavailable")
+	ErrProvider                    = errors.New("agentunnel provider error")
 	ErrCredentialIssuerUnavailable = errors.New("papercode credential issuer is unavailable")
 	ErrGitHubRequired              = errors.New("github config is not ready")
 )
@@ -36,6 +38,7 @@ var (
 type Client interface {
 	EnsureProjectResources(ctx context.Context, project ProjectRef) (ResourceDescriptor, error)
 	Status(ctx context.Context, resource ResourceDescriptor) (TunnelStatus, error)
+	CleanupProjectResources(ctx context.Context, resource ResourceDescriptor, action, reason string) error
 }
 
 type ProjectRef struct {
@@ -137,12 +140,23 @@ func (f FakeClient) EnsureProjectResources(_ context.Context, project ProjectRef
 		SSHHost:          host,
 		SSHPort:          22,
 		MachineToken:     "fake-agentunnel-token-" + project.ID,
-		Metadata:         map[string]any{"provider": "fake"},
+		Metadata: map[string]any{
+			"provider":       "fake",
+			"resource_kind":  "http_tunnel",
+			"preview_url":    base + "/projects/" + project.ID,
+			"local_url":      "http://127.0.0.1:4099",
+			"tcp_tunnel_id":  "res_" + project.ID,
+			"machine_secret": "external",
+		},
 	}, nil
 }
 
 func (FakeClient) Status(_ context.Context, _ ResourceDescriptor) (TunnelStatus, error) {
 	return TunnelStatus{Ready: true, Status: "online"}, nil
+}
+
+func (FakeClient) CleanupProjectResources(context.Context, ResourceDescriptor, string, string) error {
+	return nil
 }
 
 type DisabledClient struct{}
@@ -155,12 +169,21 @@ func (DisabledClient) Status(context.Context, ResourceDescriptor) (TunnelStatus,
 	return TunnelStatus{}, ErrTunnelUnavailable
 }
 
+func (DisabledClient) CleanupProjectResources(context.Context, ResourceDescriptor, string, string) error {
+	return ErrTunnelUnavailable
+}
+
 type HTTPClient struct {
 	BaseURL              string
 	APIKey               string
 	PapercodeLocalURL    string
 	RouteExpiresIn       time.Duration
 	RouteSubdomainPrefix string
+	SSHLocalHost         string
+	SSHLocalPort         int
+	SSHRemotePortStart   int
+	SSHRemotePortEnd     int
+	AccessPolicyID       string
 	HTTPClient           *http.Client
 }
 
@@ -177,39 +200,43 @@ func (c HTTPClient) EnsureProjectResources(ctx context.Context, project ProjectR
 	if expires <= 0 {
 		return ResourceDescriptor{}, ErrTunnelUnavailable
 	}
-	var payload struct {
+	var httpPayload struct {
 		TunnelID   string     `json:"tunnel_id"`
 		PreviewURL string     `json:"preview_url"`
 		Status     string     `json:"status"`
 		ExpiresAt  *time.Time `json:"expires_at"`
 	}
-	body := map[string]any{
+	httpBody := map[string]any{
 		"client_id":  clientID,
 		"local_url":  localURL,
 		"subdomain":  projectSubdomain(c.RouteSubdomainPrefix, project.ID),
 		"expires_in": expires.String(),
 	}
-	if err := c.post(ctx, "/api/http-tunnels", body, &payload); err != nil {
+	if strings.TrimSpace(c.AccessPolicyID) != "" {
+		httpBody["access_policy_id"] = c.AccessPolicyID
+	}
+	if err := c.post(ctx, "/api/http-tunnels", httpBody, &httpPayload); err != nil {
 		return ResourceDescriptor{}, err
 	}
-	httpURL, wsURL := routeURLs(payload.PreviewURL)
-	if payload.TunnelID == "" || httpURL == "" || wsURL == "" {
+	httpURL, wsURL := routeURLs(httpPayload.PreviewURL)
+	if httpPayload.TunnelID == "" || httpURL == "" || wsURL == "" {
 		return ResourceDescriptor{}, ErrTunnelUnavailable
 	}
 	return ResourceDescriptor{
-		TunnelID:         payload.TunnelID,
+		TunnelID:         httpPayload.TunnelID,
 		ClientID:         clientID,
-		ResourceID:       payload.TunnelID,
+		ResourceID:       httpPayload.TunnelID,
 		HTTPBaseURL:      httpURL,
 		WebSocketBaseURL: wsURL,
 		MachineToken:     machineToken,
 		Metadata: map[string]any{
 			"provider":       "agentunnel",
 			"resource_kind":  "http_tunnel",
+			"http_tunnel_id": httpPayload.TunnelID,
 			"local_url":      localURL,
-			"route_status":   payload.Status,
-			"route_expires":  timeString(payload.ExpiresAt),
-			"preview_url":    payload.PreviewURL,
+			"route_status":   httpPayload.Status,
+			"route_expires":  timeString(httpPayload.ExpiresAt),
+			"preview_url":    httpPayload.PreviewURL,
 			"machine_secret": "external",
 		},
 	}, nil
@@ -280,6 +307,26 @@ func (c HTTPClient) Status(ctx context.Context, resource ResourceDescriptor) (Tu
 	}, nil
 }
 
+func (c HTTPClient) CleanupProjectResources(ctx context.Context, resource ResourceDescriptor, action, reason string) error {
+	clientID := strings.TrimSpace(resource.ClientID)
+	if clientID == "" {
+		return ErrTunnelUnavailable
+	}
+	action = strings.TrimSpace(action)
+	if action == "" {
+		action = "suspend"
+	}
+	body := map[string]any{"action": action}
+	if strings.TrimSpace(reason) != "" {
+		body["reason"] = reason
+	}
+	var payload map[string]any
+	if err := c.post(ctx, "/api/clients/"+url.PathEscape(clientID)+"/machine-cleanup", body, &payload); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (c HTTPClient) get(ctx context.Context, path string, target any) error {
 	return c.doJSON(ctx, http.MethodGet, path, nil, target)
 }
@@ -335,7 +382,7 @@ func (c HTTPClient) doJSON(ctx context.Context, method, path string, body any, t
 		return ErrTunnelUnavailable
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 || !envelope.OK {
-		return ErrTunnelUnavailable
+		return ErrProvider
 	}
 	if len(envelope.Data) == 0 {
 		return ErrTunnelUnavailable
@@ -369,6 +416,60 @@ func (c HTTPClient) ensureClient(ctx context.Context, project ProjectRef) (strin
 	return clientID, payload.Token, nil
 }
 
+func (c HTTPClient) ensureSSHTunnel(ctx context.Context, project ProjectRef, clientID string) (ResourceDescriptor, error) {
+	localHost := firstNonEmpty(c.SSHLocalHost, "127.0.0.1")
+	localPort := firstNonZero(c.SSHLocalPort, 22)
+	remotePort := c.remotePortForProject(project.ID)
+	if remotePort == 0 {
+		return ResourceDescriptor{}, ErrTunnelUnavailable
+	}
+	var payload struct {
+		TunnelID         string `json:"tunnel_id"`
+		RemotePort       int    `json:"remote_port"`
+		LocalPort        int    `json:"local_port"`
+		Status           string `json:"status"`
+		Lifecycle        string `json:"lifecycle"`
+		ForwardingStatus string `json:"forwarding_status"`
+	}
+	body := map[string]any{
+		"client_id":   clientID,
+		"local_host":  localHost,
+		"local_port":  localPort,
+		"remote_port": remotePort,
+		"expires_in":  "never",
+	}
+	if strings.TrimSpace(c.AccessPolicyID) != "" {
+		body["access_policy_id"] = c.AccessPolicyID
+	}
+	if err := c.post(ctx, "/api/tcp-tunnels", body, &payload); err != nil {
+		return ResourceDescriptor{}, err
+	}
+	if payload.TunnelID == "" {
+		return ResourceDescriptor{}, ErrTunnelUnavailable
+	}
+	return ResourceDescriptor{
+		TunnelID: payload.TunnelID,
+		ClientID: clientID,
+		SSHPort:  firstNonZero(payload.RemotePort, remotePort),
+		Metadata: map[string]any{
+			"tcp_status":            payload.Status,
+			"tcp_lifecycle":         payload.Lifecycle,
+			"tcp_forwarding_status": payload.ForwardingStatus,
+		},
+	}, nil
+}
+
+func (c HTTPClient) remotePortForProject(projectID string) int {
+	start := c.SSHRemotePortStart
+	end := c.SSHRemotePortEnd
+	if start <= 0 || end < start || end > 65535 {
+		return 0
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(projectID))
+	return start + int(h.Sum32()%uint32(end-start+1))
+}
+
 type Service struct {
 	repo                     *Repository
 	projects                 *projects.Service
@@ -377,6 +478,8 @@ type Service struct {
 	audit                    *audit.Writer
 	minimumStartCreditWindow time.Duration
 	ttl                      time.Duration
+	connectReadyTimeout      time.Duration
+	connectPollInterval      time.Duration
 }
 
 func NewService(store *db.DB, projectService *projects.Service, client Client, auditWriter *audit.Writer, cfg config.Config) *Service {
@@ -402,6 +505,8 @@ func NewServiceWithCredentials(store *db.DB, projectService *projects.Service, c
 		audit:                    auditWriter,
 		minimumStartCreditWindow: cfg.Metering.MinimumStartCreditWindow,
 		ttl:                      defaultAccessTTL,
+		connectReadyTimeout:      cfg.Providers.Agentunnel.ConnectReadyTimeout,
+		connectPollInterval:      cfg.Providers.Agentunnel.ConnectPollInterval,
 	}
 }
 
@@ -477,8 +582,7 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 	}
 	resource, err = s.reconcileResource(ctx, project, resource, ok)
 	if err != nil {
-		_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, "", "denied", "tunnel_unavailable", nil)
-		return ConnectResponse{}, ErrTunnelUnavailable
+		return ConnectResponse{}, s.denyProviderFailure(ctx, input.UserID, input.ProjectID, err)
 	}
 	resumeQueued := false
 	if project.State == "stopped" || project.State == "ready" {
@@ -489,18 +593,19 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 		}
 		resumeQueued = true
 	}
-	status, err := s.client.Status(ctx, resource)
+	status, err := s.waitForReady(ctx, resource)
 	if err != nil {
 		reconciled, reconcileErr := s.reconcileResource(ctx, project, resource, false)
 		if reconcileErr != nil {
-			_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, "", "denied", "tunnel_unavailable", nil)
-			return ConnectResponse{}, ErrTunnelUnavailable
+			if errors.Is(err, ErrProvider) {
+				reconcileErr = ErrProvider
+			}
+			return ConnectResponse{}, s.denyProviderFailure(ctx, input.UserID, input.ProjectID, reconcileErr)
 		}
 		resource = reconciled
-		status, err = s.client.Status(ctx, resource)
+		status, err = s.waitForReady(ctx, resource)
 		if err != nil {
-			_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, "", "denied", "tunnel_unavailable", nil)
-			return ConnectResponse{}, ErrTunnelUnavailable
+			return ConnectResponse{}, s.denyProviderFailure(ctx, input.UserID, input.ProjectID, err)
 		}
 	}
 	resource = applyStatusResource(resource, status)
@@ -533,6 +638,48 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 	_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, session.ID, "approved", "", map[string]any{"kind": input.Kind, "project_state": project.State})
 	_ = s.audit.Write(ctx, audit.Event{ActorUserID: input.UserID, ActorType: audit.ActorUser, EventType: "access.connect_approved", ResourceType: "project", ResourceID: input.ProjectID, IdempotencyKey: "access.connect_approved:" + session.ID, Metadata: map[string]any{"kind": input.Kind}})
 	return response, nil
+}
+
+func (s *Service) denyProviderFailure(ctx context.Context, userID, projectID string, err error) error {
+	reason := "tunnel_unavailable"
+	out := ErrTunnelUnavailable
+	if errors.Is(err, ErrProvider) {
+		reason = "provider_error"
+		out = ErrProvider
+	}
+	_ = s.repo.RecordConnectionEvent(ctx, userID, projectID, "", "denied", reason, nil)
+	return out
+}
+
+func (s *Service) waitForReady(ctx context.Context, resource ResourceDescriptor) (TunnelStatus, error) {
+	timeout := s.connectReadyTimeout
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	interval := s.connectPollInterval
+	if interval <= 0 || interval > timeout {
+		interval = timeout
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	var last TunnelStatus
+	for {
+		status, err := s.client.Status(waitCtx, resource)
+		if err != nil {
+			return TunnelStatus{}, err
+		}
+		last = status
+		if status.Ready {
+			return status, nil
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-waitCtx.Done():
+			timer.Stop()
+			return last, nil
+		case <-timer.C:
+		}
+	}
 }
 
 func (s *Service) reconcileResource(ctx context.Context, project projects.Project, resource ResourceDescriptor, existing bool) (ResourceDescriptor, error) {
@@ -598,6 +745,23 @@ func (s *Service) Status(ctx context.Context, userID, projectID string) (Connect
 		response.Reason = "credits_exhausted"
 	}
 	return response, nil
+}
+
+func (s *Service) RevokeUserSessions(ctx context.Context, userID, reason string) error {
+	return s.repo.RevokeUserAccessSessions(ctx, userID, reason)
+}
+
+func (s *Service) RevokeProjectSessions(ctx context.Context, projectID, reason string) error {
+	if resource, ok, err := s.repo.Resource(ctx, projectID); err != nil {
+		return err
+	} else if ok {
+		action := "suspend"
+		if reason == "project_delete" {
+			action = "close"
+		}
+		_ = s.client.CleanupProjectResources(ctx, resource, action, reason)
+	}
+	return s.repo.RevokeProjectAccessSessions(ctx, projectID, reason)
 }
 
 func terminalProjectState(state string) bool {
@@ -858,6 +1022,23 @@ SET tunnel_id = EXCLUDED.tunnel_id,
     metadata = EXCLUDED.metadata,
     version = agentunnel_resources.version + 1,
     updated_at = now()`, newID("agr"), projectID, resource.TunnelID, resource.ClientID, resource.ResourceID, string(metadata))
+		if err != nil {
+			return err
+		}
+		previewURL, _ := resource.Metadata["preview_url"].(string)
+		localURL, _ := resource.Metadata["local_url"].(string)
+		if strings.TrimSpace(previewURL) == "" || strings.TrimSpace(localURL) == "" {
+			return nil
+		}
+		_, err = tx.Exec(ctx, `
+INSERT INTO preview_url_records (id, project_id, preview_key, target_url, public_url, state)
+VALUES ($1, $2, 'papercode', $3, $4, 'active')
+ON CONFLICT (project_id, preview_key) DO UPDATE
+SET target_url = EXCLUDED.target_url,
+    public_url = EXCLUDED.public_url,
+    state = 'active',
+    version = preview_url_records.version + 1,
+    updated_at = now()`, newID("pvr"), projectID, localURL, previewURL)
 		return err
 	})
 	return resource, err
@@ -921,6 +1102,43 @@ VALUES ($1, $2, $3, $4, 'active', $5::jsonb, $6, $7)`, id, userID, projectID, se
 		return err
 	})
 	return AccessSession{ID: id}, err
+}
+
+func (r *Repository) RevokeUserAccessSessions(ctx context.Context, userID, reason string) error {
+	reason = revocationReason(reason)
+	_, err := r.db.SQL().ExecContext(ctx, `
+UPDATE paperboat.access_sessions
+SET state = 'revoked',
+    revoked_at = now(),
+    updated_at = now(),
+    version = version + 1,
+    descriptor = jsonb_set(descriptor, '{revocation_reason}', to_jsonb($2::text), true)
+WHERE state = 'active'
+  AND revoked_at IS NULL
+  AND user_id = $1`, userID, reason)
+	return err
+}
+
+func (r *Repository) RevokeProjectAccessSessions(ctx context.Context, projectID, reason string) error {
+	reason = revocationReason(reason)
+	_, err := r.db.SQL().ExecContext(ctx, `
+UPDATE paperboat.access_sessions
+SET state = 'revoked',
+    revoked_at = now(),
+    updated_at = now(),
+    version = version + 1,
+    descriptor = jsonb_set(descriptor, '{revocation_reason}', to_jsonb($2::text), true)
+WHERE state = 'active'
+  AND revoked_at IS NULL
+  AND project_id = $1`, projectID, reason)
+	return err
+}
+
+func revocationReason(reason string) string {
+	if strings.TrimSpace(reason) == "" {
+		return "revoked"
+	}
+	return reason
 }
 
 func (r *Repository) RecordConnectionEvent(ctx context.Context, userID, projectID, accessSessionID, result, reason string, metadata map[string]any) error {

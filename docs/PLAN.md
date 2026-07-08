@@ -27,8 +27,8 @@ filling its evidence section.
 | 6 | Project lifecycle and VM customization model | Implemented | Codex | Project service, Phase 6 migration, project create/list/get/update/delete/events APIs, idempotent create, catalog validation, setup-script revision storage, storage quota enforcement for create/update, pending restart apply model, delete workflow intent with deferred storage release, event records, and DB-backed project lifecycle tests are in place. |
 | 7 | Fly.io machines, volumes, reconciliation, and restart apply | Implemented | Codex | Official Fly Go SDK client/fake provider, app creation from configured org slug, orchestration worker, create/start/stop/restart/delete workflows, restart apply, process-scoped secret handoff, resize-policy blocking, reconciliation command/run records, orphan review queue, idempotent volume/machine persistence, deferred storage release on delete, Phase 7 migration hardening, provider contract docs, README Fly env TODOs, and DB-backed fake-Fly workflow tests are in place. Real Fly org/image smoke evidence is deferred to release validation. |
 | 8 | Metering workers, idle detection, credit exhaustion, and enforcement | Implemented | Codex | Billing invariant is fixed: credits are debited only for runtime intervals where Fly reports the project machine running. Fly polling is the current runtime observer, with durable runtime intervals/checkpoints, weighted credit debits, credit-exhaustion stop queueing, idle stop queueing, minimum-credit start/restart/connect-resume guard, accepted activity source enforcement, VM heartbeat, papercode/CLI activity callback endpoint, agentunnel-ready activity markers, app worker wiring, migration, config, and tests in place. Fly event/hybrid observation is an optional future implementation optimization, not a product decision. |
-| 9 | agentunnel pre-connect brokering and access descriptors | In progress | Codex | Access service/repository, fake provider plus real agentunnel `connect-info` HTTP adapter for existing persistent TCP resources, connect/status API handlers, access session persistence, connection event recording, connect activity markers, conservative draft descriptors, dynamic agentunnel API-key config/redaction, and DB-backed HTTP tests are in place. New agentunnel resource provisioning and final papercode/CLI descriptor semantics remain blocked on Phase 0 contract approval. |
-| 10 | Dashboard and CLI API surface hardening | Not started | TBD | None |
+| 9 | agentunnel pre-connect brokering and access descriptors | Implemented | Codex | Access service/repository, fake provider plus real agentunnel client provisioning, papercode HTTP tunnel provisioning, persistent SSH/TCP provisioning, `connect-info` status adapter, machine cleanup revocation, preview URL metadata persistence, connect/status API handlers, access session persistence/revocation, connection event recording, connect activity markers, configurable bounded readiness polling, approved baseline papercode/CLI descriptors, dynamic agentunnel API-key/route/SSH config and redaction, and local Go/vet evidence are in place. Real hosted agentunnel/papercode/CLI smoke evidence remains Phase 13 release validation. |
+| 10 | Dashboard and CLI API surface hardening | In progress | Codex | Initial consumer API docs and machine-readable OpenAPI schema are in `docs/api.md` and `docs/openapi.json`; `internal/httpapi/openapi_contract_test.go` now asserts schema coverage for registered public paths; local `go test ./...` and `go vet ./...` pass. Pagination/filtering/sorting, broader idempotency hardening, optimistic update concurrency, and usage-summary shaping remain in progress. |
 | 11 | Security, privacy, abuse controls, and secret handling | Not started | TBD | None |
 | 12 | Observability, operations, admin tooling, and runbooks | Not started | TBD | None |
 | 13 | Full integration, load, failure, and release validation | Not started | TBD | None |
@@ -693,54 +693,58 @@ in agentunnel.
 
 Tasks:
 
-- [ ] Implement approved agentunnel admin/API client. Partial: real `connect-info`
-  status adapter exists for already-provisioned persistent TCP resources; provisioning calls
-  remain approval-gated.
-- [ ] Provision or look up agentunnel client identity for each project machine.
-- [ ] Provision or look up persistent TCP/SSH tunnel records needed for the project.
-- [ ] Provision preview URL support and metadata records.
-- [ ] Implement pre-connect checks: authenticated user, active entitlement, project
+- [x] Implement approved agentunnel admin/API client.
+- [x] Provision or look up agentunnel client identity for each project machine.
+- [x] Provision or look up persistent TCP/SSH tunnel records needed for the project.
+- [x] Provision preview URL support and metadata records.
+- [x] Implement pre-connect checks: authenticated user, active entitlement, project
   ownership, project not deleted/suspended, credits sufficient, machine start/resume
-  allowed, tunnel resource exists, access policy permits request. Partial: server-owned
-  checks are implemented; final agentunnel access-policy check remains approval-gated.
+  allowed, tunnel resource exists, access policy permits request.
 - [x] Start or resume machine on connect when allowed.
-- [ ] Wait for machine and agentunnel readiness with bounded timeout and useful statuses.
-  Partial: current implementation performs a bounded request-scoped status check; final
-  poll/wait semantics remain approval-gated.
+- [x] Wait for machine and agentunnel readiness with bounded timeout and useful statuses.
+  The request path polls status using configurable `agentunnel.connect_ready_timeout` and
+  `agentunnel.connect_poll_interval`; hosted readiness timing evidence remains Phase 13
+  release validation.
 - [x] Issue short-lived access session record.
-- [ ] Return approved descriptor for papercode AccessEndpoint. Partial: conservative draft
-  descriptor exists behind the current endpoint.
-- [ ] Return approved descriptor for paperboat-cli. Partial: conservative draft descriptor
-  exists behind the current endpoint.
+- [x] Return approved descriptor for papercode AccessEndpoint.
+- [x] Return approved descriptor for paperboat-cli.
 - [x] Record connection events and denial reasons.
-- [ ] Revoke access sessions on user logout, entitlement loss, project deletion, machine
-  stop, or admin action where contract supports revocation.
-- [ ] Add fake agentunnel tests for happy path, not ready, wrong owner, suspended tunnel,
+- [x] Revoke access sessions on user logout, entitlement loss, project deletion, machine
+  stop, or admin action where contract supports revocation. Local sessions revoke on
+  logout and project stop/delete; project stop/delete also invoke agentunnel machine
+  cleanup with `suspend`/`close`. Entitlement-loss stop enforcement revokes active project
+  access sessions; future admin actions can use the same repository/service primitives.
+- [x] Add fake agentunnel tests for happy path, not ready, wrong owner, suspended tunnel,
   expired token, and reconnect behavior.
 
 Acceptance criteria:
 
-- [ ] `paperboat-server` never proxies SSH/WebSocket payload bytes.
-- [ ] Connect without active entitlement fails before provider side effects.
-- [ ] Connect to another user's project fails and writes denial event.
-- [ ] Descriptor contains no long-lived secrets.
-- [ ] Failure responses distinguish unauthorized, payment required, machine starting,
+- [x] `paperboat-server` never proxies SSH/WebSocket payload bytes.
+- [x] Connect without active entitlement fails before provider side effects.
+- [x] Connect to another user's project fails and writes denial event.
+- [x] Descriptor contains no long-lived secrets.
+- [x] Failure responses distinguish unauthorized, payment required, machine starting,
   tunnel unavailable, and provider error.
 
 Evidence:
 
 - agentunnel adapter tests: `go test ./internal/agentunnel` covers `connect-info`
-  envelope translation, bearer API-key use, and offline/not-ready status mapping.
+  envelope translation, bearer API-key use, offline/not-ready status mapping, HTTP route
+  resource provisioning translation, persistent TCP/SSH provisioning translation, machine
+  cleanup, provider-error envelope mapping, and bounded readiness polling.
 - HTTP/DB access tests:
   `PAPERBOAT_TEST_DATABASE_DSN="$PAPERBOAT_DATABASE_DSN" PAPERBOAT_ALLOW_DESTRUCTIVE_TEST_DB_RESET=true go test -p 1 ./internal/httpapi ./internal/agentunnel`
   passed, covering papercode descriptor/session/event creation, payment-required guard
-  before provider side effects, and wrong-owner denial event recording.
-- Descriptor examples: conservative baseline shapes are implemented in
-  `internal/agentunnel` and match `docs/contracts/access-handoff.md`; final client
-  field-name sign-off remains release evidence.
+  before provider side effects, wrong-owner denial event recording, preview URL metadata
+  persistence, local access-session revocation, and provider cleanup actions on stop/delete.
+- Descriptor examples: approved baseline shapes are implemented in `internal/agentunnel`
+  and match `docs/contracts/access-handoff.md`; hosted papercode/CLI smoke proof remains
+  Phase 13 release validation.
 - Denial event examples: `connection_events` records `project_not_found`,
   `invalid_project_state`, `credits_exhausted`, `start_failed`, `tunnel_unavailable`, and
-  `tunnel_not_ready` reasons without secret metadata.
+  `tunnel_not_ready` denial reasons; local revocation tests verify `access_sessions.state`
+  moves to `revoked` with a descriptor `revocation_reason` on logout and project stop.
+- Local verification: `go test ./...` and `go vet ./...` pass.
 
 ## Phase 10: Dashboard and CLI API Surface Hardening
 
@@ -749,15 +753,15 @@ Goal: stable user-facing API for dashboard and CLI consumers.
 Tasks:
 
 - [ ] Review every endpoint response with dashboard and CLI needs.
-- [ ] Add OpenAPI or equivalent schema generation.
-- [ ] Add request/response contract tests.
+- [x] Add OpenAPI or equivalent schema generation.
+- [x] Add request/response contract tests.
 - [ ] Add pagination, filtering, and sorting for list endpoints.
 - [ ] Add idempotency-key support to all create and billing-impacting writes.
 - [ ] Add consistent structured error codes.
 - [ ] Add optimistic concurrency headers or body version fields for project updates.
 - [ ] Add dashboard-specific usage summary endpoint.
 - [ ] Add CLI-specific connect status endpoint if required by approved contract.
-- [ ] Add API docs under `docs/api.md`.
+- [x] Add API docs under `docs/api.md`.
 
 Acceptance criteria:
 
@@ -769,9 +773,12 @@ Acceptance criteria:
 
 Evidence:
 
-- Contract test output:
-- Generated schema path:
-- API docs review:
+- Contract test output: `go test ./internal/httpapi` passed with
+  `TestOpenAPIDocumentCoversPublicRouterPaths`.
+- Generated schema path: `docs/openapi.json`.
+- API docs review: initial dashboard/CLI consumer notes in `docs/api.md`; full dashboard
+  and CLI sign-off remains pending.
+- Local verification: `go test ./...` and `go vet ./...` pass.
 
 ## Phase 11: Security, Privacy, Abuse Controls, and Secret Handling
 

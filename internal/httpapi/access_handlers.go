@@ -60,6 +60,8 @@ func writeAccessError(w http.ResponseWriter, r *http.Request, err error) bool {
 		writeError(w, r, http.StatusConflict, "credits_exhausted", "Credits are too low to connect to this project.")
 	case errors.Is(err, agentunnel.ErrTunnelUnavailable):
 		writeError(w, r, http.StatusServiceUnavailable, "tunnel_unavailable", "The tunnel is not available yet.")
+	case errors.Is(err, agentunnel.ErrProvider):
+		writeError(w, r, http.StatusBadGateway, "provider_error", "The access provider rejected the connection request.")
 	case errors.Is(err, agentunnel.ErrCredentialIssuerUnavailable):
 		writeError(w, r, http.StatusNotImplemented, "credential_issuer_unavailable", "CLI papercode credential issuance is not available yet.")
 	case errors.Is(err, agentunnel.ErrGitHubRequired):

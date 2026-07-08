@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/pinksaucepasta/paperboat-server/internal/agentunnel"
 	"github.com/pinksaucepasta/paperboat-server/internal/auth"
 )
 
@@ -60,7 +61,7 @@ func workOSCallback(service *auth.Service) http.HandlerFunc {
 	}
 }
 
-func logout(service *auth.Service) http.HandlerFunc {
+func logout(service *auth.Service, access *agentunnel.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if unsafeMethod(r.Method) {
 			if err := service.ValidateCSRF(r.Context(), r); err != nil {
@@ -71,6 +72,14 @@ func logout(service *auth.Service) http.HandlerFunc {
 		if err := service.Logout(r.Context(), r); err != nil {
 			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
 			return
+		}
+		if access != nil {
+			if p, ok := principalFromContext(r.Context()); ok {
+				if err := access.RevokeUserSessions(r.Context(), p.User.ID, "logout"); err != nil {
+					writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
+					return
+				}
+			}
 		}
 		service.ClearSessionCookies(w)
 		writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]any{"status": "logged_out"}})
