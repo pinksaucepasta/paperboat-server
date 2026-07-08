@@ -1,10 +1,10 @@
 # Phase 0 Contract Pack
 
-Status: draft, pending user approval.
+Status: implemented contract baseline, pending final cross-project sign-off.
 
 These docs capture the Phase 0 contract freeze work for `paperboat-server`.
-They are intentionally written before production code exists, so later phases can
-implement against reviewed contracts instead of inventing behavior.
+They define the implementation baseline for later phases while keeping environment-
+specific provider values in dynamic configuration and catalog seed data.
 
 ## Documents
 
@@ -17,7 +17,7 @@ implement against reviewed contracts instead of inventing behavior.
 
 ## Approval Rule
 
-Anything marked `TBD` or `Pending approval` blocks the affected implementation phase.
-Do not silently choose defaults in code. Values that can change after launch must remain
-dynamic configuration or database records.
-
+Contract changes after this baseline require explicit approval. Production provider
+values and final dashboard, agentunnel, papercode, and CLI sign-off links remain release
+evidence, not code defaults. Values that can change after launch must remain dynamic
+configuration or database records.

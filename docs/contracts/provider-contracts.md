@@ -1,6 +1,6 @@
 # Provider and Catalog Contracts
 
-Status: draft, pending provider values and user approval.
+Status: implemented contract baseline, pending production provider values.
 
 ## Dynamic Catalog Rule
 
@@ -17,12 +17,14 @@ Purpose:
 - Mapping WorkOS identities to Paperboat users.
 - Session creation for dashboard-origin browser access.
 
-Pending approval:
+Approved baseline:
 
-- WorkOS organization and environment.
-- Redirect/callback URLs for local, preview, staging, and production.
-- Dashboard origin allowlist.
-- Session idle expiry and absolute expiry.
+- WorkOS organization/environment identifiers are deployment configuration.
+- Redirect/callback URLs for local, preview, staging, and production are provider
+  configuration and must point to the configured Paperboat public base URL.
+- Dashboard origin allowlist is `http.allowed_origins`; production must set only the
+  deployed dashboard origins.
+- Session idle expiry and absolute expiry are dynamic session configuration values.
 
 Implementation constraints:
 
@@ -66,19 +68,17 @@ Purpose:
 - One machine and one volume per project.
 - Runtime state used for orchestration and metering.
 
-Pending approval:
+Approved baseline:
 
-- Organization slug.
-- App naming policy.
-- Machine naming and tagging policy. Current implementation reads the machine name prefix
-  from `fly.machine_name_prefix` and tags resources with `paperboat_project_id` and
-  `managed_by=paperboat-server`.
-- Volume naming and tagging policy. Current implementation reads the volume name prefix
-  from `fly.volume_name_prefix` and uses the same managed tags.
-- Default region and region allowlist.
-- Machine image naming policy.
-- Production machine image naming policy.
-- Fly volume resize versus replacement policy for increasing/decreasing project storage.
+- Organization slug is `fly.org_slug`.
+- App name is `fly.app_name` and must be unique per environment.
+- Machine naming reads `fly.machine_name_prefix`; resources are tagged with
+  `paperboat_project_id` and `managed_by=paperboat-server`.
+- Volume naming reads `fly.volume_name_prefix`; resources use the same managed tags.
+- Default region and region allowlist come from the dynamic `regions` catalog.
+- Machine image reference is `fly.image_ref`.
+- Production image tags must be immutable release image references.
+- Storage resize/replacement is disabled until a separate volume policy is approved.
 
 Implementation constraints:
 
@@ -111,13 +111,16 @@ Purpose:
 - Project repository clone authorization.
 - Private per-user config repo provisioning.
 
-Pending approval:
+Approved baseline:
 
-- OAuth app identity.
-- OAuth scopes.
-- Config repo name policy.
-- Token refresh, validation, and revocation policy.
-- Clone credential model.
+- OAuth app identity is deployment/provider configuration.
+- OAuth scopes are `github.oauth_scopes`; production must use the minimum scope set that
+  supports authorized repository cloning plus private config repo provisioning and sync.
+- Config repo name is `github.config_repo_name`.
+- Token material is encrypted, validated before sensitive GitHub operations, and marked
+  unusable when provider validation/refresh fails.
+- Clone/config sync credential handoff is VM-scoped secret injection. User-facing APIs do
+  not return GitHub OAuth tokens or clone credentials.
 
 Implementation constraints:
 

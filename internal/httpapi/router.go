@@ -16,6 +16,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/agentunnel"
 	"github.com/pinksaucepasta/paperboat-server/internal/auth"
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
+	"github.com/pinksaucepasta/paperboat-server/internal/catalog"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
@@ -33,6 +34,7 @@ type Options struct {
 	ReadinessChecker ReadinessChecker
 	Auth             *auth.Service
 	Billing          *billing.Service
+	Catalog          catalog.Reader
 	GitHub           *pbgithub.Service
 	Projects         *projects.Service
 	Agentunnel       *agentunnel.Service
@@ -116,6 +118,19 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 		mux.Handle("POST /api/billing/checkout", requireAuth(opts.Auth, requireCSRF(opts.Auth, http.HandlerFunc(notImplemented))))
 		mux.Handle("POST /api/billing/customer-portal", requireAuth(opts.Auth, requireCSRF(opts.Auth, http.HandlerFunc(notImplemented))))
 	}
+	if opts.Catalog != nil {
+		mux.Handle("GET /api/catalog/plans", requireAuth(opts.Auth, catalogPlans(opts.Catalog)))
+		mux.Handle("GET /api/catalog/machine-types", requireAuth(opts.Auth, catalogMachineTypes(opts.Catalog)))
+		mux.Handle("GET /api/catalog/presets", requireAuth(opts.Auth, catalogPresets(opts.Catalog)))
+		mux.Handle("GET /api/catalog/idle-timeouts", requireAuth(opts.Auth, catalogIdleTimeouts(opts.Catalog)))
+		mux.Handle("GET /api/catalog/regions", requireAuth(opts.Auth, catalogRegions(opts.Catalog)))
+	} else {
+		mux.Handle("GET /api/catalog/plans", requireAuth(opts.Auth, http.HandlerFunc(notImplemented)))
+		mux.Handle("GET /api/catalog/machine-types", requireAuth(opts.Auth, http.HandlerFunc(notImplemented)))
+		mux.Handle("GET /api/catalog/presets", requireAuth(opts.Auth, http.HandlerFunc(notImplemented)))
+		mux.Handle("GET /api/catalog/idle-timeouts", requireAuth(opts.Auth, http.HandlerFunc(notImplemented)))
+		mux.Handle("GET /api/catalog/regions", requireAuth(opts.Auth, http.HandlerFunc(notImplemented)))
+	}
 	if opts.GitHub != nil {
 		mux.Handle("GET /api/github/status", requireAuth(opts.Auth, githubStatus(opts.GitHub)))
 		mux.Handle("POST /api/github/oauth/start", requireAuth(opts.Auth, requireCSRF(opts.Auth, githubOAuthStart(opts.Auth, opts.GitHub))))
@@ -132,6 +147,7 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 			mux.Handle("POST /api/projects/{project_id}/stop", requireAuth(opts.Auth, requireEntitlement(opts.Auth, requireCSRF(opts.Auth, projectsStop(opts.Projects)))))
 			mux.Handle("POST /api/projects/{project_id}/restart", requireAuth(opts.Auth, requireEntitlement(opts.Auth, requireCSRF(opts.Auth, projectsRestart(opts.Projects)))))
 			mux.Handle("POST /api/projects/{project_id}/keep-alive", requireAuth(opts.Auth, requireEntitlement(opts.Auth, requireCSRF(opts.Auth, projectsKeepAlive(opts.Projects)))))
+			mux.Handle("POST /api/projects/{project_id}/activity", requireAuth(opts.Auth, requireEntitlement(opts.Auth, requireCSRF(opts.Auth, projectsActivity(opts.Projects)))))
 			mux.Handle("GET /api/projects/{project_id}/events", requireAuth(opts.Auth, requireEntitlement(opts.Auth, projectsEvents(opts.Projects))))
 			if opts.Agentunnel != nil {
 				mux.Handle("POST /api/projects/{project_id}/connect", requireAuth(opts.Auth, requireEntitlement(opts.Auth, projectsConnect(opts.Agentunnel, agentunnel.ConnectGeneric))))

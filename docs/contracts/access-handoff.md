@@ -1,6 +1,6 @@
 # Access Handoff Contracts
 
-Status: draft, pending agentunnel, papercode, and CLI approval.
+Status: implemented contract baseline, pending final client field-name sign-off.
 
 ## Boundary
 
@@ -114,12 +114,17 @@ Alignment with papercode docs:
 - Client connection remains HTTP/WebSocket.
 - Endpoint reachability is a hint until client connects successfully.
 
-Pending approval:
+Approved baseline:
 
-- Exact papercode `AccessEndpoint` schema names.
-- Token/ticket flow from Paperboat descriptor to papercode server auth.
-- Reconnect semantics after descriptor expiry.
-- Revocation behavior for active papercode sessions.
+- Papercode receives one Paperboat environment per project VM.
+- The endpoint is an agentunnel-backed HTTP/WebSocket route to the VM-local T3 server.
+- Field names in this document are versioned contract names until papercode finalizes
+  native `AccessEndpoint` naming.
+- Descriptor expiry requires the client to request a fresh `papercode-connect`
+  descriptor; reconnect never extends a descriptor client-side.
+- Revocation is server-side: entitlement loss, project deletion/suspension, or credential
+  invalidation causes future descriptor requests to fail and active agentunnel/papercode
+  sessions to be closed by provider-side revocation where supported.
 
 ## `POST /api/projects/{project_id}/cli-connect`
 
@@ -179,13 +184,48 @@ Runtime status:
 - Do not return random, placeholder, unpersisted, or server-local-only token strings in
   `terminal.auth` or `upload.auth`.
 
-Pending approval:
+Approved baseline:
 
-- Exact papercode credential issuance flow: bootstrap token, bearer access
-  token, DPoP access token, or WebSocket ticket.
-- Whether terminal ids are stable per project/user or re-created per CLI run.
-- Upload endpoint path on the VM papercode server.
-- Image size and MIME policy source.
+- Real-provider `cli-connect` requires a configured papercode credential issuer. Without
+  it, the endpoint fails closed with `credential_issuer_unavailable`.
+- Credential method is issuer-defined and short-lived. The server may return only
+  issuer-validated terminal/upload auth metadata.
+- Terminal ids are per connect descriptor unless the credential issuer explicitly returns
+  stable ids.
+- Upload endpoint path, image size limit, and MIME policy are dynamic credential issuer or
+  server configuration values, never CLI constants.
+
+## `POST /api/projects/{project_id}/activity`
+
+Purpose:
+
+- Let authenticated papercode and paperboat-cli clients report user/agent activity that
+  should reset the server-owned idle detector.
+
+Request data shape:
+
+```json
+{
+  "source": "papercode_activity",
+  "observed_at": "2026-07-05T12:00:00Z",
+  "metadata": {
+    "event": "editor_input"
+  }
+}
+```
+
+Approved client sources:
+
+- `papercode_activity`
+- `cli_activity`
+
+Rules:
+
+- The endpoint requires an authenticated, entitled project owner.
+- `observed_at` is optional; the server records receipt time when it is omitted.
+- The endpoint rejects `connect_session`, `agentunnel_connection`, and `vm_heartbeat`
+  because those are server/provider-owned sources.
+- Metadata is diagnostic only and must not contain secrets or billing totals.
 
 ## agentunnel Adapter Boundary
 
@@ -204,9 +244,13 @@ Paperboat adapter behavior:
 - Translates agentunnel status into Paperboat connection status.
 - Keeps agentunnel response envelope internal to the adapter.
 
-Pending approval:
+Approved baseline:
 
-- Exact agentunnel provisioning calls Paperboat may use.
-- Whether Paperboat creates users/service accounts in agentunnel or maps through a
-  platform service account.
-- Token lifetime and revocation semantics for short-lived user connect approval.
+- Paperboat uses server-side agentunnel admin/control APIs only.
+- Paperboat stores resource identifiers and client-safe route metadata, not raw provider
+  secrets.
+- Agentunnel provisioning is idempotent and keyed by project.
+- User connect descriptors are short-lived and default to five minutes unless configured
+  otherwise.
+- Revocation is implemented by refusing future descriptors and invoking provider-side
+  resource/session revocation when the agentunnel API exposes it.

@@ -523,6 +523,7 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 		_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, "", "denied", "tunnel_not_ready", map[string]any{"status": status.Status, "reason": status.Reason})
 		return response, nil
 	}
+	_ = s.repo.RecordActivity(ctx, input.ProjectID, "agentunnel_connection", map[string]any{"kind": input.Kind, "status": status.Status})
 	response := buildResponse(input.Kind, project, resource, expires, credentials)
 	session, err := s.repo.CreateAccessSession(ctx, input.UserID, input.ProjectID, string(input.Kind), response, expires)
 	if err != nil {
@@ -943,6 +944,13 @@ VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), $4, $5, $6, $7::jsonb)`, newID("cev"
 }
 
 func (r *Repository) RecordActivity(ctx context.Context, projectID, source string, metadata map[string]any) error {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return fmt.Errorf("activity source is required")
+	}
+	if !validActivitySource(source) {
+		return fmt.Errorf("activity source %q is not accepted", source)
+	}
 	if metadata == nil {
 		metadata = map[string]any{}
 	}
@@ -959,6 +967,15 @@ SET last_activity_at = greatest(project_activity_markers.last_activity_at, EXCLU
     metadata = EXCLUDED.metadata,
     updated_at = now()`, projectID, source, string(b))
 	return err
+}
+
+func validActivitySource(source string) bool {
+	switch source {
+	case "connect_session", "agentunnel_connection", "papercode_activity", "cli_activity", "vm_heartbeat":
+		return true
+	default:
+		return false
+	}
 }
 
 func newID(prefix string) string {

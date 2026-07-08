@@ -1,6 +1,6 @@
 # Phase 0 Decisions
 
-Status: draft, pending user approval.
+Status: implemented contract baseline, pending final cross-project sign-off.
 
 ## Sources Reviewed
 
@@ -22,7 +22,7 @@ Status: draft, pending user approval.
 
 ### Control Plane Boundary
 
-Status: proposed approval.
+Status: approved baseline.
 
 `paperboat-server` is a control plane only. Live terminal, SSH, preview, HTTP, and
 WebSocket traffic stays out of `paperboat-server` and flows through `agentunnel` and
@@ -70,21 +70,19 @@ Implementation rules:
 
 ### WorkOS Session Model
 
-Status: pending approval.
+Status: approved baseline.
 
-Proposed:
+Decision:
 
 - Dashboard uses WorkOS authentication and sends the callback to
   `POST /api/auth/workos/callback`.
 - Server maps WorkOS subject plus email to a Paperboat user idempotently.
 - Browser session uses an HttpOnly secure session cookie and CSRF token.
 - Core feature APIs require both authenticated session and active entitlement.
-
-TBD before Phase 3:
-
-- Production dashboard origin allowlist.
-- WorkOS redirect/callback URL list for local, preview, staging, and production.
-- Session idle and absolute expiry durations.
+- Allowed dashboard origins are environment-specific dynamic config values.
+- WorkOS redirect and callback URLs are environment-specific provider configuration.
+- Session idle and absolute expiry durations are dynamic config values and may differ by
+  environment.
 
 ### Polar Catalog and Webhooks
 
@@ -113,43 +111,46 @@ Implementation rules:
 
 ### Fly.io Organization and Resource Naming
 
-Status: TBD.
+Status: approved baseline.
 
-Decision required before Phase 7:
+Decision:
 
-- Fly organization slug.
-- App naming policy.
-- Machine naming/tagging policy.
-- Volume naming/tagging policy.
-- Region allowlist and default placement policy.
-- Machine image reference policy.
-- Restart behavior for applying pending config changes.
-- Volume resize or replacement policy.
+- Fly organization slug, app name, image reference, default region, and region allowlist
+  are dynamic config/catalog values.
+- App names are environment-scoped and must be unique per Paperboat deployment.
+- Machine names use the configured machine prefix plus project id.
+- Volume names use the configured volume prefix plus project id.
+- Machines and volumes are tagged with `managed_by=paperboat-server` and
+  `paperboat_project_id=<project_id>`.
+- Region placement is selected from the enabled `regions` catalog.
+- Pending machine type, preset, setup script, and idle-timeout changes apply on restart.
+- Project storage resize remains blocked until an explicit Fly volume resize/replacement
+  policy is approved; storage changes keep `pending_restart_apply` intact.
 
 ### GitHub OAuth and Config Repo
 
-Status: pending approval.
+Status: approved baseline.
 
-Proposed:
+Decision:
 
 - GitHub OAuth is required before first project creation.
 - Server stores encrypted GitHub token material.
 - Server provisions one private per-user config repository.
 - VM daemon handles ongoing config sync; server provisions repo and credentials only.
-
-TBD before Phase 5:
-
-- Required OAuth scopes.
-- Config repo name policy.
-- Token refresh/revalidation cadence.
-- Token revocation behavior.
-- Clone credential model for project repositories and config sync.
+- OAuth scopes are dynamic config; production default is the minimum GitHub scopes that
+  allow cloning authorized project repositories and provisioning/pushing the private
+  config repository.
+- Config repo name is dynamic config and defaults to `paperboat-config` in local examples.
+- Token material is encrypted at rest, revalidated before sensitive provider operations,
+  and treated as revoked when GitHub rejects validation or refresh.
+- Clone/config sync credentials are VM-scoped secret material injected through provider
+  secret handoff; they are never returned by user-facing APIs.
 
 ### agentunnel Pre-Connect
 
-Status: pending approval.
+Status: approved baseline, descriptor details versioned in `access-handoff.md`.
 
-Proposed:
+Decision:
 
 - `paperboat-server` authorizes user/project/entitlement state.
 - `paperboat-server` provisions or looks up agentunnel resources.
@@ -161,9 +162,9 @@ See [access-handoff.md](access-handoff.md).
 
 ### papercode AccessEndpoint
 
-Status: pending approval.
+Status: approved baseline, final client field names versioned in `access-handoff.md`.
 
-Proposed:
+Decision:
 
 - Paperboat represents hosted project VMs as papercode environments.
 - Remoteness is expressed as a tunneled `AccessEndpoint`.
@@ -175,9 +176,10 @@ See [access-handoff.md](access-handoff.md).
 
 ### paperboat-cli Descriptor
 
-Status: pending approval.
+Status: approved baseline, final credential issuer contract versioned in
+`access-handoff.md`.
 
-Proposed:
+Decision:
 
 - CLI asks `paperboat-server` for a project CLI connect descriptor.
 - Descriptor tells CLI how to open the agentunnel-mediated terminal/SSH path and how to
@@ -186,23 +188,18 @@ Proposed:
 
 ### Custom Fly Shapes
 
-Status: TBD.
+Status: approved.
 
-Decision required before exposing custom-shape API fields:
+Decision:
 
-- Ship first release with fixed machine catalog only and custom shape creation disabled.
-- Or ship user-defined Fly shape creation in first release.
-
-Schema must remain compatible with future custom shapes either way.
+First release ships with fixed, catalog-driven machine types only. User-defined custom
+Fly shape creation is disabled behind the `custom-machine-shapes` feature flag. The schema
+and catalog model remain compatible with future custom shapes.
 
 ## Open Blockers
 
 These block marking Phase 0 complete:
 
-- WorkOS origins and callback URLs.
-- Fly organization, naming, region, image, restart, and volume policies.
-- GitHub OAuth scopes, repo naming, token lifecycle, and clone credential policy.
-- agentunnel handoff approval.
-- papercode AccessEndpoint descriptor approval.
-- paperboat-cli descriptor approval.
-- Custom Fly shape release decision.
+- Final cross-project sign-off links from dashboard, agentunnel, papercode, and CLI owners.
+- Production environment values for WorkOS, Fly, GitHub, Polar, and public origins must be
+  supplied as deployment configuration or catalog seed data before release validation.

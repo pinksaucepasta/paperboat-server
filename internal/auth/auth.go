@@ -367,15 +367,55 @@ SELECT EXISTS (
 }
 
 func (s *Service) HasActiveEntitlement(ctx context.Context, userID string) (bool, error) {
-	var exists bool
+	var hasPaid bool
 	err := s.db.SQL().QueryRowContext(ctx, `
 SELECT EXISTS (
 	SELECT 1 FROM paperboat.subscriptions
 	WHERE user_id = $1
 	  AND state IN ('active', 'trialing')
 	  AND (current_period_end IS NULL OR current_period_end > now())
-)`, userID).Scan(&exists)
-	return exists, err
+)`, userID).Scan(&hasPaid)
+	if err != nil || hasPaid {
+		return hasPaid, err
+	}
+	applied, err := s.ensureFreeEntitlementResources(ctx, userID)
+	return applied, err
+}
+
+func (s *Service) ensureFreeEntitlementResources(ctx context.Context, userID string) (bool, error) {
+	var plan struct {
+		versionID         string
+		includedCredits   string
+		includedStorageGB int
+	}
+	err := s.db.SQL().QueryRowContext(ctx, `
+SELECT pv.id, pv.included_credits::text, pv.included_storage_gb
+FROM paperboat.plans p
+JOIN paperboat.plan_versions pv ON pv.id = p.current_version_id
+WHERE p.code = 'free' AND p.active
+LIMIT 1`).Scan(&plan.versionID, &plan.includedCredits, &plan.includedStorageGB)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		creditAccountID, err := ensureCreditAccountTx(ctx, tx, userID)
+		if err != nil {
+			return err
+		}
+		if positiveNumericString(plan.includedCredits) {
+			if err := grantCreditsOnceTx(ctx, tx, creditAccountID, "free-plan:"+plan.versionID+":credits:"+userID, plan.versionID, plan.includedCredits); err != nil {
+				return err
+			}
+		}
+		storageAccountID, err := ensureStorageAccountTx(ctx, tx, userID)
+		if err != nil {
+			return err
+		}
+		return setIncludedStorageOnceTx(ctx, tx, storageAccountID, "free-plan:"+plan.versionID+":storage:"+userID, plan.versionID, plan.includedStorageGB)
+	})
 }
 
 func (s *Service) OwnsProject(ctx context.Context, userID, projectID string) (bool, error) {
@@ -383,6 +423,102 @@ func (s *Service) OwnsProject(ctx context.Context, userID, projectID string) (bo
 	err := s.db.SQL().QueryRowContext(ctx, `
 SELECT EXISTS (SELECT 1 FROM paperboat.projects WHERE id = $1 AND user_id = $2 AND state <> 'deleted')`, projectID, userID).Scan(&exists)
 	return exists, err
+}
+
+func ensureCreditAccountTx(ctx context.Context, tx *db.Tx, userID string) (string, error) {
+	id := newID("cred")
+	var accountID string
+	err := tx.QueryRow(ctx, `
+INSERT INTO credit_accounts (id, user_id)
+VALUES ($1, $2)
+ON CONFLICT (user_id) DO UPDATE SET updated_at = credit_accounts.updated_at
+RETURNING id`, id, userID).Scan(&accountID)
+	return accountID, err
+}
+
+func ensureStorageAccountTx(ctx context.Context, tx *db.Tx, userID string) (string, error) {
+	id := newID("stor")
+	var accountID string
+	err := tx.QueryRow(ctx, `
+INSERT INTO storage_accounts (id, user_id)
+VALUES ($1, $2)
+ON CONFLICT (user_id) DO UPDATE SET updated_at = storage_accounts.updated_at
+RETURNING id`, id, userID).Scan(&accountID)
+	return accountID, err
+}
+
+func grantCreditsOnceTx(ctx context.Context, tx *db.Tx, accountID, idempotencyKey, planVersionID, amount string) error {
+	var seen bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM credit_ledger_entries WHERE idempotency_key = $1)`, idempotencyKey).Scan(&seen); err != nil || seen {
+		return err
+	}
+	result, err := tx.Exec(ctx, `
+INSERT INTO credit_ledger_entries (id, account_id, entry_type, amount, source_type, source_id, idempotency_key, metadata)
+VALUES ($1, $2, 'grant', $3::numeric, 'plan', $4, $5, '{"plan_code":"free"}'::jsonb)
+ON CONFLICT (idempotency_key) DO NOTHING`, newID("cled"), accountID, amount, planVersionID, idempotencyKey)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil || rows == 0 {
+		return err
+	}
+	_, err = tx.Exec(ctx, `
+UPDATE credit_accounts
+SET balance = balance + $2::numeric, version = version + 1, updated_at = now()
+WHERE id = $1`, accountID, amount)
+	return err
+}
+
+func setIncludedStorageOnceTx(ctx context.Context, tx *db.Tx, accountID, idempotencyKey, planVersionID string, includedGB int) error {
+	var purchased, allocated int
+	if err := tx.QueryRow(ctx, `SELECT purchased_gb, allocated_gb FROM storage_accounts WHERE id = $1 FOR UPDATE`, accountID).Scan(&purchased, &allocated); err != nil {
+		return err
+	}
+	if allocated > includedGB+purchased {
+		return errors.New("free included storage is below allocated storage")
+	}
+	if _, err := tx.Exec(ctx, `UPDATE storage_accounts SET included_gb = $2, version = version + 1, updated_at = now() WHERE id = $1`, accountID, includedGB); err != nil {
+		return err
+	}
+	result, err := tx.Exec(ctx, `
+INSERT INTO storage_ledger_entries (id, account_id, entry_type, amount_gb, source_type, source_id, idempotency_key, metadata)
+VALUES ($1, $2, 'included_set', $3, 'plan', $4, $5, '{"plan_code":"free"}'::jsonb)
+ON CONFLICT (idempotency_key) DO NOTHING`, newID("sled"), accountID, includedGB, planVersionID, idempotencyKey)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil || rows > 0 {
+		return err
+	}
+	return storageLedgerEntryMatchesTx(ctx, tx, accountID, "included_set", includedGB, "plan", planVersionID, idempotencyKey)
+}
+
+func storageLedgerEntryMatchesTx(ctx context.Context, tx *db.Tx, accountID, entryType string, amountGB int, sourceType, sourceID, idempotencyKey string) error {
+	var existing struct {
+		accountID  string
+		entryType  string
+		amountGB   int
+		sourceType string
+		sourceID   string
+	}
+	err := tx.QueryRow(ctx, `
+SELECT account_id, entry_type, amount_gb, source_type, source_id
+FROM storage_ledger_entries
+WHERE idempotency_key = $1`, idempotencyKey).Scan(&existing.accountID, &existing.entryType, &existing.amountGB, &existing.sourceType, &existing.sourceID)
+	if err != nil {
+		return err
+	}
+	if existing.accountID != accountID || existing.entryType != entryType || existing.amountGB != amountGB || existing.sourceType != sourceType || existing.sourceID != sourceID {
+		return errors.New("storage ledger idempotency key conflicts with existing entry")
+	}
+	return err
+}
+
+func positiveNumericString(value string) bool {
+	value = strings.TrimSpace(value)
+	return value != "" && value != "0" && value != "0.0" && value != "0.000000"
 }
 
 var (

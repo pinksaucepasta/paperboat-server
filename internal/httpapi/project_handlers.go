@@ -92,6 +92,44 @@ func projectsKeepAlive(service *projects.Service) http.HandlerFunc {
 	}
 }
 
+func projectsActivity(service *projects.Service) http.HandlerFunc {
+	type request struct {
+		Source     string         `json:"source"`
+		ObservedAt *time.Time     `json:"observed_at"`
+		Metadata   map[string]any `json:"metadata"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		var body request
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON.")
+			return
+		}
+		var observedAt time.Time
+		if body.ObservedAt != nil {
+			observedAt = body.ObservedAt.UTC()
+		}
+		project, err := service.RecordClientActivity(r.Context(), projects.ActivityInput{
+			UserID:     p.User.ID,
+			ProjectID:  r.PathValue("project_id"),
+			Source:     body.Source,
+			ObservedAt: observedAt,
+			Metadata:   body.Metadata,
+		})
+		if writeProjectError(w, r, err) {
+			return
+		}
+		writeJSON(w, http.StatusAccepted, SuccessResponse{Data: map[string]any{
+			"accepted": true,
+			"project":  project,
+		}})
+	}
+}
+
 func projectsList(service *projects.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := principalFromContext(r.Context())
@@ -263,6 +301,8 @@ func writeProjectError(w http.ResponseWriter, r *http.Request, err error) bool {
 		writeError(w, r, http.StatusConflict, "invalid_project_state", "Project state does not allow this operation.")
 	case errors.Is(err, projects.ErrInvalidKeepAlive):
 		writeError(w, r, http.StatusBadRequest, "invalid_keep_alive", "Keep-alive duration is outside the configured bounds.")
+	case errors.Is(err, projects.ErrInvalidActivitySource):
+		writeError(w, r, http.StatusBadRequest, "invalid_activity_source", "Activity source is not accepted for this endpoint.")
 	default:
 		writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
 	}

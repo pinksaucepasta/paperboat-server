@@ -18,8 +18,14 @@ func TestLoadFileParsesCatalogSeed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(seed.Plans) != 3 {
-		t.Fatalf("plans = %d, want 3", len(seed.Plans))
+	plans := make(map[string]bool, len(seed.Plans))
+	for _, plan := range seed.Plans {
+		plans[plan.Code] = true
+	}
+	for _, code := range []string{"free", "sailor", "navigator", "captain"} {
+		if !plans[code] {
+			t.Fatalf("expected plan %q in seed", code)
+		}
 	}
 	if len(seed.MachineTypes) == 0 {
 		t.Fatal("expected machine type seed data")

@@ -113,6 +113,29 @@ func TestConnectionStatusDoesNotRequireConfigRepoReadiness(t *testing.T) {
 	}
 }
 
+func TestConnectionStatusDoesNotRecordActivity(t *testing.T) {
+	store, router, projectID := newAccessIntegrationRouter(t, "status-no-activity@example.com")
+	cookies := loginCookies(t, router, "workos_seed_status-no-activity@example.com:status-no-activity@example.com:Status No Activity")
+	if _, err := store.SQL().ExecContext(context.Background(), `DELETE FROM paperboat.project_activity_markers WHERE project_id = $1`, projectID); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/connection-status", nil)
+	addCookies(req, cookies)
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var markers int
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT count(*) FROM paperboat.project_activity_markers WHERE project_id = $1`, projectID).Scan(&markers); err != nil {
+		t.Fatal(err)
+	}
+	if markers != 0 {
+		t.Fatalf("activity markers = %d, want 0", markers)
+	}
+}
+
 func TestConnectionStatusSurfacesLatestStopReason(t *testing.T) {
 	store, router, projectID := newAccessIntegrationRouter(t, "status-stop-reason@example.com")
 	cookies := loginCookies(t, router, "workos_seed_status-stop-reason@example.com:status-stop-reason@example.com:Status Stop")
@@ -186,6 +209,81 @@ func TestMachineActivityHeartbeatRequiresProjectMachineCredential(t *testing.T) 
 	}
 	if recordedMachine != machineID {
 		t.Fatalf("recorded machine = %q, want %q", recordedMachine, machineID)
+	}
+}
+
+func TestProjectActivityCallbackRecordsPapercodeAndCLIActivity(t *testing.T) {
+	store, router, projectID := newAccessIntegrationRouter(t, "client-activity@example.com")
+	cookies := loginCookies(t, router, "workos_seed_client-activity@example.com:client-activity@example.com:Client Activity")
+	body := `{"source":"papercode_activity","observed_at":"2026-07-06T12:03:00Z","metadata":{"event":"editor_input"}}`
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/activity", strings.NewReader(body))
+	addCookies(req, cookies)
+	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("activity status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var source string
+	var metadata string
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT source, metadata::text FROM paperboat.project_activity_markers WHERE project_id = $1`, projectID).Scan(&source, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	if source != "papercode_activity" {
+		t.Fatalf("activity source = %q, want papercode_activity", source)
+	}
+	if !strings.Contains(metadata, "client_observed_at") {
+		t.Fatalf("metadata did not preserve client observed time: %s", metadata)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/activity", strings.NewReader(`{"source":"cli_activity","metadata":{"event":"terminal_input"}}`))
+	addCookies(req, cookies)
+	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("cli activity status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT source FROM paperboat.project_activity_markers WHERE project_id = $1`, projectID).Scan(&source); err != nil {
+		t.Fatal(err)
+	}
+	if source != "cli_activity" {
+		t.Fatalf("activity source = %q, want cli_activity", source)
+	}
+}
+
+func TestProjectActivityCallbackRequiresCSRF(t *testing.T) {
+	_, router, projectID := newAccessIntegrationRouter(t, "activity-csrf@example.com")
+	cookies := loginCookies(t, router, "workos_seed_activity-csrf@example.com:activity-csrf@example.com:Activity CSRF")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/activity", strings.NewReader(`{"source":"papercode_activity"}`))
+	addCookies(req, cookies)
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("activity without csrf status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestProjectActivityCallbackRejectsUnapprovedSource(t *testing.T) {
+	_, router, projectID := newAccessIntegrationRouter(t, "bad-activity@example.com")
+	cookies := loginCookies(t, router, "workos_seed_bad-activity@example.com:bad-activity@example.com:Bad Activity")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/activity", strings.NewReader(`{"source":"browser_ping"}`))
+	addCookies(req, cookies)
+	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("activity status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "invalid_activity_source") {
+		t.Fatalf("expected invalid_activity_source, body = %s", rec.Body.String())
 	}
 }
 

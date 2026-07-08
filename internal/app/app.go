@@ -12,6 +12,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/auth"
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
+	"github.com/pinksaucepasta/paperboat-server/internal/catalog"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
@@ -46,6 +47,7 @@ func New(opts Options) (*App, error) {
 	}
 	auditWriter := audit.NewWriter(store)
 	billingRepo := billing.NewRepository(store)
+	catalogRepo := catalog.NewRepository(store.SQL())
 	flyProvider := flyClient(opts.Config)
 	authService := auth.NewService(store, auditWriter, workOSVerifier(opts.Config), opts.Config.Secrets.SessionKeys, publicURLSecure(opts.Config.HTTP.PublicBaseURL))
 	billingService := billing.NewService(billingRepo, polarClient(opts.Config), auditWriter)
@@ -62,6 +64,7 @@ func New(opts Options) (*App, error) {
 		ReadinessChecker: checker,
 		Auth:             authService,
 		Billing:          billingService,
+		Catalog:          catalogRepo,
 		GitHub:           githubService,
 		Projects:         projectService,
 		Agentunnel:       agentunnelService,

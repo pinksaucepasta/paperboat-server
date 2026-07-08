@@ -39,4 +39,7 @@ func TestHTTPWorkOSVerifierExchangesAuthorizationCode(t *testing.T) {
 	if requestBody["grant_type"] != "authorization_code" || requestBody["code"] != "code_123" || requestBody["client_id"] != "client_123" || requestBody["client_secret"] != "secret_123" {
 		t.Fatalf("request body = %#v", requestBody)
 	}
+	if _, ok := requestBody["redirect_uri"]; ok {
+		t.Fatalf("unexpected redirect_uri in request body: %#v", requestBody)
+	}
 }

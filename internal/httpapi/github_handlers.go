@@ -41,6 +41,10 @@ func githubOAuthStart(authService *auth.Service, service *pbgithub.Service) http
 			return
 		}
 		url, err := service.OAuthAuthorizeURL(state, body.RedirectURI)
+		if errors.Is(err, pbgithub.ErrClientNotConfigured) {
+			writeError(w, r, http.StatusServiceUnavailable, "provider_unavailable", "GitHub OAuth is not configured.")
+			return
+		}
 		if err != nil {
 			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
 			return

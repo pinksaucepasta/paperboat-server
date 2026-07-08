@@ -108,7 +108,7 @@ WHERE s.user_id = $1
 ORDER BY s.updated_at DESC, s.created_at DESC
 LIMIT 1`, userID).Scan(&e.State, &e.PlanCode, &e.PlanName, &start, &end)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Entitlement{State: "none", Active: false}, nil
+		return r.freeEntitlement(ctx, userID)
 	}
 	if err != nil {
 		return Entitlement{}, fmt.Errorf("query entitlement: %w", err)
@@ -120,10 +120,16 @@ LIMIT 1`, userID).Scan(&e.State, &e.PlanCode, &e.PlanName, &start, &end)
 		e.CurrentPeriodEnd = &end.Time
 	}
 	e.Active = entitlementActive(e.State, e.CurrentPeriodEnd, time.Now().UTC())
+	if !e.Active {
+		return r.freeEntitlement(ctx, userID)
+	}
 	return e, nil
 }
 
 func (r *Repository) Usage(ctx context.Context, userID string) (Usage, error) {
+	if err := r.ensureFreePlanResources(ctx, userID); err != nil {
+		return Usage{}, err
+	}
 	var usage Usage
 	err := r.db.SQL().QueryRowContext(ctx, `
 SELECT coalesce(ca.balance::text, '0'),
@@ -139,6 +145,82 @@ WHERE u.id = $1`, userID).Scan(&usage.CreditsBalance, &usage.IncludedStorageGB, 
 		return Usage{}, fmt.Errorf("query billing usage: %w", err)
 	}
 	return usage, nil
+}
+
+func (r *Repository) freeEntitlement(ctx context.Context, userID string) (Entitlement, error) {
+	plan, ok, err := r.freePlan(ctx)
+	if err != nil || !ok {
+		if err != nil {
+			return Entitlement{}, err
+		}
+		return Entitlement{State: "none", Active: false}, nil
+	}
+	if err := r.applyFreePlanResources(ctx, userID, plan); err != nil {
+		return Entitlement{}, err
+	}
+	return Entitlement{State: "free", PlanCode: "free", PlanName: plan.name, Active: true}, nil
+}
+
+type freePlan struct {
+	versionID         string
+	name              string
+	includedCredits   string
+	includedStorageGB int
+}
+
+func (r *Repository) freePlan(ctx context.Context) (freePlan, bool, error) {
+	var plan freePlan
+	err := r.db.SQL().QueryRowContext(ctx, `
+SELECT pv.id, p.name, pv.included_credits::text, pv.included_storage_gb
+FROM paperboat.plans p
+JOIN paperboat.plan_versions pv ON pv.id = p.current_version_id
+WHERE p.code = 'free' AND p.active
+LIMIT 1`).Scan(&plan.versionID, &plan.name, &plan.includedCredits, &plan.includedStorageGB)
+	if errors.Is(err, sql.ErrNoRows) {
+		return freePlan{}, false, nil
+	}
+	if err != nil {
+		return freePlan{}, false, fmt.Errorf("query free plan: %w", err)
+	}
+	return plan, true, nil
+}
+
+func (r *Repository) ensureFreePlanResources(ctx context.Context, userID string) error {
+	var hasPaid bool
+	if err := r.db.SQL().QueryRowContext(ctx, `
+SELECT EXISTS (
+	SELECT 1 FROM paperboat.subscriptions
+	WHERE user_id = $1
+	  AND state IN ('active', 'trialing')
+	  AND (current_period_end IS NULL OR current_period_end > now())
+)`, userID).Scan(&hasPaid); err != nil {
+		return err
+	}
+	if hasPaid {
+		return nil
+	}
+	plan, ok, err := r.freePlan(ctx)
+	if err != nil || !ok {
+		return err
+	}
+	return r.applyFreePlanResources(ctx, userID, plan)
+}
+
+func (r *Repository) applyFreePlanResources(ctx context.Context, userID string, plan freePlan) error {
+	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if strings.TrimSpace(plan.includedCredits) != "" && plan.includedCredits != "0" && plan.includedCredits != "0.000000" {
+			if err := grantCreditsTx(ctx, tx, userID, newID("cled"), "free-plan:"+plan.versionID+":credits:"+userID, "plan", plan.versionID, plan.includedCredits, map[string]any{"plan_code": "free"}); err != nil {
+				return err
+			}
+		} else if _, err := ensureCreditAccount(ctx, tx, userID); err != nil {
+			return err
+		}
+		accountID, err := ensureStorageAccount(ctx, tx, userID)
+		if err != nil {
+			return err
+		}
+		return setIncludedStorageTx(ctx, tx, accountID, newID("sled"), "included_set", plan.includedStorageGB, "plan", plan.versionID, "free-plan:"+plan.versionID+":storage:"+userID, map[string]any{"plan_code": "free"})
+	})
 }
 
 func (r *Repository) ProductByCode(ctx context.Context, code string) (Product, error) {
@@ -502,6 +584,7 @@ func (c HTTPPolarClient) CreateCheckout(ctx context.Context, input CheckoutInput
 	}
 	payload := map[string]any{
 		"products":             []string{input.ProviderProductID},
+		"currency":             "usd",
 		"customer_email":       input.UserEmail,
 		"success_url":          input.SuccessURL,
 		"external_customer_id": input.UserID,
@@ -807,9 +890,6 @@ func releaseStorageTx(ctx context.Context, tx *db.Tx, accountID, projectID, entr
 }
 
 func setIncludedStorageTx(ctx context.Context, tx *db.Tx, accountID, entryID, entryType string, includedGB int, sourceType, sourceID, idempotencyKey string, metadata map[string]any) error {
-	if seen, err := storageLedgerExists(ctx, tx, idempotencyKey); err != nil || seen {
-		return err
-	}
 	var purchased, allocated int
 	if err := tx.QueryRow(ctx, `SELECT purchased_gb, allocated_gb FROM storage_accounts WHERE id = $1 FOR UPDATE`, accountID).Scan(&purchased, &allocated); err != nil {
 		return err
@@ -820,7 +900,7 @@ func setIncludedStorageTx(ctx context.Context, tx *db.Tx, accountID, entryID, en
 	if _, err := tx.Exec(ctx, `UPDATE storage_accounts SET included_gb = $2, version = version + 1, updated_at = now() WHERE id = $1`, accountID, includedGB); err != nil {
 		return err
 	}
-	return insertStorageLedger(ctx, tx, accountID, entryID, entryType, includedGB, sourceType, sourceID, idempotencyKey, metadata)
+	return insertStorageLedgerIdempotent(ctx, tx, accountID, entryID, entryType, includedGB, sourceType, sourceID, idempotencyKey, metadata)
 }
 
 func setPurchasedStorageTx(ctx context.Context, tx *db.Tx, accountID, entryID, entryType string, purchasedGB int, sourceType, sourceID, idempotencyKey string, metadata map[string]any) error {
@@ -858,6 +938,49 @@ func insertStorageLedger(ctx context.Context, tx *db.Tx, accountID, entryID, ent
 INSERT INTO storage_ledger_entries (id, account_id, entry_type, amount_gb, source_type, source_id, idempotency_key, metadata)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`, entryID, accountID, entryType, amountGB, sourceType, sourceID, idempotencyKey, string(b))
 	return err
+}
+
+func insertStorageLedgerIdempotent(ctx context.Context, tx *db.Tx, accountID, entryID, entryType string, amountGB int, sourceType, sourceID, idempotencyKey string, metadata map[string]any) error {
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	b, err := json.Marshal(metadata)
+	if err != nil {
+		return err
+	}
+	result, err := tx.Exec(ctx, `
+INSERT INTO storage_ledger_entries (id, account_id, entry_type, amount_gb, source_type, source_id, idempotency_key, metadata)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+ON CONFLICT (idempotency_key) DO NOTHING`, entryID, accountID, entryType, amountGB, sourceType, sourceID, idempotencyKey, string(b))
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil || rows > 0 {
+		return err
+	}
+	return storageLedgerEntryMatches(ctx, tx, accountID, entryType, amountGB, sourceType, sourceID, idempotencyKey)
+}
+
+func storageLedgerEntryMatches(ctx context.Context, tx *db.Tx, accountID, entryType string, amountGB int, sourceType, sourceID, idempotencyKey string) error {
+	var existing struct {
+		accountID  string
+		entryType  string
+		amountGB   int
+		sourceType string
+		sourceID   string
+	}
+	err := tx.QueryRow(ctx, `
+SELECT account_id, entry_type, amount_gb, source_type, source_id
+FROM storage_ledger_entries
+WHERE idempotency_key = $1`, idempotencyKey).Scan(&existing.accountID, &existing.entryType, &existing.amountGB, &existing.sourceType, &existing.sourceID)
+	if err != nil {
+		return err
+	}
+	if existing.accountID != accountID || existing.entryType != entryType || existing.amountGB != amountGB || existing.sourceType != sourceType || existing.sourceID != sourceID {
+		return fmt.Errorf("storage ledger idempotency key conflicts with existing entry")
+	}
+	return nil
 }
 
 func newID(prefix string) string {

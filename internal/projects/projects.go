@@ -35,6 +35,7 @@ var (
 	ErrDeleted                = errors.New("project is deleted")
 	ErrInvalidState           = errors.New("project state does not allow this operation")
 	ErrInvalidKeepAlive       = errors.New("keep alive duration is outside configured bounds")
+	ErrInvalidActivitySource  = errors.New("activity source is not accepted")
 	ErrInsufficientStorage    = metering.ErrInsufficientStorage
 	ErrInsufficientCredits    = errors.New("insufficient credits to start project")
 )
@@ -80,6 +81,14 @@ type UpdateInput struct {
 	SetupScript     *string
 }
 
+type ActivityInput struct {
+	UserID     string
+	ProjectID  string
+	Source     string
+	ObservedAt time.Time
+	Metadata   map[string]any
+}
+
 type Project struct {
 	ID                   string    `json:"id"`
 	Name                 string    `json:"name"`
@@ -92,6 +101,12 @@ type Project struct {
 	SetupScriptRevisions int       `json:"setup_script_revisions"`
 	CreatedAt            time.Time `json:"created_at"`
 	UpdatedAt            time.Time `json:"updated_at"`
+}
+
+func (p Project) normalized() Project {
+	p.CurrentConfig = p.CurrentConfig.normalized()
+	p.DesiredConfig = p.DesiredConfig.normalized()
+	return p
 }
 
 type Repo struct {
@@ -108,6 +123,13 @@ type Config struct {
 	IdleTimeoutCode string   `json:"idle_timeout_code"`
 	SetupScriptRef  string   `json:"setup_script_ref,omitempty"`
 	ConfigHash      string   `json:"config_hash"`
+}
+
+func (c Config) normalized() Config {
+	if c.PresetCodes == nil {
+		c.PresetCodes = []string{}
+	}
+	return c
 }
 
 type Event struct {
@@ -229,6 +251,33 @@ func (s *Service) Restart(ctx context.Context, userID, projectID string) (Projec
 
 func (s *Service) Events(ctx context.Context, userID, projectID string) ([]Event, error) {
 	return s.repo.Events(ctx, userID, projectID)
+}
+
+func (s *Service) RecordClientActivity(ctx context.Context, input ActivityInput) (Project, error) {
+	source := strings.TrimSpace(input.Source)
+	switch source {
+	case "papercode_activity", "cli_activity":
+	default:
+		return Project{}, ErrInvalidActivitySource
+	}
+	project, err := s.repo.Get(ctx, input.UserID, input.ProjectID)
+	if err != nil {
+		return Project{}, err
+	}
+	if project.State == "deleted" || project.State == "deleting" {
+		return Project{}, ErrDeleted
+	}
+	metadata := input.Metadata
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	if !input.ObservedAt.IsZero() {
+		metadata["client_observed_at"] = input.ObservedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if err := s.repo.RecordActivity(ctx, input.ProjectID, time.Now().UTC(), source, metadata); err != nil {
+		return Project{}, err
+	}
+	return project, nil
 }
 
 func (s *Service) SetKeepAlive(ctx context.Context, userID, projectID string, duration time.Duration) (Project, *time.Time, error) {
@@ -550,6 +599,9 @@ func (r *Repository) createIntentOnce(ctx context.Context, input CreateInput, re
 	err := r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		accountID, err := ensureStorageAccount(ctx, tx, input.UserID)
 		if err != nil {
+			return err
+		}
+		if err := ensureFreeStorage(ctx, tx, input.UserID, accountID); err != nil {
 			return err
 		}
 		setupRef := ""
@@ -1028,7 +1080,7 @@ func scanProject(row *sql.Row) (Project, error) {
 		p.PendingRestartApply = false
 	}
 	p.RestartRequired = p.PendingRestartApply
-	return p, nil
+	return p.normalized(), nil
 }
 
 func ensureStorageAccount(ctx context.Context, tx *db.Tx, userID string) (string, error) {
@@ -1041,6 +1093,65 @@ RETURNING id`, id, userID).Scan(&id); err != nil {
 		return "", err
 	}
 	return id, nil
+}
+
+func ensureFreeStorage(ctx context.Context, tx *db.Tx, userID, accountID string) error {
+	var hasPaid bool
+	if err := tx.QueryRow(ctx, `
+SELECT EXISTS (
+	SELECT 1 FROM subscriptions
+	WHERE user_id = $1
+	  AND state IN ('active', 'trialing')
+	  AND (current_period_end IS NULL OR current_period_end > now())
+)`, userID).Scan(&hasPaid); err != nil {
+		return err
+	}
+	if hasPaid {
+		return nil
+	}
+	var planVersionID string
+	var includedGB int
+	err := tx.QueryRow(ctx, `
+SELECT pv.id, pv.included_storage_gb
+FROM plans p
+JOIN plan_versions pv ON pv.id = p.current_version_id
+WHERE p.code = 'free' AND p.active
+LIMIT 1`).Scan(&planVersionID, &includedGB)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	idempotencyKey := "free-plan:" + planVersionID + ":storage:" + userID
+	var existing int
+	err = tx.QueryRow(ctx, `
+SELECT amount_gb
+FROM storage_ledger_entries
+WHERE idempotency_key = $1 AND account_id = $2 AND source_type = 'plan' AND source_id = $3 AND entry_type = 'included_set'`, idempotencyKey, accountID, planVersionID).Scan(&existing)
+	if err == nil {
+		if existing == includedGB {
+			return nil
+		}
+		return ErrIdempotencyConflict
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	var purchased, allocated int
+	if err := tx.QueryRow(ctx, `SELECT purchased_gb, allocated_gb FROM storage_accounts WHERE id = $1 FOR UPDATE`, accountID).Scan(&purchased, &allocated); err != nil {
+		return err
+	}
+	if allocated > includedGB+purchased {
+		return ErrInsufficientStorage
+	}
+	if _, err := tx.Exec(ctx, `UPDATE storage_accounts SET included_gb = $2, version = version + 1, updated_at = now() WHERE id = $1`, accountID, includedGB); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `
+INSERT INTO storage_ledger_entries (id, account_id, entry_type, amount_gb, source_type, source_id, idempotency_key, metadata)
+VALUES ($1, $2, 'included_set', $3, 'plan', $4, $5, $6::jsonb)`, newID("sled"), accountID, includedGB, planVersionID, idempotencyKey, `{"plan_code":"free"}`)
+	return err
 }
 
 func insertEvent(ctx context.Context, tx *db.Tx, projectID, eventType, message string, metadata map[string]any) error {

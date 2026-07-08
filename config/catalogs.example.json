@@ -1,6 +1,16 @@
 {
   "plans": [
     {
+      "code": "free",
+      "name": "Free",
+      "included_credits": "10",
+      "included_storage_gb": 10,
+      "active": true,
+      "metadata": {
+        "decision_status": "approved_free_project_creation"
+      }
+    },
+    {
       "code": "sailor",
       "name": "Sailor",
       "included_credits": "0",
@@ -86,7 +96,35 @@
       "placement_policy": {}
     }
   ],
-  "billing_products": [],
+  "billing_products": [
+    {
+      "code": "sailor-monthly-usd",
+      "provider": "polar",
+      "provider_product_id": "a3c0674d-286f-412f-8da3-446d89cc03ad",
+      "provider_price_id": "beed48c4-6fd1-4334-83a5-ab43dceed5b1",
+      "catalog_type": "plan",
+      "catalog_ref": "sailor",
+      "active": true
+    },
+    {
+      "code": "navigator-monthly-usd",
+      "provider": "polar",
+      "provider_product_id": "60d7ffde-7970-40c6-8cd9-cb21aeceab3f",
+      "provider_price_id": "10115c00-7b5c-481f-89af-ddb9d9b49c6e",
+      "catalog_type": "plan",
+      "catalog_ref": "navigator",
+      "active": true
+    },
+    {
+      "code": "captain-monthly-usd",
+      "provider": "polar",
+      "provider_product_id": "68fc0405-e286-4f6c-86b7-c6ad667c420a",
+      "provider_price_id": "bd7bad98-afd0-4883-9006-9df968caf139",
+      "catalog_type": "plan",
+      "catalog_ref": "captain",
+      "active": true
+    }
+  ],
   "feature_flags": [
     {
       "code": "custom-machine-shapes",

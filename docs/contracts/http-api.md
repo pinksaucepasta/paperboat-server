@@ -1,6 +1,6 @@
 # HTTP API Contract
 
-Status: draft, pending dashboard and CLI approval.
+Status: implemented contract baseline, pending dashboard and CLI sign-off.
 
 This document freezes the `paperboat-server` HTTP/JSON contract shape for production
 implementation. Endpoint behavior remains server-side authoritative; clients are
@@ -104,6 +104,7 @@ Responses:
 - `POST /api/projects/{project_id}/start`
 - `POST /api/projects/{project_id}/stop`
 - `POST /api/projects/{project_id}/restart`
+- `POST /api/projects/{project_id}/activity`
 - `GET /api/projects/{project_id}/events`
 - `GET /api/projects/{project_id}/usage`
 
@@ -140,6 +141,10 @@ Initial contract:
 - `machine_not_ready`
 - `provider_unavailable`
 - `provider_conflict`
+- `tunnel_unavailable`
+- `credential_issuer_unavailable`
+- `github_config_not_ready`
+- `invalid_activity_source`
 - `rate_limited`
 - `internal_error`
 
@@ -169,4 +174,3 @@ Initial contract:
 - CLI approves `cli-connect`, connection status, and structured error behavior.
 - papercode approves `papercode-connect` descriptor shape in [access-handoff.md](access-handoff.md).
 - agentunnel boundary remains adapter-only; no agentunnel contract changes from this repo.
-

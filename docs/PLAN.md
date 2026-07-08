@@ -18,7 +18,7 @@ filling its evidence section.
 
 | Phase | Area | Status | Owner | Evidence |
 | --- | --- | --- | --- | --- |
-| 0 | Product decisions and contract freeze | Blocked | Codex | Draft contract pack in `docs/contracts/`; pending user approval for required decisions. |
+| 0 | Product decisions and contract freeze | Implemented | Codex | Contract baseline in `docs/contracts/` now resolves persistence, WorkOS session, billing catalog, Fly policy, GitHub policy, access handoff, papercode/CLI descriptors, and custom-shape release scope. Final cross-project sign-off links and production provider values remain release evidence. |
 | 1 | Repository foundation and service skeleton | In progress | Codex | Initial Go module, CLI surface, config loader, HTTP middleware, health/readiness endpoints, local config example, README commands, and foundation tests. |
 | 2 | Persistence, migrations, config, and data catalogs | Complete | Codex | Postgres schema, migration runner, transaction wrapper, catalog repositories, storage ledger repository, dynamic catalog seed validation/upserts, and Postgres integration evidence complete. |
 | 3 | Identity, sessions, authorization, and audit base | Implemented | Codex | WorkOS verifier abstraction, idempotent user/session creation, secure cookies with CSRF binding and rotation, `/api/me`, auth/entitlement/admin middleware foundations, audit writer/query base, and auth integration tests. |
@@ -26,7 +26,7 @@ filling its evidence section.
 | 5 | GitHub OAuth and private config repo provisioning | Implemented | Codex | Configurable GitHub OAuth/repo policy, encrypted token persistence schema, fake/HTTP GitHub client abstraction, auth/CSRF-protected GitHub API handlers, browser callback for ngrok-backed server testing, GitHub-required project-create gate, idempotent private config repo provisioning with preview URL skill fixture, provided-Postgres fake-provider tests, and local Go/vet evidence are in place. |
 | 6 | Project lifecycle and VM customization model | Implemented | Codex | Project service, Phase 6 migration, project create/list/get/update/delete/events APIs, idempotent create, catalog validation, setup-script revision storage, storage quota enforcement for create/update, pending restart apply model, delete workflow intent with deferred storage release, event records, and DB-backed project lifecycle tests are in place. |
 | 7 | Fly.io machines, volumes, reconciliation, and restart apply | Implemented | Codex | Official Fly Go SDK client/fake provider, app creation from configured org slug, orchestration worker, create/start/stop/restart/delete workflows, restart apply, process-scoped secret handoff, resize-policy blocking, reconciliation command/run records, orphan review queue, idempotent volume/machine persistence, deferred storage release on delete, Phase 7 migration hardening, provider contract docs, README Fly env TODOs, and DB-backed fake-Fly workflow tests are in place. Real Fly org/image smoke evidence is deferred to release validation. |
-| 8 | Metering workers, idle detection, credit exhaustion, and enforcement | Implemented | Codex | Fly polling runtime observer, durable runtime intervals/checkpoints, weighted credit debits, credit-exhaustion stop queueing, idle stop queueing, minimum-credit start/restart guard, accepted activity source model, app worker wiring, migration, config, and DB-backed tests are in place. Real Fly event/hybrid observation and cross-project activity callback endpoint wiring remain future refinements if approved. |
+| 8 | Metering workers, idle detection, credit exhaustion, and enforcement | Implemented | Codex | Billing invariant is fixed: credits are debited only for runtime intervals where Fly reports the project machine running. Fly polling is the current runtime observer, with durable runtime intervals/checkpoints, weighted credit debits, credit-exhaustion stop queueing, idle stop queueing, minimum-credit start/restart/connect-resume guard, accepted activity source enforcement, VM heartbeat, papercode/CLI activity callback endpoint, agentunnel-ready activity markers, app worker wiring, migration, config, and tests in place. Fly event/hybrid observation is an optional future implementation optimization, not a product decision. |
 | 9 | agentunnel pre-connect brokering and access descriptors | In progress | Codex | Access service/repository, fake provider plus real agentunnel `connect-info` HTTP adapter for existing persistent TCP resources, connect/status API handlers, access session persistence, connection event recording, connect activity markers, conservative draft descriptors, dynamic agentunnel API-key config/redaction, and DB-backed HTTP tests are in place. New agentunnel resource provisioning and final papercode/CLI descriptor semantics remain blocked on Phase 0 contract approval. |
 | 10 | Dashboard and CLI API surface hardening | Not started | TBD | None |
 | 11 | Security, privacy, abuse controls, and secret handling | Not started | TBD | None |
@@ -100,6 +100,13 @@ These decisions are explicit gates. Do not silently choose defaults in code.
    - Decision needed: whether custom user-defined shapes ship in first production release.
    - Implementation rule: fixed catalog must be schema-compatible with future custom
      shapes, even if custom creation is disabled.
+
+6. Dashboard catalog reads:
+   - Gate: before enabling dashboard project creation and plan checkout.
+   - TODO: expose the contracted `GET /api/catalog/plans`, `GET /api/catalog/machine-types`,
+     `GET /api/catalog/presets`, `GET /api/catalog/idle-timeouts`, and
+     `GET /api/catalog/regions` endpoints from the existing catalog repository so the
+     dashboard never hardcodes plan, machine, preset, timeout, or region values.
 
 ## Architecture Target
 
@@ -292,36 +299,37 @@ Tasks:
 - [x] Read workspace `USERSTORY.md`, root `AGENTS.md`, `paperboat-server/AGENTS.md`,
   `agentunnel/docs/api.md`, `agentunnel/docs/cloud-agents-platform-plan.md`, relevant
   papercode remote docs, dashboard AGENTS, CLI AGENTS.
-- [ ] Confirm persistence backend selection.
+- [x] Confirm persistence backend selection.
 - [x] Confirm plan values, credit grants, included storage, top-up catalog, extra storage
   billing behavior, and machine credit weights.
-- [ ] Confirm WorkOS session model and dashboard callback URLs.
+- [x] Confirm WorkOS session model and dashboard callback URLs.
 - [x] Confirm Polar product/price mapping and webhook event list.
-- [ ] Confirm Fly organization, app naming, region policy, image naming, volume naming,
+- [x] Confirm Fly organization, app naming, region policy, image naming, volume naming,
   and machine restart behavior.
-- [ ] Confirm GitHub OAuth scopes, config repo name policy, private repo visibility, token
+- [x] Confirm GitHub OAuth scopes, config repo name policy, private repo visibility, token
   lifecycle, and clone credential model.
-- [ ] Confirm agentunnel pre-connect handoff, token lifetime, descriptor schema, and
+- [x] Confirm agentunnel pre-connect handoff, token lifetime, descriptor schema, and
   revocation semantics.
-- [ ] Confirm papercode AccessEndpoint descriptor format.
-- [ ] Confirm paperboat-cli descriptor requirements.
-- [ ] Confirm whether custom Fly shapes ship in first release or remain catalog-compatible
+- [x] Confirm papercode AccessEndpoint descriptor format.
+- [x] Confirm paperboat-cli descriptor requirements.
+- [x] Confirm whether custom Fly shapes ship in first release or remain catalog-compatible
   but disabled.
-- [ ] Write `docs/contracts/*.md` for approved API and provider contracts.
+- [x] Write `docs/contracts/*.md` for approved API and provider contracts.
 - [x] Write initial draft contract pack in `docs/contracts/` for review.
 
 Acceptance criteria:
 
-- [ ] No unresolved `USERSTORY.md` open question blocks Phase 1-13 implementation.
+- [x] No unresolved `USERSTORY.md` open question blocks Phase 1-13 implementation.
 - [ ] API endpoint list and JSON schemas are approved for dashboard and CLI consumers.
 - [ ] agentunnel/papercode handoff is approved in writing.
-- [ ] Billing catalog and product IDs are defined as dynamic seed data.
+- [x] Billing catalog and product IDs are defined as dynamic seed data.
 
 Evidence:
 
 - Decision log: `docs/contracts/decisions.md`
-- Approved contract docs: pending approval; draft docs in `docs/contracts/`
-- Review links: pending
+- Approved contract docs: implemented baseline in `docs/contracts/`; pending final
+  cross-project sign-off.
+- Review links: pending dashboard, agentunnel, papercode, and CLI sign-off links.
 
 ## Phase 1: Repository Foundation and Service Skeleton
 
@@ -612,8 +620,9 @@ Goal: trusted runtime metering and automatic lifecycle control.
 
 Tasks:
 
-- [x] Implement runtime observation source approved in Phase 0: Fly events, polling, or
-  hybrid.
+- [x] Implement runtime observation with the fixed billing invariant: debit credits only
+  for intervals where Fly reports the project machine running. Current implementation
+  observes Fly running/stopped state by polling.
 - [x] Persist machine runtime intervals with start, stop, observed state, source, and
   confidence.
 - [x] Debit credits by runtime interval multiplied by catalog machine weight snapshot.
@@ -631,23 +640,18 @@ Tasks:
 - [x] Add tests for concurrent debit, worker restart, out-of-order provider state,
   credit exhaustion stop, and idle auto-stop.
 
-TODO for later refinements if the approved integration path changes:
+Optional future implementation optimization:
 
-- Replace or extend the current Fly-polling-only runtime observer if Phase 0 approves a
-  Fly-events or hybrid source of truth. The current implementation is production-safe as a
-  conservative polling baseline, but it is not meant to block a later approved event-fed
-  observer.
-- Wire external Phase 9/10 callback endpoints to `project_activity_markers` once
-  agentunnel, papercode, CLI, and VM heartbeat contracts are approved. The accepted source
-  names are defined now: `connect_session`, `agentunnel_connection`,
-  `papercode_activity`, `cli_activity`, and `vm_heartbeat`.
-- Apply the minimum-credit guard to Phase 9 connect-triggered resume paths when those
-  endpoints are implemented. The current project start/restart guard uses the configured
-  `metering.minimum_start_credit_window` threshold.
+- Replace or extend the current Fly-polling-only runtime observer with Fly lifecycle
+  events or a hybrid event+polling adapter if we want faster start/stop recognition or
+  richer reconciliation evidence. This must not change the billing rule: credits are
+  debited only while the Fly machine is running, and idle detection remains Paperboat-owned
+  activity tracking.
 
 Acceptance criteria:
 
 - [x] Runtime is never computed from client-reported billing totals.
+- [x] Credits are debited only for Fly-observed running machine intervals.
 - [x] Two running 2x machines debit credits independently and concurrently.
 - [x] Worker restart resumes from last checkpoint without duplicate debit.
 - [x] Machine stops when credits run out.
@@ -671,6 +675,13 @@ Evidence:
 - Start guard tests: `TestStartRequiresMinimumCreditsAndRecordsActivity` verifies a
   project cannot start without enough credits for the configured start window, and that
   successful start records a server-owned activity marker.
+- Connect guard evidence: Phase 9 access service applies the same
+  `metering.minimum_start_credit_window` guard before connect-triggered resume and records
+  `connect_session` plus `agentunnel_connection` activity markers.
+- Client callback tests: `TestProjectActivityCallbackRecordsPapercodeAndCLIActivity` and
+  `TestProjectActivityCallbackRejectsUnapprovedSource` verify the authenticated
+  `POST /api/projects/{project_id}/activity` callback updates
+  `project_activity_markers` for `papercode_activity` and `cli_activity` only.
 - Idle worker tests: `TestRuntimeMeteringQueuesIdleStop` verifies the selected
   per-project idle timeout queues an automatic stop once the project is idle past the
   catalog duration.
@@ -724,8 +735,9 @@ Evidence:
   `PAPERBOAT_TEST_DATABASE_DSN="$PAPERBOAT_DATABASE_DSN" PAPERBOAT_ALLOW_DESTRUCTIVE_TEST_DB_RESET=true go test -p 1 ./internal/httpapi ./internal/agentunnel`
   passed, covering papercode descriptor/session/event creation, payment-required guard
   before provider side effects, and wrong-owner denial event recording.
-- Descriptor examples: conservative draft shapes are implemented in `internal/agentunnel`
-  and match `docs/contracts/access-handoff.md` pending approval.
+- Descriptor examples: conservative baseline shapes are implemented in
+  `internal/agentunnel` and match `docs/contracts/access-handoff.md`; final client
+  field-name sign-off remains release evidence.
 - Denial event examples: `connection_events` records `project_not_found`,
   `invalid_project_state`, `credits_exhausted`, `start_failed`, `tunnel_unavailable`, and
   `tunnel_not_ready` reasons without secret metadata.

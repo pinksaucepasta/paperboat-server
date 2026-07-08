@@ -192,6 +192,14 @@ func TestBuildCLIResponseDoesNotInventUnvalidatedAuth(t *testing.T) {
 	}
 }
 
+func TestRecordActivityRejectsUnapprovedSource(t *testing.T) {
+	repo := &Repository{}
+	err := repo.RecordActivity(context.Background(), "prj_activity", "browser_ping", nil)
+	if err == nil || !strings.Contains(err.Error(), "not accepted") {
+		t.Fatalf("RecordActivity error = %v, want source rejection", err)
+	}
+}
+
 func mustJSONForTest(value any) string {
 	b, _ := json.Marshal(value)
 	return string(b)

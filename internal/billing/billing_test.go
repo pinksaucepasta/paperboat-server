@@ -118,6 +118,9 @@ func TestHTTPPolarClientCreateCheckoutUsesPolarPayload(t *testing.T) {
 	if gotPayload["external_customer_id"] != "usr_test" {
 		t.Fatalf("external_customer_id = %#v", gotPayload["external_customer_id"])
 	}
+	if gotPayload["currency"] != "usd" {
+		t.Fatalf("currency = %#v", gotPayload["currency"])
+	}
 	if _, ok := gotPayload["price_id"]; ok {
 		t.Fatalf("unexpected price_id in payload: %#v", gotPayload)
 	}

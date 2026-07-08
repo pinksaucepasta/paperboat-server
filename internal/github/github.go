@@ -89,6 +89,16 @@ type Status struct {
 	ConfigRepoBranch      string    `json:"config_repo_branch,omitempty"`
 }
 
+func (s Status) normalized() Status {
+	if s.Scopes == nil {
+		s.Scopes = []string{}
+	}
+	if s.MissingScopes == nil {
+		s.MissingScopes = []string{}
+	}
+	return s
+}
+
 type ConfigRepo struct {
 	ID            string `json:"id"`
 	Owner         string `json:"owner"`
@@ -117,7 +127,7 @@ func (s *Service) DefaultCallbackURL() string {
 
 func (s *Service) OAuthAuthorizeURL(state, redirectURI string) (string, error) {
 	if strings.TrimSpace(s.cfg.Secrets.GitHubClientID) == "" && !s.cfg.Providers.FakeMode {
-		return "", errors.New("github client id is not configured")
+		return "", ErrClientNotConfigured
 	}
 	if strings.TrimSpace(redirectURI) == "" {
 		redirectURI = s.DefaultCallbackURL()
@@ -150,7 +160,7 @@ func (s *Service) CompleteOAuth(ctx context.Context, userID, code, redirectURI s
 	}
 	missing := missingScopes(token.Scopes, s.cfg.GitHub.OAuthScopes)
 	if len(missing) > 0 {
-		return Status{Connected: false, Scopes: token.Scopes, MissingScopes: missing}, ErrMissingScopes
+		return Status{Connected: false, Scopes: token.Scopes, MissingScopes: missing}.normalized(), ErrMissingScopes
 	}
 	ghUser, err := s.client.CurrentUser(ctx, token.AccessToken)
 	if err != nil {
@@ -225,7 +235,7 @@ WHERE user_id = $1 AND revoked_at IS NULL
 ORDER BY updated_at DESC
 LIMIT 1`, userID).Scan((*stringArray)(&scopes), &status.LastValidatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return status, nil
+		return status.normalized(), nil
 	}
 	if err != nil {
 		return Status{}, err
@@ -242,7 +252,7 @@ WHERE user_id = $1 AND provisioned_at IS NOT NULL`, userID)
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return Status{}, err
 	}
-	return status, nil
+	return status.normalized(), nil
 }
 
 func (s *Service) ProvisionConfigRepo(ctx context.Context, userID, idempotencyKey string) (ConfigRepo, error) {
@@ -775,6 +785,7 @@ func newID(prefix string) string {
 }
 
 var (
+	ErrClientNotConfigured         = errors.New("github client is not configured")
 	ErrNotConnected                = errors.New("github connection required")
 	ErrMissingScopes               = errors.New("github oauth token is missing required scopes")
 	ErrIdentityLinkedToAnotherUser = errors.New("github identity is already linked to another user")

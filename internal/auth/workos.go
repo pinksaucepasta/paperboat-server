@@ -50,7 +50,6 @@ func (v HTTPWorkOSVerifier) VerifyCallback(ctx context.Context, input CallbackIn
 		"client_secret": v.ClientSecret,
 		"code":          input.Code,
 		"grant_type":    "authorization_code",
-		"redirect_uri":  input.RedirectURI,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
@@ -696,8 +697,12 @@ WHERE reporter_lost_since IS NOT NULL
 }
 
 func (r *RuntimeRepository) RecordActivity(ctx context.Context, projectID string, at time.Time, source string, metadata map[string]any) error {
+	source = strings.TrimSpace(source)
 	if source == "" {
-		source = "server"
+		return fmt.Errorf("activity source is required")
+	}
+	if !validActivitySource(source) {
+		return fmt.Errorf("activity source %q is not accepted", source)
 	}
 	if metadata == nil {
 		metadata = map[string]any{}
@@ -717,6 +722,15 @@ SET last_activity_at = greatest(project_activity_markers.last_activity_at, EXCLU
     updated_at = now()`, projectID, at, source, string(b))
 		return err
 	})
+}
+
+func validActivitySource(source string) bool {
+	switch source {
+	case "connect_session", "agentunnel_connection", "papercode_activity", "cli_activity", "vm_heartbeat":
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *RuntimeRepository) RecordHeartbeat(ctx context.Context, heartbeat ActivityHeartbeat) error {

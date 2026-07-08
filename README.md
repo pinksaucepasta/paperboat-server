@@ -127,5 +127,41 @@ Fly.io TODO for real-provider smoke testing:
   tokens are issued through agentunnel client provisioning and injected per machine. The
   env var remains only as a local development fallback.
 
+Dashboard integration TODO (raised while wiring paperboat-dashboard):
+
+- Build the dashboard project-creation form on top of the contracted catalog reads
+  `GET /api/catalog/plans`, `GET /api/catalog/machine-types`,
+  `GET /api/catalog/presets`, `GET /api/catalog/idle-timeouts`, and
+  `GET /api/catalog/regions`. The server endpoints are live; the form still needs to be
+  wired in the dashboard. (See also `docs/PLAN.md` step 6.)
+- Session rotation vs. the dashboard BFF: `AuthenticateRequest` rotates the session on
+  safe (GET) requests near expiry and returns a fresh `Set-Cookie`. The dashboard fetches
+  these endpoints during React Server Component render, where it cannot write cookies, so
+  the rotated session/CSRF cookies are dropped and the user is silently logged out once a
+  session enters the rotation window. The dashboard now routes browser-driven and mutation
+  traffic through a **Route Handler BFF proxy** (`/api/pb/*`) that persists the rotated
+  `Set-Cookie`, which covers the common case; but reads issued during pure RSC render
+  (e.g. the auth gate calling `/api/me`) still can't persist rotation. Either avoid
+  rotating on safe methods for server-to-server callers, or provide a dedicated refresh
+  endpoint the dashboard can call from a Route Handler.
+- WorkOS authorize-URL endpoint: add `GET /api/auth/workos/authorize-url` returning
+  `{ state, authorization_url }` (parity with `POST /api/github/oauth/start`). Today
+  `GET /api/auth/workos/state` returns only the `state`, so the dashboard must hold
+  `WORKOS_CLIENT_ID` and reconstruct the WorkOS authorize URL itself. Serving the URL from
+  the server that already owns the WorkOS client would remove that duplication and the
+  requirement that the dashboard's client ID exactly match the server's.
+- Register the contracted per-project reads: `GET /api/projects/{project_id}/usage` is in
+  `docs/contracts/http-api.md` but not wired in `internal/httpapi/router.go`, and the
+  `connect` / `cli-connect` / `papercode-connect` / `connection-status` routes only mount
+  when `opts.Agentunnel` is set. The dashboard needs project usage (and eventually
+  connection status) for per-project panels.
+- Missing product surfaces: the dashboard has UI shells for agents, boats, tunnels,
+  hermes, secrets, logs, team, deployments, api-keys, and storage detail, but the server
+  exposes no endpoints for them. They are shipped as honest "coming soon" empty states.
+  Confirm which of these are in platform scope so their APIs can be specified and frozen.
+- Confirm the exact JSON field shapes of the `entitlement` and `usage` payloads
+  (`internal/billing` `Entitlement` / `Usage`) so the dashboard's `lib/api/types.ts` stays
+  in lockstep with the frozen contract.
+
 Postgres tables live in the dedicated `paperboat` schema. The migration policy is
 forward-only for production releases.
