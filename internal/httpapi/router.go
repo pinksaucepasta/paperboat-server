@@ -113,6 +113,9 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 		mux.Handle("GET /api/billing/plan-products", requireAuth(opts.Auth, billingPlanProducts(opts.Billing)))
 		mux.Handle("POST /api/billing/checkout", requireAuth(opts.Auth, requireCSRF(opts.Auth, billingCheckout(opts.Billing))))
 		mux.Handle("POST /api/billing/customer-portal", requireAuth(opts.Auth, requireCSRF(opts.Auth, billingCustomerPortal(opts.Billing))))
+		if opts.Projects != nil {
+			mux.Handle("GET /api/dashboard/usage-summary", requireAuth(opts.Auth, requireEntitlement(opts.Auth, dashboardUsageSummary(opts.Billing, opts.Projects))))
+		}
 	} else {
 		mux.Handle("GET /api/billing/entitlement", requireAuth(opts.Auth, http.HandlerFunc(paymentRequired)))
 		mux.Handle("GET /api/billing/usage", requireAuth(opts.Auth, http.HandlerFunc(paymentRequired)))

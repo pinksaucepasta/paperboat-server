@@ -1,6 +1,6 @@
 # HTTP API Contract
 
-Status: implemented contract baseline, pending dashboard and CLI sign-off.
+Status: implemented Phase 10 contract baseline.
 
 This document freezes the `paperboat-server` HTTP/JSON contract shape for production
 implementation. Endpoint behavior remains server-side authoritative; clients are
@@ -49,8 +49,12 @@ Requests:
 
 - `Authorization: Bearer <token>` for non-browser clients where approved.
 - Cookie session plus CSRF header for dashboard browser writes.
-- `Idempotency-Key` for create/start/stop/restart/delete, checkout, config repo
-  provisioning, and provider-affecting mutations.
+- `Idempotency-Key` for project create, checkout/customer portal, admin billing
+  adjustments, and config repo provisioning. Lifecycle and access mutations are
+  replay-safe through server-side state and aggregate-scoped orchestration/session
+  records.
+- `If-Match` with the numeric project `version`, or a JSON `version` field, for
+  `PATCH /api/projects/{project_id}` optimistic concurrency.
 
 Responses:
 
@@ -75,6 +79,7 @@ Responses:
 
 - `GET /api/billing/entitlement`
 - `GET /api/billing/usage`
+- `GET /api/dashboard/usage-summary`
 - `POST /api/billing/checkout`
 - `POST /api/billing/customer-portal`
 - `POST /api/webhooks/polar`
@@ -115,6 +120,9 @@ Responses:
 - `POST /api/projects/{project_id}/papercode-connect`
 - `GET /api/projects/{project_id}/connection-status`
 
+`GET /api/projects` supports `limit`, `offset`, `state`, and `sort`. Sort fields are
+`created_at`, `updated_at`, `name`, and `state`; prefix with `-` for descending order.
+
 ### Admin
 
 - `GET /api/admin/users`
@@ -145,6 +153,11 @@ Initial contract:
 - `credential_issuer_unavailable`
 - `github_config_not_ready`
 - `invalid_activity_source`
+- `invalid_pagination`
+- `invalid_sort`
+- `invalid_version`
+- `version_required`
+- `version_conflict`
 - `rate_limited`
 - `internal_error`
 

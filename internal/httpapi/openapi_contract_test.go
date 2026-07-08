@@ -22,7 +22,7 @@ func TestOpenAPIDocumentCoversPublicRouterPaths(t *testing.T) {
 		t.Fatal("missing openapi version")
 	}
 	required := map[string][]string{
-		"/healthz":                                      {"get"},
+		"/healthz":                                     {"get"},
 		"/readyz":                                      {"get"},
 		"/api/me":                                      {"get"},
 		"/api/auth/workos/state":                       {"get"},
@@ -42,8 +42,9 @@ func TestOpenAPIDocumentCoversPublicRouterPaths(t *testing.T) {
 		"/api/catalog/regions":                         {"get"},
 		"/api/github/status":                           {"get"},
 		"/api/github/oauth/start":                      {"post"},
-		"/api/github/oauth/callback":                   {"post"},
+		"/api/github/oauth/callback":                   {"get", "post"},
 		"/api/github/config-repo/provision":            {"post"},
+		"/api/dashboard/usage-summary":                 {"get"},
 		"/api/projects":                                {"get", "post"},
 		"/api/projects/{project_id}":                   {"get", "patch", "delete"},
 		"/api/projects/{project_id}/start":             {"post"},

@@ -196,6 +196,13 @@ WHERE project_id = $1`, project.ID, 8); err != nil {
 	if updated.CurrentConfig.MachineTypeCode != "standard-1x" || updated.CurrentConfig.StorageGB != 8 || updated.CurrentConfig.RegionCode != "iad" {
 		t.Fatalf("pending update did not preserve applied current config: current=%#v desired=%#v", updated.CurrentConfig, updated.DesiredConfig)
 	}
+	staleVersion := project.Version
+	if _, err := service.Update(ctx, UpdateInput{UserID: "usr_project_update", ProjectID: project.ID, ExpectedVersion: &staleVersion, StorageGB: &storageGB}); !errors.Is(err, ErrVersionConflict) {
+		t.Fatalf("stale version update error = %v, want ErrVersionConflict", err)
+	}
+	if _, err := service.Update(ctx, UpdateInput{UserID: "usr_project_update", ProjectID: project.ID, ExpectedVersion: &staleVersion, MachineTypeCode: &machine, StorageGB: &storageGB}); !errors.Is(err, ErrVersionConflict) {
+		t.Fatalf("stale version noop update error = %v, want ErrVersionConflict", err)
+	}
 	eventsBeforeNoop, err := service.Events(ctx, "usr_project_update", project.ID)
 	if err != nil {
 		t.Fatal(err)

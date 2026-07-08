@@ -56,6 +56,7 @@ func TestHTTPClientEnsureProjectResourcesCreatesClientAndHTTPTunnel(t *testing.T
 	var paths []string
 	var authHeaders []string
 	var httpCreateBody map[string]any
+	var tcpCreateBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.Method+" "+r.URL.Path)
 		authHeaders = append(authHeaders, r.Header.Get("Authorization"))
@@ -82,6 +83,21 @@ func TestHTTPClientEnsureProjectResourcesCreatesClientAndHTTPTunnel(t *testing.T
 					"status":      "active",
 				},
 			})
+		case "/api/tcp-tunnels":
+			if err := json.NewDecoder(r.Body).Decode(&tcpCreateBody); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"data": map[string]any{
+					"tunnel_id":         "tun_tcp_1",
+					"remote_port":       25432,
+					"local_port":        22,
+					"status":            "active",
+					"lifecycle":         "persistent",
+					"forwarding_status": "online",
+				},
+			})
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
@@ -102,7 +118,7 @@ func TestHTTPClientEnsureProjectResourcesCreatesClientAndHTTPTunnel(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(paths, ",") != "POST /api/clients,POST /api/http-tunnels" {
+	if strings.Join(paths, ",") != "POST /api/clients,POST /api/http-tunnels,POST /api/tcp-tunnels" {
 		t.Fatalf("paths = %#v", paths)
 	}
 	for _, got := range authHeaders {
@@ -113,6 +129,9 @@ func TestHTTPClientEnsureProjectResourcesCreatesClientAndHTTPTunnel(t *testing.T
 	if httpCreateBody["client_id"] != "cli_prj_1" || httpCreateBody["local_url"] != "http://127.0.0.1:4099" || httpCreateBody["subdomain"] != "pb-prj-1" {
 		t.Fatalf("http create body = %#v", httpCreateBody)
 	}
+	if tcpCreateBody["client_id"] != "cli_prj_1" || tcpCreateBody["local_host"] != "127.0.0.1" || tcpCreateBody["local_port"].(float64) != 22 || tcpCreateBody["expires_in"] != "never" {
+		t.Fatalf("tcp create body = %#v", tcpCreateBody)
+	}
 	if resource.TunnelID != "tun_http_1" || resource.ClientID != "cli_prj_1" || resource.ResourceID != "tun_http_1" {
 		t.Fatalf("resource ids = %#v", resource)
 	}
@@ -122,9 +141,202 @@ func TestHTTPClientEnsureProjectResourcesCreatesClientAndHTTPTunnel(t *testing.T
 	if resource.HTTPBaseURL != "https://pb-prj-1.agentunnel.example" || resource.WebSocketBaseURL != "wss://pb-prj-1.agentunnel.example" {
 		t.Fatalf("route urls = %q %q", resource.HTTPBaseURL, resource.WebSocketBaseURL)
 	}
+	if resource.SSHPort != 25432 || resource.Metadata["tcp_tunnel_id"] != "tun_tcp_1" {
+		t.Fatalf("ssh/tcp metadata = port %d metadata %#v", resource.SSHPort, resource.Metadata)
+	}
 	resourceJSON := strings.ToLower(mustJSONForTest(resource))
 	if strings.Contains(resourceJSON, "api-key") || strings.Contains(resourceJSON, "project_machine_token") {
 		t.Fatalf("resource leaked secret: %#v", resource)
+	}
+}
+
+func TestHTTPClientEnsureProjectResourcesRetriesTCPPortConflict(t *testing.T) {
+	var tcpPorts []int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/clients":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"data": map[string]any{
+					"client_id":    "cli_prj_retry",
+					"client_token": "clt_project_machine_token",
+				},
+			})
+		case "/api/http-tunnels":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"data": map[string]any{
+					"tunnel_id":   "tun_http_retry",
+					"preview_url": "https://pb-prj-retry.agentunnel.example",
+					"status":      "active",
+				},
+			})
+		case "/api/tcp-tunnels":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			tcpPorts = append(tcpPorts, int(body["remote_port"].(float64)))
+			if len(tcpPorts) < 10 {
+				w.WriteHeader(http.StatusConflict)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"ok": false,
+					"error": map[string]any{
+						"code":    "REMOTE_PORT_IN_USE",
+						"message": "remote port is already reserved",
+					},
+				})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"data": map[string]any{
+					"tunnel_id":   "tun_tcp_retry",
+					"remote_port": tcpPorts[len(tcpPorts)-1],
+					"status":      "active",
+				},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	resource, err := (HTTPClient{
+		BaseURL:              server.URL,
+		PapercodeLocalURL:    "http://127.0.0.1:4099",
+		RouteExpiresIn:       time.Hour,
+		RouteSubdomainPrefix: "pb",
+		SSHRemotePortStart:   25000,
+		SSHRemotePortEnd:     25011,
+	}).EnsureProjectResources(context.Background(), ProjectRef{ID: "prj_retry"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tcpPorts) != 10 {
+		t.Fatalf("tcp ports = %#v, want retry through the tenth candidate", tcpPorts)
+	}
+	seen := map[int]bool{}
+	for _, port := range tcpPorts {
+		if seen[port] {
+			t.Fatalf("tcp ports = %#v, want unique candidates", tcpPorts)
+		}
+		seen[port] = true
+	}
+	if resource.Metadata["tcp_tunnel_id"] != "tun_tcp_retry" || resource.SSHPort != tcpPorts[9] {
+		t.Fatalf("resource = %#v", resource)
+	}
+}
+
+func TestHTTPClientEnsureProjectResourcesDoesNotRetryNonConflictProviderError(t *testing.T) {
+	var tcpAttempts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/clients":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"data": map[string]any{
+					"client_id":    "cli_prj_non_retry",
+					"client_token": "clt_project_machine_token",
+				},
+			})
+		case "/api/http-tunnels":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"data": map[string]any{
+					"tunnel_id":   "tun_http_non_retry",
+					"preview_url": "https://pb-prj-non-retry.agentunnel.example",
+					"status":      "active",
+				},
+			})
+		case "/api/tcp-tunnels":
+			tcpAttempts++
+			w.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": false,
+				"error": map[string]any{
+					"code":    "UNAUTHORIZED",
+					"message": "invalid api key",
+				},
+			})
+		case "/api/clients/cli_prj_non_retry/machine-cleanup":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "data": map[string]any{"client_status": "revoked"}})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	_, err := (HTTPClient{
+		BaseURL:              server.URL,
+		PapercodeLocalURL:    "http://127.0.0.1:4099",
+		RouteExpiresIn:       time.Hour,
+		RouteSubdomainPrefix: "pb",
+		SSHRemotePortStart:   25000,
+		SSHRemotePortEnd:     25011,
+	}).EnsureProjectResources(context.Background(), ProjectRef{ID: "prj_non_retry"})
+	if !errors.Is(err, ErrProvider) {
+		t.Fatalf("EnsureProjectResources error = %v, want ErrProvider", err)
+	}
+	if tcpAttempts != 1 {
+		t.Fatalf("tcp attempts = %d, want 1", tcpAttempts)
+	}
+}
+
+func TestHTTPClientEnsureProjectResourcesCleansUpAfterTCPFailure(t *testing.T) {
+	var cleanupBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/clients":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"data": map[string]any{
+					"client_id":    "cli_prj_cleanup",
+					"client_token": "clt_project_machine_token",
+				},
+			})
+		case "/api/http-tunnels":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"data": map[string]any{
+					"tunnel_id":   "tun_http_cleanup",
+					"preview_url": "https://pb-prj-cleanup.agentunnel.example",
+					"status":      "active",
+				},
+			})
+		case "/api/tcp-tunnels":
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": false,
+				"error": map[string]any{
+					"code":    "REMOTE_PORT_IN_USE",
+					"message": "remote port is already reserved",
+				},
+			})
+		case "/api/clients/cli_prj_cleanup/machine-cleanup":
+			if err := json.NewDecoder(r.Body).Decode(&cleanupBody); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "data": map[string]any{"client_status": "revoked"}})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	_, err := (HTTPClient{
+		BaseURL:              server.URL,
+		PapercodeLocalURL:    "http://127.0.0.1:4099",
+		RouteExpiresIn:       time.Hour,
+		RouteSubdomainPrefix: "pb",
+		SSHRemotePortStart:   25000,
+		SSHRemotePortEnd:     25000,
+	}).EnsureProjectResources(context.Background(), ProjectRef{ID: "prj_cleanup"})
+	if !errors.Is(err, ErrProvider) {
+		t.Fatalf("EnsureProjectResources error = %v, want ErrProvider", err)
+	}
+	if cleanupBody["action"] != "close" || cleanupBody["reason"] != "provision_failed" {
+		t.Fatalf("cleanup body = %#v", cleanupBody)
 	}
 }
 
@@ -155,6 +367,101 @@ func TestHTTPClientCleanupProjectResourcesCallsMachineCleanup(t *testing.T) {
 
 func TestHTTPClientStatusUsesHTTPTunnelRoute(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/http-tunnels/tun_http_1":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"data": map[string]any{
+					"tunnel_id":   "tun_http_1",
+					"preview_url": "https://pb-prj-1.agentunnel.example",
+					"status":      "active",
+				},
+			})
+		case "/api/tcp-tunnels/tun_tcp_1/connect-info":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"data": map[string]any{
+					"tunnel_id":         "tun_tcp_1",
+					"host":              "ssh.agentunnel.example",
+					"port":              25432,
+					"status":            "active",
+					"forwarding_status": "online",
+					"can_connect":       true,
+				},
+			})
+		default:
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	status, err := (HTTPClient{BaseURL: server.URL}).Status(context.Background(), ResourceDescriptor{
+		TunnelID: "tun_http_1",
+		Metadata: map[string]any{
+			"resource_kind": "http_tunnel",
+			"tcp_tunnel_id": "tun_tcp_1",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Ready || status.HTTPBaseURL != "https://pb-prj-1.agentunnel.example" || status.WebSocketBaseURL != "wss://pb-prj-1.agentunnel.example" {
+		t.Fatalf("status = %#v", status)
+	}
+	if status.SSHHost != "ssh.agentunnel.example" || status.SSHPort != 25432 {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestHTTPClientStatusRequiresCombinedTCPTunnelReadiness(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/http-tunnels/tun_http_1":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"data": map[string]any{
+					"tunnel_id":   "tun_http_1",
+					"preview_url": "https://pb-prj-1.agentunnel.example",
+					"status":      "active",
+				},
+			})
+		case "/api/tcp-tunnels/tun_tcp_1/connect-info":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"data": map[string]any{
+					"tunnel_id":         "tun_tcp_1",
+					"status":            "active",
+					"forwarding_status": "offline",
+					"can_connect":       false,
+					"reason_code":       "CLIENT_OFFLINE",
+				},
+			})
+		default:
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	status, err := (HTTPClient{BaseURL: server.URL}).Status(context.Background(), ResourceDescriptor{
+		TunnelID: "tun_http_1",
+		Metadata: map[string]any{
+			"resource_kind": "http_tunnel",
+			"tcp_tunnel_id": "tun_tcp_1",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Ready || status.Status != "offline" || status.Reason != "CLIENT_OFFLINE" {
+		t.Fatalf("status = %#v", status)
+	}
+	if status.HTTPBaseURL != "https://pb-prj-1.agentunnel.example" || status.WebSocketBaseURL != "wss://pb-prj-1.agentunnel.example" {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestHTTPClientStatusRejectsCombinedResourceWithoutTCPTunnelID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/http-tunnels/tun_http_1" {
 			t.Fatalf("path = %q", r.URL.Path)
 		}
@@ -178,7 +485,7 @@ func TestHTTPClientStatusUsesHTTPTunnelRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !status.Ready || status.HTTPBaseURL != "https://pb-prj-1.agentunnel.example" || status.WebSocketBaseURL != "wss://pb-prj-1.agentunnel.example" {
+	if status.Ready || status.Reason != "TCP_TUNNEL_MISSING" {
 		t.Fatalf("status = %#v", status)
 	}
 }

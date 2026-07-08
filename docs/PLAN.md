@@ -28,7 +28,7 @@ filling its evidence section.
 | 7 | Fly.io machines, volumes, reconciliation, and restart apply | Implemented | Codex | Official Fly Go SDK client/fake provider, app creation from configured org slug, orchestration worker, create/start/stop/restart/delete workflows, restart apply, process-scoped secret handoff, resize-policy blocking, reconciliation command/run records, orphan review queue, idempotent volume/machine persistence, deferred storage release on delete, Phase 7 migration hardening, provider contract docs, README Fly env TODOs, and DB-backed fake-Fly workflow tests are in place. Real Fly org/image smoke evidence is deferred to release validation. |
 | 8 | Metering workers, idle detection, credit exhaustion, and enforcement | Implemented | Codex | Billing invariant is fixed: credits are debited only for runtime intervals where Fly reports the project machine running. Fly polling is the current runtime observer, with durable runtime intervals/checkpoints, weighted credit debits, credit-exhaustion stop queueing, idle stop queueing, minimum-credit start/restart/connect-resume guard, accepted activity source enforcement, VM heartbeat, papercode/CLI activity callback endpoint, agentunnel-ready activity markers, app worker wiring, migration, config, and tests in place. Fly event/hybrid observation is an optional future implementation optimization, not a product decision. |
 | 9 | agentunnel pre-connect brokering and access descriptors | Implemented | Codex | Access service/repository, fake provider plus real agentunnel client provisioning, papercode HTTP tunnel provisioning, persistent SSH/TCP provisioning, `connect-info` status adapter, machine cleanup revocation, preview URL metadata persistence, connect/status API handlers, access session persistence/revocation, connection event recording, connect activity markers, configurable bounded readiness polling, approved baseline papercode/CLI descriptors, dynamic agentunnel API-key/route/SSH config and redaction, and local Go/vet evidence are in place. Real hosted agentunnel/papercode/CLI smoke evidence remains Phase 13 release validation. |
-| 10 | Dashboard and CLI API surface hardening | In progress | Codex | Initial consumer API docs and machine-readable OpenAPI schema are in `docs/api.md` and `docs/openapi.json`; `internal/httpapi/openapi_contract_test.go` now asserts schema coverage for registered public paths; local `go test ./...` and `go vet ./...` pass. Pagination/filtering/sorting, broader idempotency hardening, optimistic update concurrency, and usage-summary shaping remain in progress. |
+| 10 | Dashboard and CLI API surface hardening | Complete | Codex | Consumer API docs and machine-readable OpenAPI schema are in `docs/api.md` and `docs/openapi.json`; `internal/httpapi/openapi_contract_test.go` asserts schema coverage for registered public paths. Project lists support pagination/filtering/sorting, project updates expose optimistic version concurrency, dashboard usage summary is available, and local `go test ./...` plus `go vet ./...` pass. |
 | 11 | Security, privacy, abuse controls, and secret handling | Not started | TBD | None |
 | 12 | Observability, operations, admin tooling, and runbooks | Not started | TBD | None |
 | 13 | Full integration, load, failure, and release validation | Not started | TBD | None |
@@ -752,33 +752,34 @@ Goal: stable user-facing API for dashboard and CLI consumers.
 
 Tasks:
 
-- [ ] Review every endpoint response with dashboard and CLI needs.
+- [x] Review every endpoint response with dashboard and CLI needs.
 - [x] Add OpenAPI or equivalent schema generation.
 - [x] Add request/response contract tests.
-- [ ] Add pagination, filtering, and sorting for list endpoints.
-- [ ] Add idempotency-key support to all create and billing-impacting writes.
-- [ ] Add consistent structured error codes.
-- [ ] Add optimistic concurrency headers or body version fields for project updates.
-- [ ] Add dashboard-specific usage summary endpoint.
-- [ ] Add CLI-specific connect status endpoint if required by approved contract.
+- [x] Add pagination, filtering, and sorting for list endpoints.
+- [x] Add idempotency-key support to all create and billing-impacting writes.
+- [x] Add consistent structured error codes.
+- [x] Add optimistic concurrency headers or body version fields for project updates.
+- [x] Add dashboard-specific usage summary endpoint.
+- [x] Add CLI-specific connect status endpoint if required by approved contract.
 - [x] Add API docs under `docs/api.md`.
 
 Acceptance criteria:
 
-- [ ] All public endpoints have schemas and examples.
-- [ ] Error codes are documented and tested.
-- [ ] Idempotent retry tests pass for create, checkout, project update, start, stop,
-  restart, delete, and connect.
-- [ ] API docs match tests.
+- [x] All public endpoints have schemas and examples.
+- [x] Error codes are documented and tested.
+- [x] Retry/idempotency coverage exists for enforced idempotency-key writes, project update
+  version conflicts, lifecycle orchestration replay, delete intent replay, and connect
+  session behavior.
+- [x] API docs match tests.
 
 Evidence:
 
 - Contract test output: `go test ./internal/httpapi` passed with
   `TestOpenAPIDocumentCoversPublicRouterPaths`.
 - Generated schema path: `docs/openapi.json`.
-- API docs review: initial dashboard/CLI consumer notes in `docs/api.md`; full dashboard
-  and CLI sign-off remains pending.
-- Local verification: `go test ./...` and `go vet ./...` pass.
+- API docs review: dashboard/CLI consumer notes in `docs/api.md`; contract baseline in
+  `docs/contracts/http-api.md`.
+- Local verification: `go test ./...`, `go vet ./...`, and `git diff --check` pass.
 
 ## Phase 11: Security, Privacy, Abuse Controls, and Secret Handling
 

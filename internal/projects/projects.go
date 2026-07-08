@@ -27,6 +27,8 @@ const MaxSetupScriptBytes = 64 * 1024
 var (
 	ErrIdempotencyKeyRequired = errors.New("idempotency key is required")
 	ErrIdempotencyConflict    = errors.New("idempotency key conflicts with existing project")
+	ErrVersionRequired        = errors.New("project version is required")
+	ErrVersionConflict        = errors.New("project version conflicts with current project")
 	ErrInvalidRepositoryURL   = errors.New("repository_url must be an https git url")
 	ErrInvalidStorage         = errors.New("storage_gb must be positive")
 	ErrInvalidSetupScript     = errors.New("setup script exceeds maximum size")
@@ -73,6 +75,7 @@ type CreateInput struct {
 type UpdateInput struct {
 	UserID          string
 	ProjectID       string
+	ExpectedVersion *int64
 	StorageGB       *int
 	MachineTypeCode *string
 	RegionCode      *string
@@ -91,6 +94,7 @@ type ActivityInput struct {
 
 type Project struct {
 	ID                   string    `json:"id"`
+	Version              int64     `json:"version"`
 	Name                 string    `json:"name"`
 	State                string    `json:"state"`
 	Repository           Repo      `json:"repository"`
@@ -195,9 +199,12 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (Project, error
 		return Project{}, err
 	}
 	if change.configHash == current.DesiredConfig.ConfigHash {
+		if err := s.repo.CheckUpdateVersion(ctx, input.UserID, input.ProjectID, input.ExpectedVersion); err != nil {
+			return Project{}, err
+		}
 		return current, nil
 	}
-	project, err := s.repo.UpdateDesiredConfig(ctx, input.UserID, input.ProjectID, change)
+	project, err := s.repo.UpdateDesiredConfig(ctx, input.UserID, input.ProjectID, change, input.ExpectedVersion)
 	if err != nil {
 		return Project{}, err
 	}
@@ -463,10 +470,11 @@ type persistedProject struct {
 }
 
 type storageAllocation struct {
-	accountID  string
-	assignedGB int
-	version    int64
-	state      string
+	accountID      string
+	assignedGB     int
+	version        int64
+	projectVersion int64
+	state          string
 }
 
 type catalogRefs struct {
@@ -686,10 +694,10 @@ func (r *Repository) Get(ctx context.Context, userID, projectID string) (Project
 	return scanProject(row)
 }
 
-func (r *Repository) UpdateDesiredConfig(ctx context.Context, userID, projectID string, change desiredChange) (Project, error) {
+func (r *Repository) UpdateDesiredConfig(ctx context.Context, userID, projectID string, change desiredChange, expectedVersion *int64) (Project, error) {
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
-		err = r.updateDesiredConfigOnce(ctx, userID, projectID, change)
+		err = r.updateDesiredConfigOnce(ctx, userID, projectID, change, expectedVersion)
 		if !isSerializationFailure(err) {
 			break
 		}
@@ -700,11 +708,30 @@ func (r *Repository) UpdateDesiredConfig(ctx context.Context, userID, projectID 
 	return r.Get(ctx, userID, projectID)
 }
 
-func (r *Repository) updateDesiredConfigOnce(ctx context.Context, userID, projectID string, change desiredChange) error {
+func (r *Repository) CheckUpdateVersion(ctx context.Context, userID, projectID string, expectedVersion *int64) error {
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		allocation, err := projectStorageAllocationTx(ctx, tx, userID, projectID)
 		if err != nil {
 			return err
+		}
+		if expectedVersion != nil && allocation.projectVersion != *expectedVersion {
+			return ErrVersionConflict
+		}
+		if allocation.state == "deleting" || allocation.state == "deleted" {
+			return ErrDeleted
+		}
+		return nil
+	})
+}
+
+func (r *Repository) updateDesiredConfigOnce(ctx context.Context, userID, projectID string, change desiredChange, expectedVersion *int64) error {
+	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		allocation, err := projectStorageAllocationTx(ctx, tx, userID, projectID)
+		if err != nil {
+			return err
+		}
+		if expectedVersion != nil && allocation.projectVersion != *expectedVersion {
+			return ErrVersionConflict
 		}
 		if allocation.state == "deleting" || allocation.state == "deleted" {
 			return ErrDeleted
@@ -769,11 +796,11 @@ WHERE project_id = $1 AND EXISTS (SELECT 1 FROM projects WHERE id = $1 AND user_
 func projectStorageAllocationTx(ctx context.Context, tx *db.Tx, userID, projectID string) (storageAllocation, error) {
 	var allocation storageAllocation
 	err := tx.QueryRow(ctx, `
-SELECT psa.storage_account_id, psa.assigned_gb, psa.version, p.state
+SELECT psa.storage_account_id, psa.assigned_gb, psa.version, p.version, p.state
 FROM project_storage_allocations psa
 JOIN projects p ON p.id = psa.project_id
 WHERE p.id = $1 AND p.user_id = $2
-FOR UPDATE OF p, psa`, projectID, userID).Scan(&allocation.accountID, &allocation.assignedGB, &allocation.version, &allocation.state)
+FOR UPDATE OF p, psa`, projectID, userID).Scan(&allocation.accountID, &allocation.assignedGB, &allocation.version, &allocation.projectVersion, &allocation.state)
 	if errors.Is(err, sql.ErrNoRows) {
 		return storageAllocation{}, ErrNotFound
 	}
@@ -1024,7 +1051,7 @@ ORDER BY created_at ASC`, projectID)
 }
 
 const projectSelectSQL = `
-SELECT p.id, p.name, p.state, p.created_at, p.updated_at,
+SELECT p.id, p.version, p.name, p.state, p.created_at, p.updated_at,
        pr.provider, pr.source_url, pr.default_branch,
        psa.assigned_gb,
        mt.code, r.code, coalesce(string_agg(DISTINCT vp.code, ',' ORDER BY vp.code) FILTER (WHERE vp.code IS NOT NULL), '') AS preset_codes,
@@ -1058,7 +1085,7 @@ func scanProject(row *sql.Row) (Project, error) {
 	var presetCodes string
 	var appliedMachine, appliedRegion, appliedPresets, appliedIdle string
 	var appliedHash string
-	err := row.Scan(&p.ID, &p.Name, &p.State, &p.CreatedAt, &p.UpdatedAt, &p.Repository.Provider, &p.Repository.SourceURL, &p.Repository.DefaultBranch, &p.DesiredConfig.StorageGB, &p.DesiredConfig.MachineTypeCode, &p.DesiredConfig.RegionCode, &presetCodes, &p.DesiredConfig.IdleTimeoutCode, &p.DesiredConfig.SetupScriptRef, &p.PendingRestartApply, &p.DesiredConfig.ConfigHash, &appliedHash, &p.CurrentConfig.StorageGB, &appliedMachine, &appliedRegion, &appliedPresets, &appliedIdle, &p.CurrentConfig.SetupScriptRef, &p.SetupScriptRevisions)
+	err := row.Scan(&p.ID, &p.Version, &p.Name, &p.State, &p.CreatedAt, &p.UpdatedAt, &p.Repository.Provider, &p.Repository.SourceURL, &p.Repository.DefaultBranch, &p.DesiredConfig.StorageGB, &p.DesiredConfig.MachineTypeCode, &p.DesiredConfig.RegionCode, &presetCodes, &p.DesiredConfig.IdleTimeoutCode, &p.DesiredConfig.SetupScriptRef, &p.PendingRestartApply, &p.DesiredConfig.ConfigHash, &appliedHash, &p.CurrentConfig.StorageGB, &appliedMachine, &appliedRegion, &appliedPresets, &appliedIdle, &p.CurrentConfig.SetupScriptRef, &p.SetupScriptRevisions)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Project{}, ErrNotFound
 	}

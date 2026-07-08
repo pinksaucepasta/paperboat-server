@@ -23,6 +23,7 @@ import (
 )
 
 const defaultAccessTTL = 5 * time.Minute
+const providerCodeRemotePortInUse = "REMOTE_PORT_IN_USE"
 
 var (
 	ErrNotFound                    = projects.ErrNotFound
@@ -34,6 +35,22 @@ var (
 	ErrCredentialIssuerUnavailable = errors.New("papercode credential issuer is unavailable")
 	ErrGitHubRequired              = errors.New("github config is not ready")
 )
+
+type providerError struct {
+	code    string
+	message string
+}
+
+func (e providerError) Error() string {
+	if e.code == "" {
+		return ErrProvider.Error()
+	}
+	return ErrProvider.Error() + ": " + e.code
+}
+
+func (e providerError) Is(target error) bool {
+	return target == ErrProvider
+}
 
 type Client interface {
 	EnsureProjectResources(ctx context.Context, project ProjectRef) (ResourceDescriptor, error)
@@ -192,13 +209,20 @@ func (c HTTPClient) EnsureProjectResources(ctx context.Context, project ProjectR
 	if err != nil {
 		return ResourceDescriptor{}, err
 	}
+	fail := func(err error) (ResourceDescriptor, error) {
+		cleanupErr := c.CleanupProjectResources(ctx, ResourceDescriptor{ClientID: clientID}, "close", "provision_failed")
+		if cleanupErr != nil {
+			return ResourceDescriptor{}, errors.Join(err, cleanupErr)
+		}
+		return ResourceDescriptor{}, err
+	}
 	localURL := strings.TrimSpace(c.PapercodeLocalURL)
 	if localURL == "" {
-		return ResourceDescriptor{}, ErrTunnelUnavailable
+		return fail(ErrTunnelUnavailable)
 	}
 	expires := c.RouteExpiresIn
 	if expires <= 0 {
-		return ResourceDescriptor{}, ErrTunnelUnavailable
+		return fail(ErrTunnelUnavailable)
 	}
 	var httpPayload struct {
 		TunnelID   string     `json:"tunnel_id"`
@@ -216,11 +240,15 @@ func (c HTTPClient) EnsureProjectResources(ctx context.Context, project ProjectR
 		httpBody["access_policy_id"] = c.AccessPolicyID
 	}
 	if err := c.post(ctx, "/api/http-tunnels", httpBody, &httpPayload); err != nil {
-		return ResourceDescriptor{}, err
+		return fail(err)
 	}
 	httpURL, wsURL := routeURLs(httpPayload.PreviewURL)
 	if httpPayload.TunnelID == "" || httpURL == "" || wsURL == "" {
-		return ResourceDescriptor{}, ErrTunnelUnavailable
+		return fail(ErrTunnelUnavailable)
+	}
+	sshResource, err := c.ensureSSHTunnel(ctx, project, clientID)
+	if err != nil {
+		return fail(err)
 	}
 	return ResourceDescriptor{
 		TunnelID:         httpPayload.TunnelID,
@@ -228,16 +256,22 @@ func (c HTTPClient) EnsureProjectResources(ctx context.Context, project ProjectR
 		ResourceID:       httpPayload.TunnelID,
 		HTTPBaseURL:      httpURL,
 		WebSocketBaseURL: wsURL,
+		SSHHost:          sshResource.SSHHost,
+		SSHPort:          sshResource.SSHPort,
 		MachineToken:     machineToken,
 		Metadata: map[string]any{
-			"provider":       "agentunnel",
-			"resource_kind":  "http_tunnel",
-			"http_tunnel_id": httpPayload.TunnelID,
-			"local_url":      localURL,
-			"route_status":   httpPayload.Status,
-			"route_expires":  timeString(httpPayload.ExpiresAt),
-			"preview_url":    httpPayload.PreviewURL,
-			"machine_secret": "external",
+			"provider":              "agentunnel",
+			"resource_kind":         "http_tunnel",
+			"http_tunnel_id":        httpPayload.TunnelID,
+			"tcp_tunnel_id":         sshResource.TunnelID,
+			"local_url":             localURL,
+			"route_status":          httpPayload.Status,
+			"route_expires":         timeString(httpPayload.ExpiresAt),
+			"preview_url":           httpPayload.PreviewURL,
+			"machine_secret":        "external",
+			"tcp_status":            sshResource.Metadata["tcp_status"],
+			"tcp_lifecycle":         sshResource.Metadata["tcp_lifecycle"],
+			"tcp_forwarding_status": sshResource.Metadata["tcp_forwarding_status"],
 		},
 	}, nil
 }
@@ -247,30 +281,66 @@ func (c HTTPClient) Status(ctx context.Context, resource ResourceDescriptor) (Tu
 		return TunnelStatus{}, ErrTunnelUnavailable
 	}
 	if resourceKind(resource) == "http_tunnel" {
-		var payload struct {
-			TunnelID   string     `json:"tunnel_id"`
-			PreviewURL string     `json:"preview_url"`
-			Status     string     `json:"status"`
-			ExpiresAt  *time.Time `json:"expires_at"`
-		}
-		if err := c.get(ctx, "/api/http-tunnels/"+url.PathEscape(resource.TunnelID), &payload); err != nil {
+		httpStatus, err := c.httpTunnelStatus(ctx, resource)
+		if err != nil {
 			return TunnelStatus{}, err
 		}
-		httpURL, wsURL := routeURLs(firstNonEmpty(payload.PreviewURL, resource.HTTPBaseURL))
-		status := firstNonEmpty(payload.Status, "unknown")
-		ready := status == "active" && httpURL != "" && wsURL != ""
-		reason := ""
-		if !ready {
-			reason = "HTTP_ROUTE_NOT_ACTIVE"
+		tcpTunnelID, _ := resource.Metadata["tcp_tunnel_id"].(string)
+		if strings.TrimSpace(tcpTunnelID) == "" {
+			httpStatus.Ready = false
+			httpStatus.Reason = firstNonEmpty(httpStatus.Reason, "TCP_TUNNEL_MISSING")
+			return httpStatus, nil
 		}
-		return TunnelStatus{
-			Ready:            ready,
-			Status:           status,
-			Reason:           reason,
-			HTTPBaseURL:      httpURL,
-			WebSocketBaseURL: wsURL,
-		}, nil
+		tcpResource := resource
+		tcpResource.TunnelID = tcpTunnelID
+		tcpStatus, err := c.tcpTunnelStatus(ctx, tcpResource)
+		if err != nil {
+			return TunnelStatus{}, err
+		}
+		combined := httpStatus
+		combined.SSHHost = tcpStatus.SSHHost
+		combined.SSHPort = tcpStatus.SSHPort
+		combined.Ready = httpStatus.Ready && tcpStatus.Ready
+		if !httpStatus.Ready {
+			return combined, nil
+		}
+		combined.Status = firstNonEmpty(tcpStatus.Status, httpStatus.Status)
+		combined.Reason = tcpStatus.Reason
+		if !tcpStatus.Ready && combined.Reason == "" {
+			combined.Reason = "TCP_TUNNEL_NOT_READY"
+		}
+		return combined, nil
 	}
+	return c.tcpTunnelStatus(ctx, resource)
+}
+
+func (c HTTPClient) httpTunnelStatus(ctx context.Context, resource ResourceDescriptor) (TunnelStatus, error) {
+	var payload struct {
+		TunnelID   string     `json:"tunnel_id"`
+		PreviewURL string     `json:"preview_url"`
+		Status     string     `json:"status"`
+		ExpiresAt  *time.Time `json:"expires_at"`
+	}
+	if err := c.get(ctx, "/api/http-tunnels/"+url.PathEscape(resource.TunnelID), &payload); err != nil {
+		return TunnelStatus{}, err
+	}
+	httpURL, wsURL := routeURLs(firstNonEmpty(payload.PreviewURL, resource.HTTPBaseURL))
+	status := firstNonEmpty(payload.Status, "unknown")
+	ready := status == "active" && httpURL != "" && wsURL != ""
+	reason := ""
+	if !ready {
+		reason = "HTTP_ROUTE_NOT_ACTIVE"
+	}
+	return TunnelStatus{
+		Ready:            ready,
+		Status:           status,
+		Reason:           reason,
+		HTTPBaseURL:      httpURL,
+		WebSocketBaseURL: wsURL,
+	}, nil
+}
+
+func (c HTTPClient) tcpTunnelStatus(ctx context.Context, resource ResourceDescriptor) (TunnelStatus, error) {
 	var payload struct {
 		Type             string `json:"type"`
 		Protocol         string `json:"protocol"`
@@ -382,7 +452,7 @@ func (c HTTPClient) doJSON(ctx context.Context, method, path string, body any, t
 		return ErrTunnelUnavailable
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 || !envelope.OK {
-		return ErrProvider
+		return providerError{code: envelope.Error.Code, message: envelope.Error.Message}
 	}
 	if len(envelope.Data) == 0 {
 		return ErrTunnelUnavailable
@@ -419,55 +489,78 @@ func (c HTTPClient) ensureClient(ctx context.Context, project ProjectRef) (strin
 func (c HTTPClient) ensureSSHTunnel(ctx context.Context, project ProjectRef, clientID string) (ResourceDescriptor, error) {
 	localHost := firstNonEmpty(c.SSHLocalHost, "127.0.0.1")
 	localPort := firstNonZero(c.SSHLocalPort, 22)
-	remotePort := c.remotePortForProject(project.ID)
-	if remotePort == 0 {
+	remotePorts := c.remotePortsForProject(project.ID)
+	if len(remotePorts) == 0 {
 		return ResourceDescriptor{}, ErrTunnelUnavailable
 	}
-	var payload struct {
-		TunnelID         string `json:"tunnel_id"`
-		RemotePort       int    `json:"remote_port"`
-		LocalPort        int    `json:"local_port"`
-		Status           string `json:"status"`
-		Lifecycle        string `json:"lifecycle"`
-		ForwardingStatus string `json:"forwarding_status"`
+	var lastErr error
+	for _, remotePort := range remotePorts {
+		var payload struct {
+			TunnelID         string `json:"tunnel_id"`
+			RemotePort       int    `json:"remote_port"`
+			LocalPort        int    `json:"local_port"`
+			Status           string `json:"status"`
+			Lifecycle        string `json:"lifecycle"`
+			ForwardingStatus string `json:"forwarding_status"`
+		}
+		body := map[string]any{
+			"client_id":   clientID,
+			"local_host":  localHost,
+			"local_port":  localPort,
+			"remote_port": remotePort,
+			"expires_in":  "never",
+		}
+		if strings.TrimSpace(c.AccessPolicyID) != "" {
+			body["access_policy_id"] = c.AccessPolicyID
+		}
+		if err := c.post(ctx, "/api/tcp-tunnels", body, &payload); err != nil {
+			lastErr = err
+			if isRemotePortInUse(err) {
+				continue
+			}
+			return ResourceDescriptor{}, err
+		}
+		if payload.TunnelID == "" {
+			lastErr = ErrTunnelUnavailable
+			return ResourceDescriptor{}, lastErr
+		}
+		return ResourceDescriptor{
+			TunnelID: payload.TunnelID,
+			ClientID: clientID,
+			SSHPort:  firstNonZero(payload.RemotePort, remotePort),
+			Metadata: map[string]any{
+				"tcp_status":            payload.Status,
+				"tcp_lifecycle":         payload.Lifecycle,
+				"tcp_forwarding_status": payload.ForwardingStatus,
+			},
+		}, nil
 	}
-	body := map[string]any{
-		"client_id":   clientID,
-		"local_host":  localHost,
-		"local_port":  localPort,
-		"remote_port": remotePort,
-		"expires_in":  "never",
+	if lastErr != nil {
+		return ResourceDescriptor{}, lastErr
 	}
-	if strings.TrimSpace(c.AccessPolicyID) != "" {
-		body["access_policy_id"] = c.AccessPolicyID
-	}
-	if err := c.post(ctx, "/api/tcp-tunnels", body, &payload); err != nil {
-		return ResourceDescriptor{}, err
-	}
-	if payload.TunnelID == "" {
-		return ResourceDescriptor{}, ErrTunnelUnavailable
-	}
-	return ResourceDescriptor{
-		TunnelID: payload.TunnelID,
-		ClientID: clientID,
-		SSHPort:  firstNonZero(payload.RemotePort, remotePort),
-		Metadata: map[string]any{
-			"tcp_status":            payload.Status,
-			"tcp_lifecycle":         payload.Lifecycle,
-			"tcp_forwarding_status": payload.ForwardingStatus,
-		},
-	}, nil
+	return ResourceDescriptor{}, ErrTunnelUnavailable
 }
 
-func (c HTTPClient) remotePortForProject(projectID string) int {
+func isRemotePortInUse(err error) bool {
+	var providerErr providerError
+	return errors.As(err, &providerErr) && providerErr.code == providerCodeRemotePortInUse
+}
+
+func (c HTTPClient) remotePortsForProject(projectID string) []int {
 	start := c.SSHRemotePortStart
 	end := c.SSHRemotePortEnd
 	if start <= 0 || end < start || end > 65535 {
-		return 0
+		return nil
 	}
+	size := end - start + 1
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(projectID))
-	return start + int(h.Sum32()%uint32(end-start+1))
+	offset := int(h.Sum32() % uint32(size))
+	ports := make([]int, 0, size)
+	for i := 0; i < size; i++ {
+		ports = append(ports, start+((offset+i)%size))
+	}
+	return ports
 }
 
 type Service struct {
@@ -759,7 +852,9 @@ func (s *Service) RevokeProjectSessions(ctx context.Context, projectID, reason s
 		if reason == "project_delete" {
 			action = "close"
 		}
-		_ = s.client.CleanupProjectResources(ctx, resource, action, reason)
+		if err := s.client.CleanupProjectResources(ctx, resource, action, reason); err != nil {
+			return err
+		}
 	}
 	return s.repo.RevokeProjectAccessSessions(ctx, projectID, reason)
 }

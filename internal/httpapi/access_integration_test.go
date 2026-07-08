@@ -449,6 +449,43 @@ func TestProjectStopRevokesActiveAccessSessions(t *testing.T) {
 	}
 }
 
+func TestProjectStopDoesNotRevokeLocalSessionWhenProviderCleanupFails(t *testing.T) {
+	client := &failingCleanupAccessClient{Client: agentunnel.FakeClient{BaseURL: "https://agentunnel.example"}}
+	store, router, projectID := newAccessIntegrationRouterWithClient(t, "stop-cleanup-fails@example.com", client)
+	cookies := loginCookies(t, router, "workos_seed_stop-cleanup-fails@example.com:stop-cleanup-fails@example.com:Stop Cleanup Fails")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/papercode-connect", nil)
+	addCookies(req, cookies)
+	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("connect status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/stop", nil)
+	addCookies(req, cookies)
+	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("stop status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var state string
+	var revoked bool
+	if err := store.SQL().QueryRowContext(context.Background(), `
+SELECT state, revoked_at IS NOT NULL
+FROM paperboat.access_sessions
+WHERE project_id = $1
+ORDER BY created_at DESC
+LIMIT 1`, projectID).Scan(&state, &revoked); err != nil {
+		t.Fatal(err)
+	}
+	if state != "active" || revoked {
+		t.Fatalf("access session state = %q revoked=%v, want active revoked=false", state, revoked)
+	}
+}
+
 func TestProjectDeleteRevokesActiveAccessSessions(t *testing.T) {
 	client := &recordingAccessClient{Client: agentunnel.FakeClient{BaseURL: "https://agentunnel.example"}}
 	store, router, projectID := newAccessIntegrationRouterWithClient(t, "delete-revokes@example.com", client)
@@ -889,6 +926,14 @@ func (c *recordingAccessClient) CleanupProjectResources(ctx context.Context, res
 	c.cleanupAction = action
 	c.cleanupReason = reason
 	return c.Client.CleanupProjectResources(ctx, resource, action, reason)
+}
+
+type failingCleanupAccessClient struct {
+	agentunnel.Client
+}
+
+func (c *failingCleanupAccessClient) CleanupProjectResources(context.Context, agentunnel.ResourceDescriptor, string, string) error {
+	return errors.New("agentunnel cleanup failed")
 }
 
 type failingIssueCredentialIssuer struct{}

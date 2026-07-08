@@ -1,6 +1,6 @@
 # Paperboat Server API
 
-Status: Phase 10 hardening in progress. The machine-readable schema is
+Status: Phase 10 hardening complete. The machine-readable schema is
 [`docs/openapi.json`](openapi.json).
 
 This API is the control-plane contract for dashboard and CLI clients. It authorizes,
@@ -31,8 +31,14 @@ Error:
 ```
 
 Every response includes a `Request-Id` header. Browser writes use the session cookie plus
-CSRF protection. Provider-affecting and billing-impacting writes require an
-`Idempotency-Key` header.
+CSRF protection. Project create, billing checkout/customer portal, admin billing
+adjustments, and GitHub config-repo provisioning require an `Idempotency-Key` header.
+Project lifecycle and access routes are replay-safe through persisted project, session,
+and orchestration state; they do not currently require a client idempotency key.
+
+Mutable resources include a numeric `version`. Dashboard updates to
+`PATCH /api/projects/{project_id}` must send either an `If-Match` header containing that
+version or a `version` field in the JSON body. Stale writes fail with `version_conflict`.
 
 ## Dashboard Reads
 
@@ -40,6 +46,7 @@ CSRF protection. Provider-affecting and billing-impacting writes require an
 - `GET /api/billing/entitlement`
 - `GET /api/billing/usage`
 - `GET /api/billing/plan-products`
+- `GET /api/dashboard/usage-summary`
 - `GET /api/catalog/plans`
 - `GET /api/catalog/machine-types`
 - `GET /api/catalog/presets`
@@ -51,6 +58,34 @@ CSRF protection. Provider-affecting and billing-impacting writes require an
 - `GET /api/projects/{project_id}/events`
 - `GET /api/projects/{project_id}/connection-status`
 
+`GET /api/projects` returns a shaped list response:
+
+```json
+{
+  "data": {
+    "items": [],
+    "pagination": {
+      "limit": 50,
+      "offset": 0,
+      "total": 0,
+      "next_offset": null
+    },
+    "filters": {
+      "state": ""
+    },
+    "sort": "-created_at"
+  }
+}
+```
+
+Supported list query parameters:
+
+- `limit` from `1` to `200` defaults to `50`.
+- `offset` defaults to `0`.
+- `state` filters by project state.
+- `sort` accepts `created_at`, `updated_at`, `name`, or `state`; prefix with `-` for
+  descending order.
+
 Catalog values are database/config driven. Dashboard clients must not hardcode plans,
 machine types, presets, idle timeouts, regions, credit weights, or storage limits.
 
@@ -61,6 +96,7 @@ machine types, presets, idle timeouts, regions, credit weights, or storage limit
 - `POST /api/billing/checkout`
 - `POST /api/billing/customer-portal`
 - `POST /api/github/oauth/start`
+- `GET /api/github/oauth/callback`
 - `POST /api/github/oauth/callback`
 - `POST /api/github/config-repo/provision`
 - `POST /api/projects`
@@ -112,6 +148,11 @@ Documented public codes currently emitted by the handlers include:
 - `github_config_not_ready`
 - `invalid_activity_source`
 - `invalid_keep_alive`
+- `invalid_pagination`
+- `invalid_sort`
+- `invalid_version`
+- `version_required`
+- `version_conflict`
 - `internal_error`
 
 Adding, removing, or renaming public error codes requires contract approval.

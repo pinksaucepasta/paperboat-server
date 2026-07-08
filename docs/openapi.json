@@ -67,9 +67,10 @@
       },
       "Project": {
         "type": "object",
-        "required": ["id", "name", "state", "repository", "current_config", "desired_config", "pending_restart_apply", "restart_required", "setup_script_revisions", "created_at", "updated_at"],
+        "required": ["id", "version", "name", "state", "repository", "current_config", "desired_config", "pending_restart_apply", "restart_required", "setup_script_revisions", "created_at", "updated_at"],
         "properties": {
           "id": { "type": "string" },
+          "version": { "type": "integer", "format": "int64" },
           "name": { "type": "string" },
           "state": {
             "type": "string",
@@ -106,6 +107,19 @@
           "setup_script_ref": { "type": "string" },
           "config_hash": { "type": "string" }
         }
+      },
+      "ProjectUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "version": { "type": "integer", "format": "int64", "description": "Current project version. Required when If-Match is not supplied." },
+          "storage_gb": { "type": "integer" },
+          "machine_type_code": { "type": "string" },
+          "region_code": { "type": "string" },
+          "preset_codes": { "type": "array", "items": { "type": "string" } },
+          "idle_timeout_code": { "type": "string" },
+          "setup_script": { "type": "string" }
+        },
+        "additionalProperties": false
       },
       "ProjectEvent": {
         "type": "object",
@@ -308,11 +322,34 @@
     "/api/catalog/regions": { "get": { "summary": "Region catalog", "responses": { "200": { "description": "Regions.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } } } } },
     "/api/github/status": { "get": { "summary": "GitHub connection status", "responses": { "200": { "description": "GitHub status.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "401": { "$ref": "#/components/responses/Error" } } } },
     "/api/github/oauth/start": { "post": { "summary": "Start GitHub OAuth", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "responses": { "200": { "description": "OAuth URL and state.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "400": { "$ref": "#/components/responses/Error" } } } },
-    "/api/github/oauth/callback": { "post": { "summary": "Complete GitHub OAuth", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "responses": { "200": { "description": "GitHub connected.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "400": { "$ref": "#/components/responses/Error" } } } },
+    "/api/github/oauth/callback": {
+      "get": {
+        "summary": "Complete GitHub OAuth from browser redirect",
+        "responses": {
+          "200": { "description": "GitHub connected.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "400": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "post": {
+        "summary": "Complete GitHub OAuth",
+        "security": [{ "cookieSession": [] }, { "csrfHeader": [] }],
+        "responses": {
+          "200": { "description": "GitHub connected.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "400": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
     "/api/github/config-repo/provision": { "post": { "summary": "Provision private config repo", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }], "responses": { "200": { "description": "Config repo metadata.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "400": { "$ref": "#/components/responses/Error" } } } },
+    "/api/dashboard/usage-summary": { "get": { "summary": "Dashboard usage summary", "responses": { "200": { "description": "Credit, storage, and project summary.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "401": { "$ref": "#/components/responses/Error" } } } },
     "/api/projects": {
       "get": {
         "summary": "List projects",
+        "parameters": [
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 } },
+          { "name": "offset", "in": "query", "schema": { "type": "integer", "minimum": 0, "default": 0 } },
+          { "name": "state", "in": "query", "schema": { "type": "string" } },
+          { "name": "sort", "in": "query", "schema": { "type": "string", "enum": ["created_at", "-created_at", "updated_at", "-updated_at", "name", "-name", "state", "-state"], "default": "-created_at" } }
+        ],
         "responses": {
           "200": {
             "description": "Projects.",
@@ -356,8 +393,20 @@
       },
       "patch": {
         "summary": "Update desired project configuration",
+        "parameters": [{ "name": "If-Match", "in": "header", "required": false, "schema": { "type": "string" }, "description": "Project version, optionally quoted or prefixed with project-version-." }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ProjectUpdateRequest" }
+            }
+          }
+        },
         "responses": {
           "200": { "description": "Updated project.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "400": { "$ref": "#/components/responses/Error" },
+          "412": { "$ref": "#/components/responses/Error" },
+          "428": { "$ref": "#/components/responses/Error" },
           "409": { "$ref": "#/components/responses/Error" }
         }
       },
