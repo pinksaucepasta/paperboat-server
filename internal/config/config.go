@@ -60,6 +60,7 @@ type Billing struct {
 
 type Metering struct {
 	MinimumStartCreditWindow time.Duration `json:"minimum_start_credit_window"`
+	MaxKeepAliveDuration     time.Duration `json:"max_keep_alive_duration"`
 }
 
 type GitHub struct {
@@ -113,6 +114,7 @@ type Secrets struct {
 	FlyAPIToken            string   `json:"fly_api_token"`
 	AgentunnelAPIKey       string   `json:"agentunnel_api_key"`
 	AgentunnelMachineToken string   `json:"agentunnel_machine_token"`
+	MachineActivityToken   string   `json:"machine_activity_token"`
 }
 
 type LoadOptions struct {
@@ -173,6 +175,7 @@ func Default() Config {
 		},
 		Metering: Metering{
 			MinimumStartCreditWindow: 5 * time.Minute,
+			MaxKeepAliveDuration:     12 * time.Hour,
 		},
 		Providers: Providers{
 			FakeMode: true,
@@ -243,6 +246,9 @@ func (c Config) Validate() error {
 	}
 	if c.Metering.MinimumStartCreditWindow <= 0 {
 		errs = append(errs, fmt.Errorf("metering.minimum_start_credit_window must be positive"))
+	}
+	if c.Metering.MaxKeepAliveDuration <= 0 {
+		errs = append(errs, fmt.Errorf("metering.max_keep_alive_duration must be positive"))
 	}
 	if strings.TrimSpace(c.Providers.Agentunnel.PapercodeLocalURL) == "" {
 		errs = append(errs, fmt.Errorf("agentunnel.papercode_local_url is required"))
@@ -375,6 +381,13 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 		}
 		c.Metering.MinimumStartCreditWindow = parsed
 	}
+	if v, ok := lookup("PAPERBOAT_MAX_KEEP_ALIVE_DURATION"); ok {
+		parsed, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("PAPERBOAT_MAX_KEEP_ALIVE_DURATION: %w", err)
+		}
+		c.Metering.MaxKeepAliveDuration = parsed
+	}
 	if v, ok := lookup("PAPERBOAT_MAX_BODY_BYTES"); ok {
 		parsed, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
@@ -420,6 +433,9 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 		return err
 	}
 	if err := setSecret("PAPERBOAT_AGENTUNNEL_MACHINE_TOKEN", &c.Secrets.AgentunnelMachineToken); err != nil {
+		return err
+	}
+	if err := setSecret("PAPERBOAT_MACHINE_ACTIVITY_TOKEN", &c.Secrets.MachineActivityToken); err != nil {
 		return err
 	}
 	if v, ok := lookup("PAPERBOAT_SESSION_KEYS"); ok {

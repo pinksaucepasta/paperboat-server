@@ -72,6 +72,44 @@ SELECT count(*) FROM paperboat.audit_events WHERE event_type IN ('auth.login', '
 	}
 }
 
+func TestCSRFEndpointBootstrapsMissingCSRFCookie(t *testing.T) {
+	_, router := newAuthIntegrationRouter(t)
+	cookies := loginCookies(t, router, "workos_cli_csrf:cli-csrf@example.com:CLI CSRF")
+	var sessionCookie *http.Cookie
+	for _, cookie := range cookies {
+		if cookie.Name == auth.SessionCookieName {
+			sessionCookie = cookie
+			break
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("missing session cookie")
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/csrf", nil)
+	req.AddCookie(sessionCookie)
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("csrf status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var gotCSRF, gotSession bool
+	for _, cookie := range rec.Result().Cookies() {
+		if cookie.Name == auth.CSRFCookieName && cookie.Value != "" {
+			gotCSRF = true
+		}
+		if cookie.Name == auth.SessionCookieName {
+			gotSession = true
+		}
+	}
+	if !gotCSRF || gotSession {
+		t.Fatalf("expected csrf cookie without session rotation, got %#v", rec.Result().Cookies())
+	}
+	if !strings.Contains(rec.Body.String(), `"csrf_token"`) {
+		t.Fatalf("csrf response missing token: %s", rec.Body.String())
+	}
+}
+
 func TestWorkOSCallbackRejectsMissingState(t *testing.T) {
 	_, router := newAuthIntegrationRouter(t)
 	rec := httptest.NewRecorder()

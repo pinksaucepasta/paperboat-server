@@ -18,6 +18,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
+	"github.com/pinksaucepasta/paperboat-server/internal/metering"
 	"github.com/pinksaucepasta/paperboat-server/internal/observability"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 )
@@ -35,6 +36,7 @@ type Options struct {
 	GitHub           *pbgithub.Service
 	Projects         *projects.Service
 	Agentunnel       *agentunnel.Service
+	MeteringRepo     *metering.RuntimeRepository
 	OverrideHandler  http.Handler
 }
 
@@ -54,6 +56,9 @@ func NewRouter(opts Options) http.Handler {
 		}
 		if opts.Billing != nil {
 			mux.HandleFunc("POST /api/webhooks/polar", polarWebhook(opts.Billing, opts.Config.Secrets.PolarWebhookSecret, opts.Config.Billing.PolarWebhookTolerance))
+		}
+		if opts.MeteringRepo != nil {
+			mux.HandleFunc("POST /api/machine/activity-heartbeat", activityHeartbeat(opts.MeteringRepo))
 		}
 		mux.HandleFunc("/", notImplemented)
 		handler = mux
@@ -126,6 +131,7 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 			mux.Handle("POST /api/projects/{project_id}/start", requireAuth(opts.Auth, requireEntitlement(opts.Auth, requireCSRF(opts.Auth, projectsStart(opts.Projects)))))
 			mux.Handle("POST /api/projects/{project_id}/stop", requireAuth(opts.Auth, requireEntitlement(opts.Auth, requireCSRF(opts.Auth, projectsStop(opts.Projects)))))
 			mux.Handle("POST /api/projects/{project_id}/restart", requireAuth(opts.Auth, requireEntitlement(opts.Auth, requireCSRF(opts.Auth, projectsRestart(opts.Projects)))))
+			mux.Handle("POST /api/projects/{project_id}/keep-alive", requireAuth(opts.Auth, requireEntitlement(opts.Auth, requireCSRF(opts.Auth, projectsKeepAlive(opts.Projects)))))
 			mux.Handle("GET /api/projects/{project_id}/events", requireAuth(opts.Auth, requireEntitlement(opts.Auth, projectsEvents(opts.Projects))))
 			if opts.Agentunnel != nil {
 				mux.Handle("POST /api/projects/{project_id}/connect", requireAuth(opts.Auth, requireEntitlement(opts.Auth, projectsConnect(opts.Agentunnel, agentunnel.ConnectGeneric))))

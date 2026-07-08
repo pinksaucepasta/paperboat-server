@@ -19,6 +19,14 @@ RUN go mod download
 COPY agentunnel ./
 RUN go build -o /out/agentunnel ./cmd/agentunnel
 
+FROM golang:1.25-bookworm AS paperboat-server-tools
+
+WORKDIR /src/paperboat-server
+COPY paperboat-server/go.mod paperboat-server/go.sum ./
+RUN go mod download
+COPY paperboat-server ./
+RUN go build -o /out/paperboat-activity-reporter-go ./cmd/paperboat-activity-reporter
+
 FROM node:24-bookworm-slim
 
 RUN apt-get update \
@@ -38,6 +46,7 @@ ENV PAPERBOAT_WORKSPACE=/workspace \
 
 COPY --from=papercode /opt/papercode-server /opt/papercode-server
 COPY --from=agentunnel /out/agentunnel /usr/local/bin/agentunnel
+COPY --from=paperboat-server-tools /out/paperboat-activity-reporter-go /usr/local/bin/paperboat-activity-reporter-go
 COPY paperboat-server/deploy/project-vm/bin/ /usr/local/bin/
 
 RUN chmod +x /usr/local/bin/paperboat-*

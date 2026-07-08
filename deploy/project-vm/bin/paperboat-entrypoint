@@ -7,6 +7,8 @@ workspace="${PAPERBOAT_WORKSPACE:-/workspace}"
 readiness_file="${PAPERBOAT_READINESS_FILE:-$runtime_dir/readiness.json}"
 bin_dir="${PAPERBOAT_BIN_DIR:-/usr/local/bin}"
 child_pids=()
+activity_pid=""
+activity_restart_count=0
 
 mkdir -p "$runtime_dir" "$log_dir" "$workspace"
 export GIT_ASKPASS="${PAPERBOAT_GIT_ASKPASS:-$bin_dir/paperboat-git-askpass}"
@@ -77,15 +79,19 @@ child_pids+=("$agentunnel_pid")
 "${PAPERBOAT_WAIT_AGENTUNNEL_COMMAND:-$bin_dir/paperboat-wait-agentunnel}" 60
 
 log info "starting activity reporter"
-"${PAPERBOAT_ACTIVITY_COMMAND:-$bin_dir/paperboat-activity-reporter}" &
-activity_pid=$!
-child_pids+=("$activity_pid")
+start_activity() {
+  "${PAPERBOAT_ACTIVITY_COMMAND:-$bin_dir/paperboat-activity-reporter}" &
+  activity_pid=$!
+  child_pids+=("$activity_pid")
+  log info "activity reporter started"
+}
+start_activity
 
 write_readiness ready ""
 log info "runtime ready"
 
 while :; do
-  for child_pid in "$papercode_pid" "$agentunnel_pid" "$activity_pid"; do
+  for child_pid in "$papercode_pid" "$agentunnel_pid"; do
     if ! kill -0 "$child_pid" 2>/dev/null; then
       wait "$child_pid" 2>/dev/null || status=$?
       status="${status:-1}"
@@ -93,5 +99,18 @@ while :; do
       exit "$status"
     fi
   done
+  if [ -n "$activity_pid" ] && ! kill -0 "$activity_pid" 2>/dev/null; then
+    wait "$activity_pid" 2>/dev/null || activity_status=$?
+    activity_status="${activity_status:-1}"
+    activity_restart_count=$((activity_restart_count + 1))
+    backoff="$activity_restart_count"
+    if [ "$backoff" -gt "${PAPERBOAT_ACTIVITY_RESTART_MAX_BACKOFF_SECONDS:-30}" ]; then
+      backoff="${PAPERBOAT_ACTIVITY_RESTART_MAX_BACKOFF_SECONDS:-30}"
+    fi
+    printf '{"ts":"%s","component":"entrypoint","level":"error","message":"activity reporter exited","status":%s,"restart_count":%s,"backoff_seconds":%s}\n' \
+      "$(date -Iseconds)" "$activity_status" "$activity_restart_count" "$backoff" >&2
+    sleep "$backoff"
+    start_activity
+  fi
   sleep 1
 done

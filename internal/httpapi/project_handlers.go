@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
@@ -53,6 +54,41 @@ func projectsCreate(service *projects.Service) http.HandlerFunc {
 			status = http.StatusOK
 		}
 		writeJSON(w, status, SuccessResponse{Data: project})
+	}
+}
+
+func projectsKeepAlive(service *projects.Service) http.HandlerFunc {
+	type request struct {
+		DurationSeconds int  `json:"duration_seconds"`
+		Clear           bool `json:"clear"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		var body request
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON.")
+			return
+		}
+		if !body.Clear && body.DurationSeconds <= 0 {
+			writeError(w, r, http.StatusBadRequest, "invalid_keep_alive", "Keep-alive duration must be positive unless clear is true.")
+			return
+		}
+		duration := time.Duration(body.DurationSeconds) * time.Second
+		if body.Clear {
+			duration = 0
+		}
+		project, until, err := service.SetKeepAlive(r.Context(), p.User.ID, r.PathValue("project_id"), duration)
+		if writeProjectError(w, r, err) {
+			return
+		}
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]any{
+			"project":          project,
+			"keep_alive_until": until,
+		}})
 	}
 }
 
@@ -225,6 +261,8 @@ func writeProjectError(w http.ResponseWriter, r *http.Request, err error) bool {
 		writeError(w, r, http.StatusConflict, "project_deleted", "Deleted projects cannot be changed.")
 	case errors.Is(err, projects.ErrInvalidState):
 		writeError(w, r, http.StatusConflict, "invalid_project_state", "Project state does not allow this operation.")
+	case errors.Is(err, projects.ErrInvalidKeepAlive):
+		writeError(w, r, http.StatusBadRequest, "invalid_keep_alive", "Keep-alive duration is outside the configured bounds.")
 	default:
 		writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
 	}

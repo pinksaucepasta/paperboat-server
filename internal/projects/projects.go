@@ -34,6 +34,7 @@ var (
 	ErrNotFound               = errors.New("project not found")
 	ErrDeleted                = errors.New("project is deleted")
 	ErrInvalidState           = errors.New("project state does not allow this operation")
+	ErrInvalidKeepAlive       = errors.New("keep alive duration is outside configured bounds")
 	ErrInsufficientStorage    = metering.ErrInsufficientStorage
 	ErrInsufficientCredits    = errors.New("insufficient credits to start project")
 )
@@ -42,6 +43,7 @@ type Service struct {
 	repo                     *Repository
 	audit                    *audit.Writer
 	minimumStartCreditWindow time.Duration
+	maxKeepAliveDuration     time.Duration
 }
 
 func NewService(store *db.DB, auditWriter *audit.Writer, cfg config.Config) *Service {
@@ -49,6 +51,7 @@ func NewService(store *db.DB, auditWriter *audit.Writer, cfg config.Config) *Ser
 		repo:                     NewRepository(store, cfg.Secrets.EncryptionKey),
 		audit:                    auditWriter,
 		minimumStartCreditWindow: cfg.Metering.MinimumStartCreditWindow,
+		maxKeepAliveDuration:     cfg.Metering.MaxKeepAliveDuration,
 	}
 }
 
@@ -226,6 +229,36 @@ func (s *Service) Restart(ctx context.Context, userID, projectID string) (Projec
 
 func (s *Service) Events(ctx context.Context, userID, projectID string) ([]Event, error) {
 	return s.repo.Events(ctx, userID, projectID)
+}
+
+func (s *Service) SetKeepAlive(ctx context.Context, userID, projectID string, duration time.Duration) (Project, *time.Time, error) {
+	if duration < 0 || duration > s.maxKeepAliveDuration {
+		return Project{}, nil, ErrInvalidKeepAlive
+	}
+	project, err := s.repo.Get(ctx, userID, projectID)
+	if err != nil {
+		return Project{}, nil, err
+	}
+	if project.State == "deleted" || project.State == "deleting" {
+		return Project{}, nil, ErrDeleted
+	}
+	var until *time.Time
+	if duration > 0 {
+		t := time.Now().UTC().Add(duration)
+		until = &t
+	}
+	if err := s.repo.SetKeepAlive(ctx, userID, projectID, until); err != nil {
+		return Project{}, nil, err
+	}
+	eventType := "project.keep_alive_cleared"
+	metadata := map[string]any{}
+	if until != nil {
+		eventType = "project.keep_alive_set"
+		metadata["keep_alive_until"] = until.UTC().Format(time.RFC3339Nano)
+		metadata["duration_seconds"] = int(duration.Seconds())
+	}
+	_ = s.audit.Write(ctx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: eventType, ResourceType: "project", ResourceID: projectID, IdempotencyKey: eventType + ":" + projectID + ":" + time.Now().UTC().Format(time.RFC3339Nano), Metadata: metadata})
+	return project, until, nil
 }
 
 func (s *Service) buildDesiredChange(ctx context.Context, current Project, input UpdateInput) (desiredChange, error) {
@@ -866,6 +899,37 @@ SET last_activity_at = greatest(project_activity_markers.last_activity_at, EXCLU
     metadata = EXCLUDED.metadata,
     updated_at = now()`, projectID, at, source, string(b))
 		return err
+	})
+}
+
+func (r *Repository) SetKeepAlive(ctx context.Context, userID, projectID string, until *time.Time) error {
+	if _, err := r.Get(ctx, userID, projectID); err != nil {
+		return err
+	}
+	var value any
+	eventType := "project.keep_alive_cleared"
+	message := "Project keep-alive pin was cleared."
+	metadata := map[string]any{}
+	if until != nil {
+		value = until.UTC()
+		eventType = "project.keep_alive_set"
+		message = "Project keep-alive pin was set."
+		metadata["keep_alive_until"] = until.UTC().Format(time.RFC3339Nano)
+	} else {
+		value = nil
+	}
+	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		_, err := tx.Exec(ctx, `
+INSERT INTO project_activity_markers (project_id, last_activity_at, source, metadata, keep_alive_until, idle_warning_sent_at)
+VALUES ($1, now(), 'connect_session', '{}'::jsonb, $2, NULL)
+ON CONFLICT (project_id) DO UPDATE
+SET keep_alive_until = EXCLUDED.keep_alive_until,
+    idle_warning_sent_at = NULL,
+    updated_at = now()`, projectID, value)
+		if err != nil {
+			return err
+		}
+		return insertEvent(ctx, tx, projectID, eventType, message, metadata)
 	})
 }
 

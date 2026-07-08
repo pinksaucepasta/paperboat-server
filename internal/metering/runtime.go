@@ -3,6 +3,7 @@ package metering
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
+	"github.com/pinksaucepasta/paperboat-server/internal/secrets"
 )
 
 type RuntimeService struct {
@@ -20,20 +22,46 @@ type RuntimeService struct {
 	fly     fly.Client
 	billing *billing.Repository
 	now     func() time.Time
+	cfg     EnforcementConfig
 }
+
+type EnforcementConfig struct {
+	HeartbeatGrace        time.Duration
+	ReporterLostStopGrace time.Duration
+	IdleWarningLead       time.Duration
+}
+
+var ErrInvalidHeartbeatCredential = errors.New("invalid heartbeat credential")
 
 func NewRuntimeService(store *db.DB, flyClient fly.Client, billingRepo *billing.Repository) *RuntimeService {
 	return &RuntimeService{
-		repo:    NewRuntimeRepository(store),
+		repo:    NewRuntimeRepository(store, ""),
 		fly:     flyClient,
 		billing: billingRepo,
 		now:     func() time.Time { return time.Now().UTC() },
+		cfg: EnforcementConfig{
+			HeartbeatGrace:        2 * time.Minute,
+			ReporterLostStopGrace: 10 * time.Minute,
+			IdleWarningLead:       5 * time.Minute,
+		},
 	}
 }
 
 func (s *RuntimeService) SetClock(now func() time.Time) {
 	if now != nil {
 		s.now = now
+	}
+}
+
+func (s *RuntimeService) SetEnforcementConfig(cfg EnforcementConfig) {
+	if cfg.HeartbeatGrace > 0 {
+		s.cfg.HeartbeatGrace = cfg.HeartbeatGrace
+	}
+	if cfg.ReporterLostStopGrace > 0 {
+		s.cfg.ReporterLostStopGrace = cfg.ReporterLostStopGrace
+	}
+	if cfg.IdleWarningLead > 0 {
+		s.cfg.IdleWarningLead = cfg.IdleWarningLead
 	}
 }
 
@@ -67,7 +95,7 @@ func (s *RuntimeService) RunOnce(ctx context.Context) error {
 			return err
 		}
 	}
-	return s.repo.QueueIdleStops(ctx, now)
+	return s.repo.EnforceIdleAndReporterState(ctx, now, s.cfg)
 }
 
 func (s *RuntimeService) Worker(interval time.Duration) func(context.Context) error {
@@ -166,11 +194,12 @@ func (s *RuntimeService) processCheckpoint(ctx context.Context, checkpoint Check
 }
 
 type RuntimeRepository struct {
-	db *db.DB
+	db            *db.DB
+	encryptionKey string
 }
 
-func NewRuntimeRepository(store *db.DB) *RuntimeRepository {
-	return &RuntimeRepository{db: store}
+func NewRuntimeRepository(store *db.DB, encryptionKey string) *RuntimeRepository {
+	return &RuntimeRepository{db: store, encryptionKey: encryptionKey}
 }
 
 type MeterableMachine struct {
@@ -205,6 +234,15 @@ type Checkpoint struct {
 	CreditWeight      string
 	CreditsDebited    string
 	IdempotencyKey    string
+}
+
+type ActivityHeartbeat struct {
+	ProjectID       string
+	MachineID       string
+	LastActivityAt  time.Time
+	LastHeartbeatAt time.Time
+	ReporterVersion string
+	Signals         map[string]string
 }
 
 func (r *RuntimeRepository) MeterableMachines(ctx context.Context) ([]MeterableMachine, error) {
@@ -496,17 +534,17 @@ func (r *RuntimeRepository) RecordObservedProjectState(ctx context.Context, proj
 	})
 }
 
-func (r *RuntimeRepository) QueueIdleStops(ctx context.Context, now time.Time) error {
+func (r *RuntimeRepository) EnforceIdleAndReporterState(ctx context.Context, now time.Time, cfg EnforcementConfig) error {
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		rows, err := tx.Query(ctx, `
-SELECT p.id, coalesce(pam.last_activity_at, mri.started_at), ito.duration_seconds
+SELECT p.id, coalesce(pam.last_activity_at, mri.started_at), ito.duration_seconds, pam.keep_alive_until
 FROM projects p
 JOIN machine_runtime_intervals mri ON mri.project_id = p.id AND mri.stopped_at IS NULL
 JOIN project_runtime_configs prc ON prc.project_id = p.id
 JOIN idle_timeout_options ito ON ito.id = prc.applied_idle_timeout_option_id
 LEFT JOIN project_activity_markers pam ON pam.project_id = p.id
 WHERE p.state = 'running'
-  AND coalesce(pam.last_activity_at, mri.started_at) <= $1::timestamptz - (ito.duration_seconds * interval '1 second')
+  AND (pam.keep_alive_until IS NULL OR pam.keep_alive_until <= $1)
 FOR UPDATE OF p SKIP LOCKED`, now)
 		if err != nil {
 			return err
@@ -515,11 +553,12 @@ FOR UPDATE OF p SKIP LOCKED`, now)
 			projectID      string
 			lastActivity   time.Time
 			timeoutSeconds int
+			keepAliveUntil sql.NullTime
 		}
 		var stops []idleStop
 		for rows.Next() {
 			var stop idleStop
-			if err := rows.Scan(&stop.projectID, &stop.lastActivity, &stop.timeoutSeconds); err != nil {
+			if err := rows.Scan(&stop.projectID, &stop.lastActivity, &stop.timeoutSeconds, &stop.keepAliveUntil); err != nil {
 				rows.Close()
 				return err
 			}
@@ -531,6 +570,16 @@ FOR UPDATE OF p SKIP LOCKED`, now)
 		}
 		rows.Close()
 		for _, stop := range stops {
+			deadline := stop.lastActivity.Add(time.Duration(stop.timeoutSeconds) * time.Second)
+			if cfg.IdleWarningLead > 0 && now.Before(deadline) && !now.Before(deadline.Add(-cfg.IdleWarningLead)) {
+				if err := emitIdleWarningTx(ctx, tx, stop.projectID, stop.lastActivity, deadline); err != nil {
+					return err
+				}
+				continue
+			}
+			if now.Before(deadline) {
+				continue
+			}
 			if err := queueSystemStopTx(ctx, tx, stop.projectID, "idle_timeout", map[string]any{
 				"last_activity_at":     stop.lastActivity.UTC().Format(time.RFC3339Nano),
 				"idle_timeout_seconds": stop.timeoutSeconds,
@@ -538,8 +587,112 @@ FOR UPDATE OF p SKIP LOCKED`, now)
 				return err
 			}
 		}
+		if cfg.HeartbeatGrace > 0 && cfg.ReporterLostStopGrace > 0 {
+			if err := r.enforceReporterLossTx(ctx, tx, now, cfg); err != nil {
+				return err
+			}
+		}
+		if err := r.enforceEntitlementLossTx(ctx, tx, now); err != nil {
+			return err
+		}
 		return nil
 	})
+}
+
+func (r *RuntimeRepository) enforceEntitlementLossTx(ctx context.Context, tx *db.Tx, now time.Time) error {
+	rows, err := tx.Query(ctx, `
+SELECT DISTINCT p.id, p.user_id
+FROM projects p
+JOIN machine_runtime_intervals mri ON mri.project_id = p.id AND mri.stopped_at IS NULL
+WHERE p.state = 'running'
+  AND NOT EXISTS (
+    SELECT 1 FROM subscriptions s
+    WHERE s.user_id = p.user_id
+      AND s.state IN ('active', 'trialing')
+      AND (s.current_period_end IS NULL OR s.current_period_end > $1)
+  )
+FOR UPDATE OF p SKIP LOCKED`, now)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	type stop struct {
+		projectID string
+		userID    string
+	}
+	var stops []stop
+	for rows.Next() {
+		var item stop
+		if err := rows.Scan(&item.projectID, &item.userID); err != nil {
+			return err
+		}
+		stops = append(stops, item)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, item := range stops {
+		if err := queueSystemStopTx(ctx, tx, item.projectID, "entitlement_lost", map[string]any{
+			"user_id": item.userID,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *RuntimeRepository) enforceReporterLossTx(ctx context.Context, tx *db.Tx, now time.Time, cfg EnforcementConfig) error {
+	rows, err := tx.Query(ctx, `
+SELECT p.id, pam.last_heartbeat_at, pam.reporter_lost_since
+FROM projects p
+JOIN machine_runtime_intervals mri ON mri.project_id = p.id AND mri.stopped_at IS NULL
+LEFT JOIN project_activity_markers pam ON pam.project_id = p.id
+WHERE p.state = 'running'
+  AND pam.last_heartbeat_at IS NOT NULL
+  AND pam.last_heartbeat_at <= $1::timestamptz
+FOR UPDATE OF p SKIP LOCKED`, now.Add(-cfg.HeartbeatGrace))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	type lost struct {
+		projectID string
+		heartbeat time.Time
+		lostSince sql.NullTime
+	}
+	var lostRows []lost
+	for rows.Next() {
+		var item lost
+		if err := rows.Scan(&item.projectID, &item.heartbeat, &item.lostSince); err != nil {
+			return err
+		}
+		lostRows = append(lostRows, item)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, item := range lostRows {
+		lostSince := item.heartbeat.Add(cfg.HeartbeatGrace)
+		if item.lostSince.Valid {
+			lostSince = item.lostSince.Time
+		} else if _, err := tx.Exec(ctx, `UPDATE project_activity_markers SET reporter_lost_since = $2, updated_at = now() WHERE project_id = $1`, item.projectID, lostSince); err != nil {
+			return err
+		}
+		if !now.Before(lostSince.Add(cfg.ReporterLostStopGrace)) {
+			if err := queueSystemStopTx(ctx, tx, item.projectID, "activity_reporter_lost", map[string]any{
+				"last_heartbeat_at": item.heartbeat.UTC().Format(time.RFC3339Nano),
+				"lost_since":        lostSince.UTC().Format(time.RFC3339Nano),
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	_, err = tx.Exec(ctx, `
+UPDATE project_activity_markers
+SET reporter_lost_since = NULL, updated_at = now()
+WHERE reporter_lost_since IS NOT NULL
+  AND last_heartbeat_at > $1::timestamptz`, now.Add(-cfg.HeartbeatGrace))
+	return err
 }
 
 func (r *RuntimeRepository) RecordActivity(ctx context.Context, projectID string, at time.Time, source string, metadata map[string]any) error {
@@ -563,6 +716,100 @@ SET last_activity_at = greatest(project_activity_markers.last_activity_at, EXCLU
     metadata = EXCLUDED.metadata,
     updated_at = now()`, projectID, at, source, string(b))
 		return err
+	})
+}
+
+func (r *RuntimeRepository) RecordHeartbeat(ctx context.Context, heartbeat ActivityHeartbeat) error {
+	if heartbeat.LastHeartbeatAt.IsZero() {
+		heartbeat.LastHeartbeatAt = time.Now().UTC()
+	}
+	if heartbeat.LastActivityAt.IsZero() {
+		heartbeat.LastActivityAt = heartbeat.LastHeartbeatAt
+	}
+	signals := heartbeat.Signals
+	if signals == nil {
+		signals = map[string]string{}
+	}
+	b, err := json.Marshal(signals)
+	if err != nil {
+		return err
+	}
+	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		_, err := tx.Exec(ctx, `
+INSERT INTO project_activity_markers
+	(project_id, machine_id, last_activity_at, source, metadata, last_heartbeat_at, reporter_version, signals)
+VALUES ($1, $2, $3, 'vm_heartbeat', '{}'::jsonb, $4, $5, $6::jsonb)
+ON CONFLICT (project_id) DO UPDATE
+SET machine_id = EXCLUDED.machine_id,
+    last_activity_at = greatest(project_activity_markers.last_activity_at, EXCLUDED.last_activity_at),
+    source = EXCLUDED.source,
+    last_heartbeat_at = greatest(coalesce(project_activity_markers.last_heartbeat_at, '-infinity'::timestamptz), EXCLUDED.last_heartbeat_at),
+    reporter_version = EXCLUDED.reporter_version,
+    signals = EXCLUDED.signals,
+    reporter_lost_since = NULL,
+    idle_warning_sent_at = CASE
+      WHEN EXCLUDED.last_activity_at > project_activity_markers.last_activity_at THEN NULL
+      ELSE project_activity_markers.idle_warning_sent_at
+    END,
+    updated_at = now()`,
+			heartbeat.ProjectID, heartbeat.MachineID, heartbeat.LastActivityAt, heartbeat.LastHeartbeatAt, heartbeat.ReporterVersion, string(b))
+		return err
+	})
+}
+
+func (r *RuntimeRepository) VerifyHeartbeatCredential(ctx context.Context, projectID, machineID, token string) error {
+	if projectID == "" || machineID == "" || token == "" || r.encryptionKey == "" {
+		return ErrInvalidHeartbeatCredential
+	}
+	var encoded string
+	err := r.db.SQL().QueryRowContext(ctx, `
+SELECT ar.metadata->>'machine_token_ciphertext'
+FROM paperboat.fly_machines fm
+JOIN paperboat.agentunnel_resources ar ON ar.project_id = fm.project_id
+WHERE fm.project_id = $1 AND fm.fly_machine_id = $2`, projectID, machineID).Scan(&encoded)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrInvalidHeartbeatCredential
+	}
+	if err != nil {
+		return err
+	}
+	if encoded == "" {
+		return ErrInvalidHeartbeatCredential
+	}
+	ciphertext, err := hex.DecodeString(encoded)
+	if err != nil {
+		return ErrInvalidHeartbeatCredential
+	}
+	expected, err := secrets.Decrypt(r.encryptionKey, ciphertext)
+	if err != nil {
+		return ErrInvalidHeartbeatCredential
+	}
+	if subtle.ConstantTimeCompare([]byte(token), []byte(expected)) != 1 {
+		return ErrInvalidHeartbeatCredential
+	}
+	return nil
+}
+
+func emitIdleWarningTx(ctx context.Context, tx *db.Tx, projectID string, lastActivity, deadline time.Time) error {
+	result, err := tx.Exec(ctx, `
+INSERT INTO project_activity_markers (project_id, last_activity_at, source, metadata, idle_warning_sent_at)
+VALUES ($1, $2, 'server', '{}'::jsonb, now())
+ON CONFLICT (project_id) DO UPDATE
+SET idle_warning_sent_at = now(), updated_at = now()
+WHERE project_activity_markers.idle_warning_sent_at IS NULL`, projectID, lastActivity)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return nil
+	}
+	return insertEvent(ctx, tx, projectID, "project.idle_stop_warning", "Project is approaching its configured idle timeout.", map[string]any{
+		"last_activity_at": lastActivity.UTC().Format(time.RFC3339Nano),
+		"idle_deadline":    deadline.UTC().Format(time.RFC3339Nano),
 	})
 }
 
@@ -599,6 +846,12 @@ WHERE idempotency_key = $1`, key, payload); err != nil {
 	}
 	if reason == "credit_exhausted" {
 		message = "Project credits were exhausted; stop was queued."
+	}
+	if reason == "activity_reporter_lost" {
+		message = "Project activity reporter stopped heartbeating; stop was queued."
+	}
+	if reason == "entitlement_lost" {
+		message = "Project entitlement is inactive; stop was queued."
 	}
 	return insertEvent(ctx, tx, projectID, "project.stop_queued."+reason, message, metadata)
 }

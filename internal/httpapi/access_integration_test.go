@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -18,7 +19,9 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
+	"github.com/pinksaucepasta/paperboat-server/internal/metering"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
+	"github.com/pinksaucepasta/paperboat-server/internal/secrets"
 )
 
 func TestAccessConnectIssuesPapercodeDescriptorAndRecordsSession(t *testing.T) {
@@ -107,6 +110,132 @@ func TestConnectionStatusDoesNotRequireConfigRepoReadiness(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), "github_config_not_ready") {
 		t.Fatalf("status leaked CLI-only readiness reason: %s", rec.Body.String())
+	}
+}
+
+func TestConnectionStatusSurfacesLatestStopReason(t *testing.T) {
+	store, router, projectID := newAccessIntegrationRouter(t, "status-stop-reason@example.com")
+	cookies := loginCookies(t, router, "workos_seed_status-stop-reason@example.com:status-stop-reason@example.com:Status Stop")
+	if _, err := store.SQL().ExecContext(context.Background(), `UPDATE paperboat.projects SET state = 'stopped' WHERE id = $1`, projectID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(context.Background(), `
+INSERT INTO paperboat.project_events (id, project_id, event_type, message, metadata)
+VALUES ($2, $1, 'project.stop_queued.idle_timeout', 'stopped for test', '{}'::jsonb)`, projectID, "pevt_stop_reason_"+projectID); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/connection-status", nil)
+	addCookies(req, cookies)
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"connectable":false`) || !strings.Contains(rec.Body.String(), `"reason":"idle_timeout"`) {
+		t.Fatalf("expected idle stop reason in status, body = %s", rec.Body.String())
+	}
+}
+
+func TestMachineActivityHeartbeatRequiresProjectMachineCredential(t *testing.T) {
+	store, router, projectID := newAccessIntegrationRouter(t, "heartbeat@example.com")
+	const machineID = "fly_machine_heartbeat"
+	const machineToken = "project-scoped-machine-token"
+	seedHeartbeatMachineCredential(t, store, projectID, machineID, machineToken)
+
+	body := `{"project_id":"` + projectID + `","machine_id":"` + machineID + `","last_activity_at":"2026-07-06T12:00:00Z","sampled_at":"2026-07-06T12:00:05Z","reporter_version":"test","signals":{"input":"2026-07-06T12:00:00Z"}}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/machine/activity-heartbeat", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer wrong-token")
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong token status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	otherProjectBody := strings.Replace(body, projectID, "other-project", 1)
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/machine/activity-heartbeat", strings.NewReader(otherProjectBody))
+	req.Header.Set("Authorization", "Bearer "+machineToken)
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong project status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	wrongMachineBody := strings.Replace(body, machineID, "stale-machine", 1)
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/machine/activity-heartbeat", strings.NewReader(wrongMachineBody))
+	req.Header.Set("Authorization", "Bearer "+machineToken)
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong machine status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/machine/activity-heartbeat", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+machineToken)
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("valid heartbeat status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var recordedMachine string
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT machine_id FROM paperboat.project_activity_markers WHERE project_id = $1`, projectID).Scan(&recordedMachine); err != nil {
+		t.Fatal(err)
+	}
+	if recordedMachine != machineID {
+		t.Fatalf("recorded machine = %q, want %q", recordedMachine, machineID)
+	}
+}
+
+func TestProjectKeepAliveRequiresCSRF(t *testing.T) {
+	_, router, projectID := newAccessIntegrationRouter(t, "keepalive-csrf@example.com")
+	cookies := loginCookies(t, router, "workos_seed_keepalive-csrf@example.com:keepalive-csrf@example.com:Keepalive CSRF")
+	body := `{"duration_seconds":3600}`
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/keep-alive", strings.NewReader(body))
+	addCookies(req, cookies)
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("missing csrf status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/keep-alive", strings.NewReader(body))
+	addCookies(req, cookies)
+	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("with csrf status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestProjectKeepAliveRejectsZeroDurationUnlessClear(t *testing.T) {
+	_, router, projectID := newAccessIntegrationRouter(t, "keepalive-zero@example.com")
+	cookies := loginCookies(t, router, "workos_seed_keepalive-zero@example.com:keepalive-zero@example.com:Keepalive Zero")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/keep-alive", strings.NewReader(`{"duration_seconds":0}`))
+	addCookies(req, cookies)
+	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("zero duration status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/keep-alive", strings.NewReader(`{"clear":true}`))
+	addCookies(req, cookies)
+	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -400,6 +529,7 @@ func newAccessIntegrationRouterWithAccessService(t *testing.T, email string, cli
 		GitHub:           githubService,
 		Projects:         projectService,
 		Agentunnel:       accessService,
+		MeteringRepo:     metering.NewRuntimeRepository(store, cfg.Secrets.EncryptionKey),
 	})
 	cookies := loginCookies(t, router, "workos_seed_"+email+":"+email+":Access Owner")
 	userID := userIDByEmail(t, store, email)
@@ -503,6 +633,29 @@ func insertAccessResource(t *testing.T, store *db.DB, projectID string) {
 INSERT INTO paperboat.agentunnel_resources (id, project_id, tunnel_id, client_id, resource_id, metadata)
 VALUES ($1, $2, $3, $4, $5, '{"http_base_url":"https://agentunnel.example/projects/test","websocket_base_url":"wss://agentunnel.example/projects/test","ssh_host":"ssh.agentunnel.example","ssh_port":25432}'::jsonb)
 ON CONFLICT (project_id) DO NOTHING`, "agr_"+projectID, projectID, "tun_"+projectID, "cli_"+projectID, "res_"+projectID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func seedHeartbeatMachineCredential(t *testing.T, store *db.DB, projectID, machineID, token string) {
+	t.Helper()
+	ciphertext, err := secrets.Encrypt("test-access-encryption-key-for-phase-nine", token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := fmt.Sprintf("%x", ciphertext)
+	if _, err := store.SQL().ExecContext(context.Background(), `
+INSERT INTO paperboat.fly_machines (id, project_id, fly_machine_id, state, image_ref, region)
+VALUES ($1, $2, $3, 'running', 'image', 'iad')
+ON CONFLICT (project_id) DO UPDATE SET fly_machine_id = EXCLUDED.fly_machine_id, state = EXCLUDED.state`,
+		"flm_heartbeat_"+projectID, projectID, machineID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(context.Background(), `
+INSERT INTO paperboat.agentunnel_resources (id, project_id, tunnel_id, client_id, resource_id, metadata)
+VALUES ($1, $2, $3, $4, $5, jsonb_build_object('machine_token_ciphertext', $6::text))
+ON CONFLICT (project_id) DO UPDATE SET metadata = jsonb_build_object('machine_token_ciphertext', $6::text)`,
+		"agr_heartbeat_"+projectID, projectID, "tun_heartbeat_"+projectID, "cli_heartbeat_"+projectID, "res_heartbeat_"+projectID, encoded); err != nil {
 		t.Fatal(err)
 	}
 }

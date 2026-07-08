@@ -81,8 +81,18 @@ func csrf(service *auth.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token, ok := service.CSRFToken(r)
 		if !ok {
-			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
-			return
+			p, principalOK := principalFromContext(r.Context())
+			if !principalOK {
+				writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+				return
+			}
+			refreshed, err := service.RefreshCSRF(r.Context(), p.Session)
+			if err != nil {
+				writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
+				return
+			}
+			service.SetCSRFCookie(w, refreshed, p.Session.ExpiresAt)
+			token = refreshed
 		}
 		writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]any{"csrf_token": token}})
 	}

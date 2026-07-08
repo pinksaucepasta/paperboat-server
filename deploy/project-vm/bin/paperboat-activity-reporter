@@ -1,10 +1,4 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-interval="${PAPERBOAT_ACTIVITY_INTERVAL_SECONDS:-30}"
-
-while :; do
-  printf '{"ts":"%s","component":"activity","level":"info","project_id":"%s","state":"alive"}\n' \
-    "$(date -Iseconds)" "${PAPERBOAT_PROJECT_ID:-}" >&2
-  sleep "$interval"
-done
+exec "${PAPERBOAT_ACTIVITY_REPORTER_BINARY:-/usr/local/bin/paperboat-activity-reporter-go}"

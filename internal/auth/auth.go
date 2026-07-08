@@ -245,6 +245,29 @@ WHERE id = $4 AND revoked_at IS NULL AND expires_at > now()`,
 	return next, nil
 }
 
+func (s *Service) RefreshCSRF(ctx context.Context, session Session) (string, error) {
+	if session.ID == "" {
+		return "", ErrUnauthenticated
+	}
+	token := newToken()
+	result, err := s.db.SQL().ExecContext(ctx, `
+UPDATE paperboat.sessions
+SET csrf_hash = $1, updated_at = now()
+WHERE id = $2 AND revoked_at IS NULL AND expires_at > now()`,
+		tokenHash(token), session.ID)
+	if err != nil {
+		return "", err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return "", err
+	}
+	if rows != 1 {
+		return "", ErrUnauthenticated
+	}
+	return token, nil
+}
+
 func (s *Service) ShouldRotate(session Session) bool {
 	return !session.ExpiresAt.IsZero() && session.ExpiresAt.Before(s.now().Add(7*24*time.Hour))
 }
@@ -283,6 +306,10 @@ RETURNING user_id`, sessionHash).Scan(&userID)
 func (s *Service) SetSessionCookies(w http.ResponseWriter, session Session) {
 	http.SetCookie(w, &http.Cookie{Name: SessionCookieName, Value: session.Token, Path: "/", HttpOnly: true, Secure: s.cookieSecure, SameSite: http.SameSiteLaxMode, Expires: session.ExpiresAt})
 	http.SetCookie(w, &http.Cookie{Name: CSRFCookieName, Value: session.CSRFToken, Path: "/", HttpOnly: false, Secure: s.cookieSecure, SameSite: http.SameSiteLaxMode, Expires: session.ExpiresAt})
+}
+
+func (s *Service) SetCSRFCookie(w http.ResponseWriter, token string, expiresAt time.Time) {
+	http.SetCookie(w, &http.Cookie{Name: CSRFCookieName, Value: token, Path: "/", HttpOnly: false, Secure: s.cookieSecure, SameSite: http.SameSiteLaxMode, Expires: expiresAt})
 }
 
 func (s *Service) SetOAuthStateCookie(w http.ResponseWriter, state string) {

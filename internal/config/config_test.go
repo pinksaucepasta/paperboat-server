@@ -79,6 +79,28 @@ func TestProductionValidationRejectsFakeProvidersAndWeakSecrets(t *testing.T) {
 	}
 }
 
+func TestProductionValidationDoesNotRequireMachineActivityToken(t *testing.T) {
+	cfg := Default()
+	cfg.Environment = EnvironmentProduction
+	cfg.Providers.FakeMode = false
+	cfg.Secrets.SessionKeys = []string{"0123456789abcdef0123456789abcdef"}
+	cfg.Secrets.EncryptionKey = "abcdef0123456789abcdef0123456789"
+	cfg.Secrets.WorkOSAPIKey = "workos-api-key"
+	cfg.Secrets.WorkOSClientID = "workos-client-id"
+	cfg.Secrets.WorkOSClientSecret = "workos-client-secret"
+	cfg.Secrets.PolarAPIKey = "polar-api-key"
+	cfg.Secrets.PolarWebhookSecret = "polar-webhook-secret"
+	cfg.Secrets.GitHubClientID = "github-client-id"
+	cfg.Secrets.GitHubClientSecret = "github-client-secret"
+	cfg.Secrets.FlyAPIToken = "fly-api-token"
+	cfg.Secrets.AgentunnelAPIKey = "agentunnel-api-key"
+	cfg.Secrets.MachineActivityToken = ""
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 func TestValidationRequiresPostgresAndCatalogSeedFile(t *testing.T) {
 	cfg := Default()
 	cfg.Database.Driver = "memory"

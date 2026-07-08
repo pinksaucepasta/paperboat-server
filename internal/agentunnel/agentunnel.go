@@ -586,6 +586,12 @@ func (s *Service) Status(ctx context.Context, userID, projectID string) (Connect
 		response.Connectable = false
 		response.Reason = firstNonEmpty(response.Reason, "project_state_"+project.State)
 	}
+	if project.State == "stopping" || project.State == "stopped" {
+		if reason, ok, reasonErr := s.repo.LatestStopReason(ctx, projectID); reasonErr == nil && ok {
+			response.Connectable = false
+			response.Reason = reason
+		}
+	}
 	if err := s.repo.EnsureConnectCredits(ctx, userID, projectID, s.minimumStartCreditWindow); err != nil {
 		response.Connectable = false
 		response.Reason = "credits_exhausted"
@@ -880,6 +886,24 @@ WHERE project_id = $1`, projectID).Scan(&resource.TunnelID, &resource.ClientID, 
 		resource.SSHPort = int(port)
 	}
 	return resource, true, nil
+}
+
+func (r *Repository) LatestStopReason(ctx context.Context, projectID string) (string, bool, error) {
+	var eventType string
+	err := r.db.SQL().QueryRowContext(ctx, `
+SELECT event_type
+FROM paperboat.project_events
+WHERE project_id = $1
+  AND event_type LIKE 'project.stop_queued.%'
+ORDER BY created_at DESC
+LIMIT 1`, projectID).Scan(&eventType)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return strings.TrimPrefix(eventType, "project.stop_queued."), true, nil
 }
 
 func (r *Repository) CreateAccessSession(ctx context.Context, userID, projectID, sessionType string, descriptor ConnectResponse, expiresAt time.Time) (AccessSession, error) {

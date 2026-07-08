@@ -65,6 +65,7 @@ func New(opts Options) (*App, error) {
 		GitHub:           githubService,
 		Projects:         projectService,
 		Agentunnel:       agentunnelService,
+		MeteringRepo:     metering.NewRuntimeRepository(store, opts.Config.Secrets.EncryptionKey),
 	})
 	return &App{
 		cfg:    opts.Config,

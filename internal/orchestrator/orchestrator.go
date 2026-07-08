@@ -337,8 +337,10 @@ func (s *Service) findProviderMachine(ctx context.Context, name string, intent P
 }
 
 func (s *Service) machineSpec(intent ProjectIntent, volumeID string) fly.MachineSpec {
+	machineName := providerName(s.cfg.Fly.MachineNamePrefix, intent.ID)
 	env := map[string]string{
 		"PAPERBOAT_PROJECT_ID":           intent.ID,
+		"PAPERBOAT_MACHINE_ID":           machineName,
 		"PAPERBOAT_REPOSITORY_URL":       intent.RepositoryURL,
 		"PAPERBOAT_DEFAULT_BRANCH":       intent.DefaultBranch,
 		"PAPERBOAT_PRESET_CODES":         strings.Join(intent.PresetCodes, ","),
@@ -348,6 +350,8 @@ func (s *Service) machineSpec(intent ProjectIntent, volumeID string) fly.Machine
 		"PAPERBOAT_SETUP_SCRIPT_REF":     intent.SetupScriptRef,
 		"PAPERBOAT_SETUP_SCRIPT_ENV":     s.cfg.Fly.SetupScriptSecret,
 		"PAPERBOAT_DESIRED_CONFIG_SHA":   intent.DesiredConfigHash,
+		"PAPERBOAT_ACTIVITY_ENDPOINT":    strings.TrimRight(s.cfg.HTTP.PublicBaseURL, "/") + "/api/machine/activity-heartbeat",
+		"PAPERBOAT_ACTIVITY_TOKEN_ENV":   "PAPERBOAT_MACHINE_ACTIVITY_TOKEN",
 	}
 	if strings.TrimSpace(intent.GitHubConfigRepoURL) != "" {
 		env["PAPERBOAT_CONFIG_REPO_URL"] = intent.GitHubConfigRepoURL
@@ -368,7 +372,7 @@ func (s *Service) machineSpec(intent ProjectIntent, volumeID string) fly.Machine
 		env["PAPERBOAT_AGENTUNNEL_TUNNEL_ID"] = intent.AgentunnelTunnelID
 	}
 	return fly.MachineSpec{
-		Name:       providerName(s.cfg.Fly.MachineNamePrefix, intent.ID),
+		Name:       machineName,
 		ImageRef:   s.cfg.Fly.ImageRef,
 		Region:     intent.RegionCode,
 		Size:       fly.MachineSize{VCPU: intent.VCPU, MemoryMB: intent.MemoryMB},
@@ -404,6 +408,13 @@ func (s *Service) projectSecrets(intent ProjectIntent) []fly.MachineSecret {
 			EnvVar: s.cfg.Fly.SetupScriptSecret,
 			Name:   providerName("pbsecret-setup", intent.ID),
 			Value:  intent.SetupScript,
+		})
+	}
+	if strings.TrimSpace(agentunnelToken) != "" {
+		out = append(out, fly.MachineSecret{
+			EnvVar: "PAPERBOAT_MACHINE_ACTIVITY_TOKEN",
+			Name:   providerName("pbsecret-activity", intent.ID),
+			Value:  agentunnelToken,
 		})
 	}
 	return out
@@ -700,7 +711,13 @@ func (r *Repository) RecordMachine(ctx context.Context, projectID, flyMachineID,
 		_, err := tx.Exec(ctx, `
 INSERT INTO fly_machines (id, project_id, fly_machine_id, state, image_ref, region, observed_config_hash)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
-ON CONFLICT (project_id) DO UPDATE SET fly_machine_id = fly_machines.fly_machine_id
+ON CONFLICT (project_id) DO UPDATE SET
+    fly_machine_id = EXCLUDED.fly_machine_id,
+    state = EXCLUDED.state,
+    image_ref = EXCLUDED.image_ref,
+    region = EXCLUDED.region,
+    observed_config_hash = EXCLUDED.observed_config_hash,
+    updated_at = now()
 `, newID("flm"), projectID, flyMachineID, state, imageRef, region, configHash)
 		return err
 	})
