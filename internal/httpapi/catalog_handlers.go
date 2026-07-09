@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/catalog"
+	"github.com/pinksaucepasta/paperboat-server/internal/fly"
 )
 
 type catalogPlanResponse struct {
@@ -135,8 +136,30 @@ func catalogIdleTimeouts(reader catalog.Reader) http.Handler {
 	})
 }
 
-func catalogRegions(reader catalog.Reader) http.Handler {
+func catalogRegions(reader catalog.Reader, flyClient fly.Client, writer catalog.RegionWriter) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if flyClient != nil && writer != nil {
+			flyRegions, err := flyClient.ListRegions(r.Context())
+			if err == nil {
+				records := make([]catalog.RegionRecord, 0, len(flyRegions))
+				for _, region := range flyRegions {
+					if region.Code == "" || region.Name == "" {
+						continue
+					}
+					records = append(records, catalog.RegionRecord{
+						Code:    region.Code,
+						Name:    region.Name,
+						Enabled: !region.Deprecated,
+					})
+				}
+				if len(records) > 0 {
+					if err := writer.SyncRegions(r.Context(), records); err != nil {
+						writeError(w, r, http.StatusInternalServerError, "internal_error", "Catalog regions could not be loaded.")
+						return
+					}
+				}
+			}
+		}
 		records, err := reader.ListRegions(r.Context())
 		if err != nil {
 			writeError(w, r, http.StatusInternalServerError, "internal_error", "Catalog regions could not be loaded.")

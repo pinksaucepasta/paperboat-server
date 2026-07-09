@@ -65,6 +65,8 @@ func New(opts Options) (*App, error) {
 		Auth:             authService,
 		Billing:          billingService,
 		Catalog:          catalogRepo,
+		CatalogWriter:    catalogRepo,
+		Fly:              flyProvider,
 		GitHub:           githubService,
 		Projects:         projectService,
 		Agentunnel:       agentunnelService,

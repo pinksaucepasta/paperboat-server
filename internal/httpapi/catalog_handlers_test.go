@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/catalog"
+	"github.com/pinksaucepasta/paperboat-server/internal/fly"
 )
 
 type fakeCatalogReader struct {
@@ -38,6 +39,16 @@ func (f fakeCatalogReader) ListIdleTimeouts(context.Context) ([]catalog.IdleTime
 
 func (f fakeCatalogReader) ListRegions(context.Context) ([]catalog.RegionRecord, error) {
 	return f.regions, f.err
+}
+
+type fakeRegionWriter struct {
+	regions []catalog.RegionRecord
+	err     error
+}
+
+func (f *fakeRegionWriter) SyncRegions(_ context.Context, regions []catalog.RegionRecord) error {
+	f.regions = append([]catalog.RegionRecord(nil), regions...)
+	return f.err
 }
 
 func TestCatalogPlansReturnsContractPayload(t *testing.T) {
@@ -75,7 +86,7 @@ func TestCatalogEndpointsReturnInternalErrorWhenRepositoryFails(t *testing.T) {
 	reader := fakeCatalogReader{err: errors.New("db down")}
 
 	rec := httptest.NewRecorder()
-	catalogRegions(reader).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/catalog/regions", nil))
+	catalogRegions(reader, nil, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/catalog/regions", nil))
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
@@ -86,6 +97,62 @@ func TestCatalogEndpointsReturnInternalErrorWhenRepositoryFails(t *testing.T) {
 	}
 	if payload.Error.Code != "internal_error" {
 		t.Fatalf("error code = %q", payload.Error.Code)
+	}
+}
+
+func TestCatalogRegionsSyncsFlyRegionsBeforeReturningCatalog(t *testing.T) {
+	reader := fakeCatalogReader{regions: []catalog.RegionRecord{{
+		Code:    "bom",
+		Name:    "Mumbai, India",
+		Enabled: true,
+		Version: 2,
+	}}}
+	flyClient := fly.NewFakeClient()
+	flyClient.Regions = []fly.Region{{Code: "bom", Name: "Mumbai, India"}, {Code: "old", Name: "Deprecated", Deprecated: true}}
+	writer := &fakeRegionWriter{}
+
+	rec := httptest.NewRecorder()
+	catalogRegions(reader, flyClient, writer).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/catalog/regions", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if len(writer.regions) != 2 {
+		t.Fatalf("synced regions = %#v", writer.regions)
+	}
+	if writer.regions[0].Code != "bom" || !writer.regions[0].Enabled || writer.regions[1].Enabled {
+		t.Fatalf("synced region payload = %#v", writer.regions)
+	}
+	var payload struct {
+		Data []catalogRegionResponse `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Data) != 1 || payload.Data[0].Code != "bom" || !payload.Data[0].Enabled {
+		t.Fatalf("region payload = %#v", payload.Data)
+	}
+}
+
+func TestCatalogRegionsFallsBackToCatalogWhenFlyFails(t *testing.T) {
+	reader := fakeCatalogReader{regions: []catalog.RegionRecord{{
+		Code:    "iad",
+		Name:    "Ashburn, Virginia (US)",
+		Enabled: true,
+		Version: 1,
+	}}}
+	flyClient := fly.NewFakeClient()
+	flyClient.FailOnce["ListRegions"] = errors.New("fly down")
+	writer := &fakeRegionWriter{}
+
+	rec := httptest.NewRecorder()
+	catalogRegions(reader, flyClient, writer).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/catalog/regions", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if len(writer.regions) != 0 {
+		t.Fatalf("unexpected sync = %#v", writer.regions)
 	}
 }
 
