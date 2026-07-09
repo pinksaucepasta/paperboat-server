@@ -25,8 +25,15 @@ type Machine struct {
 	Tags       map[string]string
 }
 
+type Region struct {
+	Code       string
+	Name       string
+	Deprecated bool
+}
+
 type MachineSpec struct {
 	Name       string
+	Hostname   string
 	ImageRef   string
 	Region     string
 	Size       MachineSize
@@ -51,6 +58,7 @@ type MachineSize struct {
 }
 
 type Client interface {
+	ListRegions(ctx context.Context) ([]Region, error)
 	CreateVolume(ctx context.Context, name, region string, sizeGB int, tags map[string]string) (Volume, error)
 	GetVolume(ctx context.Context, volumeID string) (Volume, error)
 	ListVolumes(ctx context.Context) ([]Volume, error)
@@ -69,6 +77,7 @@ type Client interface {
 type FakeClient struct {
 	mu           sync.Mutex
 	next         int
+	Regions      []Region
 	Volumes      map[string]Volume
 	Machines     map[string]Machine
 	MachineSpecs map[string]MachineSpec
@@ -77,7 +86,26 @@ type FakeClient struct {
 }
 
 func NewFakeClient() *FakeClient {
-	return &FakeClient{Volumes: map[string]Volume{}, Machines: map[string]Machine{}, MachineSpecs: map[string]MachineSpec{}, FailOnce: map[string]error{}}
+	return &FakeClient{
+		Regions: []Region{
+			{Code: "iad", Name: "Ashburn, Virginia (US)"},
+			{Code: "bom", Name: "Mumbai, India"},
+		},
+		Volumes:      map[string]Volume{},
+		Machines:     map[string]Machine{},
+		MachineSpecs: map[string]MachineSpec{},
+		FailOnce:     map[string]error{},
+	}
+}
+
+func (f *FakeClient) ListRegions(ctx context.Context) ([]Region, error) {
+	if err := f.fail("ListRegions"); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Calls = append(f.Calls, "ListRegions")
+	return append([]Region(nil), f.Regions...), nil
 }
 
 func (f *FakeClient) CreateVolume(ctx context.Context, name, region string, sizeGB int, tags map[string]string) (Volume, error) {

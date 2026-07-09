@@ -77,6 +77,7 @@ type Fly struct {
 	ImageRef          string   `json:"image_ref"`
 	VolumeNamePrefix  string   `json:"volume_name_prefix"`
 	MachineNamePrefix string   `json:"machine_name_prefix"`
+	Hostname          string   `json:"hostname"`
 	MountPath         string   `json:"mount_path"`
 	BootCommand       []string `json:"boot_command"`
 	AgentunnelSecret  string   `json:"agentunnel_secret"`
@@ -216,6 +217,7 @@ func Default() Config {
 			ImageRef:          "registry.example.invalid/paperboat/project-vm:dev",
 			VolumeNamePrefix:  "pbvol",
 			MachineNamePrefix: "pbvm",
+			Hostname:          "paperboat",
 			MountPath:         "/workspace",
 			BootCommand:       []string{"/usr/local/bin/paperboat-entrypoint"},
 			AgentunnelSecret:  "AGENTUNNEL_MACHINE_TOKEN",
@@ -372,6 +374,7 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_FLY_IMAGE_REF", &c.Fly.ImageRef)
 	setString("PAPERBOAT_FLY_VOLUME_NAME_PREFIX", &c.Fly.VolumeNamePrefix)
 	setString("PAPERBOAT_FLY_MACHINE_NAME_PREFIX", &c.Fly.MachineNamePrefix)
+	setString("PAPERBOAT_FLY_HOSTNAME", &c.Fly.Hostname)
 	setString("PAPERBOAT_FLY_MOUNT_PATH", &c.Fly.MountPath)
 	setString("PAPERBOAT_FLY_AGENTUNNEL_SECRET", &c.Fly.AgentunnelSecret)
 	setString("PAPERBOAT_FLY_GITHUB_SECRET", &c.Fly.GitHubSecret)

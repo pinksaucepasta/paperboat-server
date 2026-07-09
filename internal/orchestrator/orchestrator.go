@@ -388,6 +388,7 @@ func (s *Service) machineSpec(intent ProjectIntent, volumeID string) fly.Machine
 	}
 	return fly.MachineSpec{
 		Name:       machineName,
+		Hostname:   s.cfg.Fly.Hostname,
 		ImageRef:   s.cfg.Fly.ImageRef,
 		Region:     intent.RegionCode,
 		Size:       fly.MachineSize{VCPU: intent.VCPU, MemoryMB: intent.MemoryMB},

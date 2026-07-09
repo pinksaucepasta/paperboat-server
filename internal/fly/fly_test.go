@@ -47,6 +47,25 @@ func TestSDKMachineConfigUsesFlySDKShape(t *testing.T) {
 	}
 }
 
+func TestSDKMachineConfigSetsHostname(t *testing.T) {
+	cfg := sdkMachineConfig(MachineSpec{
+		Name:     "pbvm-prj",
+		Hostname: "paperboat",
+		ImageRef: "registry.example/app:test",
+		Region:   "iad",
+		Size:     MachineSize{VCPU: 1, MemoryMB: 256},
+	})
+	if cfg.DNS == nil || cfg.DNS.Hostname != "paperboat" {
+		t.Fatalf("dns = %#v", cfg.DNS)
+	}
+
+	// No hostname means no DNS override is written.
+	bare := sdkMachineConfig(MachineSpec{Name: "pbvm-prj", ImageRef: "img", Region: "iad", Size: MachineSize{VCPU: 1, MemoryMB: 256}})
+	if bare.DNS != nil {
+		t.Fatalf("expected nil dns, got %#v", bare.DNS)
+	}
+}
+
 func TestSDKMachineConfigAlwaysIgnoresAppSecrets(t *testing.T) {
 	cfg := sdkMachineConfig(MachineSpec{
 		Name:     "pbvm-prj",

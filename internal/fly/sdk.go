@@ -25,6 +25,29 @@ type SDKClient struct {
 
 var flapsClientMu sync.Mutex
 
+func (c *SDKClient) ListRegions(ctx context.Context) ([]Region, error) {
+	client, err := c.flaps(ctx)
+	if err != nil {
+		return nil, err
+	}
+	regions, err := client.GetRegions(ctx)
+	if err != nil {
+		return nil, mapSDKError(err)
+	}
+	if regions == nil {
+		return nil, nil
+	}
+	out := make([]Region, 0, len(regions.Regions))
+	for _, region := range regions.Regions {
+		out = append(out, Region{
+			Code:       strings.ToLower(strings.TrimSpace(region.Code)),
+			Name:       strings.TrimSpace(region.Name),
+			Deprecated: region.Deprecated,
+		})
+	}
+	return out, nil
+}
+
 func (c *SDKClient) CreateVolume(ctx context.Context, name, region string, sizeGB int, tags map[string]string) (Volume, error) {
 	if err := c.ensureApp(ctx); err != nil {
 		return Volume{}, err
@@ -305,6 +328,9 @@ func sdkMachineConfig(spec MachineSpec) *flygo.MachineConfig {
 	}
 	if len(spec.Command) > 0 {
 		cfg.Init = flygo.MachineInit{Cmd: append([]string(nil), spec.Command...)}
+	}
+	if strings.TrimSpace(spec.Hostname) != "" {
+		cfg.DNS = &flygo.DNSConfig{Hostname: spec.Hostname}
 	}
 	if spec.VolumeID != "" && spec.MountPath != "" {
 		cfg.Mounts = []flygo.MachineMount{{Volume: spec.VolumeID, Path: spec.MountPath}}
