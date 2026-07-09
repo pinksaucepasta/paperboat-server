@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -179,7 +180,21 @@ func (s *Service) startProject(ctx context.Context, projectID string) error {
 	if err != nil {
 		return err
 	}
+	if err := s.reconcileMachineSpecDrift(ctx, projectID, machine.FlyMachineID); err != nil {
+		if !errors.Is(err, fly.ErrNotFound) {
+			return err
+		}
+		if machine, err = s.recreateMissingMachine(ctx, projectID); err != nil {
+			return err
+		}
+	}
 	observed, err := s.fly.StartMachine(ctx, machine.FlyMachineID)
+	if errors.Is(err, fly.ErrNotFound) {
+		if machine, err = s.recreateMissingMachine(ctx, projectID); err != nil {
+			return err
+		}
+		observed, err = s.fly.StartMachine(ctx, machine.FlyMachineID)
+	}
 	if err != nil {
 		return err
 	}
@@ -218,15 +233,23 @@ func (s *Service) restartProject(ctx context.Context, projectID string) error {
 		return ErrVolumeResizeRequiresApproval
 	}
 	if _, err := s.fly.StopMachine(ctx, machine.FlyMachineID); err != nil {
-		return err
-	}
-	if intent.PendingRestartApply {
+		if !errors.Is(err, fly.ErrNotFound) {
+			return err
+		}
+		// The machine vanished at the provider; the replacement is created
+		// stopped with the full desired spec, so skip the update paths below.
+		if machine, err = s.recreateMissingMachine(ctx, projectID); err != nil {
+			return err
+		}
+	} else if intent.PendingRestartApply {
 		if _, err := s.fly.UpdateMachine(ctx, machine.FlyMachineID, s.machineSpec(intent, volume.FlyVolumeID)); err != nil {
 			return err
 		}
 		if err := s.repo.ApplyRuntimeConfig(ctx, intent); err != nil {
 			return err
 		}
+	} else if err := s.applyMachineSpecDrift(ctx, intent, machine.FlyMachineID, volume.FlyVolumeID); err != nil {
+		return err
 	}
 	observed, err := s.fly.StartMachine(ctx, machine.FlyMachineID)
 	if err != nil {
@@ -386,7 +409,7 @@ func (s *Service) machineSpec(intent ProjectIntent, volumeID string) fly.Machine
 	if strings.TrimSpace(intent.AgentunnelTunnelID) != "" {
 		env["PAPERBOAT_AGENTUNNEL_TUNNEL_ID"] = intent.AgentunnelTunnelID
 	}
-	return fly.MachineSpec{
+	spec := fly.MachineSpec{
 		Name:       machineName,
 		Hostname:   s.cfg.Fly.Hostname,
 		ImageRef:   s.cfg.Fly.ImageRef,
@@ -400,6 +423,109 @@ func (s *Service) machineSpec(intent ProjectIntent, volumeID string) fly.Machine
 		ConfigHash: intent.DesiredConfigHash,
 		Tags:       resourceTags(intent.ID),
 	}
+	spec.Tags[specHashTag] = machineSpecHash(spec)
+	return spec
+}
+
+// specHashTag is machine metadata carrying a digest of the full rendered
+// machine spec, so drift introduced by server-side settings (hostname, image,
+// boot command, env) is detectable against the live Fly machine even when the
+// project's own desired config is unchanged.
+const specHashTag = "paperboat_spec_hash"
+
+func machineSpecHash(spec fly.MachineSpec) string {
+	secretRefs := make([]string, 0, len(spec.Secrets))
+	for _, secret := range spec.Secrets {
+		secretRefs = append(secretRefs, secret.EnvVar+"="+secret.Name)
+	}
+	sort.Strings(secretRefs)
+	payload, _ := json.Marshal(map[string]any{
+		"name":        spec.Name,
+		"hostname":    spec.Hostname,
+		"image_ref":   spec.ImageRef,
+		"region":      spec.Region,
+		"vcpu":        spec.Size.VCPU,
+		"memory_mb":   spec.Size.MemoryMB,
+		"volume_id":   spec.VolumeID,
+		"mount_path":  spec.MountPath,
+		"env":         spec.Env,
+		"command":     spec.Command,
+		"secret_refs": secretRefs,
+	})
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
+
+// reconcileMachineSpecDrift loads the project's applied intent and syncs the
+// machine config when the rendered spec no longer matches what is on the
+// machine. Pending project changes are excluded: those apply on restart only.
+func (s *Service) reconcileMachineSpecDrift(ctx context.Context, projectID, machineID string) error {
+	intent, err := s.repo.ProjectIntent(ctx, projectID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	if intent.PendingRestartApply {
+		return nil
+	}
+	volume, err := s.repo.ProjectVolume(ctx, projectID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	return s.applyMachineSpecDrift(ctx, intent, machineID, volume.FlyVolumeID)
+}
+
+// recreateMissingMachine self-heals a project whose Fly machine was destroyed
+// out-of-band (host failure, manual deletion): the stale record is dropped and
+// a replacement is created against the project's existing volume, so the
+// workspace — including the cloned repository — is preserved.
+func (s *Service) recreateMissingMachine(ctx context.Context, projectID string) (MachineRecord, error) {
+	intent, err := s.repo.ProjectIntent(ctx, projectID)
+	if err != nil {
+		return MachineRecord{}, err
+	}
+	volume, err := s.repo.ProjectVolume(ctx, projectID)
+	if err != nil {
+		return MachineRecord{}, err
+	}
+	if err := s.repo.RemoveMachine(ctx, projectID); err != nil {
+		return MachineRecord{}, err
+	}
+	machine, err := s.ensureMachine(ctx, intent, volume.FlyVolumeID)
+	if err != nil {
+		return MachineRecord{}, err
+	}
+	// The replacement carries the full desired spec, so any change that was
+	// waiting for a restart is now applied.
+	if intent.PendingRestartApply {
+		if err := s.repo.ApplyRuntimeConfig(ctx, intent); err != nil {
+			return MachineRecord{}, err
+		}
+	}
+	if err := s.repo.RecordProjectEvent(ctx, projectID, "project.machine_recreated", "Project machine was missing at the provider and was recreated on the existing volume.", map[string]any{"fly_machine_id": machine.FlyMachineID}); err != nil {
+		return MachineRecord{}, err
+	}
+	return machine, nil
+}
+
+func (s *Service) applyMachineSpecDrift(ctx context.Context, intent ProjectIntent, machineID, volumeID string) error {
+	spec := s.machineSpec(intent, volumeID)
+	observed, err := s.fly.GetMachine(ctx, machineID)
+	if err != nil {
+		return err
+	}
+	if observed.Tags[specHashTag] == spec.Tags[specHashTag] {
+		return nil
+	}
+	if _, err := s.fly.UpdateMachine(ctx, machineID, spec); err != nil {
+		return err
+	}
+	return s.repo.RecordProjectEvent(ctx, intent.ID, "project.machine_spec_drift_applied", "Machine configuration drifted from the desired spec and was reconciled.", map[string]any{"spec_hash": spec.Tags[specHashTag]})
 }
 
 func (s *Service) projectSecrets(intent ProjectIntent) []fly.MachineSecret {
@@ -569,7 +695,7 @@ WHERE state = 'queued' AND next_run_at <= now()
     SELECT 1
     FROM projects
     WHERE projects.id = orchestration_jobs.aggregate_id
-      AND projects.state = 'deleted'
+      AND projects.state IN ('deleted', 'deleting')
       AND orchestration_jobs.job_type <> 'project.delete'
   )
 ORDER BY created_at

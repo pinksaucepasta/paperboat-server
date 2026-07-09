@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/pinksaucepasta/paperboat-server/internal/agentunnel"
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
@@ -18,7 +20,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/secrets"
 )
 
-func TestProvisionProjectIsIdempotentAndReachesReady(t *testing.T) {
+func TestProvisionProjectIsIdempotentAndLeavesMachineStopped(t *testing.T) {
 	store := newOrchestratorTestDB(t)
 	ctx := context.Background()
 	seedOrchestratorCatalogs(t, store)
@@ -44,15 +46,23 @@ func TestProvisionProjectIsIdempotentAndReachesReady(t *testing.T) {
 	if err := service.RunOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
-	ready, err := projectService.Get(ctx, "usr_orch_create", project.ID)
+	provisioned, err := projectService.Get(ctx, "usr_orch_create", project.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ready.State != "ready" || ready.PendingRestartApply {
-		t.Fatalf("project after provisioning = %#v, want ready with applied config", ready)
+	if provisioned.State != "stopped" || provisioned.PendingRestartApply {
+		t.Fatalf("project after provisioning = %#v, want stopped with applied config", provisioned)
 	}
 	if len(fakeFly.Volumes) != 1 || len(fakeFly.Machines) != 1 {
 		t.Fatalf("fake Fly resources = %d volumes, %d machines; want one each", len(fakeFly.Volumes), len(fakeFly.Machines))
+	}
+	if calls := countCalls(fakeFly.Calls, "StartMachine:"); calls != 0 {
+		t.Fatalf("provisioning started the machine, calls=%d", calls)
+	}
+	for _, machine := range fakeFly.Machines {
+		if machine.State != "stopped" {
+			t.Fatalf("provisioned machine state = %q, want stopped", machine.State)
+		}
 	}
 	var spec fly.MachineSpec
 	for _, value := range fakeFly.MachineSpecs {
@@ -101,7 +111,7 @@ func TestProvisionAdoptsExistingProviderResourcesBeforeCreate(t *testing.T) {
 		t.Fatal(err)
 	}
 	fakeFly := fly.NewFakeClient()
-	fakeFly.Volumes["vol_existing"] = fly.Volume{ID: "vol_existing", Name: "pbvol-" + strings.ReplaceAll(project.ID, "_", "-"), SizeGB: 8, Region: "iad", State: "created"}
+	fakeFly.Volumes["vol_existing"] = fly.Volume{ID: "vol_existing", Name: providerVolumeName(cfg.Fly.VolumeNamePrefix, project.ID), SizeGB: 8, Region: "iad", State: "created"}
 	fakeFly.Machines["mach_existing"] = fly.Machine{ID: "mach_existing", Name: "pbvm-" + strings.ReplaceAll(project.ID, "_", "-"), State: "stopped", Region: "iad", Tags: map[string]string{"paperboat_project_id": project.ID, "managed_by": "paperboat-server"}}
 
 	service := NewService(store, fakeFly, cfg)
@@ -123,6 +133,102 @@ func TestProvisionAdoptsExistingProviderResourcesBeforeCreate(t *testing.T) {
 	}
 	if volumeID != "vol_existing" || machineID != "mach_existing" {
 		t.Fatalf("adopted ids = volume %q machine %q", volumeID, machineID)
+	}
+}
+
+func TestProvisionStillCreatesFlyResourcesWhenAgentunnelUnavailable(t *testing.T) {
+	store := newOrchestratorTestDB(t)
+	ctx := context.Background()
+	seedOrchestratorCatalogs(t, store)
+	insertOrchestratorUser(t, store, "usr_orch_agentunnel_down", 20)
+
+	cfg := orchestratorTestConfig()
+	cfg.Secrets.AgentunnelMachineToken = ""
+	projectService := projects.NewService(store, audit.NewWriter(store), cfg)
+	project, _, err := projectService.Create(ctx, projects.CreateInput{
+		UserID:          "usr_orch_agentunnel_down",
+		IdempotencyKey:  "orch-agentunnel-down",
+		RepositoryURL:   "https://github.com/paperboat/example.git",
+		StorageGB:       8,
+		MachineTypeCode: "standard-1x",
+		RegionCode:      "iad",
+		PresetCodes:     []string{"codex"},
+		IdleTimeoutCode: "15m",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fakeFly := fly.NewFakeClient()
+	service := NewServiceWithAgentunnel(store, fakeFly, cfg, agentunnel.DisabledClient{})
+
+	err = service.RunOnce(ctx)
+	if !errors.Is(err, agentunnel.ErrTunnelUnavailable) {
+		t.Fatalf("RunOnce error = %v, want ErrTunnelUnavailable", err)
+	}
+	if len(fakeFly.Volumes) != 1 || len(fakeFly.Machines) != 1 {
+		t.Fatalf("fake Fly resources = %d volumes, %d machines; want one each", len(fakeFly.Volumes), len(fakeFly.Machines))
+	}
+	var volumeID, machineID string
+	if err := store.SQL().QueryRowContext(ctx, `SELECT fly_volume_id FROM paperboat.fly_volumes WHERE project_id = $1`, project.ID).Scan(&volumeID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SQL().QueryRowContext(ctx, `SELECT fly_machine_id FROM paperboat.fly_machines WHERE project_id = $1`, project.ID).Scan(&machineID); err != nil {
+		t.Fatal(err)
+	}
+	if volumeID == "" || machineID == "" {
+		t.Fatalf("recorded ids = volume %q machine %q, want both set", volumeID, machineID)
+	}
+	for _, volume := range fakeFly.Volumes {
+		if !validFlyVolumeName(volume.Name) {
+			t.Fatalf("volume name %q is not Fly-compatible", volume.Name)
+		}
+	}
+}
+
+func TestClaimNextJobSkipsStaleCreateForDeletedProject(t *testing.T) {
+	store := newOrchestratorTestDB(t)
+	ctx := context.Background()
+	seedOrchestratorCatalogs(t, store)
+	insertOrchestratorUser(t, store, "usr_orch_skip_deleted", 20)
+
+	cfg := orchestratorTestConfig()
+	projectService := projects.NewService(store, audit.NewWriter(store), cfg)
+	deleted, _, err := projectService.Create(ctx, projects.CreateInput{
+		UserID:          "usr_orch_skip_deleted",
+		IdempotencyKey:  "orch-skip-deleted",
+		RepositoryURL:   "https://github.com/paperboat/deleted.git",
+		StorageGB:       4,
+		MachineTypeCode: "standard-1x",
+		RegionCode:      "iad",
+		PresetCodes:     []string{"codex"},
+		IdleTimeoutCode: "15m",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := projectService.Delete(ctx, "usr_orch_skip_deleted", deleted.ID); err != nil {
+		t.Fatal(err)
+	}
+	active, _, err := projectService.Create(ctx, projects.CreateInput{
+		UserID:          "usr_orch_skip_deleted",
+		IdempotencyKey:  "orch-skip-active",
+		RepositoryURL:   "https://github.com/paperboat/active.git",
+		StorageGB:       4,
+		MachineTypeCode: "standard-1x",
+		RegionCode:      "iad",
+		PresetCodes:     []string{"codex"},
+		IdleTimeoutCode: "15m",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := NewRepository(store, cfg.Secrets.EncryptionKey)
+	job, ok, err := repo.ClaimNextJob(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || job.Type != "project.create" || job.AggregateID != active.ID {
+		t.Fatalf("claimed job = %#v ok=%v, want active project.create for %s", job, ok, active.ID)
 	}
 }
 
@@ -183,6 +289,159 @@ func TestRestartAppliesPendingConfigExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestStartReconcilesServerManagedSpecDrift(t *testing.T) {
+	store := newOrchestratorTestDB(t)
+	ctx := context.Background()
+	seedOrchestratorCatalogs(t, store)
+	insertOrchestratorUser(t, store, "usr_orch_drift", 20)
+
+	cfg := orchestratorTestConfig()
+	projectService := projects.NewService(store, audit.NewWriter(store), cfg)
+	project, _, err := projectService.Create(ctx, projects.CreateInput{
+		UserID:          "usr_orch_drift",
+		IdempotencyKey:  "orch-drift",
+		RepositoryURL:   "https://github.com/paperboat/example.git",
+		StorageGB:       8,
+		MachineTypeCode: "standard-1x",
+		RegionCode:      "iad",
+		PresetCodes:     []string{"codex"},
+		IdleTimeoutCode: "15m",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fakeFly := fly.NewFakeClient()
+	service := NewService(store, fakeFly, cfg)
+	if err := service.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a machine provisioned before a server-managed setting (e.g. the
+	// VM hostname) existed: its metadata carries a stale spec hash.
+	for id, machine := range fakeFly.Machines {
+		machine.Tags[specHashTag] = "stale"
+		fakeFly.Machines[id] = machine
+	}
+	if err := service.startProject(ctx, project.ID); err != nil {
+		t.Fatal(err)
+	}
+	if calls := countCalls(fakeFly.Calls, "UpdateMachine:"); calls != 1 {
+		t.Fatalf("UpdateMachine calls after drifted start = %d, want 1", calls)
+	}
+	for machineID, spec := range fakeFly.MachineSpecs {
+		if spec.Hostname != cfg.Fly.Hostname {
+			t.Fatalf("machine %s hostname after drift reconcile = %q, want %q", machineID, spec.Hostname, cfg.Fly.Hostname)
+		}
+		if spec.VolumeID == "" {
+			t.Fatalf("drift reconcile dropped volume mount for machine %s: %#v", machineID, spec)
+		}
+	}
+	if err := service.stopProject(ctx, project.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.startProject(ctx, project.ID); err != nil {
+		t.Fatal(err)
+	}
+	if calls := countCalls(fakeFly.Calls, "UpdateMachine:"); calls != 1 {
+		t.Fatalf("converged start re-applied unchanged spec, update calls = %d", calls)
+	}
+	var driftEvents int
+	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.project_events WHERE project_id = $1 AND event_type = 'project.machine_spec_drift_applied'`, project.ID).Scan(&driftEvents); err != nil {
+		t.Fatal(err)
+	}
+	if driftEvents != 1 {
+		t.Fatalf("drift events recorded = %d, want 1", driftEvents)
+	}
+}
+
+func TestStartAndRestartRecreateMissingMachineOnExistingVolume(t *testing.T) {
+	store := newOrchestratorTestDB(t)
+	ctx := context.Background()
+	seedOrchestratorCatalogs(t, store)
+	insertOrchestratorUser(t, store, "usr_orch_heal", 20)
+
+	cfg := orchestratorTestConfig()
+	projectService := projects.NewService(store, audit.NewWriter(store), cfg)
+	project, _, err := projectService.Create(ctx, projects.CreateInput{
+		UserID:          "usr_orch_heal",
+		IdempotencyKey:  "orch-heal",
+		RepositoryURL:   "https://github.com/paperboat/example.git",
+		StorageGB:       8,
+		MachineTypeCode: "standard-1x",
+		RegionCode:      "iad",
+		PresetCodes:     []string{"codex"},
+		IdleTimeoutCode: "15m",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fakeFly := fly.NewFakeClient()
+	service := NewService(store, fakeFly, cfg)
+	if err := service.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewRepository(store, cfg.Secrets.EncryptionKey)
+	before, err := repo.ProjectMachine(ctx, project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	volumeBefore, err := repo.ProjectVolume(ctx, project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate out-of-band destruction (host failure, manual delete).
+	delete(fakeFly.Machines, before.FlyMachineID)
+	delete(fakeFly.MachineSpecs, before.FlyMachineID)
+
+	if err := service.startProject(ctx, project.ID); err != nil {
+		t.Fatal(err)
+	}
+	healed, err := repo.ProjectMachine(ctx, project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if healed.FlyMachineID == before.FlyMachineID {
+		t.Fatalf("machine record still points at destroyed machine %s", before.FlyMachineID)
+	}
+	replacement, ok := fakeFly.Machines[healed.FlyMachineID]
+	if !ok || replacement.State != "running" {
+		t.Fatalf("replacement machine = %#v ok=%v, want running", replacement, ok)
+	}
+	spec := fakeFly.MachineSpecs[healed.FlyMachineID]
+	if spec.VolumeID != volumeBefore.FlyVolumeID {
+		t.Fatalf("replacement machine volume = %q, want existing volume %q", spec.VolumeID, volumeBefore.FlyVolumeID)
+	}
+	if spec.Hostname != cfg.Fly.Hostname {
+		t.Fatalf("replacement machine hostname = %q, want %q", spec.Hostname, cfg.Fly.Hostname)
+	}
+	if len(fakeFly.Volumes) != 1 {
+		t.Fatalf("healing created extra volumes: %d", len(fakeFly.Volumes))
+	}
+	var healEvents int
+	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.project_events WHERE project_id = $1 AND event_type = 'project.machine_recreated'`, project.ID).Scan(&healEvents); err != nil {
+		t.Fatal(err)
+	}
+	if healEvents != 1 {
+		t.Fatalf("machine_recreated events = %d, want 1", healEvents)
+	}
+
+	// Restart must also self-heal when the machine disappears while running.
+	delete(fakeFly.Machines, healed.FlyMachineID)
+	delete(fakeFly.MachineSpecs, healed.FlyMachineID)
+	if err := service.restartProject(ctx, project.ID); err != nil {
+		t.Fatal(err)
+	}
+	afterRestart, err := repo.ProjectMachine(ctx, project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterRestart.FlyMachineID == healed.FlyMachineID {
+		t.Fatalf("restart did not replace destroyed machine %s", healed.FlyMachineID)
+	}
+	if machine := fakeFly.Machines[afterRestart.FlyMachineID]; machine.State != "running" {
+		t.Fatalf("machine state after restart heal = %q, want running", machine.State)
+	}
+}
+
 func TestDeleteReleasesStorageAfterProviderCleanup(t *testing.T) {
 	store := newOrchestratorTestDB(t)
 	ctx := context.Background()
@@ -227,8 +486,56 @@ func TestDeleteReleasesStorageAfterProviderCleanup(t *testing.T) {
 	if len(fakeFly.Volumes) != 0 || len(fakeFly.Machines) != 0 {
 		t.Fatalf("provider resources remain after delete: volumes=%d machines=%d", len(fakeFly.Volumes), len(fakeFly.Machines))
 	}
-	if calls := countCalls(fakeFly.Calls, "DeleteSecret:"); calls != 2 {
-		t.Fatalf("DeleteSecret calls = %d, want 2; calls=%#v", calls, fakeFly.Calls)
+	// Agentunnel, GitHub, and machine-activity tokens are all removed.
+	if calls := countCalls(fakeFly.Calls, "DeleteSecret:"); calls != 3 {
+		t.Fatalf("DeleteSecret calls = %d, want 3; calls=%#v", calls, fakeFly.Calls)
+	}
+}
+
+func TestDeleteContinuesToVolumeWhenMachineAlreadyGone(t *testing.T) {
+	store := newOrchestratorTestDB(t)
+	ctx := context.Background()
+	seedOrchestratorCatalogs(t, store)
+	insertOrchestratorUser(t, store, "usr_orch_delete_partial", 20)
+
+	cfg := orchestratorTestConfig()
+	cfg.Secrets.AgentunnelMachineToken = "agentunnel-delete-partial-token"
+	projectService := projects.NewService(store, audit.NewWriter(store), cfg)
+	project, _, err := projectService.Create(ctx, projects.CreateInput{
+		UserID:          "usr_orch_delete_partial",
+		IdempotencyKey:  "orch-delete-partial",
+		RepositoryURL:   "https://github.com/paperboat/example.git",
+		StorageGB:       8,
+		MachineTypeCode: "standard-1x",
+		RegionCode:      "iad",
+		IdleTimeoutCode: "15m",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fakeFly := fly.NewFakeClient()
+	service := NewService(store, fakeFly, cfg)
+	if err := service.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for id := range fakeFly.Machines {
+		delete(fakeFly.Machines, id)
+	}
+	if _, err := projectService.Delete(ctx, "usr_orch_delete_partial", project.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(fakeFly.Volumes) != 0 {
+		t.Fatalf("provider volume remains after partial delete retry path: %d", len(fakeFly.Volumes))
+	}
+	var projectState string
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state FROM paperboat.projects WHERE id = $1`, project.ID).Scan(&projectState); err != nil {
+		t.Fatal(err)
+	}
+	if projectState != "deleted" {
+		t.Fatalf("project state = %q, want deleted", projectState)
 	}
 }
 
@@ -252,6 +559,7 @@ func TestProvisionInjectsConfiguredMachineSecrets(t *testing.T) {
 		RegionCode:      "iad",
 		PresetCodes:     []string{"codex"},
 		IdleTimeoutCode: "15m",
+		SetupScript:     "echo setup from revision",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -265,7 +573,9 @@ func TestProvisionInjectsConfiguredMachineSecrets(t *testing.T) {
 	for _, value := range fakeFly.MachineSpecs {
 		spec = value
 	}
-	if !hasSecret(spec.Secrets, cfg.Fly.AgentunnelSecret, "agentunnel-machine-token") {
+	// Fake mode issues a project-scoped agentunnel token, which takes
+	// precedence over the configured fallback token.
+	if !hasSecret(spec.Secrets, cfg.Fly.AgentunnelSecret, "fake-agentunnel-token-"+project.ID) {
 		t.Fatalf("agentunnel secret was not injected: %#v", spec.Secrets)
 	}
 	if !hasSecret(spec.Secrets, cfg.Fly.GitHubSecret, "github-config-token") {
@@ -273,6 +583,11 @@ func TestProvisionInjectsConfiguredMachineSecrets(t *testing.T) {
 	}
 	if !hasSecret(spec.Secrets, cfg.Fly.SetupScriptSecret, "echo setup from revision") {
 		t.Fatalf("setup script secret was not injected: %#v", spec.Secrets)
+	}
+	for _, secret := range spec.Secrets {
+		if !validFlySecretName(secret.Name) {
+			t.Fatalf("secret name %q is not Fly-compatible", secret.Name)
+		}
 	}
 	if spec.Env["PAPERBOAT_CONFIG_REPO_URL"] != "https://github.com/paperboat-test-user/paperboat-config.git" ||
 		spec.Env["PAPERBOAT_CONFIG_REPO_BRANCH"] != "main" {
@@ -464,6 +779,14 @@ func hasSecret(secrets []fly.MachineSecret, envVar, value string) bool {
 	return false
 }
 
+func validFlySecretName(name string) bool {
+	return regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`).MatchString(name)
+}
+
+func validFlyVolumeName(name string) bool {
+	return regexp.MustCompile(`^[a-z0-9_]{1,30}$`).MatchString(name)
+}
+
 func insertGitHubToken(t *testing.T, store *db.DB, userID, token string) {
 	t.Helper()
 	ciphertext, err := secrets.Encrypt(orchestratorTestConfig().Secrets.EncryptionKey, token)
@@ -472,7 +795,8 @@ func insertGitHubToken(t *testing.T, store *db.DB, userID, token string) {
 	}
 	if _, err := store.SQL().ExecContext(context.Background(), `
 INSERT INTO paperboat.github_oauth_tokens (id, user_id, token_ciphertext, scopes, provider_account_login, last_validated_at)
-VALUES ($1, $2, $3, ARRAY['repo'], $4, now())`, "ght_"+userID, userID, ciphertext, "gh_"+userID); err != nil {
+VALUES ($1, $2, $3, ARRAY['repo'], $4, now())
+ON CONFLICT (user_id) DO UPDATE SET token_ciphertext = EXCLUDED.token_ciphertext, revoked_at = NULL, expires_at = NULL, last_validated_at = now()`, "ght_"+userID, userID, ciphertext, "gh_"+userID); err != nil {
 		t.Fatal(err)
 	}
 }
