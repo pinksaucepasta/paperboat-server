@@ -1,4 +1,9 @@
-FROM node:24-bookworm-slim AS papercode
+# PAPERCODE selects whether the papercode server is baked into the image:
+#   enabled  (default) — requires the papercode repo in the build context
+#   disabled           — runtime boots with PAPERBOAT_PAPERCODE_MODE=disabled
+ARG PAPERCODE=enabled
+
+FROM node:24-bookworm-slim AS papercode-enabled
 
 WORKDIR /opt/papercode
 RUN corepack enable
@@ -10,6 +15,11 @@ COPY papercode/oxlint-plugin-t3code ./oxlint-plugin-t3code
 RUN pnpm install --frozen-lockfile
 RUN pnpm run build
 RUN pnpm --filter t3 deploy --prod /opt/papercode-server
+
+FROM node:24-bookworm-slim AS papercode-disabled
+RUN mkdir -p /opt/papercode-server
+
+FROM papercode-${PAPERCODE} AS papercode
 
 FROM golang:1.25-bookworm AS agentunnel
 
@@ -28,6 +38,9 @@ COPY paperboat-server ./
 RUN go build -o /out/paperboat-activity-reporter-go ./cmd/paperboat-activity-reporter
 
 FROM node:24-bookworm-slim
+
+ARG PAPERCODE=enabled
+ENV PAPERBOAT_PAPERCODE_MODE=${PAPERCODE}
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl git openssh-client tini \

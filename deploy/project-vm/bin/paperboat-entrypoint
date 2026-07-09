@@ -54,10 +54,19 @@ log info "syncing config repo"
 log info "applying presets"
 "${PAPERBOAT_PRESET_APPLY_COMMAND:-$bin_dir/paperboat-apply-presets}"
 
-log info "starting papercode"
-"${PAPERBOAT_PAPERCODE_COMMAND:-$bin_dir/paperboat-start-papercode}" &
-papercode_pid=$!
-child_pids+=("$papercode_pid")
+# papercode is optional: images built without the papercode component set
+# PAPERBOAT_PAPERCODE_MODE=disabled so the rest of the runtime (workspace
+# clone, config sync, agentunnel, activity reporting) still runs.
+papercode_mode="${PAPERBOAT_PAPERCODE_MODE:-enabled}"
+papercode_pid=""
+if [ "$papercode_mode" != "disabled" ]; then
+  log info "starting papercode"
+  "${PAPERBOAT_PAPERCODE_COMMAND:-$bin_dir/paperboat-start-papercode}" &
+  papercode_pid=$!
+  child_pids+=("$papercode_pid")
+else
+  log info "papercode disabled for this image; skipping"
+fi
 
 cleanup() {
   log info "shutting down"
@@ -69,12 +78,24 @@ cleanup() {
 }
 trap cleanup TERM INT EXIT
 
-"${PAPERBOAT_WAIT_HTTP_COMMAND:-$bin_dir/paperboat-wait-http}" "${PAPERBOAT_PAPERCODE_LOCAL_URL:-http://127.0.0.1:4099}" 60
+if [ "$papercode_mode" != "disabled" ]; then
+  "${PAPERBOAT_WAIT_HTTP_COMMAND:-$bin_dir/paperboat-wait-http}" "${PAPERBOAT_PAPERCODE_LOCAL_URL:-http://127.0.0.1:4099}" 60
+fi
+
+# PAPERBOAT_AGENTUNNEL_MODE=required (default) treats an agentunnel exit as
+# fatal. The control plane sets "optional" while the hosted HTTP machine-client
+# flow is unavailable: the runtime then keeps agentunnel alive with restarts
+# and backoff instead of taking the whole VM down with it.
+agentunnel_mode="${PAPERBOAT_AGENTUNNEL_MODE:-required}"
+agentunnel_restart_count=0
+start_agentunnel() {
+  "${PAPERBOAT_AGENTUNNEL_COMMAND:-$bin_dir/paperboat-start-agentunnel}" &
+  agentunnel_pid=$!
+  child_pids+=("$agentunnel_pid")
+}
 
 log info "starting agentunnel"
-"${PAPERBOAT_AGENTUNNEL_COMMAND:-$bin_dir/paperboat-start-agentunnel}" &
-agentunnel_pid=$!
-child_pids+=("$agentunnel_pid")
+start_agentunnel
 
 "${PAPERBOAT_WAIT_AGENTUNNEL_COMMAND:-$bin_dir/paperboat-wait-agentunnel}" 60
 
@@ -92,6 +113,12 @@ log info "runtime ready"
 
 while :; do
   for child_pid in "$papercode_pid" "$agentunnel_pid"; do
+    if [ -z "$child_pid" ]; then
+      continue
+    fi
+    if [ "$child_pid" = "$agentunnel_pid" ] && [ "$agentunnel_mode" = "optional" ]; then
+      continue
+    fi
     if ! kill -0 "$child_pid" 2>/dev/null; then
       wait "$child_pid" 2>/dev/null || status=$?
       status="${status:-1}"
@@ -99,6 +126,19 @@ while :; do
       exit "$status"
     fi
   done
+  if [ "$agentunnel_mode" = "optional" ] && [ -n "$agentunnel_pid" ] && ! kill -0 "$agentunnel_pid" 2>/dev/null; then
+    wait "$agentunnel_pid" 2>/dev/null || agentunnel_status=$?
+    agentunnel_status="${agentunnel_status:-1}"
+    agentunnel_restart_count=$((agentunnel_restart_count + 1))
+    agentunnel_backoff="$agentunnel_restart_count"
+    if [ "$agentunnel_backoff" -gt "${PAPERBOAT_AGENTUNNEL_RESTART_MAX_BACKOFF_SECONDS:-30}" ]; then
+      agentunnel_backoff="${PAPERBOAT_AGENTUNNEL_RESTART_MAX_BACKOFF_SECONDS:-30}"
+    fi
+    printf '{"ts":"%s","component":"entrypoint","level":"error","message":"agentunnel exited","status":%s,"restart_count":%s,"backoff_seconds":%s}\n' \
+      "$(date -Iseconds)" "$agentunnel_status" "$agentunnel_restart_count" "$agentunnel_backoff" >&2
+    sleep "$agentunnel_backoff"
+    start_agentunnel
+  fi
   if [ -n "$activity_pid" ] && ! kill -0 "$activity_pid" 2>/dev/null; then
     wait "$activity_pid" 2>/dev/null || activity_status=$?
     activity_status="${activity_status:-1}"

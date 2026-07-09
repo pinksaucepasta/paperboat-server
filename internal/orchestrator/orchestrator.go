@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -123,17 +124,18 @@ func (s *Service) provisionProject(ctx context.Context, projectID string) error 
 	if err != nil {
 		return err
 	}
-	if err := s.ensureAgentunnelResource(ctx, &intent); err != nil {
-		return err
-	}
 	volume, err := s.ensureVolume(ctx, intent)
 	if err != nil {
 		return err
 	}
+	agentunnelErr := s.ensureAgentunnelResource(ctx, &intent)
 	if _, err := s.ensureMachine(ctx, intent, volume.FlyVolumeID); err != nil {
 		return err
 	}
-	return s.repo.MarkReady(ctx, intent)
+	if agentunnelErr != nil {
+		return agentunnelErr
+	}
+	return s.repo.MarkProvisionedStopped(ctx, intent)
 }
 
 func (s *Service) ensureAgentunnelResource(ctx context.Context, intent *ProjectIntent) error {
@@ -237,14 +239,22 @@ func (s *Service) deleteProject(ctx context.Context, projectID string) error {
 	intent, intentErr := s.repo.ProjectIntent(ctx, projectID)
 	machine, machineErr := s.repo.ProjectMachine(ctx, projectID)
 	if machineErr == nil {
-		if _, err := s.fly.StopMachine(ctx, machine.FlyMachineID); err != nil && !errors.Is(err, fly.ErrNotFound) {
-			return err
-		}
-		if err := s.fly.DestroyMachine(ctx, machine.FlyMachineID); err != nil && !errors.Is(err, fly.ErrNotFound) {
-			return err
-		}
-		if err := s.repo.RemoveMachine(ctx, projectID); err != nil {
-			return err
+		if _, err := s.fly.StopMachine(ctx, machine.FlyMachineID); err != nil {
+			if !errors.Is(err, fly.ErrNotFound) {
+				return err
+			}
+			if err := s.repo.RemoveMachine(ctx, projectID); err != nil {
+				return err
+			}
+		} else {
+			if err := s.fly.DestroyMachine(ctx, machine.FlyMachineID); err != nil {
+				if !errors.Is(err, fly.ErrNotFound) {
+					return err
+				}
+			}
+			if err := s.repo.RemoveMachine(ctx, projectID); err != nil {
+				return err
+			}
 		}
 	} else if !errors.Is(machineErr, sql.ErrNoRows) {
 		return machineErr
@@ -258,8 +268,10 @@ func (s *Service) deleteProject(ctx context.Context, projectID string) error {
 	}
 	volume, volumeErr := s.repo.ProjectVolume(ctx, projectID)
 	if volumeErr == nil {
-		if err := s.fly.DestroyVolume(ctx, volume.FlyVolumeID); err != nil && !errors.Is(err, fly.ErrNotFound) {
-			return err
+		if err := s.fly.DestroyVolume(ctx, volume.FlyVolumeID); err != nil {
+			if !errors.Is(err, fly.ErrNotFound) {
+				return err
+			}
 		}
 		if err := s.repo.RemoveVolume(ctx, projectID); err != nil {
 			return err
@@ -276,7 +288,7 @@ func (s *Service) ensureVolume(ctx context.Context, intent ProjectIntent) (Volum
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return VolumeRecord{}, err
 	}
-	name := providerName(s.cfg.Fly.VolumeNamePrefix, intent.ID)
+	name := providerVolumeName(s.cfg.Fly.VolumeNamePrefix, intent.ID)
 	if adopted, ok, err := s.findProviderVolume(ctx, name, intent); err != nil || ok {
 		if err != nil {
 			return VolumeRecord{}, err
@@ -362,6 +374,9 @@ func (s *Service) machineSpec(intent ProjectIntent, volumeID string) fly.Machine
 	if strings.TrimSpace(s.cfg.Providers.Agentunnel.BaseURL) != "" {
 		env["PAPERBOAT_AGENTUNNEL_SERVER_URL"] = s.cfg.Providers.Agentunnel.BaseURL
 	}
+	if strings.TrimSpace(s.cfg.Providers.Agentunnel.MachineMode) != "" {
+		env["PAPERBOAT_AGENTUNNEL_MODE"] = s.cfg.Providers.Agentunnel.MachineMode
+	}
 	if strings.TrimSpace(s.cfg.Providers.Agentunnel.PapercodeLocalURL) != "" {
 		env["PAPERBOAT_PAPERCODE_LOCAL_URL"] = s.cfg.Providers.Agentunnel.PapercodeLocalURL
 	}
@@ -392,28 +407,28 @@ func (s *Service) projectSecrets(intent ProjectIntent) []fly.MachineSecret {
 	if strings.TrimSpace(agentunnelToken) != "" {
 		out = append(out, fly.MachineSecret{
 			EnvVar: s.cfg.Fly.AgentunnelSecret,
-			Name:   providerName("pbsecret-agentunnel", intent.ID),
+			Name:   providerSecretName("PBSECRET_AGENTUNNEL", intent.ID),
 			Value:  agentunnelToken,
 		})
 	}
 	if strings.TrimSpace(intent.GitHubConfigToken) != "" {
 		out = append(out, fly.MachineSecret{
 			EnvVar: s.cfg.Fly.GitHubSecret,
-			Name:   providerName("pbsecret-github", intent.ID),
+			Name:   providerSecretName("PBSECRET_GITHUB", intent.ID),
 			Value:  intent.GitHubConfigToken,
 		})
 	}
 	if strings.TrimSpace(intent.SetupScript) != "" {
 		out = append(out, fly.MachineSecret{
 			EnvVar: s.cfg.Fly.SetupScriptSecret,
-			Name:   providerName("pbsecret-setup", intent.ID),
+			Name:   providerSecretName("PBSECRET_SETUP", intent.ID),
 			Value:  intent.SetupScript,
 		})
 	}
 	if strings.TrimSpace(agentunnelToken) != "" {
 		out = append(out, fly.MachineSecret{
 			EnvVar: "PAPERBOAT_MACHINE_ACTIVITY_TOKEN",
-			Name:   providerName("pbsecret-activity", intent.ID),
+			Name:   providerSecretName("PBSECRET_ACTIVITY", intent.ID),
 			Value:  agentunnelToken,
 		})
 	}
@@ -435,6 +450,41 @@ func (s *Service) deleteProviderSecrets(ctx context.Context, intent ProjectInten
 func providerName(prefix, projectID string) string {
 	value := strings.NewReplacer("_", "-", ".", "-").Replace(strings.ToLower(projectID))
 	return strings.Trim(strings.TrimSpace(prefix), "-") + "-" + value
+}
+
+func providerSecretName(prefix, projectID string) string {
+	value := strings.NewReplacer("-", "_", ".", "_").Replace(strings.ToUpper(projectID))
+	return strings.Trim(strings.TrimSpace(prefix), "_") + "_" + value
+}
+
+func providerVolumeName(prefix, projectID string) string {
+	cleanPrefix := sanitizeVolumePart(prefix)
+	if cleanPrefix == "" {
+		cleanPrefix = "pbvol"
+	}
+	if len(cleanPrefix) > 12 {
+		cleanPrefix = cleanPrefix[:12]
+	}
+	sum := sha256.Sum256([]byte(projectID))
+	return cleanPrefix + "_" + hex.EncodeToString(sum[:])[:16]
+}
+
+func sanitizeVolumePart(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '_':
+			b.WriteRune(r)
+		case r == '-' || r == '.':
+			b.WriteRune('_')
+		}
+	}
+	return strings.Trim(b.String(), "_")
 }
 
 func resourceTags(projectID string) map[string]string {
@@ -514,6 +564,13 @@ func (r *Repository) ClaimNextJob(ctx context.Context) (Job, bool, error) {
 SELECT id, job_type, aggregate_id, payload
 FROM orchestration_jobs
 WHERE state = 'queued' AND next_run_at <= now()
+  AND NOT EXISTS (
+    SELECT 1
+    FROM projects
+    WHERE projects.id = orchestration_jobs.aggregate_id
+      AND projects.state = 'deleted'
+      AND orchestration_jobs.job_type <> 'project.delete'
+  )
 ORDER BY created_at
 FOR UPDATE SKIP LOCKED
 LIMIT 1`).Scan(&job.ID, &job.Type, &job.AggregateID, &payload); err != nil {
@@ -534,7 +591,7 @@ LIMIT 1`).Scan(&job.ID, &job.Type, &job.AggregateID, &payload); err != nil {
 
 func (r *Repository) CompleteJob(ctx context.Context, jobID string) error {
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		_, err := tx.Exec(ctx, `UPDATE orchestration_jobs SET state = 'succeeded', version = version + 1, updated_at = now() WHERE id = $1`, jobID)
+		_, err := tx.Exec(ctx, `UPDATE orchestration_jobs SET state = 'succeeded', last_error = '', version = version + 1, updated_at = now() WHERE id = $1`, jobID)
 		return err
 	})
 }
@@ -727,15 +784,15 @@ ON CONFLICT (project_id) DO UPDATE SET
 	return r.ProjectMachine(ctx, projectID)
 }
 
-func (r *Repository) MarkReady(ctx context.Context, intent ProjectIntent) error {
+func (r *Repository) MarkProvisionedStopped(ctx context.Context, intent ProjectIntent) error {
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		if err := applyRuntimeConfigTx(ctx, tx, intent); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE projects SET state = 'ready', version = version + 1, updated_at = now() WHERE id = $1 AND state <> 'deleted'`, intent.ID); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE projects SET state = 'stopped', version = version + 1, updated_at = now() WHERE id = $1 AND state <> 'deleted'`, intent.ID); err != nil {
 			return err
 		}
-		return insertEvent(ctx, tx, intent.ID, "project.ready", "Project machine and storage were provisioned.", map[string]any{"state": "ready"})
+		return insertEvent(ctx, tx, intent.ID, "project.stopped", "Project machine and storage were provisioned. The machine is stopped until you start it.", map[string]any{"state": "stopped"})
 	})
 }
 

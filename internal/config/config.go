@@ -96,6 +96,7 @@ type Providers struct {
 type ProviderConfig struct {
 	BaseURL              string        `json:"base_url"`
 	Ready                bool          `json:"ready"`
+	MachineMode          string        `json:"machine_mode,omitempty"`
 	PapercodeLocalURL    string        `json:"papercode_local_url,omitempty"`
 	RouteExpiresIn       time.Duration `json:"route_expires_in,omitempty"`
 	RouteSubdomainPrefix string        `json:"route_subdomain_prefix,omitempty"`
@@ -190,6 +191,7 @@ func Default() Config {
 				BaseURL: "https://api.github.com",
 			},
 			Agentunnel: ProviderConfig{
+				MachineMode:          "required",
 				PapercodeLocalURL:    "http://127.0.0.1:4099",
 				RouteExpiresIn:       30 * 24 * time.Hour,
 				RouteSubdomainPrefix: "pb",
@@ -262,6 +264,11 @@ func (c Config) Validate() error {
 	}
 	if c.Metering.MaxKeepAliveDuration <= 0 {
 		errs = append(errs, fmt.Errorf("metering.max_keep_alive_duration must be positive"))
+	}
+	switch c.Providers.Agentunnel.MachineMode {
+	case "required", "optional":
+	default:
+		errs = append(errs, fmt.Errorf("agentunnel.machine_mode must be \"required\" or \"optional\""))
 	}
 	if strings.TrimSpace(c.Providers.Agentunnel.PapercodeLocalURL) == "" {
 		errs = append(errs, fmt.Errorf("agentunnel.papercode_local_url is required"))
@@ -374,6 +381,7 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_GITHUB_BASE_URL", &c.Providers.GitHub.BaseURL)
 	setString("PAPERBOAT_FLY_BASE_URL", &c.Providers.Fly.BaseURL)
 	setString("PAPERBOAT_AGENTUNNEL_BASE_URL", &c.Providers.Agentunnel.BaseURL)
+	setString("PAPERBOAT_AGENTUNNEL_MACHINE_MODE", &c.Providers.Agentunnel.MachineMode)
 	setString("PAPERBOAT_AGENTUNNEL_PAPERCODE_LOCAL_URL", &c.Providers.Agentunnel.PapercodeLocalURL)
 	setString("PAPERBOAT_AGENTUNNEL_ROUTE_SUBDOMAIN_PREFIX", &c.Providers.Agentunnel.RouteSubdomainPrefix)
 	setString("PAPERBOAT_AGENTUNNEL_SSH_LOCAL_HOST", &c.Providers.Agentunnel.SSHLocalHost)

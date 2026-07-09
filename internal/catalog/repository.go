@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 type Reader interface {
@@ -12,6 +13,10 @@ type Reader interface {
 	ListPresets(context.Context) ([]PresetRecord, error)
 	ListIdleTimeouts(context.Context) ([]IdleTimeoutRecord, error)
 	ListRegions(context.Context) ([]RegionRecord, error)
+}
+
+type RegionWriter interface {
+	SyncRegions(context.Context, []RegionRecord) error
 }
 
 type PlanRecord struct {
@@ -171,4 +176,41 @@ ORDER BY code`)
 		out = append(out, record)
 	}
 	return out, rs.Err()
+}
+
+func (r *Repository) SyncRegions(ctx context.Context, records []RegionRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	tx, err := r.queryer.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin sync regions: %w", err)
+	}
+	defer tx.Rollback()
+	for _, record := range records {
+		code := strings.ToLower(strings.TrimSpace(record.Code))
+		name := strings.TrimSpace(record.Name)
+		if code == "" || name == "" {
+			continue
+		}
+		// Provider sync must never enable a region: whether a region is
+		// offered to users is an operator decision made in the catalog
+		// (seed-catalogs). New provider regions arrive disabled, and a
+		// region deprecated at the provider is force-disabled.
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO paperboat.regions (id, code, name, enabled)
+VALUES ('reg_' || $1, $1, $2, false)
+ON CONFLICT (code) DO UPDATE SET
+	name = EXCLUDED.name,
+	enabled = regions.enabled AND $3,
+	version = CASE WHEN (regions.name, regions.enabled) IS DISTINCT FROM (EXCLUDED.name, regions.enabled AND $3) THEN regions.version + 1 ELSE regions.version END,
+	updated_at = CASE WHEN (regions.name, regions.enabled) IS DISTINCT FROM (EXCLUDED.name, regions.enabled AND $3) THEN now() ELSE regions.updated_at END`,
+			code, name, record.Enabled); err != nil {
+			return fmt.Errorf("sync region %s: %w", code, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit sync regions: %w", err)
+	}
+	return nil
 }

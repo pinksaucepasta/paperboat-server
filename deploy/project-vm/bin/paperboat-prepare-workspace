@@ -5,9 +5,21 @@ workspace="${PAPERBOAT_WORKSPACE:-/workspace}"
 repo_url="${PAPERBOAT_REPOSITORY_URL:?PAPERBOAT_REPOSITORY_URL is required}"
 branch="${PAPERBOAT_DEFAULT_BRANCH:-}"
 
+# The repository is cloned into its own folder under the workspace
+# (e.g. /workspace/<repo-name>), keeping the workspace root free for
+# runtime state (.paperboat) and future projects. The folder name is
+# derived from the repository URL unless the control plane overrides it.
+project_dir="${PAPERBOAT_PROJECT_DIR:-}"
+if [ -z "$project_dir" ]; then
+  project_dir="${repo_url%/}"
+  project_dir="${project_dir##*/}"
+  project_dir="${project_dir%.git}"
+fi
+target="$workspace/$project_dir"
+
 mkdir -p "$workspace"
 
-if [ ! -d "$workspace/.git" ]; then
+if [ ! -d "$target/.git" ]; then
   tmp="$workspace/.paperboat-clone"
   rm -rf "$tmp"
   if [ -n "$branch" ]; then
@@ -15,8 +27,8 @@ if [ ! -d "$workspace/.git" ]; then
   else
     git clone "$repo_url" "$tmp"
   fi
-  find "$tmp" -mindepth 1 -maxdepth 1 -exec mv {} "$workspace/" \;
-  rmdir "$tmp"
+  rm -rf "$target"
+  mv "$tmp" "$target"
 fi
 
 mkdir -p "$workspace/.paperboat"
