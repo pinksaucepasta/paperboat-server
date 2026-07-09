@@ -124,6 +124,50 @@ func githubOAuthBrowserCallback(authService *auth.Service, service *pbgithub.Ser
 	}
 }
 
+func githubRepositories(service *pbgithub.Service) http.HandlerFunc {
+	type repositoryResponse struct {
+		Owner         string `json:"owner"`
+		Name          string `json:"name"`
+		FullName      string `json:"full_name"`
+		DefaultBranch string `json:"default_branch"`
+		CloneURL      string `json:"clone_url"`
+		HTMLURL       string `json:"html_url"`
+		Private       bool   `json:"private"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		repos, err := service.ListRepos(r.Context(), p.User.ID)
+		switch {
+		case errors.Is(err, pbgithub.ErrNotConnected):
+			writeError(w, r, http.StatusConflict, "github_required", "Connect GitHub before listing repositories.")
+			return
+		case errors.Is(err, pbgithub.ErrMissingScopes):
+			writeError(w, r, http.StatusForbidden, "github_scope_denied", "GitHub authorization is missing required scopes.")
+			return
+		case err != nil:
+			writeError(w, r, http.StatusServiceUnavailable, "provider_unavailable", "GitHub repositories could not be loaded.")
+			return
+		}
+		out := make([]repositoryResponse, 0, len(repos))
+		for _, repo := range repos {
+			out = append(out, repositoryResponse{
+				Owner:         repo.Owner,
+				Name:          repo.Name,
+				FullName:      repo.Owner + "/" + repo.Name,
+				DefaultBranch: repo.DefaultBranch,
+				CloneURL:      repo.CloneURL,
+				HTMLURL:       repo.HTMLURL,
+				Private:       repo.Private,
+			})
+		}
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: out})
+	}
+}
+
 func githubProvisionConfigRepo(service *pbgithub.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := principalFromContext(r.Context())

@@ -18,6 +18,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
 	"github.com/pinksaucepasta/paperboat-server/internal/catalog"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
+	"github.com/pinksaucepasta/paperboat-server/internal/fly"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
 	"github.com/pinksaucepasta/paperboat-server/internal/observability"
@@ -35,6 +36,8 @@ type Options struct {
 	Auth             *auth.Service
 	Billing          *billing.Service
 	Catalog          catalog.Reader
+	CatalogWriter    catalog.RegionWriter
+	Fly              fly.Client
 	GitHub           *pbgithub.Service
 	Projects         *projects.Service
 	Agentunnel       *agentunnel.Service
@@ -128,7 +131,7 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 		mux.Handle("GET /api/catalog/machine-types", requireAuth(opts.Auth, catalogMachineTypes(opts.Catalog)))
 		mux.Handle("GET /api/catalog/presets", requireAuth(opts.Auth, catalogPresets(opts.Catalog)))
 		mux.Handle("GET /api/catalog/idle-timeouts", requireAuth(opts.Auth, catalogIdleTimeouts(opts.Catalog)))
-		mux.Handle("GET /api/catalog/regions", requireAuth(opts.Auth, catalogRegions(opts.Catalog)))
+		mux.Handle("GET /api/catalog/regions", requireAuth(opts.Auth, catalogRegions(opts.Catalog, opts.Fly, opts.CatalogWriter)))
 	} else {
 		mux.Handle("GET /api/catalog/plans", requireAuth(opts.Auth, http.HandlerFunc(notImplemented)))
 		mux.Handle("GET /api/catalog/machine-types", requireAuth(opts.Auth, http.HandlerFunc(notImplemented)))
@@ -138,6 +141,7 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 	}
 	if opts.GitHub != nil {
 		mux.Handle("GET /api/github/status", requireAuth(opts.Auth, githubStatus(opts.GitHub)))
+		mux.Handle("GET /api/github/repositories", requireAuth(opts.Auth, requireEntitlement(opts.Auth, githubRepositories(opts.GitHub))))
 		mux.Handle("POST /api/github/oauth/start", requireAuth(opts.Auth, requireCSRF(opts.Auth, githubOAuthStart(opts.Auth, opts.GitHub))))
 		mux.Handle("GET /api/github/oauth/callback", requireAuth(opts.Auth, githubOAuthBrowserCallback(opts.Auth, opts.GitHub)))
 		mux.Handle("POST /api/github/oauth/callback", requireAuth(opts.Auth, requireCSRF(opts.Auth, githubOAuthCallback(opts.Auth, opts.GitHub))))

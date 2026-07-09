@@ -62,7 +62,9 @@ COPY --from=agentunnel /out/agentunnel /usr/local/bin/agentunnel
 COPY --from=paperboat-server-tools /out/paperboat-activity-reporter-go /usr/local/bin/paperboat-activity-reporter-go
 COPY paperboat-server/deploy/project-vm/bin/ /usr/local/bin/
 
-RUN chmod +x /usr/local/bin/paperboat-*
+RUN chmod +x /usr/local/bin/paperboat-* \
+  && install -m 0644 /usr/local/bin/paperboat-workspace-cd.sh /etc/profile.d/50-paperboat-workspace.sh \
+  && printf '\n# Paperboat: open interactive shells inside the project repository.\n. /etc/profile.d/50-paperboat-workspace.sh\n' >> /etc/bash.bashrc
 
 WORKDIR /workspace
 HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=6 CMD ["/usr/local/bin/paperboat-healthcheck"]

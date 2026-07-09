@@ -33,6 +33,7 @@ type Client interface {
 	ExchangeOAuthCode(context.Context, OAuthExchangeInput) (OAuthToken, error)
 	CurrentUser(context.Context, string) (GitHubUser, error)
 	GetRepo(context.Context, string, string, string) (Repo, error)
+	ListRepos(context.Context, string) ([]Repo, error)
 	CreateRepo(context.Context, string, RepoCreateInput) (Repo, error)
 	GetFile(context.Context, string, string, string, string, string) (File, error)
 	PutFile(context.Context, string, string, string, PutFileInput) error
@@ -325,6 +326,16 @@ LIMIT 1`, userID).Scan((*stringArray)(&scopes))
 	return nil
 }
 
+// ListRepos returns the repositories the connected GitHub account can access,
+// most-recently-updated first, for selection during project creation.
+func (s *Service) ListRepos(ctx context.Context, userID string) ([]Repo, error) {
+	token, _, err := s.githubToken(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return s.client.ListRepos(ctx, token)
+}
+
 func (s *Service) githubToken(ctx context.Context, userID string) (string, string, error) {
 	var ciphertext []byte
 	var login string
@@ -476,6 +487,29 @@ func (c HTTPClient) GetRepo(ctx context.Context, token, owner, name string) (Rep
 		return Repo{}, err
 	}
 	return body.repo(), err
+}
+
+// listReposMaxPages bounds how many pages of the authenticated user's
+// repositories are fetched (100 per page) so a very large account cannot make
+// the request unbounded.
+const listReposMaxPages = 10
+
+func (c HTTPClient) ListRepos(ctx context.Context, token string) ([]Repo, error) {
+	repos := make([]Repo, 0, 100)
+	for page := 1; page <= listReposMaxPages; page++ {
+		var body []githubRepoResponse
+		path := fmt.Sprintf("/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member&page=%d", page)
+		if err := c.doJSON(ctx, token, http.MethodGet, path, nil, &body); err != nil {
+			return nil, err
+		}
+		for _, item := range body {
+			repos = append(repos, item.repo())
+		}
+		if len(body) < 100 {
+			break
+		}
+	}
+	return repos, nil
 }
 
 func (c HTTPClient) CreateRepo(ctx context.Context, token string, input RepoCreateInput) (Repo, error) {
@@ -662,6 +696,17 @@ func (f *FakeClient) GetRepo(_ context.Context, _, owner, name string) (Repo, er
 		return Repo{}, ErrRepoNotFound
 	}
 	return repo, nil
+}
+
+func (f *FakeClient) ListRepos(context.Context, string) ([]Repo, error) {
+	repos := make([]Repo, 0, len(f.Repos))
+	for _, repo := range f.Repos {
+		repos = append(repos, repo)
+	}
+	slices.SortFunc(repos, func(a, b Repo) int {
+		return strings.Compare(a.Owner+"/"+a.Name, b.Owner+"/"+b.Name)
+	})
+	return repos, nil
 }
 
 func (f *FakeClient) CreateRepo(_ context.Context, _ string, input RepoCreateInput) (Repo, error) {

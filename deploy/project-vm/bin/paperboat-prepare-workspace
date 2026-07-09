@@ -32,3 +32,7 @@ if [ ! -d "$target/.git" ]; then
 fi
 
 mkdir -p "$workspace/.paperboat"
+
+# Record the resolved repository path so interactive shells (SSH, agent
+# terminals) can open directly inside the project instead of the workspace root.
+printf '%s\n' "$target" > "$workspace/.paperboat/project-dir"
