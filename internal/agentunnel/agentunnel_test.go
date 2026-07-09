@@ -55,6 +55,7 @@ func TestHTTPClientStatusUsesConnectInfoEnvelope(t *testing.T) {
 func TestHTTPClientEnsureProjectResourcesCreatesClientAndHTTPTunnel(t *testing.T) {
 	var paths []string
 	var authHeaders []string
+	var clientCreateBody map[string]any
 	var httpCreateBody map[string]any
 	var tcpCreateBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -62,6 +63,9 @@ func TestHTTPClientEnsureProjectResourcesCreatesClientAndHTTPTunnel(t *testing.T
 		authHeaders = append(authHeaders, r.Header.Get("Authorization"))
 		switch r.URL.Path {
 		case "/api/clients":
+			if err := json.NewDecoder(r.Body).Decode(&clientCreateBody); err != nil {
+				t.Fatal(err)
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"ok": true,
 				"data": map[string]any{
@@ -121,6 +125,9 @@ func TestHTTPClientEnsureProjectResourcesCreatesClientAndHTTPTunnel(t *testing.T
 	if strings.Join(paths, ",") != "POST /api/clients,POST /api/http-tunnels,POST /api/tcp-tunnels" {
 		t.Fatalf("paths = %#v", paths)
 	}
+	if name, _ := clientCreateBody["name"].(string); !strings.HasPrefix(name, "paperboat-demo-") || strings.Contains(name, "_") {
+		t.Fatalf("client name = %q, want sanitized demo client name", name)
+	}
 	for _, got := range authHeaders {
 		if got != "Bearer agentunnel-api-key" {
 			t.Fatalf("authorization header = %q", got)
@@ -147,6 +154,134 @@ func TestHTTPClientEnsureProjectResourcesCreatesClientAndHTTPTunnel(t *testing.T
 	resourceJSON := strings.ToLower(mustJSONForTest(resource))
 	if strings.Contains(resourceJSON, "api-key") || strings.Contains(resourceJSON, "project_machine_token") {
 		t.Fatalf("resource leaked secret: %#v", resource)
+	}
+}
+
+func TestHTTPClientEnsureProjectResourcesAllowsHTTPOnlyWhenTCPDisabled(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/clients":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"data": map[string]any{
+					"client_id":    "cli_prj_http_only",
+					"client_token": "clt_http_only_machine_token",
+				},
+			})
+		case "/api/http-tunnels":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"data": map[string]any{
+					"tunnel_id":   "tun_http_only",
+					"preview_url": "https://pb-prj-http-only.agentunnel.example",
+					"status":      "active",
+				},
+			})
+		case "/api/tcp-tunnels":
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": false,
+				"error": map[string]any{
+					"code":    "TCP_TUNNELS_DISABLED",
+					"message": "TCP tunnels are disabled on this server.",
+				},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	resource, err := (HTTPClient{
+		BaseURL:              server.URL,
+		APIKey:               "agentunnel-api-key",
+		PapercodeLocalURL:    "http://127.0.0.1:4099",
+		RouteExpiresIn:       time.Hour,
+		RouteSubdomainPrefix: "pb",
+		SSHRemotePortStart:   25000,
+		SSHRemotePortEnd:     25000,
+	}).EnsureProjectResources(context.Background(), ProjectRef{ID: "prj_http_only"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resource.TunnelID != "tun_http_only" || resource.MachineToken != "clt_http_only_machine_token" {
+		t.Fatalf("resource = %#v", resource)
+	}
+	if resource.Metadata["tcp_status"] != "disabled" || resource.Metadata["tcp_error_code"] != "TCP_TUNNELS_DISABLED" {
+		t.Fatalf("tcp disabled metadata = %#v", resource.Metadata)
+	}
+}
+
+func TestHTTPClientEnsureProjectResourcesRetriesSubdomainConflict(t *testing.T) {
+	var httpCreateBodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/clients":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"data": map[string]any{
+					"client_id":    "cli_prj_conflict",
+					"client_token": "clt_conflict_machine_token",
+				},
+			})
+		case "/api/http-tunnels":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			httpCreateBodies = append(httpCreateBodies, body)
+			if len(httpCreateBodies) == 1 {
+				w.WriteHeader(http.StatusConflict)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"ok": false,
+					"error": map[string]any{
+						"code":    "SUBDOMAIN_IN_USE",
+						"message": "This tunnel hostname is already in use.",
+					},
+				})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"data": map[string]any{
+					"tunnel_id":   "tun_http_conflict_retry",
+					"preview_url": "https://pb-prj-conflict-alt.agentunnel.example",
+					"status":      "active",
+				},
+			})
+		case "/api/tcp-tunnels":
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": false,
+				"error": map[string]any{
+					"code": "TCP_TUNNELS_DISABLED",
+				},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	resource, err := (HTTPClient{
+		BaseURL:              server.URL,
+		PapercodeLocalURL:    "http://127.0.0.1:4099",
+		RouteExpiresIn:       time.Hour,
+		RouteSubdomainPrefix: "pb",
+		SSHRemotePortStart:   25000,
+		SSHRemotePortEnd:     25000,
+	}).EnsureProjectResources(context.Background(), ProjectRef{ID: "prj_conflict"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(httpCreateBodies) != 2 {
+		t.Fatalf("http create attempts = %d, want 2", len(httpCreateBodies))
+	}
+	if httpCreateBodies[0]["subdomain"] == httpCreateBodies[1]["subdomain"] {
+		t.Fatalf("retry reused conflicting subdomain: %#v", httpCreateBodies)
+	}
+	if resource.TunnelID != "tun_http_conflict_retry" {
+		t.Fatalf("resource = %#v", resource)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -24,6 +25,8 @@ import (
 
 const defaultAccessTTL = 5 * time.Minute
 const providerCodeRemotePortInUse = "REMOTE_PORT_IN_USE"
+const providerCodeTCPTunnelsDisabled = "TCP_TUNNELS_DISABLED"
+const providerCodeSubdomainInUse = "SUBDOMAIN_IN_USE"
 
 var (
 	ErrNotFound                    = projects.ErrNotFound
@@ -44,6 +47,9 @@ type providerError struct {
 func (e providerError) Error() string {
 	if e.code == "" {
 		return ErrProvider.Error()
+	}
+	if e.message != "" {
+		return ErrProvider.Error() + ": " + e.code + ": " + e.message
 	}
 	return ErrProvider.Error() + ": " + e.code
 }
@@ -230,50 +236,68 @@ func (c HTTPClient) EnsureProjectResources(ctx context.Context, project ProjectR
 		Status     string     `json:"status"`
 		ExpiresAt  *time.Time `json:"expires_at"`
 	}
-	httpBody := map[string]any{
-		"client_id":  clientID,
-		"local_url":  localURL,
-		"subdomain":  projectSubdomain(c.RouteSubdomainPrefix, project.ID),
-		"expires_in": expires.String(),
+	var lastHTTPErr error
+	for _, subdomain := range projectSubdomainCandidates(c.RouteSubdomainPrefix, project.ID) {
+		httpBody := map[string]any{
+			"client_id":  clientID,
+			"local_url":  localURL,
+			"subdomain":  subdomain,
+			"expires_in": expires.String(),
+		}
+		if strings.TrimSpace(c.AccessPolicyID) != "" {
+			httpBody["access_policy_id"] = c.AccessPolicyID
+		}
+		if err := c.post(ctx, "/api/http-tunnels", httpBody, &httpPayload); err != nil {
+			lastHTTPErr = err
+			if isSubdomainInUse(err) {
+				continue
+			}
+			return fail(err)
+		}
+		lastHTTPErr = nil
+		break
 	}
-	if strings.TrimSpace(c.AccessPolicyID) != "" {
-		httpBody["access_policy_id"] = c.AccessPolicyID
-	}
-	if err := c.post(ctx, "/api/http-tunnels", httpBody, &httpPayload); err != nil {
-		return fail(err)
+	if lastHTTPErr != nil {
+		return fail(lastHTTPErr)
 	}
 	httpURL, wsURL := routeURLs(httpPayload.PreviewURL)
 	if httpPayload.TunnelID == "" || httpURL == "" || wsURL == "" {
 		return fail(ErrTunnelUnavailable)
 	}
 	sshResource, err := c.ensureSSHTunnel(ctx, project, clientID)
-	if err != nil {
+	if err != nil && !isTCPTunnelsDisabled(err) {
 		return fail(err)
 	}
-	return ResourceDescriptor{
+	resource := ResourceDescriptor{
 		TunnelID:         httpPayload.TunnelID,
 		ClientID:         clientID,
 		ResourceID:       httpPayload.TunnelID,
 		HTTPBaseURL:      httpURL,
 		WebSocketBaseURL: wsURL,
-		SSHHost:          sshResource.SSHHost,
-		SSHPort:          sshResource.SSHPort,
 		MachineToken:     machineToken,
 		Metadata: map[string]any{
-			"provider":              "agentunnel",
-			"resource_kind":         "http_tunnel",
-			"http_tunnel_id":        httpPayload.TunnelID,
-			"tcp_tunnel_id":         sshResource.TunnelID,
-			"local_url":             localURL,
-			"route_status":          httpPayload.Status,
-			"route_expires":         timeString(httpPayload.ExpiresAt),
-			"preview_url":           httpPayload.PreviewURL,
-			"machine_secret":        "external",
-			"tcp_status":            sshResource.Metadata["tcp_status"],
-			"tcp_lifecycle":         sshResource.Metadata["tcp_lifecycle"],
-			"tcp_forwarding_status": sshResource.Metadata["tcp_forwarding_status"],
+			"provider":       "agentunnel",
+			"resource_kind":  "http_tunnel",
+			"http_tunnel_id": httpPayload.TunnelID,
+			"local_url":      localURL,
+			"route_status":   httpPayload.Status,
+			"route_expires":  timeString(httpPayload.ExpiresAt),
+			"preview_url":    httpPayload.PreviewURL,
+			"machine_secret": "external",
 		},
-	}, nil
+	}
+	if err != nil {
+		resource.Metadata["tcp_status"] = "disabled"
+		resource.Metadata["tcp_error_code"] = providerCodeTCPTunnelsDisabled
+		return resource, nil
+	}
+	resource.SSHHost = sshResource.SSHHost
+	resource.SSHPort = sshResource.SSHPort
+	resource.Metadata["tcp_tunnel_id"] = sshResource.TunnelID
+	resource.Metadata["tcp_status"] = sshResource.Metadata["tcp_status"]
+	resource.Metadata["tcp_lifecycle"] = sshResource.Metadata["tcp_lifecycle"]
+	resource.Metadata["tcp_forwarding_status"] = sshResource.Metadata["tcp_forwarding_status"]
+	return resource, nil
 }
 
 func (c HTTPClient) Status(ctx context.Context, resource ResourceDescriptor) (TunnelStatus, error) {
@@ -469,10 +493,7 @@ func (c HTTPClient) ensureClient(ctx context.Context, project ProjectRef) (strin
 		ID       string `json:"id"`
 		Token    string `json:"client_token"`
 	}
-	body := map[string]any{"name": "paperboat-" + project.ID}
-	if strings.TrimSpace(project.Name) != "" {
-		body["name"] = "paperboat-" + project.ID + "-" + project.Name
-	}
+	body := map[string]any{"name": projectClientName(project)}
 	if err := c.post(ctx, "/api/clients", body, &payload); err != nil {
 		return "", "", err
 	}
@@ -544,6 +565,16 @@ func (c HTTPClient) ensureSSHTunnel(ctx context.Context, project ProjectRef, cli
 func isRemotePortInUse(err error) bool {
 	var providerErr providerError
 	return errors.As(err, &providerErr) && providerErr.code == providerCodeRemotePortInUse
+}
+
+func isTCPTunnelsDisabled(err error) bool {
+	var providerErr providerError
+	return errors.As(err, &providerErr) && providerErr.code == providerCodeTCPTunnelsDisabled
+}
+
+func isSubdomainInUse(err error) bool {
+	var providerErr providerError
+	return errors.As(err, &providerErr) && providerErr.code == providerCodeSubdomainInUse
 }
 
 func (c HTTPClient) remotePortsForProject(projectID string) []int {
@@ -661,12 +692,12 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 		credentialInput := CredentialInput{UserID: input.UserID, ProjectID: input.ProjectID, ExpiresAt: expires}
 		if err := s.credentials.CheckCLI(ctx, credentialInput); err != nil {
 			_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, "", "denied", "credential_issuer_unavailable", nil)
-			return ConnectResponse{}, err
+			return ConnectResponse{}, fmt.Errorf("%w: %v", ErrCredentialIssuerUnavailable, err)
 		}
 		credentials, err = s.credentials.IssueCLI(ctx, credentialInput)
 		if err != nil {
 			_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, "", "denied", "credential_issuer_unavailable", nil)
-			return ConnectResponse{}, err
+			return ConnectResponse{}, fmt.Errorf("%w: %v", ErrCredentialIssuerUnavailable, err)
 		}
 	}
 	resource, ok, err := s.repo.Resource(ctx, input.ProjectID)
@@ -971,6 +1002,39 @@ func projectSubdomain(prefix, projectID string) string {
 		projectID = "project"
 	}
 	return prefix + "-" + projectID
+}
+
+func projectSubdomainCandidates(prefix, projectID string) []string {
+	base := truncateSubdomain(projectSubdomain(prefix, projectID))
+	sum := sha256.Sum256([]byte(projectID))
+	hash := hex.EncodeToString(sum[:])
+	return []string{
+		base,
+		truncateSubdomain(base + "-" + hash[:6]),
+		truncateSubdomain(base + "-" + hash[6:12]),
+		truncateSubdomain(base + "-" + hash[12:18]),
+	}
+}
+
+func truncateSubdomain(value string) string {
+	if len(value) <= 63 {
+		return value
+	}
+	return strings.Trim(value[:63], "-")
+}
+
+func projectClientName(project ProjectRef) string {
+	base := sanitizeSubdomainPart(firstNonEmpty(project.Name, project.ID))
+	if base == "" {
+		base = "project"
+	}
+	sum := sha256.Sum256([]byte(project.ID))
+	suffix := hex.EncodeToString(sum[:])[:10]
+	maxBaseLen := 48
+	if len(base) > maxBaseLen {
+		base = strings.Trim(base[:maxBaseLen], "-")
+	}
+	return "paperboat-" + base + "-" + suffix
 }
 
 func sanitizeSubdomainPart(value string) string {

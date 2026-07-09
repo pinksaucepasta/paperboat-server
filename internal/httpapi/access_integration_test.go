@@ -99,6 +99,7 @@ func TestPapercodeConnectDoesNotRequireConfigRepoReadiness(t *testing.T) {
 
 func TestConnectionStatusDoesNotRequireConfigRepoReadiness(t *testing.T) {
 	store, router, projectID := newAccessIntegrationRouter(t, "status-no-config@example.com")
+	insertAccessResource(t, store, projectID)
 	cookies := loginCookies(t, router, "workos_seed_status-no-config@example.com:status-no-config@example.com:Status No Config")
 	userID := userIDByEmail(t, store, "status-no-config@example.com")
 	if _, err := store.SQL().ExecContext(context.Background(), `DELETE FROM paperboat.github_config_repositories WHERE user_id = $1`, userID); err != nil {
@@ -145,6 +146,7 @@ func TestConnectionStatusDoesNotRecordActivity(t *testing.T) {
 
 func TestConnectionStatusSurfacesLatestStopReason(t *testing.T) {
 	store, router, projectID := newAccessIntegrationRouter(t, "status-stop-reason@example.com")
+	insertAccessResource(t, store, projectID)
 	cookies := loginCookies(t, router, "workos_seed_status-stop-reason@example.com:status-stop-reason@example.com:Status Stop")
 	if _, err := store.SQL().ExecContext(context.Background(), `UPDATE paperboat.projects SET state = 'stopped' WHERE id = $1`, projectID); err != nil {
 		t.Fatal(err)
@@ -503,6 +505,7 @@ func TestProjectDeleteRevokesActiveAccessSessions(t *testing.T) {
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodDelete, "/api/projects/"+projectID, nil)
 	addCookies(req, cookies)
+	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("delete status = %d, body = %s", rec.Code, rec.Body.String())
