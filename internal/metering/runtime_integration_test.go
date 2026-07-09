@@ -435,8 +435,7 @@ func TestRuntimeMeteringQueuesStopOnEntitlementLoss(t *testing.T) {
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
 	userID := seedMeteredProject(t, store, suffix, "entitlement", "mach_entitlement_"+suffix, "standard-1x", "1", 600)
 	if _, err := store.SQL().ExecContext(ctx, `
-INSERT INTO paperboat.subscriptions (id, user_id, provider, provider_subscription_id, state, current_period_end)
-VALUES ($1, $2, 'polar', $3, 'canceled', $4)`, "sub_entitlement_"+suffix, userID, "sub-entitlement-"+suffix, time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)); err != nil {
+UPDATE paperboat.subscriptions SET state = 'canceled', current_period_end = $2 WHERE user_id = $1`, userID, time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
 	}
 	billingRepo := billing.NewRepository(store)
@@ -502,6 +501,11 @@ func seedMeteredProject(t *testing.T, store *db.DB, suffix, label, machineID, ma
 	t.Helper()
 	userID := "usr_meter_" + suffix
 	if _, err := store.SQL().ExecContext(context.Background(), `INSERT INTO paperboat.users (id, workos_subject, primary_email, status) VALUES ($1, $2, $3, 'active')`, userID, "workos_meter_"+suffix, "meter-"+suffix+"@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(context.Background(), `
+INSERT INTO paperboat.subscriptions (id, user_id, provider, provider_subscription_id, state, current_period_end)
+VALUES ($1, $2, 'polar', $3, 'active', NULL)`, "sub_seed_"+label+"_"+suffix, userID, "sub-seed-"+label+"-"+suffix); err != nil {
 		t.Fatal(err)
 	}
 	seedMeteredProjectForUser(t, store, suffix, userID, label, machineID, machineCode, weight, idleSeconds)

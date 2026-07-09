@@ -602,10 +602,13 @@ FOR UPDATE OF p SKIP LOCKED`, now)
 
 func (r *RuntimeRepository) enforceEntitlementLossTx(ctx context.Context, tx *db.Tx, now time.Time) error {
 	rows, err := tx.Query(ctx, `
-SELECT DISTINCT p.id, p.user_id
+SELECT p.id, p.user_id
 FROM projects p
-JOIN machine_runtime_intervals mri ON mri.project_id = p.id AND mri.stopped_at IS NULL
 WHERE p.state = 'running'
+  AND EXISTS (
+    SELECT 1 FROM machine_runtime_intervals mri
+    WHERE mri.project_id = p.id AND mri.stopped_at IS NULL
+  )
   AND NOT EXISTS (
     SELECT 1 FROM subscriptions s
     WHERE s.user_id = p.user_id
