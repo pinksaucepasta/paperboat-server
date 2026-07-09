@@ -10,11 +10,22 @@ if [ -n "${PAPERBOAT_AGENTUNNEL_FORWARD_COMMAND:-}" ]; then
   exec bash -lc "$PAPERBOAT_AGENTUNNEL_FORWARD_COMMAND"
 fi
 
+# The project's HTTP tunnel is served from this machine: HTTP streams the
+# relay assigns to this client are forwarded to the local papercode URL. The
+# tunnel_id is pinned when the control plane provides it.
+http_local_url="${PAPERBOAT_PAPERCODE_LOCAL_URL:-http://127.0.0.1:4099}"
+if [ -n "${PAPERBOAT_AGENTUNNEL_TUNNEL_ID:-}" ]; then
+  serve_http_entry="{\"tunnel_id\": \"${PAPERBOAT_AGENTUNNEL_TUNNEL_ID}\", \"local_url\": \"${http_local_url}\"}"
+else
+  serve_http_entry="{\"local_url\": \"${http_local_url}\"}"
+fi
+
 cat > "$config_dir/client.json" <<EOF
 {
   "server_url": "${PAPERBOAT_AGENTUNNEL_SERVER_URL:?PAPERBOAT_AGENTUNNEL_SERVER_URL is required}",
   "client_token": "${!token_env:?agentunnel token env is required}",
-  "machine_id": "${PAPERBOAT_AGENTUNNEL_CLIENT_ID:?PAPERBOAT_AGENTUNNEL_CLIENT_ID is required}"
+  "machine_id": "${PAPERBOAT_AGENTUNNEL_CLIENT_ID:?PAPERBOAT_AGENTUNNEL_CLIENT_ID is required}",
+  "serve_http_tunnels": [${serve_http_entry}]
 }
 EOF
 chmod 600 "$config_dir/client.json"
