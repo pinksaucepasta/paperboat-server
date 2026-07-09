@@ -217,7 +217,7 @@ func (s *Service) Delete(ctx context.Context, userID, projectID string) (Project
 	if err != nil {
 		return Project{}, err
 	}
-	_ = s.audit.Write(ctx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "project.delete_requested", ResourceType: "project", ResourceID: projectID, IdempotencyKey: "project.delete_requested:" + projectID, Metadata: map[string]any{"storage_release_deferred": true}})
+	_ = s.audit.Write(ctx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "project.delete_requested", ResourceType: "project", ResourceID: projectID, IdempotencyKey: "project.delete_requested:" + projectID, Metadata: map[string]any{"storage_release_deferred": project.State == "deleting"}})
 	return project, nil
 }
 
@@ -545,7 +545,7 @@ func (r *Repository) FindByIdempotencyKey(ctx context.Context, userID, key, requ
 }
 
 func (r *Repository) ResolveCatalog(ctx context.Context, machineTypeCode, regionCode string, presetCodes []string, idleTimeoutCode string) (catalogRefs, error) {
-	var refs catalogRefs
+	refs := catalogRefs{presetVersionIDs: []string{}}
 	if machineTypeCode == "" || regionCode == "" || idleTimeoutCode == "" {
 		return refs, ErrCatalogUnavailable
 	}
@@ -882,18 +882,66 @@ func (r *Repository) MarkDeleting(ctx context.Context, userID, projectID string)
 		if affected == 0 {
 			return ErrNotFound
 		}
+		// Deletion supersedes any lifecycle work still waiting in the queue;
+		// a stale create/start/restart must never run for a deleting project.
 		if _, err := tx.Exec(ctx, `
+UPDATE orchestration_jobs SET state = 'superseded', updated_at = now()
+WHERE aggregate_type = 'project' AND aggregate_id = $1 AND state = 'queued' AND job_type <> 'project.delete'`, projectID); err != nil {
+			return err
+		}
+		var provisioned bool
+		if err := tx.QueryRow(ctx, `
+SELECT EXISTS (SELECT 1 FROM fly_volumes WHERE project_id = $1)
+    OR EXISTS (SELECT 1 FROM fly_machines WHERE project_id = $1)
+    OR EXISTS (SELECT 1 FROM agentunnel_resources WHERE project_id = $1)`, projectID).Scan(&provisioned); err != nil {
+			return err
+		}
+		if provisioned {
+			if _, err := tx.Exec(ctx, `
 INSERT INTO orchestration_jobs (id, job_type, aggregate_type, aggregate_id, idempotency_key, state, payload)
 VALUES ($1, 'project.delete', 'project', $2, $3, 'queued', '{}'::jsonb)
 ON CONFLICT (idempotency_key) DO NOTHING`, newID("job"), projectID, "project.delete:"+projectID); err != nil {
-			return err
+				return err
+			}
+			return insertEvent(ctx, tx, projectID, "project.delete_queued", "Project deletion was queued.", map[string]any{"storage_release": "after_provider_cleanup"})
 		}
-		return insertEvent(ctx, tx, projectID, "project.delete_queued", "Project deletion was queued.", map[string]any{"storage_release": "after_provider_cleanup"})
+		// Nothing exists at the provider yet: delete inline and release the
+		// storage allocation immediately instead of queueing orchestration.
+		return markDeletedAndReleaseStorageTx(ctx, tx, projectID)
 	})
 	if err != nil {
 		return Project{}, err
 	}
 	return r.Get(ctx, userID, projectID)
+}
+
+// markDeletedAndReleaseStorageTx finalizes deletion of a project with no
+// provider resources: the storage allocation returns to the user's pool (once,
+// keyed by the same ledger idempotency key the orchestrator uses) and the
+// project is marked deleted.
+func markDeletedAndReleaseStorageTx(ctx context.Context, tx *db.Tx, projectID string) error {
+	var accountID string
+	var assigned int
+	if err := tx.QueryRow(ctx, `SELECT storage_account_id, assigned_gb FROM project_storage_allocations WHERE project_id = $1 FOR UPDATE`, projectID).Scan(&accountID, &assigned); err != nil {
+		return err
+	}
+	var existing int
+	key := "project.storage.release.delete:" + projectID
+	err := tx.QueryRow(ctx, `SELECT amount_gb FROM storage_ledger_entries WHERE idempotency_key = $1`, key).Scan(&existing)
+	if errors.Is(err, sql.ErrNoRows) {
+		if _, err := tx.Exec(ctx, `UPDATE storage_accounts SET allocated_gb = allocated_gb - $2, version = version + 1, updated_at = now() WHERE id = $1`, accountID, assigned); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO storage_ledger_entries (id, account_id, entry_type, amount_gb, source_type, source_id, idempotency_key) VALUES ($1, $2, 'release', $3, 'project', $4, $5)`, newID("sled"), accountID, assigned, projectID, key); err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE projects SET state = 'deleted', version = version + 1, updated_at = now() WHERE id = $1`, projectID); err != nil {
+		return err
+	}
+	return insertEvent(ctx, tx, projectID, "project.deleted", "Project was deleted before provisioning; storage was released.", map[string]any{"storage_gb": assigned})
 }
 
 func (r *Repository) QueueLifecycleJob(ctx context.Context, userID, projectID, jobType, nextState string) (Project, error) {

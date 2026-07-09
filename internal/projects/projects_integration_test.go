@@ -18,7 +18,7 @@ func TestCreateProjectPersistsIntentAllocatesStorageAndIsIdempotent(t *testing.T
 	store := newProjectTestDB(t)
 	ctx := context.Background()
 	seedProjectCatalogs(t, store)
-	insertProjectUser(t, store, "usr_project_create", 12)
+	insertProjectUser(t, store, "usr_project_create", 16)
 
 	service := NewService(store, audit.NewWriter(store), projectTestConfig())
 	input := CreateInput{
@@ -119,6 +119,20 @@ WHERE project_id = $1`, project.ID, input.StorageGB); err != nil {
 	}
 	if trimmedProject.Name != "spaced" || trimmedProject.Repository.SourceURL != "https://github.com/paperboat/spaced.git" {
 		t.Fatalf("trimmed url project = name %q url %q, want spaced and trimmed source", trimmedProject.Name, trimmedProject.Repository.SourceURL)
+	}
+
+	noPresetInput := input
+	noPresetInput.IdempotencyKey = "create-project-no-presets-key"
+	noPresetInput.Name = "no-presets"
+	noPresetInput.RepositoryURL = "https://github.com/paperboat/no-presets.git"
+	noPresetInput.StorageGB = 1
+	noPresetInput.PresetCodes = nil
+	noPresetProject, _, err := service.Create(ctx, noPresetInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if noPresetProject.DesiredConfig.PresetCodes == nil || len(noPresetProject.DesiredConfig.PresetCodes) != 0 {
+		t.Fatalf("no-preset create preset codes = %#v, want empty slice", noPresetProject.DesiredConfig.PresetCodes)
 	}
 }
 
@@ -283,8 +297,10 @@ WHERE project_id = $1`, project.ID, 8); err != nil {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if deleting.State != "deleting" {
-		t.Fatalf("delete state = %q, want deleting", deleting.State)
+	// The project was never provisioned (no provider resources), so deletion
+	// completes inline instead of queueing orchestration.
+	if deleting.State != "deleted" {
+		t.Fatalf("delete state = %q, want deleted", deleting.State)
 	}
 	afterDeleteSize := 14
 	if _, err := service.Update(ctx, UpdateInput{UserID: "usr_project_update", ProjectID: project.ID, StorageGB: &afterDeleteSize}); !errors.Is(err, ErrDeleted) {
