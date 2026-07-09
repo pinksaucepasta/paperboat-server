@@ -74,6 +74,116 @@
         "version": 1,
         "files": []
       }
+    },
+    {
+      "code": "claude-code",
+      "name": "Claude Code",
+      "description": "Anthropic's Claude Code CLI coding agent.",
+      "active": true,
+      "manifest": {
+        "kind": "paperboat.vm_preset",
+        "version": 1,
+        "files": []
+      }
+    },
+    {
+      "code": "codex",
+      "name": "Codex CLI",
+      "description": "OpenAI's Codex CLI coding agent.",
+      "active": true,
+      "manifest": {
+        "kind": "paperboat.vm_preset",
+        "version": 1,
+        "files": []
+      }
+    },
+    {
+      "code": "cursor-cli",
+      "name": "Cursor CLI",
+      "description": "Cursor's terminal coding agent (cursor-agent).",
+      "active": true,
+      "manifest": {
+        "kind": "paperboat.vm_preset",
+        "version": 1,
+        "files": []
+      }
+    },
+    {
+      "code": "pi",
+      "name": "Pi",
+      "description": "Pi coding agent CLI.",
+      "active": true,
+      "manifest": {
+        "kind": "paperboat.vm_preset",
+        "version": 1,
+        "files": []
+      }
+    },
+    {
+      "code": "antigravity",
+      "name": "Antigravity CLI",
+      "description": "Google's Antigravity terminal coding agent (agy).",
+      "active": true,
+      "manifest": {
+        "kind": "paperboat.vm_preset",
+        "version": 1,
+        "files": []
+      }
+    },
+    {
+      "code": "opencode",
+      "name": "OpenCode",
+      "description": "Open-source, model-agnostic terminal coding agent.",
+      "active": true,
+      "manifest": {
+        "kind": "paperboat.vm_preset",
+        "version": 1,
+        "files": []
+      }
+    },
+    {
+      "code": "amp",
+      "name": "Amp",
+      "description": "Sourcegraph's Amp coding agent CLI.",
+      "active": true,
+      "manifest": {
+        "kind": "paperboat.vm_preset",
+        "version": 1,
+        "files": []
+      }
+    },
+    {
+      "code": "crush",
+      "name": "Crush",
+      "description": "Charm's Crush terminal coding agent.",
+      "active": true,
+      "manifest": {
+        "kind": "paperboat.vm_preset",
+        "version": 1,
+        "files": []
+      }
+    },
+    {
+      "code": "aider",
+      "name": "Aider",
+      "description": "Aider AI pair-programming CLI.",
+      "active": true,
+      "manifest": {
+        "kind": "paperboat.vm_preset",
+        "version": 1,
+        "files": []
+      }
+    },
+    {
+      "code": "goose",
+      "name": "Goose",
+      "description": "Block's Goose coding agent CLI.",
+      "active": true,
+      "manifest": {
+        "kind": "paperboat.vm_preset",
+        "version": 1,
+        "files": []
+      }
     }
   ],
   "idle_timeouts": [
@@ -93,6 +203,12 @@
       "code": "iad",
       "name": "Ashburn, Virginia",
       "enabled": true,
+      "placement_policy": {}
+    },
+    {
+      "code": "bom",
+      "name": "Mumbai, India",
+      "enabled": false,
       "placement_policy": {}
     }
   ],

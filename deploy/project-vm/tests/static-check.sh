@@ -7,6 +7,10 @@ for file in "$root"/bin/paperboat-*; do
   test -x "$file"
   bash -n "$file"
 done
+for file in "$root"/presets.d/*.sh; do
+  test -x "$file"
+  bash -n "$file"
+done
 test -x "$root/build-image.sh"
 bash -n "$root/build-image.sh"
 
@@ -39,3 +43,4 @@ grep -q 'PAPERBOAT_SETUP_SCRIPT_ENV' "$root/bin/paperboat-apply-presets"
 
 server_root="$(cd "$root/../.." && pwd)"
 grep -q 'BootCommand:.*paperboat-entrypoint' "$server_root/internal/config/config.go"
+grep -q 'paperboat-server/deploy/project-vm/presets.d/' "$root/Dockerfile"
