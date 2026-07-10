@@ -34,6 +34,7 @@ type Options struct {
 	Logger           *slog.Logger
 	ReadinessChecker ReadinessChecker
 	Auth             *auth.Service
+	DeviceAuth       *auth.DeviceService
 	Billing          *billing.Service
 	Catalog          catalog.Reader
 	CatalogWriter    catalog.RegionWriter
@@ -110,6 +111,18 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 	mux.Handle("POST /api/auth/logout", requireAuth(opts.Auth, logout(opts.Auth, opts.Agentunnel)))
 	mux.Handle("GET /api/auth/csrf", requireAuth(opts.Auth, csrf(opts.Auth)))
 	mux.Handle("GET /api/me", requireAuth(opts.Auth, me(opts.Auth)))
+	if opts.DeviceAuth != nil {
+		requestNetwork := newRequestNetwork(opts.Config.HTTP.TrustedProxyCIDRs)
+		mux.HandleFunc("POST /api/auth/device/authorize", deviceAuthorize(opts.DeviceAuth, requestNetwork))
+		mux.HandleFunc("POST /api/auth/device/token", deviceToken(opts.DeviceAuth, requestNetwork))
+		mux.Handle("GET /api/auth/device/requests/{user_code}", requireAuth(opts.Auth, deviceRequest(opts.DeviceAuth)))
+		mux.Handle("POST /api/auth/device/requests/{user_code}/approve", requireAuth(opts.Auth, requireCSRF(opts.Auth, deviceDecision(opts.DeviceAuth, true))))
+		mux.Handle("POST /api/auth/device/requests/{user_code}/deny", requireAuth(opts.Auth, requireCSRF(opts.Auth, deviceDecision(opts.DeviceAuth, false))))
+		mux.HandleFunc("POST /api/auth/token/refresh", tokenRefresh(opts.DeviceAuth))
+		mux.HandleFunc("POST /api/auth/token/revoke", tokenRevoke(opts.DeviceAuth))
+		mux.Handle("GET /api/auth/clients", requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope("account:read", clientsList(opts.DeviceAuth))))
+		mux.Handle("DELETE /api/auth/clients/{client_session_id}", requireAnyAuth(opts.Auth, opts.DeviceAuth, requireCSRF(opts.Auth, requireScope("clients:revoke", clientDelete(opts.DeviceAuth)))))
+	}
 	if opts.Billing != nil {
 		mux.Handle("GET /api/billing/entitlement", requireAuth(opts.Auth, billingEntitlement(opts.Billing)))
 		mux.Handle("GET /api/billing/usage", requireAuth(opts.Auth, billingUsage(opts.Billing)))
@@ -147,7 +160,13 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 		mux.Handle("POST /api/github/oauth/callback", requireAuth(opts.Auth, requireCSRF(opts.Auth, githubOAuthCallback(opts.Auth, opts.GitHub))))
 		mux.Handle("POST /api/github/config-repo/provision", requireAuth(opts.Auth, requireCSRF(opts.Auth, githubProvisionConfigRepo(opts.GitHub))))
 		if opts.Projects != nil {
-			mux.Handle("GET /api/projects", requireAuth(opts.Auth, requireEntitlement(opts.Auth, projectsList(opts.Projects))))
+			projectAuth := func(scope string, next http.Handler) http.Handler {
+				if opts.DeviceAuth != nil {
+					return requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope(scope, next))
+				}
+				return requireAuth(opts.Auth, next)
+			}
+			mux.Handle("GET /api/projects", projectAuth("projects:read", requireEntitlement(opts.Auth, projectsList(opts.Projects))))
 			mux.Handle("POST /api/projects", requireAuth(opts.Auth, requireEntitlement(opts.Auth, requireGitHubConnection(opts.GitHub, projectsCreate(opts.Projects)))))
 			mux.Handle("GET /api/projects/{project_id}", requireAuth(opts.Auth, requireEntitlement(opts.Auth, projectsGet(opts.Projects))))
 			mux.Handle("PATCH /api/projects/{project_id}", requireAuth(opts.Auth, requireEntitlement(opts.Auth, projectsUpdate(opts.Projects))))
@@ -161,8 +180,8 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 			if opts.Agentunnel != nil {
 				mux.Handle("POST /api/projects/{project_id}/connect", requireAuth(opts.Auth, requireEntitlement(opts.Auth, projectsConnect(opts.Agentunnel, agentunnel.ConnectGeneric))))
 				mux.Handle("POST /api/projects/{project_id}/papercode-connect", requireAuth(opts.Auth, requireEntitlement(opts.Auth, projectsConnect(opts.Agentunnel, agentunnel.ConnectPapercode))))
-				mux.Handle("POST /api/projects/{project_id}/cli-connect", requireAuth(opts.Auth, requireEntitlement(opts.Auth, projectsConnect(opts.Agentunnel, agentunnel.ConnectCLI))))
-				mux.Handle("GET /api/projects/{project_id}/connection-status", requireAuth(opts.Auth, requireEntitlement(opts.Auth, projectsConnectionStatus(opts.Agentunnel))))
+				mux.Handle("POST /api/projects/{project_id}/cli-connect", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", requireEntitlement(opts.Auth, projectsConnect(opts.Agentunnel, agentunnel.ConnectCLI)))))
+				mux.Handle("GET /api/projects/{project_id}/connection-status", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", requireEntitlement(opts.Auth, projectsConnectionStatus(opts.Agentunnel)))))
 			}
 		} else {
 			mux.Handle("POST /api/projects", requireAuth(opts.Auth, requireEntitlement(opts.Auth, requireGitHubConnection(opts.GitHub, http.HandlerFunc(notImplemented)))))
@@ -197,11 +216,26 @@ func accessLog(logger *slog.Logger, next http.Handler) http.Handler {
 		next.ServeHTTP(rec, r)
 		observability.LoggerWithRequest(r.Context(), logger).Info("http_request",
 			"method", r.Method,
-			"path", r.URL.Path,
+			"path", safeLogPath(r.URL.Path),
 			"status", rec.status,
 			"duration_ms", time.Since(start).Milliseconds(),
 		)
 	})
+}
+
+func safeLogPath(path string) string {
+	if strings.HasPrefix(path, "/api/auth/device/requests/") {
+		suffix := strings.TrimPrefix(path, "/api/auth/device/requests/")
+		switch {
+		case strings.HasSuffix(suffix, "/approve"):
+			return "/api/auth/device/requests/{user_code}/approve"
+		case strings.HasSuffix(suffix, "/deny"):
+			return "/api/auth/device/requests/{user_code}/deny"
+		default:
+			return "/api/auth/device/requests/{user_code}"
+		}
+	}
+	return path
 }
 
 func recoverer(logger *slog.Logger, next http.Handler) http.Handler {

@@ -601,6 +601,7 @@
     "/api/auth/token/revoke": {
       "post": {
         "summary": "Revoke a CLI client-session family",
+        "description": "Logs out only the CLI client-session family identified by the bearer credential.",
         "security": [{ "bearerAccess": [] }, { "bearerRefresh": [] }],
         "responses": {
           "200": { "description": "Client session revoked or already revoked.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
@@ -663,6 +664,7 @@
     "/api/auth/logout": {
       "post": {
         "summary": "Log out current session",
+        "description": "Revokes the current WorkOS-backed browser session and active downstream access sessions. Independent CLI client sessions remain active.",
         "security": [{ "cookieSession": [] }, { "csrfHeader": [] }],
         "responses": {
           "200": { "description": "Session revoked.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },

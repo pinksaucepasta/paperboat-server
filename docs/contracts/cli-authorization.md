@@ -85,13 +85,22 @@ token revokes the entire client-session family. Concurrent refresh is serialized
 only one request succeeds.
 
 `POST /api/auth/token/revoke` accepts either the current access or refresh token as a bearer
-credential and idempotently revokes its client-session family. `GET /api/auth/clients` and
+credential and idempotently revokes its client-session family. Retrying with a known token
+from an already-revoked family returns success; an arbitrary or unknown bearer remains an
+authentication failure and returns HTTP 401, matching OpenAPI. `GET /api/auth/clients` and
 `DELETE /api/auth/clients/{client_session_id}` accept either the WorkOS-backed dashboard
 cookie session (with CSRF on DELETE) or an access token. Bearer listing requires
 `account:read`; bearer deletion requires `clients:revoke`. The target must belong to the
-same Paperboat account. Account suspension, administrative revocation,
-logout, refresh replay, and explicit client deletion revoke Paperboat access and all
-recorded downstream papercode sessions.
+same Paperboat account. Logout is session-scoped: `POST /api/auth/logout` revokes only the
+current WorkOS-backed browser session, while `POST /api/auth/token/revoke` revokes the
+calling CLI client-session family. Browser logout also tears down active downstream access
+sessions, but it does not revoke independent CLI installations. Account suspension and
+administrative account revocation revoke every CLI client-session family. Refresh replay
+and explicit client deletion revoke the affected Paperboat family and mark its linked local
+access-session records revoked immediately. Invalidating the actual terminal and file bearer
+sessions inside papercode requires the signed control-plane revocation endpoint tracked in
+integration Phase 4; until that lands, those short-lived downstream credentials remain usable
+until expiry. Phase 1 must remain `Implemented`, not `Complete`, while this dependency is open.
 
 `GET /api/auth/clients` accepts `limit` (1-200, default 50), `offset` (default 0), and an
 optional `state=active|revoked`. Its `data` contains `items` and `pagination`. Every item

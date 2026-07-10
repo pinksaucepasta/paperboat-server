@@ -643,9 +643,10 @@ const (
 )
 
 type ConnectInput struct {
-	UserID    string
-	ProjectID string
-	Kind      ConnectKind
+	UserID          string
+	ProjectID       string
+	Kind            ConnectKind
+	ClientSessionID string
 }
 
 type ConnectResponse struct {
@@ -754,7 +755,7 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 	}
 	_ = s.repo.RecordActivity(ctx, input.ProjectID, "agentunnel_connection", map[string]any{"kind": input.Kind, "status": status.Status})
 	response := buildResponse(input.Kind, project, resource, expires, credentials)
-	session, err := s.repo.CreateAccessSession(ctx, input.UserID, input.ProjectID, string(input.Kind), response, expires)
+	session, err := s.repo.CreateAccessSession(ctx, input.UserID, input.ProjectID, input.ClientSessionID, string(input.Kind), response, expires)
 	if err != nil {
 		return ConnectResponse{}, err
 	}
@@ -873,6 +874,10 @@ func (s *Service) Status(ctx context.Context, userID, projectID string) (Connect
 
 func (s *Service) RevokeUserSessions(ctx context.Context, userID, reason string) error {
 	return s.repo.RevokeUserAccessSessions(ctx, userID, reason)
+}
+
+func (s *Service) RevokeClientSessions(ctx context.Context, clientSessionID, reason string) error {
+	return s.repo.RevokeClientAccessSessions(ctx, clientSessionID, reason)
 }
 
 func (s *Service) RevokeProjectSessions(ctx context.Context, projectID, reason string) error {
@@ -1247,7 +1252,7 @@ LIMIT 1`, projectID).Scan(&eventType)
 	return strings.TrimPrefix(eventType, "project.stop_queued."), true, nil
 }
 
-func (r *Repository) CreateAccessSession(ctx context.Context, userID, projectID, sessionType string, descriptor ConnectResponse, expiresAt time.Time) (AccessSession, error) {
+func (r *Repository) CreateAccessSession(ctx context.Context, userID, projectID, clientSessionID, sessionType string, descriptor ConnectResponse, expiresAt time.Time) (AccessSession, error) {
 	id := newID("acs")
 	descriptorBytes, err := json.Marshal(descriptor)
 	if err != nil {
@@ -1256,11 +1261,17 @@ func (r *Repository) CreateAccessSession(ctx context.Context, userID, projectID,
 	key := "access.session:" + id
 	err = r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		_, err := tx.Exec(ctx, `
-INSERT INTO access_sessions (id, user_id, project_id, session_type, state, descriptor, expires_at, idempotency_key)
-VALUES ($1, $2, $3, $4, 'active', $5::jsonb, $6, $7)`, id, userID, projectID, sessionType, string(descriptorBytes), expiresAt, key)
+INSERT INTO access_sessions (id, user_id, project_id, client_session_id, session_type, state, descriptor, expires_at, idempotency_key)
+VALUES ($1, $2, $3, nullif($4,''), $5, 'active', $6::jsonb, $7, $8)`, id, userID, projectID, clientSessionID, sessionType, string(descriptorBytes), expiresAt, key)
 		return err
 	})
 	return AccessSession{ID: id}, err
+}
+
+func (r *Repository) RevokeClientAccessSessions(ctx context.Context, clientSessionID, reason string) error {
+	reason = revocationReason(reason)
+	_, err := r.db.SQL().ExecContext(ctx, `UPDATE paperboat.access_sessions SET state='revoked',revoked_at=coalesce(revoked_at,now()),updated_at=now(),version=version+1,descriptor=jsonb_set(descriptor,'{revocation_reason}',to_jsonb($2::text),true) WHERE client_session_id=$1 AND state='active' AND revoked_at IS NULL`, clientSessionID, reason)
+	return err
 }
 
 func (r *Repository) RevokeUserAccessSessions(ctx context.Context, userID, reason string) error {

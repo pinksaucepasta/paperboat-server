@@ -21,7 +21,7 @@ filling its evidence section.
 | 0 | Product decisions and contract freeze | Implemented | Codex | Contract baseline now includes CLI device authorization, rotating client sessions, stable environment identity, papercode mint/JWKS rules, staged-image auth, terminal compatibility, and agentunnel route ownership. Immutable cross-repo commit links remain release evidence. |
 | 1 | Repository foundation and service skeleton | In progress | Codex | Initial Go module, CLI surface, config loader, HTTP middleware, health/readiness endpoints, local config example, README commands, and foundation tests. |
 | 2 | Persistence, migrations, config, and data catalogs | Complete | Codex | Postgres schema, migration runner, transaction wrapper, catalog repositories, storage ledger repository, dynamic catalog seed validation/upserts, and Postgres integration evidence complete. |
-| 3 | Identity, sessions, authorization, and audit base | Implemented | Codex | WorkOS verifier abstraction, idempotent user/session creation, secure cookies with CSRF binding and rotation, `/api/me`, auth/entitlement/admin middleware foundations, audit writer/query base, and auth integration tests. |
+| 3 | Identity, sessions, authorization, and audit base | Implemented | Codex | WorkOS browser sessions plus CLI device grants, scoped bearer sessions, rotating refresh families with replay revocation, client management/revocation, Postgres-backed rate limits, secret-safe logging, OpenAPI contracts, and auth integration tests. Local linked access records revoke with the client; actual papercode bearer invalidation remains the Phase 9/CLI-integration Phase 4 dependency. Postgres execution of the new device-flow tests remains release evidence. |
 | 4 | Billing, entitlements, credits, and storage ledger | In progress | Codex | Phase 4 decision gate approved; billing service, Polar client abstraction, signed/idempotent webhook processing, subscription entitlement transitions, checkout/customer portal handlers, entitlement/usage APIs, credit grants/debits/refunds, storage included/purchased/release/cancellation ledger primitives, admin adjustments, docs, and focused Go/vet evidence are in place. Project create/update quota enforcement remains for Phase 6 API wiring. |
 | 5 | GitHub OAuth and private config repo provisioning | Implemented | Codex | Configurable GitHub OAuth/repo policy, encrypted token persistence schema, fake/HTTP GitHub client abstraction, auth/CSRF-protected GitHub API handlers, browser callback for ngrok-backed server testing, GitHub-required project-create gate, idempotent private config repo provisioning with preview URL skill fixture, provided-Postgres fake-provider tests, and local Go/vet evidence are in place. |
 | 6 | Project lifecycle and VM customization model | Implemented | Codex | Project service, Phase 6 migration, project create/list/get/update/delete/events APIs, idempotent create, catalog validation, setup-script revision storage, storage quota enforcement for create/update, pending restart apply model, delete workflow intent with deferred storage release, event records, and DB-backed project lifecycle tests are in place. |
@@ -412,6 +412,18 @@ Tasks:
 - [x] Add login/logout/session tests.
 - [x] Add authorization tests for cross-user access denial.
 - [x] Add audit tests proving required events are written once.
+- [x] Add durable OAuth device grants with exact dynamic client/scope allowlists.
+- [x] Add scoped bearer authentication without weakening browser cookie/CSRF boundaries.
+- [x] Add rotating refresh-token families with replay detection and family revocation.
+- [x] Add authorized-client listing, CLI family logout, explicit client revocation, and
+  account suspension/administrative revocation hooks. Browser logout remains scoped to the
+  current browser session and does not revoke independent CLI installations.
+- [ ] Invalidate actual papercode terminal/file sessions when a CLI family is revoked. The
+  local access-session linkage and revocation state are implemented, but papercode's signed
+  control-plane revocation endpoint and the real server credential issuer are Phase 9 / CLI
+  integration Phase 4 work.
+- [x] Add replica-safe polling transitions and Postgres-backed network/grant/account limits.
+- [x] Redact device codes and tokens from persistence, logs, errors, and audit metadata.
 
 Acceptance criteria:
 
@@ -421,12 +433,20 @@ Acceptance criteria:
 - [x] Core dashboard APIs return payment-required style structured errors without active
   entitlement.
 - [x] Auth events are audited without storing secrets.
+- [x] A CLI session is issued only after explicit browser approval and one successful poll.
+- [x] Denied, expired, consumed, replayed, and revoked credentials cannot mint usable access.
+- [x] Cookie and bearer authentication remain distinct and scope enforcement applies to CLI APIs.
 
 Evidence:
 
 - Auth test output: `GOCACHE=/tmp/paperboat-go-build go test ./internal/httpapi ./internal/auth` passed; DB-backed auth integration tests are included and run when `PAPERBOAT_TEST_DATABASE_DSN` is set, matching the existing repository-test pattern. Full `GOCACHE=/tmp/paperboat-go-build go test ./...` passed with local port-bind permission for the pre-existing app shutdown test.
 - Cross-user denial tests: `TestProjectOwnershipDeniesCrossUserAccess` proves another user's project is rejected by the ownership helper while the requesting user's session remains valid.
 - Audit sample: `TestAuthLoginMeCSRFLogoutAndAudit` verifies `auth.login` and `auth.logout` audit events are written from the login/logout flow without token material in event metadata.
+- CLI authorization tests: `TestDeviceAuthorizationApprovalBearerRefreshAndReplay` and
+  `TestDeviceGrantPollConsumptionIsSingleUse` cover approval, one-time consumption, bearer
+  use, refresh replay revocation, and concurrent polling when a Postgres test DSN is set.
+  `go test ./...` and `go vet ./...` pass locally; these DB-backed cases were explicitly
+  skipped because `PAPERBOAT_TEST_DATABASE_DSN` was not available.
 
 ## Phase 4: Billing, Entitlements, Credits, and Storage Ledger
 

@@ -108,7 +108,7 @@ func TestConnectionStatusDoesNotRequireConfigRepoReadiness(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/connection-status", nil)
-	addCookies(req, cookies)
+	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status code = %d, body = %s", rec.Code, rec.Body.String())
@@ -130,7 +130,7 @@ func TestConnectionStatusDoesNotRecordActivity(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/connection-status", nil)
-	addCookies(req, cookies)
+	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status code = %d, body = %s", rec.Code, rec.Body.String())
@@ -158,7 +158,7 @@ VALUES ($2, $1, 'project.stop_queued.idle_timeout', 'stopped for test', '{}'::js
 	}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/connection-status", nil)
-	addCookies(req, cookies)
+	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status code = %d, body = %s", rec.Code, rec.Body.String())
@@ -356,8 +356,7 @@ func TestAccessConnectRequiresEntitlementBeforeProviderSideEffects(t *testing.T)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/cli-connect", nil)
-	addCookies(req, cookies)
-	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusPaymentRequired {
 		t.Fatalf("connect status = %d, body = %s", rec.Code, rec.Body.String())
@@ -378,7 +377,14 @@ func TestCLIConnectIssuesPapercodeDescriptorWithScopedAuth(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/cli-connect", nil)
 	addCookies(req, cookies)
-	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("cookie CLI connect status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/cli-connect", nil)
+	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("connect status = %d, body = %s", rec.Code, rec.Body.String())
@@ -397,6 +403,45 @@ func TestCLIConnectIssuesPapercodeDescriptorWithScopedAuth(t *testing.T) {
 	if sessions != 1 {
 		t.Fatalf("cli access sessions = %d, want 1", sessions)
 	}
+}
+
+func TestCLIClientRevocationRevokesLinkedAccessSessions(t *testing.T) {
+	store, router, projectID := newAccessIntegrationRouter(t, "cli-client-revoke@example.com")
+	cookies := loginCookies(t, router, "workos_cli_client_revoke:cli-client-revoke@example.com:CLI Revoke")
+	grant := authorizeDevice(t, router)
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/device/requests/"+grant.UserCode+"/approve", nil)
+	addCookies(req, cookies)
+	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("approve status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	tokens := pollDevice(t, router, grant.DeviceCode, http.StatusOK)
+
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/cli-connect", nil)
+	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("connect status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var linked string
+	if err := store.SQL().QueryRow(`SELECT coalesce(client_session_id,'') FROM paperboat.access_sessions WHERE project_id=$1 AND session_type='cli' ORDER BY created_at DESC LIMIT 1`, projectID).Scan(&linked); err != nil {
+		t.Fatal(err)
+	}
+	if linked != tokens.ClientSessionID {
+		t.Fatalf("linked client session=%q want=%q", linked, tokens.ClientSessionID)
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/api/auth/clients/"+tokens.ClientSessionID, nil)
+	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	assertAccessSessionState(t, store, projectID, "revoked", "user_revoked")
 }
 
 func TestLogoutRevokesActiveAccessSessions(t *testing.T) {
@@ -529,8 +574,7 @@ func TestCLIConnectRequiresGitHubConfigBeforeProviderSideEffects(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/cli-connect", nil)
-	addCookies(req, cookies)
-	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("connect status = %d, body = %s", rec.Code, rec.Body.String())
@@ -559,8 +603,7 @@ func TestCLIConnectRequiresCredentialIssuerBeforeProviderSideEffects(t *testing.
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/cli-connect", nil)
-	addCookies(req, cookies)
-	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotImplemented {
 		t.Fatalf("connect status = %d, body = %s", rec.Code, rec.Body.String())
@@ -596,8 +639,7 @@ func TestCLIConnectRequiresCredentialIssueBeforeProviderSideEffects(t *testing.T
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/cli-connect", nil)
-	addCookies(req, cookies)
-	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotImplemented {
 		t.Fatalf("connect status = %d, body = %s", rec.Code, rec.Body.String())
@@ -744,11 +786,14 @@ func newAccessIntegrationRouterWithAccessService(t *testing.T, email string, cli
 	if issuer != nil {
 		accessService = agentunnel.NewServiceWithCredentials(store, projectService, client, issuer, auditWriter, cfg)
 	}
+	deviceService := auth.NewDeviceService(store, auditWriter, cfg.CLIAuth, []string{"test-session-key"})
+	deviceService.SetDownstreamRevoker(accessService)
 	router := NewRouter(Options{
 		Config:           cfg,
 		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
 		ReadinessChecker: readinessFunc(func(context.Context) error { return nil }),
 		Auth:             authService,
+		DeviceAuth:       deviceService,
 		Billing:          billingService,
 		GitHub:           githubService,
 		Projects:         projectService,

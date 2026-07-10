@@ -16,6 +16,7 @@ type authContextKey struct{}
 type principal struct {
 	User    auth.User
 	Session auth.Session
+	Client  *auth.ClientPrincipal
 }
 
 func workOSState(service *auth.Service) http.HandlerFunc {
@@ -154,12 +155,68 @@ func requireAuth(service *auth.Service, next http.Handler) http.Handler {
 	})
 }
 
+func requireAnyAuth(service *auth.Service, devices *auth.DeviceService, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if token, ok := bearerToken(r); ok {
+			client, err := devices.Authenticate(r.Context(), token)
+			if err != nil {
+				writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+				return
+			}
+			ctx := context.WithValue(r.Context(), authContextKey{}, principal{User: client.User, Client: &client})
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+		if strings.TrimSpace(r.Header.Get("Authorization")) != "" {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		requireAuth(service, next).ServeHTTP(w, r)
+	})
+}
+
+func requireBearerAuth(devices *auth.DeviceService, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token, ok := bearerToken(r)
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		client, err := devices.Authenticate(r.Context(), token)
+		if err != nil {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		ctx := context.WithValue(r.Context(), authContextKey{}, principal{User: client.User, Client: &client})
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func requireScope(scope string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		if p.Client != nil && !p.Client.HasScope(scope) {
+			writeError(w, r, http.StatusForbidden, "insufficient_scope", "The client is not authorized for this operation.")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func shouldRotateForRequest(r *http.Request) bool {
 	return !unsafeMethod(r.Method) && r.URL.Path != "/api/auth/csrf"
 }
 
 func requireCSRF(service *auth.Service, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if p, ok := principalFromContext(r.Context()); ok && p.Client != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if unsafeMethod(r.Method) {
 			if err := service.ValidateCSRF(r.Context(), r); err != nil {
 				writeError(w, r, http.StatusForbidden, "csrf_failed", "CSRF validation failed.")
@@ -168,6 +225,15 @@ func requireCSRF(service *auth.Service, next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func bearerToken(r *http.Request) (string, bool) {
+	header := strings.TrimSpace(r.Header.Get("Authorization"))
+	parts := strings.Fields(header)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || parts[1] == "" {
+		return "", false
+	}
+	return parts[1], true
 }
 
 func requireEntitlement(service *auth.Service, next http.Handler) http.Handler {

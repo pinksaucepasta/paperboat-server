@@ -27,10 +27,14 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 }
 
 func writeError(w http.ResponseWriter, r *http.Request, status int, code, message string) {
+	writeErrorDetails(w, r, status, code, message, map[string]any{})
+}
+
+func writeErrorDetails(w http.ResponseWriter, r *http.Request, status int, code, message string, details map[string]any) {
 	writeJSON(w, status, ErrorResponse{Error: APIError{
 		Code:      code,
 		Message:   message,
 		RequestID: requestIDFromContext(r.Context()),
-		Details:   map[string]any{},
+		Details:   details,
 	}})
 }

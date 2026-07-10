@@ -7,7 +7,8 @@
     "read_header_timeout": 5000000000,
     "request_timeout": 15000000000,
     "shutdown_timeout": 10000000000,
-    "max_body_bytes": 1048576
+    "max_body_bytes": 1048576,
+    "trusted_proxy_cidrs": []
   },
   "database": {
     "driver": "postgres",
@@ -17,7 +18,21 @@
     "seed_file": "config/catalogs.example.json"
   },
   "metering": {
-    "minimum_start_credit_window": 300000000000
+    "minimum_start_credit_window": 300000000000,
+    "max_keep_alive_duration": 43200000000000
+  },
+  "cli_auth": {
+    "verification_url": "http://localhost:3000/cli/authorize",
+    "client_id": "paperboat-cli",
+    "allowed_scopes": ["account:read", "clients:revoke", "projects:read", "projects:connect", "session:refresh"],
+    "device_grant_lifetime": 600000000000,
+    "access_token_lifetime": 900000000000,
+    "refresh_token_lifetime": 2592000000000000,
+    "poll_interval": 5000000000,
+    "max_client_label_length": 120,
+    "network_requests_per_minute": 30,
+    "grant_polls_per_minute": 30,
+    "account_actions_per_minute": 30
   },
   "github": {
     "oauth_authorize_url": "https://github.com/login/oauth/authorize",

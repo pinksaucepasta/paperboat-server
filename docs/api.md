@@ -1,6 +1,6 @@
 # Paperboat Server API
 
-Status: existing Phase 10 APIs plus the frozen Phase 0 CLI integration target. Device
+Status: existing Phase 10 APIs plus the implemented Phase 1 CLI authorization surface. Device
 authorization, bearer sessions, JWKS, and the final descriptor are documented before their
 implementation phases. The machine-readable schema is [`docs/openapi.json`](openapi.json).
 
@@ -121,6 +121,13 @@ use project reads, project events, and connection status for progress.
 CLI sign-in uses the device authorization and rotating client-session contract documented
 in `docs/contracts/cli-authorization.md`. Browser cookies and papercode environment tokens
 are not accepted as CLI identity. CLI project APIs require scoped Paperboat bearer tokens.
+Dashboard `POST /api/auth/logout` revokes only the current browser session; CLI family
+logout uses `POST /api/auth/token/revoke`. Account suspension and administrative account
+revocation revoke all authorized CLI clients.
+Client revocation also marks linked Paperboat access-session records revoked. Actual
+papercode terminal/file bearer invalidation is deferred to the signed control-plane
+revocation contract in CLI integration Phase 4; downstream credentials otherwise expire at
+their configured short lifetime.
 `GET /api/projects` requires `projects:read`. `POST /api/projects/{project_id}/cli-connect`
 and `GET /api/projects/{project_id}/connection-status` require `projects:connect`.
 

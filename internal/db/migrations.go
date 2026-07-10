@@ -22,6 +22,9 @@ var Migrations = []Migration{
 	{Version: 5, Name: "phase_7_fly_orchestration_readiness", SQL: phase7FlyOrchestrationSQL},
 	{Version: 6, Name: "phase_8_runtime_metering", SQL: phase8RuntimeMeteringSQL},
 	{Version: 7, Name: "phase_9_activity_heartbeat_state", SQL: phase9ActivityHeartbeatSQL},
+	{Version: 8, Name: "cli_device_authorization", SQL: cliDeviceAuthorizationSQL},
+	{Version: 9, Name: "cli_account_lifecycle_revocation", SQL: cliAccountLifecycleRevocationSQL},
+	{Version: 10, Name: "cli_downstream_session_link", SQL: cliDownstreamSessionLinkSQL},
 }
 
 func Migrate(ctx context.Context, d *DB) error {
@@ -710,4 +713,151 @@ ALTER TABLE project_activity_markers ADD COLUMN IF NOT EXISTS idle_warning_sent_
 
 CREATE INDEX IF NOT EXISTS idx_project_activity_markers_last_heartbeat
 ON project_activity_markers(last_heartbeat_at);
+`
+
+const cliDeviceAuthorizationSQL = `
+SET LOCAL search_path TO paperboat;
+
+CREATE TABLE device_grants (
+	id text PRIMARY KEY,
+	client_id text NOT NULL,
+	client_label text NOT NULL,
+	device_type text NOT NULL,
+	os text NOT NULL,
+	scopes text[] NOT NULL,
+	device_code_hash text NOT NULL UNIQUE,
+	user_code_hash text NOT NULL UNIQUE,
+	state text NOT NULL CHECK (state IN ('pending','approved','denied','consumed','expired')),
+	user_id text REFERENCES users(id),
+	issued_at timestamptz NOT NULL,
+	expires_at timestamptz NOT NULL,
+	poll_interval_seconds integer NOT NULL,
+	next_poll_at timestamptz NOT NULL,
+	approved_at timestamptz,
+	denied_at timestamptz,
+	consumed_at timestamptz,
+	created_network_hash text NOT NULL,
+	version bigint NOT NULL DEFAULT 1
+);
+CREATE INDEX idx_device_grants_expiry ON device_grants(expires_at);
+
+CREATE TABLE client_sessions (
+	id text PRIMARY KEY,
+	user_id text NOT NULL REFERENCES users(id),
+	client_id text NOT NULL,
+	client_label text NOT NULL,
+	device_type text NOT NULL,
+	os text NOT NULL,
+	scopes text[] NOT NULL,
+	state text NOT NULL CHECK (state IN ('active','revoked')),
+	created_at timestamptz NOT NULL,
+	approved_at timestamptz NOT NULL,
+	last_used_at timestamptz,
+	revoked_at timestamptz,
+	revocation_reason text,
+	version bigint NOT NULL DEFAULT 1
+);
+CREATE INDEX idx_client_sessions_user_created ON client_sessions(user_id, created_at DESC);
+
+CREATE TABLE client_access_tokens (
+	token_hash text PRIMARY KEY,
+	client_session_id text NOT NULL REFERENCES client_sessions(id) ON DELETE CASCADE,
+	expires_at timestamptz NOT NULL,
+	created_at timestamptz NOT NULL,
+	revoked_at timestamptz
+);
+CREATE INDEX idx_client_access_tokens_session ON client_access_tokens(client_session_id);
+
+CREATE TABLE client_refresh_tokens (
+	token_hash text PRIMARY KEY,
+	client_session_id text NOT NULL REFERENCES client_sessions(id) ON DELETE CASCADE,
+	state text NOT NULL CHECK (state IN ('active','rotated','revoked')),
+	expires_at timestamptz NOT NULL,
+	created_at timestamptz NOT NULL,
+	rotated_at timestamptz,
+	revoked_at timestamptz
+);
+CREATE UNIQUE INDEX idx_client_refresh_tokens_one_active ON client_refresh_tokens(client_session_id) WHERE state = 'active';
+
+CREATE TABLE auth_rate_limits (
+	bucket_key text NOT NULL,
+	window_start timestamptz NOT NULL,
+	request_count integer NOT NULL,
+	PRIMARY KEY (bucket_key, window_start)
+);
+CREATE INDEX idx_auth_rate_limits_window ON auth_rate_limits(window_start);
+`
+
+const cliAccountLifecycleRevocationSQL = `
+SET LOCAL search_path TO paperboat;
+
+CREATE OR REPLACE FUNCTION revoke_user_client_sessions_on_status_change()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+	revoked_time timestamptz := now();
+	reason text := 'account_' || NEW.status;
+BEGIN
+	IF OLD.status = 'active' AND NEW.status <> 'active' THEN
+		UPDATE client_sessions
+		SET state = 'revoked',
+			revoked_at = coalesce(revoked_at, revoked_time),
+			revocation_reason = coalesce(revocation_reason, reason),
+			version = version + 1
+		WHERE user_id = NEW.id AND state = 'active';
+
+		UPDATE client_access_tokens
+		SET revoked_at = coalesce(revoked_at, revoked_time)
+		WHERE client_session_id IN (SELECT id FROM client_sessions WHERE user_id = NEW.id);
+
+		UPDATE client_refresh_tokens
+		SET state = 'revoked', revoked_at = coalesce(revoked_at, revoked_time)
+		WHERE client_session_id IN (SELECT id FROM client_sessions WHERE user_id = NEW.id)
+		  AND state <> 'revoked';
+	END IF;
+	RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_users_revoke_client_sessions ON users;
+CREATE TRIGGER trg_users_revoke_client_sessions
+AFTER UPDATE OF status ON users
+FOR EACH ROW
+WHEN (OLD.status IS DISTINCT FROM NEW.status)
+EXECUTE FUNCTION revoke_user_client_sessions_on_status_change();
+`
+
+const cliDownstreamSessionLinkSQL = `
+SET LOCAL search_path TO paperboat;
+
+ALTER TABLE access_sessions
+ADD COLUMN IF NOT EXISTS client_session_id text REFERENCES client_sessions(id);
+
+CREATE INDEX IF NOT EXISTS idx_access_sessions_client_session
+ON access_sessions(client_session_id)
+WHERE client_session_id IS NOT NULL;
+
+CREATE OR REPLACE FUNCTION revoke_access_sessions_on_client_revocation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+	IF OLD.state = 'active' AND NEW.state = 'revoked' THEN
+		UPDATE access_sessions
+		SET state = 'revoked', revoked_at = coalesce(revoked_at, now()), updated_at = now(),
+			version = version + 1,
+			descriptor = jsonb_set(descriptor, '{revocation_reason}', to_jsonb(coalesce(NEW.revocation_reason, 'client_revoked')::text), true)
+		WHERE client_session_id = NEW.id AND state = 'active' AND revoked_at IS NULL;
+	END IF;
+	RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_client_sessions_revoke_access ON client_sessions;
+CREATE TRIGGER trg_client_sessions_revoke_access
+AFTER UPDATE OF state ON client_sessions
+FOR EACH ROW
+WHEN (OLD.state IS DISTINCT FROM NEW.state)
+EXECUTE FUNCTION revoke_access_sessions_on_client_revocation();
 `

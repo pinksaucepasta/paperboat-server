@@ -41,6 +41,16 @@ func TestMigrateRequiresPostgresIntegrationDSN(t *testing.T) {
 	if !hasRole {
 		t.Fatal("users.role migration was not applied")
 	}
+	var hasClientRevocationTrigger bool
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (
+		SELECT 1 FROM pg_trigger
+		WHERE tgname = 'trg_users_revoke_client_sessions' AND NOT tgisinternal
+	)`).Scan(&hasClientRevocationTrigger); err != nil {
+		t.Fatal(err)
+	}
+	if !hasClientRevocationTrigger {
+		t.Fatal("account lifecycle client-revocation trigger was not applied")
+	}
 }
 
 func TestConcurrentMigrateCallsAreSerialized(t *testing.T) {

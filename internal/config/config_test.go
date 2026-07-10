@@ -133,6 +133,30 @@ func TestValidationRequiresPostgresAndCatalogSeedFile(t *testing.T) {
 	}
 }
 
+func TestValidationRejectsInvalidCLIAuthURLAndTrustedProxyCIDR(t *testing.T) {
+	for _, raw := range []string{"dashboard.example.com/cli/authorize", "ftp://dashboard.example.com/cli/authorize", "://bad"} {
+		cfg := Default()
+		cfg.CLIAuth.VerificationURL = raw
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "cli_auth.verification_url") {
+			t.Fatalf("verification URL %q error = %v", raw, err)
+		}
+	}
+	cfg := Default()
+	cfg.HTTP.TrustedProxyCIDRs = []string{"not-a-cidr"}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "trusted_proxy_cidrs") {
+		t.Fatalf("trusted proxy error = %v", err)
+	}
+}
+
+func TestValidationAcceptsAbsoluteCLIAuthURLAndTrustedProxyCIDR(t *testing.T) {
+	cfg := Default()
+	cfg.CLIAuth.VerificationURL = "https://dashboard.example.com/cli/authorize"
+	cfg.HTTP.TrustedProxyCIDRs = []string{"10.0.0.0/8", "2001:db8::/32"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRedactedJSONDoesNotExposeSecrets(t *testing.T) {
 	cfg := Default()
 	cfg.Secrets.EncryptionKey = "super-secret-encryption-key"

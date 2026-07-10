@@ -14,10 +14,15 @@ func projectsConnect(service *agentunnel.Service, kind agentunnel.ConnectKind) h
 			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
 			return
 		}
+		clientSessionID := ""
+		if p.Client != nil {
+			clientSessionID = p.Client.SessionID
+		}
 		response, err := service.Connect(r.Context(), agentunnel.ConnectInput{
-			UserID:    p.User.ID,
-			ProjectID: r.PathValue("project_id"),
-			Kind:      kind,
+			UserID:          p.User.ID,
+			ProjectID:       r.PathValue("project_id"),
+			Kind:            kind,
+			ClientSessionID: clientSessionID,
 		})
 		if writeAccessError(w, r, err) {
 			return

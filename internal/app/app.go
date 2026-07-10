@@ -50,11 +50,13 @@ func New(opts Options) (*App, error) {
 	catalogRepo := catalog.NewRepository(store.SQL())
 	flyProvider := flyClient(opts.Config)
 	authService := auth.NewService(store, auditWriter, workOSVerifier(opts.Config), opts.Config.Secrets.SessionKeys, publicURLSecure(opts.Config.HTTP.PublicBaseURL))
+	deviceAuthService := auth.NewDeviceService(store, auditWriter, opts.Config.CLIAuth, opts.Config.Secrets.SessionKeys)
 	billingService := billing.NewService(billingRepo, polarClient(opts.Config), auditWriter)
 	githubService := pbgithub.NewService(store, auditWriter, githubClient(opts.Config), opts.Config)
 	projectService := projects.NewService(store, auditWriter, opts.Config)
 	agentunnelProvider := agentunnelClient(opts.Config)
 	agentunnelService := agentunnel.NewService(store, projectService, agentunnelProvider, auditWriter, opts.Config)
+	deviceAuthService.SetDownstreamRevoker(agentunnelService)
 	orchestratorService := orchestrator.NewServiceWithAgentunnel(store, flyProvider, opts.Config, agentunnelProvider)
 	meteringService := metering.NewRuntimeService(store, flyProvider, billingRepo)
 	checker := readinessChecker{cfg: opts.Config, db: store}
@@ -63,6 +65,7 @@ func New(opts Options) (*App, error) {
 		Logger:           opts.Logger,
 		ReadinessChecker: checker,
 		Auth:             authService,
+		DeviceAuth:       deviceAuthService,
 		Billing:          billingService,
 		Catalog:          catalogRepo,
 		CatalogWriter:    catalogRepo,

@@ -28,6 +28,7 @@ type Config struct {
 	Catalogs    Catalogs    `json:"catalogs"`
 	Billing     Billing     `json:"billing"`
 	Metering    Metering    `json:"metering"`
+	CLIAuth     CLIAuth     `json:"cli_auth"`
 	GitHub      GitHub      `json:"github"`
 	Fly         Fly         `json:"fly"`
 	Providers   Providers   `json:"providers"`
@@ -61,6 +62,20 @@ type Billing struct {
 type Metering struct {
 	MinimumStartCreditWindow time.Duration `json:"minimum_start_credit_window"`
 	MaxKeepAliveDuration     time.Duration `json:"max_keep_alive_duration"`
+}
+
+type CLIAuth struct {
+	VerificationURL          string        `json:"verification_url"`
+	ClientID                 string        `json:"client_id"`
+	AllowedScopes            []string      `json:"allowed_scopes"`
+	DeviceGrantLifetime      time.Duration `json:"device_grant_lifetime"`
+	AccessTokenLifetime      time.Duration `json:"access_token_lifetime"`
+	RefreshTokenLifetime     time.Duration `json:"refresh_token_lifetime"`
+	PollInterval             time.Duration `json:"poll_interval"`
+	MaxClientLabelLength     int           `json:"max_client_label_length"`
+	NetworkRequestsPerMinute int           `json:"network_requests_per_minute"`
+	GrantPollsPerMinute      int           `json:"grant_polls_per_minute"`
+	AccountActionsPerMinute  int           `json:"account_actions_per_minute"`
 }
 
 type GitHub struct {
@@ -186,6 +201,19 @@ func Default() Config {
 			MinimumStartCreditWindow: 5 * time.Minute,
 			MaxKeepAliveDuration:     12 * time.Hour,
 		},
+		CLIAuth: CLIAuth{
+			VerificationURL:          "http://localhost:3000/cli/authorize",
+			ClientID:                 "paperboat-cli",
+			AllowedScopes:            []string{"account:read", "clients:revoke", "projects:read", "projects:connect", "session:refresh"},
+			DeviceGrantLifetime:      10 * time.Minute,
+			AccessTokenLifetime:      15 * time.Minute,
+			RefreshTokenLifetime:     30 * 24 * time.Hour,
+			PollInterval:             5 * time.Second,
+			MaxClientLabelLength:     120,
+			NetworkRequestsPerMinute: 30,
+			GrantPollsPerMinute:      30,
+			AccountActionsPerMinute:  30,
+		},
 		Providers: Providers{
 			FakeMode: true,
 			GitHub: ProviderConfig{
@@ -250,6 +278,11 @@ func (c Config) Validate() error {
 	if c.HTTP.MaxBodyBytes <= 0 {
 		errs = append(errs, fmt.Errorf("http.max_body_bytes must be positive"))
 	}
+	for _, raw := range c.HTTP.TrustedProxyCIDRs {
+		if _, _, err := net.ParseCIDR(strings.TrimSpace(raw)); err != nil {
+			errs = append(errs, fmt.Errorf("http.trusted_proxy_cidrs contains invalid CIDR %q", raw))
+		}
+	}
 	if c.Database.Driver == "" || c.Database.DSN == "" {
 		errs = append(errs, fmt.Errorf("database.driver and database.dsn are required"))
 	} else if c.Database.Driver != "postgres" && c.Database.Driver != "pgx" {
@@ -266,6 +299,18 @@ func (c Config) Validate() error {
 	}
 	if c.Metering.MaxKeepAliveDuration <= 0 {
 		errs = append(errs, fmt.Errorf("metering.max_keep_alive_duration must be positive"))
+	}
+	if strings.TrimSpace(c.CLIAuth.VerificationURL) == "" || strings.TrimSpace(c.CLIAuth.ClientID) == "" || len(c.CLIAuth.AllowedScopes) == 0 {
+		errs = append(errs, fmt.Errorf("cli_auth verification_url, client_id, and allowed_scopes are required"))
+	}
+	if verificationURL, err := url.Parse(c.CLIAuth.VerificationURL); err != nil || (verificationURL.Scheme != "http" && verificationURL.Scheme != "https") || verificationURL.Host == "" {
+		errs = append(errs, fmt.Errorf("cli_auth.verification_url must be an absolute http or https URL"))
+	}
+	if c.CLIAuth.DeviceGrantLifetime <= 0 || c.CLIAuth.AccessTokenLifetime <= 0 || c.CLIAuth.RefreshTokenLifetime <= 0 || c.CLIAuth.PollInterval <= 0 {
+		errs = append(errs, fmt.Errorf("cli_auth lifetimes and poll_interval must be positive"))
+	}
+	if c.CLIAuth.MaxClientLabelLength <= 0 || c.CLIAuth.NetworkRequestsPerMinute <= 0 || c.CLIAuth.GrantPollsPerMinute <= 0 || c.CLIAuth.AccountActionsPerMinute <= 0 {
+		errs = append(errs, fmt.Errorf("cli_auth limits must be positive"))
 	}
 	switch c.Providers.Agentunnel.MachineMode {
 	case "required", "optional":
@@ -365,6 +410,8 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_DATABASE_DRIVER", &c.Database.Driver)
 	setString("PAPERBOAT_DATABASE_DSN", &c.Database.DSN)
 	setString("PAPERBOAT_CATALOG_SEED_FILE", &c.Catalogs.SeedFile)
+	setString("PAPERBOAT_CLI_VERIFICATION_URL", &c.CLIAuth.VerificationURL)
+	setString("PAPERBOAT_CLI_CLIENT_ID", &c.CLIAuth.ClientID)
 	setString("PAPERBOAT_GITHUB_OAUTH_AUTHORIZE_URL", &c.GitHub.OAuthAuthorizeURL)
 	setString("PAPERBOAT_GITHUB_OAUTH_TOKEN_URL", &c.GitHub.OAuthTokenURL)
 	setString("PAPERBOAT_GITHUB_CONFIG_REPO_NAME", &c.GitHub.ConfigRepoName)
@@ -391,6 +438,40 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_AGENTUNNEL_ACCESS_POLICY_ID", &c.Providers.Agentunnel.AccessPolicyID)
 	if v, ok := lookup("PAPERBOAT_ALLOWED_ORIGINS"); ok {
 		c.HTTP.AllowedOrigins = splitCSV(v)
+	}
+	if v, ok := lookup("PAPERBOAT_TRUSTED_PROXY_CIDRS"); ok {
+		c.HTTP.TrustedProxyCIDRs = splitCSV(v)
+	}
+	if v, ok := lookup("PAPERBOAT_CLI_ALLOWED_SCOPES"); ok {
+		c.CLIAuth.AllowedScopes = splitCSV(v)
+	}
+	for name, target := range map[string]*time.Duration{
+		"PAPERBOAT_CLI_DEVICE_GRANT_LIFETIME":  &c.CLIAuth.DeviceGrantLifetime,
+		"PAPERBOAT_CLI_ACCESS_TOKEN_LIFETIME":  &c.CLIAuth.AccessTokenLifetime,
+		"PAPERBOAT_CLI_REFRESH_TOKEN_LIFETIME": &c.CLIAuth.RefreshTokenLifetime,
+		"PAPERBOAT_CLI_POLL_INTERVAL":          &c.CLIAuth.PollInterval,
+	} {
+		if v, ok := lookup(name); ok {
+			parsed, err := time.ParseDuration(v)
+			if err != nil {
+				return fmt.Errorf("parse %s: %w", name, err)
+			}
+			*target = parsed
+		}
+	}
+	for name, target := range map[string]*int{
+		"PAPERBOAT_CLI_MAX_CLIENT_LABEL_LENGTH":     &c.CLIAuth.MaxClientLabelLength,
+		"PAPERBOAT_CLI_NETWORK_REQUESTS_PER_MINUTE": &c.CLIAuth.NetworkRequestsPerMinute,
+		"PAPERBOAT_CLI_GRANT_POLLS_PER_MINUTE":      &c.CLIAuth.GrantPollsPerMinute,
+		"PAPERBOAT_CLI_ACCOUNT_ACTIONS_PER_MINUTE":  &c.CLIAuth.AccountActionsPerMinute,
+	} {
+		if v, ok := lookup(name); ok {
+			parsed, err := strconv.Atoi(v)
+			if err != nil {
+				return fmt.Errorf("parse %s: %w", name, err)
+			}
+			*target = parsed
+		}
 	}
 	if v, ok := lookup("PAPERBOAT_GITHUB_OAUTH_SCOPES"); ok {
 		c.GitHub.OAuthScopes = splitCSV(v)
