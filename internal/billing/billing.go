@@ -89,11 +89,12 @@ type Usage struct {
 }
 
 type PlanProduct struct {
-	Code              string `json:"code"`
-	PlanCode          string `json:"plan_code"`
-	PlanName          string `json:"plan_name"`
-	IncludedCredits   string `json:"included_credits"`
-	IncludedStorageGB int    `json:"included_storage_gb"`
+	Code              string          `json:"code"`
+	PlanCode          string          `json:"plan_code"`
+	PlanName          string          `json:"plan_name"`
+	IncludedCredits   string          `json:"included_credits"`
+	IncludedStorageGB int             `json:"included_storage_gb"`
+	Metadata          json.RawMessage `json:"metadata"`
 }
 
 type Product struct {
@@ -236,7 +237,17 @@ func (r *Repository) ProductByCode(ctx context.Context, code string) (Product, e
 	err := r.db.SQL().QueryRowContext(ctx, `
 SELECT code, catalog_type, catalog_ref, provider_product_id, provider_price_id
 FROM paperboat.billing_products
-WHERE code = $1 AND provider = 'polar' AND active`, code).Scan(&product.Code, &product.CatalogType, &product.CatalogRef, &product.ProviderProductID, &product.ProviderPriceID)
+WHERE code = $1
+  AND provider = 'polar'
+  AND active
+  AND (
+	catalog_type <> 'plan'
+	OR EXISTS (
+		SELECT 1
+		FROM paperboat.plans p
+		WHERE p.code = catalog_ref AND p.active
+	)
+  )`, code).Scan(&product.Code, &product.CatalogType, &product.CatalogRef, &product.ProviderProductID, &product.ProviderPriceID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Product{}, ErrUnknownProduct
 	}
@@ -248,14 +259,15 @@ WHERE code = $1 AND provider = 'polar' AND active`, code).Scan(&product.Code, &p
 
 func (r *Repository) ListPlanProducts(ctx context.Context) ([]PlanProduct, error) {
 	rows, err := r.db.SQL().QueryContext(ctx, `
-SELECT bp.code, p.code, p.name, pv.included_credits::text, pv.included_storage_gb
+SELECT bp.code, p.code, p.name, pv.included_credits::text, pv.included_storage_gb, pv.metadata
 FROM paperboat.billing_products bp
 JOIN paperboat.plans p ON p.code = bp.catalog_ref
 JOIN paperboat.plan_versions pv ON pv.id = p.current_version_id
 WHERE bp.provider = 'polar'
   AND bp.catalog_type = 'plan'
   AND bp.active
-ORDER BY p.sort_order, p.code, bp.code`)
+  AND p.active
+ORDER BY p.code, bp.code`)
 	if err != nil {
 		return nil, fmt.Errorf("query billing plan products: %w", err)
 	}
@@ -263,7 +275,7 @@ ORDER BY p.sort_order, p.code, bp.code`)
 	var products []PlanProduct
 	for rows.Next() {
 		var product PlanProduct
-		if err := rows.Scan(&product.Code, &product.PlanCode, &product.PlanName, &product.IncludedCredits, &product.IncludedStorageGB); err != nil {
+		if err := rows.Scan(&product.Code, &product.PlanCode, &product.PlanName, &product.IncludedCredits, &product.IncludedStorageGB, &product.Metadata); err != nil {
 			return nil, fmt.Errorf("scan billing plan product: %w", err)
 		}
 		products = append(products, product)
@@ -490,9 +502,16 @@ type WebhookEvent struct {
 }
 
 func (s *Service) HandleWebhook(ctx context.Context, body []byte) (bool, error) {
+	return s.HandleWebhookWithID(ctx, "", body)
+}
+
+func (s *Service) HandleWebhookWithID(ctx context.Context, providerEventID string, body []byte) (bool, error) {
 	var event WebhookEvent
 	if err := json.Unmarshal(body, &event); err != nil {
 		return false, fmt.Errorf("parse polar webhook: %w", err)
+	}
+	if strings.TrimSpace(providerEventID) != "" {
+		event.ID = strings.TrimSpace(providerEventID)
 	}
 	if strings.TrimSpace(event.ID) == "" || strings.TrimSpace(event.Type) == "" {
 		return false, fmt.Errorf("polar webhook missing id or type")
@@ -503,10 +522,13 @@ func (s *Service) HandleWebhook(ctx context.Context, body []byte) (bool, error) 
 }
 
 func (s *Service) processWebhookEvent(ctx context.Context, tx *db.Tx, event WebhookEvent) error {
+	if !billingRelevantEvent(event.Type) {
+		return nil
+	}
 	payload := webhookPayload(event)
 	userID := payload.firstString("external_user_id", "external_customer_id", "customer.external_id", "customer.external_user_id", "metadata.paperboat_user_id", "metadata.user_id")
 	productID := payload.firstString("product_id", "product.id", "product", "price.product_id", "items.0.product_id")
-	priceID := payload.firstString("price_id", "price.id", "price", "items.0.price_id")
+	priceID := payload.firstString("price_id", "product_price_id", "price.id", "product_price.id", "price", "items.0.price_id", "items.0.product_price_id")
 	product, err := s.repo.ProductByProviderIDs(ctx, tx, productID, priceID)
 	if errors.Is(err, ErrUnknownProduct) {
 		return fmt.Errorf("%w: polar product_id=%q price_id=%q", ErrRetryableWebhook, productID, priceID)
@@ -582,9 +604,9 @@ WHERE p.code = $1 AND p.active`, product.CatalogRef).Scan(&planVersionID, &inclu
 	if subscriptionID == "" {
 		subscriptionID = event.ID
 	}
-	state := subscriptionState(payload.firstString("status", "state"), event.Type)
-	start := payload.firstTime("current_period_start", "period_start")
-	end := payload.firstTime("current_period_end", "period_end", "ends_at")
+	state := subscriptionState(payload.firstString("subscription.status", "status", "state"), event.Type)
+	start := payload.firstTime("subscription.current_period_start", "current_period_start", "period_start")
+	end := payload.firstTime("subscription.current_period_end", "current_period_end", "period_end", "ends_at")
 	if _, err := tx.Exec(ctx, `
 INSERT INTO subscriptions (id, user_id, provider, provider_subscription_id, state, active_plan_version_id, current_period_start, current_period_end)
 VALUES ($1, $2, 'polar', $3, $4, $5, $6, $7)
@@ -599,15 +621,21 @@ ON CONFLICT (provider_subscription_id) DO UPDATE SET
 		return err
 	}
 	if state == "active" || state == "trialing" {
-		if err := grantCreditsTx(ctx, tx, userID, newID("cled"), event.ID+":plan-credits:"+product.Code, "polar_event", event.ID, includedCredits, map[string]any{"event_type": event.Type, "plan_code": product.CatalogRef}); err != nil {
+		periodKey := event.ID
+		ledgerSourceID := event.ID
+		if startTime, ok := start.(time.Time); subscriptionID != "" && ok {
+			periodKey = "subscription:" + subscriptionID + ":period:" + startTime.UTC().Format(time.RFC3339Nano)
+			ledgerSourceID = subscriptionID
+		}
+		if err := grantCreditsTx(ctx, tx, userID, newID("cled"), periodKey+":plan-credits:"+product.Code, "polar_subscription", ledgerSourceID, includedCredits, map[string]any{"event_type": event.Type, "plan_code": product.CatalogRef}); err != nil {
 			return err
 		}
 		accountID, err := ensureStorageAccount(ctx, tx, userID)
 		if err != nil {
 			return err
 		}
-		storageKey := event.ID + ":included-storage:" + product.Code
-		return setIncludedStorageTx(ctx, tx, accountID, newID("sled"), "included_set", includedStorageGB, "polar_event", event.ID, storageKey, map[string]any{"event_type": event.Type, "plan_code": product.CatalogRef})
+		storageKey := periodKey + ":included-storage:" + product.Code
+		return setIncludedStorageTx(ctx, tx, accountID, newID("sled"), "included_set", includedStorageGB, "polar_subscription", ledgerSourceID, storageKey, map[string]any{"event_type": event.Type, "plan_code": product.CatalogRef})
 	}
 	return nil
 }
@@ -710,13 +738,9 @@ func VerifyWebhookSignatureAt(body []byte, webhookID, timestamp, signatures, sec
 		return ErrInvalidSignature
 	}
 
-	key, err := standardWebhookSecret(secret)
-	if err != nil {
-		return ErrInvalidSignature
-	}
 	signedContent := []byte(webhookID + "." + timestamp + ".")
 	signedContent = append(signedContent, body...)
-	expectedMAC := hmac.New(sha256.New, key)
+	expectedMAC := hmac.New(sha256.New, []byte(secret))
 	_, _ = expectedMAC.Write(signedContent)
 	expected := base64.StdEncoding.EncodeToString(expectedMAC.Sum(nil))
 
@@ -726,33 +750,6 @@ func VerifyWebhookSignatureAt(body []byte, webhookID, timestamp, signatures, sec
 		}
 	}
 	return ErrInvalidSignature
-}
-
-func standardWebhookSecret(secret string) ([]byte, error) {
-	secret = strings.TrimSpace(secret)
-	if strings.HasPrefix(secret, "whsec_") {
-		return decodeWebhookSecret(strings.TrimPrefix(secret, "whsec_"))
-	}
-	if decoded, err := decodeWebhookSecret(secret); err == nil {
-		return decoded, nil
-	}
-	return []byte(secret), nil
-}
-
-func decodeWebhookSecret(secret string) ([]byte, error) {
-	encodings := []*base64.Encoding{
-		base64.StdEncoding,
-		base64.RawStdEncoding,
-		base64.URLEncoding,
-		base64.RawURLEncoding,
-	}
-	for _, encoding := range encodings {
-		decoded, err := encoding.DecodeString(secret)
-		if err == nil {
-			return decoded, nil
-		}
-	}
-	return nil, ErrInvalidSignature
 }
 
 func standardWebhookSignatures(header string) []string {
@@ -1123,4 +1120,11 @@ func refundLikeEvent(eventType string) bool {
 	return strings.Contains(eventType, "refund") ||
 		strings.Contains(eventType, "chargeback") ||
 		strings.Contains(eventType, "dispute")
+}
+
+func billingRelevantEvent(eventType string) bool {
+	eventType = strings.ToLower(strings.TrimSpace(eventType))
+	return strings.HasPrefix(eventType, "subscription.") ||
+		eventType == "order.paid" ||
+		refundLikeEvent(eventType)
 }

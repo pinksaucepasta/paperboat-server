@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -27,6 +28,7 @@ type PlanRecord struct {
 	CurrentVersionID  string
 	IncludedCredits   string
 	IncludedStorageGB int
+	Metadata          json.RawMessage
 	Version           int64
 }
 
@@ -79,7 +81,7 @@ func NewRepository(queryer *sql.DB) *Repository {
 
 func (r *Repository) ListPlans(ctx context.Context) ([]PlanRecord, error) {
 	rs, err := r.queryer.QueryContext(ctx, `
-SELECT p.id, p.code, p.name, p.active, p.current_version_id, pv.included_credits::text, pv.included_storage_gb, p.version
+SELECT p.id, p.code, p.name, p.active, p.current_version_id, pv.included_credits::text, pv.included_storage_gb, pv.metadata, p.version
 FROM paperboat.plans p
 JOIN paperboat.plan_versions pv ON pv.id = p.current_version_id
 ORDER BY p.code`)
@@ -90,7 +92,7 @@ ORDER BY p.code`)
 	var out []PlanRecord
 	for rs.Next() {
 		var record PlanRecord
-		if err := rs.Scan(&record.ID, &record.Code, &record.Name, &record.Active, &record.CurrentVersionID, &record.IncludedCredits, &record.IncludedStorageGB, &record.Version); err != nil {
+		if err := rs.Scan(&record.ID, &record.Code, &record.Name, &record.Active, &record.CurrentVersionID, &record.IncludedCredits, &record.IncludedStorageGB, &record.Metadata, &record.Version); err != nil {
 			return nil, fmt.Errorf("scan plan: %w", err)
 		}
 		out = append(out, record)

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/catalog"
@@ -8,12 +9,13 @@ import (
 )
 
 type catalogPlanResponse struct {
-	Code              string `json:"code"`
-	Name              string `json:"name"`
-	Active            bool   `json:"active"`
-	IncludedCredits   string `json:"included_credits"`
-	IncludedStorageGB int    `json:"included_storage_gb"`
-	Version           int64  `json:"version"`
+	Code              string          `json:"code"`
+	Name              string          `json:"name"`
+	Active            bool            `json:"active"`
+	IncludedCredits   string          `json:"included_credits"`
+	IncludedStorageGB int             `json:"included_storage_gb"`
+	Metadata          json.RawMessage `json:"metadata"`
+	Version           int64           `json:"version"`
 }
 
 type catalogMachineTypeResponse struct {
@@ -64,6 +66,7 @@ func catalogPlans(reader catalog.Reader) http.Handler {
 				Active:            record.Active,
 				IncludedCredits:   record.IncludedCredits,
 				IncludedStorageGB: record.IncludedStorageGB,
+				Metadata:          record.Metadata,
 				Version:           record.Version,
 			})
 		}

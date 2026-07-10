@@ -10,23 +10,23 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
 
 func TestVerifyWebhookSignature(t *testing.T) {
 	body := []byte(`{"id":"evt_test","type":"subscription.active"}`)
-	key := []byte("test-webhook-secret")
-	secret := "whsec_" + base64.StdEncoding.EncodeToString(key)
+	secret := "whsec_test-webhook-secret"
 	webhookID := "msg_test"
 	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
 	timestamp := strconv.FormatInt(now.Unix(), 10)
-	mac := hmac.New(sha256.New, []byte(secret))
+	mac := hmac.New(sha256.New, []byte(strings.TrimPrefix(secret, "whsec_")))
 	_, _ = mac.Write([]byte(webhookID + "." + timestamp + "."))
 	_, _ = mac.Write(body)
 	wrongSignature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
-	mac = hmac.New(sha256.New, key)
+	mac = hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write([]byte(webhookID + "." + timestamp + "."))
 	_, _ = mac.Write(body)
 	signature := "v1," + base64.StdEncoding.EncodeToString(mac.Sum(nil))
@@ -44,12 +44,11 @@ func TestVerifyWebhookSignature(t *testing.T) {
 
 func TestVerifyWebhookSignatureRejectsOutsideTolerance(t *testing.T) {
 	body := []byte(`{"id":"evt_test","type":"subscription.active"}`)
-	key := []byte("test-webhook-secret")
-	secret := "whsec_" + base64.StdEncoding.EncodeToString(key)
+	secret := "whsec_test-webhook-secret"
 	webhookID := "msg_test"
 	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
 	oldTimestamp := strconv.FormatInt(now.Add(-10*time.Minute).Unix(), 10)
-	mac := hmac.New(sha256.New, key)
+	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write([]byte(webhookID + "." + oldTimestamp + "."))
 	_, _ = mac.Write(body)
 	signature := "v1," + base64.StdEncoding.EncodeToString(mac.Sum(nil))
@@ -188,6 +187,25 @@ func TestEntitlementActiveStates(t *testing.T) {
 				t.Fatalf("entitlementActive() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestBillingRelevantEvent(t *testing.T) {
+	cases := map[string]bool{
+		"subscription.created":  true,
+		"subscription.active":   true,
+		"subscription.canceled": true,
+		"order.paid":            true,
+		"order.refunded":        true,
+		"refund.created":        true,
+		"checkout.created":      false,
+		"customer.updated":      false,
+		"member.created":        false,
+	}
+	for eventType, want := range cases {
+		if got := billingRelevantEvent(eventType); got != want {
+			t.Errorf("billingRelevantEvent(%q) = %t, want %t", eventType, got, want)
+		}
 	}
 }
 

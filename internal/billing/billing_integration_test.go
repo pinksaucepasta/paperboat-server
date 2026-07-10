@@ -24,20 +24,37 @@ func TestPolarWebhookAppliesPlanResourcesIdempotently(t *testing.T) {
 	insertPlanProduct(t, store, planCode, productID, "price_plan_"+suffix, "12.5", 42)
 
 	service := billing.NewService(billing.NewRepository(store), billing.FakePolarClient{}, audit.NewWriter(store))
-	body := []byte(fmt.Sprintf(`{"id":"evt_plan_%[1]s","type":"subscription.active","data":{"customer":{"external_id":"%[2]s"},"product_id":"%[3]s","price_id":"price_plan_%[1]s","subscription":{"id":"sub_%[1]s"},"status":"active","current_period_end":"2026-08-05T12:00:00Z"}}`, suffix, userID, productID))
-	inserted, err := service.HandleWebhook(ctx, body)
+	body := []byte(fmt.Sprintf(`{"type":"subscription.created","data":{"id":"sub_%[1]s","customer":{"external_id":"%[2]s"},"product_id":"%[3]s","price_id":"price_plan_%[1]s","status":"active","current_period_start":"2026-07-05T12:00:00Z","current_period_end":"2026-08-05T12:00:00Z"}}`, suffix, userID, productID))
+	inserted, err := service.HandleWebhookWithID(ctx, "evt_plan_created_"+suffix, body)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !inserted {
 		t.Fatal("first webhook was not inserted")
 	}
-	inserted, err = service.HandleWebhook(ctx, body)
+	body = []byte(fmt.Sprintf(`{"type":"subscription.active","data":{"id":"sub_%[1]s","customer":{"external_id":"%[2]s"},"product_id":"%[3]s","price_id":"price_plan_%[1]s","status":"active","current_period_start":"2026-07-05T12:00:00Z","current_period_end":"2026-08-05T12:00:00Z"}}`, suffix, userID, productID))
+	inserted, err = service.HandleWebhookWithID(ctx, "evt_plan_active_"+suffix, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inserted {
+		t.Fatal("second lifecycle webhook was not inserted")
+	}
+	body = []byte(fmt.Sprintf(`{"type":"order.paid","data":{"id":"order_%[1]s","customer":{"external_id":"%[2]s"},"product_id":"%[3]s","product_price_id":"price_plan_%[1]s","status":"paid","subscription":{"id":"sub_%[1]s","status":"active","current_period_start":"2026-07-05T12:00:00Z","current_period_end":"2026-08-05T12:00:00Z"}}}`, suffix, userID, productID))
+	inserted, err = service.HandleWebhookWithID(ctx, "evt_order_paid_"+suffix, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inserted {
+		t.Fatal("order.paid webhook was not inserted")
+	}
+	body = []byte(fmt.Sprintf(`{"type":"subscription.active","data":{"id":"sub_%[1]s","customer":{"external_id":"%[2]s"},"product_id":"%[3]s","price_id":"price_plan_%[1]s","status":"active","current_period_start":"2026-07-05T12:00:00Z","current_period_end":"2026-08-05T12:00:00Z"}}`, suffix, userID, productID))
+	inserted, err = service.HandleWebhookWithID(ctx, "evt_plan_active_"+suffix, body)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if inserted {
-		t.Fatal("duplicate webhook inserted")
+		t.Fatal("duplicate provider event was inserted")
 	}
 	usage, err := billing.NewRepository(store).Usage(ctx, userID)
 	if err != nil {
@@ -52,6 +69,61 @@ func TestPolarWebhookAppliesPlanResourcesIdempotently(t *testing.T) {
 	}
 	if state != "active" {
 		t.Fatalf("subscription state = %q", state)
+	}
+}
+
+func TestListPlanProductsReturnsActiveCatalogPlans(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	activeCode := "active-plan-" + suffix
+	inactiveCode := "inactive-plan-" + suffix
+	insertPlanProduct(t, store, activeCode, "prod_active_"+suffix, "price_active_"+suffix, "25", 50)
+	insertPlanProduct(t, store, inactiveCode, "prod_inactive_"+suffix, "price_inactive_"+suffix, "100", 200)
+	cleanupPlanProducts(t, store, activeCode, inactiveCode)
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.plans SET active = false WHERE code = $1`, inactiveCode); err != nil {
+		t.Fatal(err)
+	}
+
+	products, err := billing.NewRepository(store).ListPlanProducts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var foundActive, foundInactive bool
+	for _, product := range products {
+		switch product.PlanCode {
+		case activeCode:
+			foundActive = true
+			if product.IncludedCredits != "25.000000" || product.IncludedStorageGB != 50 {
+				t.Fatalf("active plan product = %+v", product)
+			}
+		case inactiveCode:
+			foundInactive = true
+		}
+	}
+	if !foundActive {
+		t.Fatal("active plan product was not listed")
+	}
+	if foundInactive {
+		t.Fatal("inactive catalog plan product was listed")
+	}
+}
+
+func TestCheckoutRejectsInactiveCatalogPlan(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	planCode := "inactive-checkout-plan-" + suffix
+	insertPlanProduct(t, store, planCode, "prod_inactive_checkout_"+suffix, "price_inactive_checkout_"+suffix, "100", 200)
+	cleanupPlanProducts(t, store, planCode)
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.plans SET active = false WHERE code = $1`, planCode); err != nil {
+		t.Fatal(err)
+	}
+
+	service := billing.NewService(billing.NewRepository(store), billing.FakePolarClient{}, audit.NewWriter(store))
+	_, err := service.CreateCheckout(ctx, "usr_unused", "user@example.test", "product-"+planCode, "checkout-"+suffix, "https://example.test/success")
+	if err != billing.ErrUnknownProduct {
+		t.Fatalf("checkout error = %v, want unknown product", err)
 	}
 }
 
@@ -250,4 +322,22 @@ INSERT INTO paperboat.billing_products (id, code, provider, provider_product_id,
 VALUES ($1, $2, 'polar', $3, $4, 'plan', $5, true)`, "bp_"+planCode, "product-"+planCode, productID, priceID, planCode); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func cleanupPlanProducts(t *testing.T, store *db.DB, planCodes ...string) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx := context.Background()
+		if _, err := store.SQL().ExecContext(ctx, `DELETE FROM paperboat.billing_products WHERE catalog_type = 'plan' AND catalog_ref = ANY($1)`, planCodes); err != nil {
+			t.Errorf("clean billing products: %v", err)
+			return
+		}
+		if _, err := store.SQL().ExecContext(ctx, `DELETE FROM paperboat.plan_versions WHERE plan_id IN (SELECT id FROM paperboat.plans WHERE code = ANY($1))`, planCodes); err != nil {
+			t.Errorf("clean plan versions: %v", err)
+			return
+		}
+		if _, err := store.SQL().ExecContext(ctx, `DELETE FROM paperboat.plans WHERE code = ANY($1)`, planCodes); err != nil {
+			t.Errorf("clean plans: %v", err)
+		}
+	})
 }

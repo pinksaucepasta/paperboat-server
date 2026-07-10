@@ -131,7 +131,7 @@ func polarWebhook(service *billing.Service, secret string, tolerance time.Durati
 			writeError(w, r, http.StatusUnauthorized, "forbidden", "Webhook signature is invalid.")
 			return
 		}
-		inserted, err := service.HandleWebhook(r.Context(), body)
+		inserted, err := service.HandleWebhookWithID(r.Context(), r.Header.Get("Webhook-Id"), body)
 		if err != nil {
 			if errors.Is(err, billing.ErrRetryableWebhook) {
 				writeError(w, r, http.StatusServiceUnavailable, "provider_unavailable", "Webhook event could not be processed yet.")

@@ -4,40 +4,81 @@
       "code": "free",
       "name": "Free",
       "included_credits": "10",
-      "included_storage_gb": 10,
+      "included_storage_gb": 5,
       "active": true,
       "metadata": {
-        "decision_status": "approved_free_project_creation"
+        "decision_status": "approved_free_project_creation",
+        "presentation": {
+          "price_monthly_usd": 0,
+          "tagline": "Try Paperboat at no cost",
+          "features": [
+            { "label": "1 active project", "icon": "projects" },
+            { "label": "1 region", "icon": "regions" },
+            { "label": "Access to agentunnel", "icon": "agentunnel" },
+            { "label": "Community support", "icon": "support" }
+          ]
+        }
       }
     },
     {
       "code": "sailor",
       "name": "Sailor",
-      "included_credits": "0",
-      "included_storage_gb": 0,
-      "active": false,
+      "included_credits": "100",
+      "included_storage_gb": 30,
+      "active": true,
       "metadata": {
-        "decision_status": "pending_phase_4_values"
+        "decision_status": "approved",
+        "presentation": {
+          "price_monthly_usd": 20,
+          "tagline": "For solo builders getting started",
+          "features": [
+            { "label": "Up to 5 active projects", "icon": "projects" },
+            { "label": "Limited region access", "icon": "regions" },
+            { "label": "Access to agentunnel", "icon": "agentunnel" },
+            { "label": "General support", "icon": "support" }
+          ]
+        }
       }
     },
     {
       "code": "navigator",
       "name": "Navigator",
-      "included_credits": "0",
-      "included_storage_gb": 0,
-      "active": false,
+      "included_credits": "300",
+      "included_storage_gb": 100,
+      "active": true,
       "metadata": {
-        "decision_status": "pending_phase_4_values"
+        "decision_status": "approved",
+        "presentation": {
+          "price_monthly_usd": 60,
+          "tagline": "For daily drivers who ship constantly",
+          "most_popular": true,
+          "features": [
+            { "label": "Up to 20 active projects", "icon": "projects" },
+            { "label": "Access to all regions", "icon": "regions" },
+            { "label": "Access to agentunnel", "icon": "agentunnel" },
+            { "label": "Priority support", "icon": "support" }
+          ]
+        }
       }
     },
     {
       "code": "captain",
       "name": "Captain",
-      "included_credits": "0",
-      "included_storage_gb": 0,
-      "active": false,
+      "included_credits": "1000",
+      "included_storage_gb": 500,
+      "active": true,
       "metadata": {
-        "decision_status": "pending_phase_4_values"
+        "decision_status": "approved",
+        "presentation": {
+          "price_monthly_usd": 200,
+          "tagline": "For teams and heavy workloads",
+          "features": [
+            { "label": "Up to 100 active projects", "icon": "projects" },
+            { "label": "Access to all regions", "icon": "regions" },
+            { "label": "Access to agentunnel", "icon": "agentunnel" },
+            { "label": "Priority support", "icon": "support" }
+          ]
+        }
       }
     }
   ],
