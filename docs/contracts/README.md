@@ -14,6 +14,8 @@ specific provider values in dynamic configuration and catalog seed data.
   catalog seed boundaries.
 - [access-handoff.md](access-handoff.md) - agentunnel, papercode, and paperboat-cli
   pre-connect descriptor contracts.
+- [cli-authorization.md](cli-authorization.md) - device grants, scoped CLI sessions,
+  refresh rotation, and client revocation.
 
 ## Approval Rule
 

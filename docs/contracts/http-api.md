@@ -65,6 +65,7 @@ Responses:
 
 ### Health
 
+- `GET /.well-known/jwks.json`
 - `GET /healthz`
 - `GET /readyz`
 
@@ -74,6 +75,19 @@ Responses:
 - `POST /api/auth/workos/callback`
 - `POST /api/auth/logout`
 - `GET /api/auth/csrf`
+- `POST /api/auth/device/authorize`
+- `POST /api/auth/device/token`
+- `GET /api/auth/device/requests/{user_code}`
+- `POST /api/auth/device/requests/{user_code}/approve`
+- `POST /api/auth/device/requests/{user_code}/deny`
+- `POST /api/auth/token/refresh`
+- `POST /api/auth/token/revoke`
+- `GET /api/auth/clients`
+- `DELETE /api/auth/clients/{client_session_id}`
+
+The device/session contract, polling outcomes, rotation, and revocation behavior are frozen
+in [cli-authorization.md](cli-authorization.md). Browser approval uses cookie plus CSRF;
+CLI project reads and connects use scoped Paperboat bearer access tokens.
 
 ### Billing and Entitlements
 
@@ -159,6 +173,16 @@ Initial contract:
 - `version_required`
 - `version_conflict`
 - `rate_limited`
+- `authorization_pending`
+- `slow_down`
+- `access_denied`
+- `expired_token`
+- `invalid_grant`
+- `invalid_client`
+- `invalid_scope`
+- `device_request_not_pending`
+- `device_request_expired`
+- `device_request_consumed`
 - `internal_error`
 
 Adding or renaming public codes after approval requires explicit contract approval.

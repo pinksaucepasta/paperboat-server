@@ -18,7 +18,7 @@ filling its evidence section.
 
 | Phase | Area | Status | Owner | Evidence |
 | --- | --- | --- | --- | --- |
-| 0 | Product decisions and contract freeze | Implemented | Codex | Contract baseline in `docs/contracts/` now resolves persistence, WorkOS session, billing catalog, Fly policy, GitHub policy, access handoff, papercode/CLI descriptors, and custom-shape release scope. Final cross-project sign-off links and production provider values remain release evidence. |
+| 0 | Product decisions and contract freeze | Implemented | Codex | Contract baseline now includes CLI device authorization, rotating client sessions, stable environment identity, papercode mint/JWKS rules, staged-image auth, terminal compatibility, and agentunnel route ownership. Immutable cross-repo commit links remain release evidence. |
 | 1 | Repository foundation and service skeleton | In progress | Codex | Initial Go module, CLI surface, config loader, HTTP middleware, health/readiness endpoints, local config example, README commands, and foundation tests. |
 | 2 | Persistence, migrations, config, and data catalogs | Complete | Codex | Postgres schema, migration runner, transaction wrapper, catalog repositories, storage ledger repository, dynamic catalog seed validation/upserts, and Postgres integration evidence complete. |
 | 3 | Identity, sessions, authorization, and audit base | Implemented | Codex | WorkOS verifier abstraction, idempotent user/session creation, secure cookies with CSRF binding and rotation, `/api/me`, auth/entitlement/admin middleware foundations, audit writer/query base, and auth integration tests. |
@@ -27,7 +27,7 @@ filling its evidence section.
 | 6 | Project lifecycle and VM customization model | Implemented | Codex | Project service, Phase 6 migration, project create/list/get/update/delete/events APIs, idempotent create, catalog validation, setup-script revision storage, storage quota enforcement for create/update, pending restart apply model, delete workflow intent with deferred storage release, event records, and DB-backed project lifecycle tests are in place. |
 | 7 | Fly.io machines, volumes, reconciliation, and restart apply | Implemented | Codex | Official Fly Go SDK client/fake provider, app creation from configured org slug, orchestration worker, create/start/stop/restart/delete workflows, restart apply, process-scoped secret handoff, resize-policy blocking, reconciliation command/run records, orphan review queue, idempotent volume/machine persistence, deferred storage release on delete, Phase 7 migration hardening, provider contract docs, README Fly env TODOs, and DB-backed fake-Fly workflow tests are in place. Real Fly org/image smoke evidence is deferred to release validation. |
 | 8 | Metering workers, idle detection, credit exhaustion, and enforcement | Implemented | Codex | Billing invariant is fixed: credits are debited only for runtime intervals where Fly reports the project machine running. Fly polling is the current runtime observer, with durable runtime intervals/checkpoints, weighted credit debits, credit-exhaustion stop queueing, idle stop queueing, minimum-credit start/restart/connect-resume guard, accepted activity source enforcement, VM heartbeat, papercode/CLI activity callback endpoint, agentunnel-ready activity markers, app worker wiring, migration, config, and tests in place. Fly event/hybrid observation is an optional future implementation optimization, not a product decision. |
-| 9 | agentunnel pre-connect brokering and access descriptors | Implemented | Codex | Access service/repository, fake provider plus real agentunnel client provisioning, papercode HTTP tunnel provisioning, persistent SSH/TCP provisioning, `connect-info` status adapter, machine cleanup revocation, preview URL metadata persistence, connect/status API handlers, access session persistence/revocation, connection event recording, connect activity markers, configurable bounded readiness polling, approved baseline papercode/CLI descriptors, dynamic agentunnel API-key/route/SSH config and redaction, and local Go/vet evidence are in place. Real hosted agentunnel/papercode/CLI smoke evidence remains Phase 13 release validation. |
+| 9 | agentunnel pre-connect brokering and access descriptors | In progress | Codex | Existing access orchestration and route provisioning remain foundations. The Phase 0 CLI contract supersedes cookie auth and the legacy upload descriptor; bearer sessions, stable environment identity, real papercode mint/exchange/revocation, and the staged-image descriptor remain implementation work. |
 | 10 | Dashboard and CLI API surface hardening | Complete | Codex | Consumer API docs and machine-readable OpenAPI schema are in `docs/api.md` and `docs/openapi.json`; `internal/httpapi/openapi_contract_test.go` asserts schema coverage for registered public paths. Project lists support pagination/filtering/sorting, project updates expose optimistic version concurrency, dashboard usage summary is available, and local `go test ./...` plus `go vet ./...` pass. |
 | 11 | Security, privacy, abuse controls, and secret handling | Not started | TBD | None |
 | 12 | Observability, operations, admin tooling, and runbooks | Not started | TBD | None |
@@ -84,24 +84,13 @@ These decisions are explicit gates. Do not silently choose defaults in code.
    - Implementation rule: values live in config/database catalogs and can change without
      redeploy.
 
-3. agentunnel pre-connect contract:
-   - Gate: before Phase 9 implementation.
-   - Decision needed: exact token/session handoff, response fields, expiry semantics,
-     reconnect semantics, and revocation flow.
-   - Implementation rule: traffic still stays out of `paperboat-server`.
-
-4. papercode AccessEndpoint wiring:
-   - Gate: before Phase 9 end-to-end tests.
-   - Decision needed: how papercode desktop/mobile/web receives Paperboat access metadata
-     and authenticates through agentunnel.
-
-5. Custom Fly machine shapes:
+3. Custom Fly machine shapes:
    - Gate: before exposing custom-shape API fields.
    - Decision needed: whether custom user-defined shapes ship in first production release.
    - Implementation rule: fixed catalog must be schema-compatible with future custom
      shapes, even if custom creation is disabled.
 
-6. Dashboard catalog reads:
+4. Dashboard catalog reads:
    - Gate: before enabling dashboard project creation and plan checkout.
    - TODO: expose the contracted `GET /api/catalog/plans`, `GET /api/catalog/machine-types`,
      `GET /api/catalog/presets`, `GET /api/catalog/idle-timeouts`, and
@@ -320,16 +309,18 @@ Tasks:
 Acceptance criteria:
 
 - [x] No unresolved `USERSTORY.md` open question blocks Phase 1-13 implementation.
-- [ ] API endpoint list and JSON schemas are approved for dashboard and CLI consumers.
-- [ ] agentunnel/papercode handoff is approved in writing.
+- [x] API endpoint list and JSON schemas are approved for dashboard and CLI consumers.
+- [x] agentunnel/papercode handoff is approved in writing.
 - [x] Billing catalog and product IDs are defined as dynamic seed data.
 
 Evidence:
 
 - Decision log: `docs/contracts/decisions.md`
-- Approved contract docs: implemented baseline in `docs/contracts/`; pending final
-  cross-project sign-off.
-- Review links: pending dashboard, agentunnel, papercode, and CLI sign-off links.
+- Approved contract docs: `docs/contracts/cli-authorization.md`,
+  `docs/contracts/access-handoff.md`, `docs/openapi.json`, dashboard
+  `docs/cli-device-authorization.md`, papercode `docs/cloud/environment-auth.md`,
+  agentunnel `docs/paperboat-integration.md`, and CLI integration plan/fixtures.
+- Immutable commit links are pending until the cross-repo changes are committed.
 
 ## Phase 1: Repository Foundation and Service Skeleton
 
@@ -737,9 +728,10 @@ Evidence:
   passed, covering papercode descriptor/session/event creation, payment-required guard
   before provider side effects, wrong-owner denial event recording, preview URL metadata
   persistence, local access-session revocation, and provider cleanup actions on stop/delete.
-- Descriptor examples: approved baseline shapes are implemented in `internal/agentunnel`
-  and match `docs/contracts/access-handoff.md`; hosted papercode/CLI smoke proof remains
-  Phase 13 release validation.
+- Descriptor examples: `docs/contracts/access-handoff.md` is the frozen target. Existing
+  `internal/agentunnel` descriptor code still implements the superseded upload/auth shape
+  and must be reconciled during the CLI integration implementation; hosted smoke proof
+  remains Phase 13 release validation.
 - Denial event examples: `connection_events` records `project_not_found`,
   `invalid_project_state`, `credits_exhausted`, `start_failed`, `tunnel_unavailable`, and
   `tunnel_not_ready` denial reasons; local revocation tests verify `access_sessions.state`

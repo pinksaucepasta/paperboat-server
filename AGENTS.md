@@ -43,8 +43,10 @@ and orchestrates; agentunnel and the papercode server on each VM do the live wor
   the user's **private config repo**. (The config *sync* itself runs as a daemon on the VM;
   the server sets up the repo and credentials.)
 - **Agent-access pre-connect** — perform auth/authorization/brokering checks before a
-  papercode/paperboat-cli client connects to a VM through agentunnel. Confirm the exact
-  hand-off with agentunnel; do not duplicate its tunneling logic.
+  papercode/paperboat-cli client connects to a VM through agentunnel. This includes
+  ownership/entitlement/credit checks, Fly resume/readiness, stable agentunnel route
+  reconciliation, scoped papercode credential minting, descriptor issuance, and downstream
+  revocation. Do not duplicate agentunnel forwarding or proxy terminal/upload bytes.
 
 ---
 
@@ -95,8 +97,6 @@ go test ./...   # add -race when touching concurrent/orchestration code
 - **Persistence.** DB choice for users/plans/projects/machines/usage. Default lean:
   SQLite-first to match agentunnel, moving to Postgres only if multi-node scale demands it —
   confirm before committing.
-- **agentunnel hand-off.** The precise pre-connect protocol between this server and
-  agentunnel (token issuance, session brokering, reconnect).
 - **Metering source of truth.** How runtime is measured (Fly machine events vs. server-side
   polling) so credits are accurate without trusting the client.
 

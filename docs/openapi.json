@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Paperboat Server API",
-    "version": "0.10.0",
+    "version": "0.11.0",
     "description": "Production control-plane HTTP API for Paperboat dashboard and CLI clients."
   },
   "servers": [
@@ -26,6 +26,16 @@
         "type": "apiKey",
         "in": "header",
         "name": "X-CSRF-Token"
+      },
+      "bearerAccess": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Short-lived scoped Paperboat access token."
+      },
+      "bearerRefresh": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Rotating refresh token accepted only by the refresh endpoint."
       }
     },
     "schemas": {
@@ -62,6 +72,260 @@
           "details": {
             "type": "object",
             "additionalProperties": true
+          }
+        }
+      },
+      "DeviceAuthorizationRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["client_id", "client_label", "device_type", "os", "scopes"],
+        "properties": {
+          "client_id": { "const": "paperboat-cli" },
+          "client_label": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "device_type": { "type": "string", "enum": ["desktop", "server", "container"] },
+          "os": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "scopes": {
+            "type": "array",
+            "minItems": 5,
+            "maxItems": 5,
+            "uniqueItems": true,
+            "items": { "type": "string", "enum": ["account:read", "clients:revoke", "projects:read", "projects:connect", "session:refresh"] }
+          }
+        }
+      },
+      "DeviceAuthorization": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["device_code", "user_code", "verification_uri", "verification_uri_complete", "expires_in", "interval"],
+        "properties": {
+          "device_code": { "type": "string" },
+          "user_code": { "type": "string" },
+          "verification_uri": { "type": "string", "format": "uri" },
+          "verification_uri_complete": { "type": "string", "format": "uri" },
+          "expires_in": { "type": "integer", "minimum": 1 },
+          "interval": { "type": "integer", "minimum": 1 }
+        }
+      },
+      "DeviceTokenRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["client_id", "device_code"],
+        "properties": {
+          "client_id": { "const": "paperboat-cli" },
+          "device_code": { "type": "string", "minLength": 1 }
+        }
+      },
+      "TokenSet": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["access_token", "refresh_token", "token_type", "expires_in", "scope", "client_session_id"],
+        "properties": {
+          "access_token": { "type": "string" },
+          "refresh_token": { "type": "string" },
+          "token_type": { "const": "Bearer" },
+          "expires_in": { "type": "integer", "minimum": 1 },
+          "scope": { "const": "account:read clients:revoke projects:read projects:connect session:refresh" },
+          "client_session_id": { "type": "string" }
+        }
+      },
+      "DeviceRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["user_code", "client_label", "device_type", "os", "scopes", "issued_at", "expires_at", "state"],
+        "properties": {
+          "user_code": { "type": "string" },
+          "client_label": { "type": "string" },
+          "device_type": { "type": "string", "enum": ["desktop", "server", "container"] },
+          "os": { "type": "string" },
+          "scopes": { "type": "array", "minItems": 5, "maxItems": 5, "uniqueItems": true, "items": { "type": "string", "enum": ["account:read", "clients:revoke", "projects:read", "projects:connect", "session:refresh"] } },
+          "issued_at": { "type": "string", "format": "date-time" },
+          "expires_at": { "type": "string", "format": "date-time" },
+          "state": { "type": "string", "enum": ["pending", "approved", "denied", "expired", "consumed"] }
+        }
+      },
+      "CLIConnectDescriptor": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["project_id", "project_state", "connectable", "status", "reason", "retry_after_seconds", "expires_at", "environment", "terminal", "upload"],
+        "properties": {
+          "project_id": { "type": "string" },
+          "project_state": { "type": "string" },
+          "connectable": { "const": true },
+          "status": { "const": "ready" },
+          "reason": { "const": "ready" },
+          "retry_after_seconds": { "const": 0 },
+          "expires_at": { "type": "string", "format": "date-time" },
+          "environment": {
+            "type": "object",
+            "required": ["environment_id", "display_name", "project_root"],
+            "properties": {
+              "environment_id": { "type": "string" },
+              "display_name": { "type": "string" },
+              "project_root": { "type": "string" }
+            }
+          },
+          "terminal": {
+            "type": "object",
+            "required": ["kind", "websocket_base_url", "auth", "thread_id", "terminal_id", "cwd"],
+            "properties": {
+              "kind": { "const": "papercode_websocket" },
+              "websocket_base_url": { "type": "string", "format": "uri", "pattern": "^wss://" },
+              "auth": { "$ref": "#/components/schemas/TerminalAuth" },
+              "thread_id": { "type": "string" },
+              "terminal_id": { "type": "string" },
+              "cwd": { "type": "string" }
+            }
+          },
+          "upload": { "$ref": "#/components/schemas/StagedImageUpload" }
+        }
+      },
+      "TerminalAuth": {
+        "type": "object",
+        "required": ["method", "ticket", "expires_at", "scopes"],
+        "properties": {
+          "method": { "const": "websocket_ticket" },
+          "ticket": { "type": "string" },
+          "expires_at": { "type": "string", "format": "date-time" },
+          "scopes": { "type": "array", "minItems": 1, "maxItems": 1, "prefixItems": [{ "const": "terminal:operate" }], "items": false }
+        }
+      },
+      "StagedImageUpload": {
+        "type": "object",
+        "required": ["kind", "http_base_url", "path", "auth", "max_bytes", "allowed_mime_types", "retention_seconds"],
+        "properties": {
+          "kind": { "const": "papercode_staged_image" },
+          "http_base_url": { "type": "string", "format": "uri", "pattern": "^https://" },
+          "path": { "const": "/api/files/staged-images" },
+          "auth": {
+            "type": "object",
+            "required": ["method", "token", "expires_at", "scopes"],
+            "properties": {
+              "method": { "const": "bearer" },
+              "token": { "type": "string" },
+              "expires_at": { "type": "string", "format": "date-time" },
+              "scopes": { "type": "array", "minItems": 1, "maxItems": 1, "prefixItems": [{ "const": "file:stage" }], "items": false }
+            }
+          },
+          "max_bytes": { "type": "integer", "minimum": 1 },
+          "allowed_mime_types": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^image/" } },
+          "retention_seconds": { "type": "integer", "minimum": 1 }
+        }
+      },
+      "AuthorizedClient": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["client_session_id", "client_id", "client_label", "device_type", "os", "scopes", "state", "created_at", "approved_at", "last_used_at", "revoked_at", "revocation_reason", "current"],
+        "properties": {
+          "client_session_id": { "type": "string" },
+          "client_id": { "const": "paperboat-cli" },
+          "client_label": { "type": "string" },
+          "device_type": { "type": "string", "enum": ["desktop", "server", "container"] },
+          "os": { "type": "string" },
+          "scopes": { "type": "array", "minItems": 5, "maxItems": 5, "uniqueItems": true, "items": { "type": "string", "enum": ["account:read", "clients:revoke", "projects:read", "projects:connect", "session:refresh"] } },
+          "state": { "type": "string", "enum": ["active", "revoked"] },
+          "created_at": { "type": "string", "format": "date-time" },
+          "approved_at": { "type": "string", "format": "date-time" },
+          "last_used_at": { "type": ["string", "null"], "format": "date-time" },
+          "revoked_at": { "type": ["string", "null"], "format": "date-time" },
+          "revocation_reason": { "type": ["string", "null"] },
+          "current": { "type": "boolean" }
+        }
+      },
+      "AuthorizedClientList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["items", "pagination"],
+        "properties": {
+          "items": { "type": "array", "items": { "$ref": "#/components/schemas/AuthorizedClient" } },
+          "pagination": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["limit", "offset", "total", "next_offset"],
+            "properties": {
+              "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
+              "offset": { "type": "integer", "minimum": 0 },
+              "total": { "type": "integer", "minimum": 0 },
+              "next_offset": { "type": ["integer", "null"], "minimum": 0 }
+            }
+          }
+        }
+      },
+      "ConnectionStatus": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["project_id", "project_state", "connectable", "status", "reason", "retry_after_seconds"],
+            "properties": {
+              "project_id": { "type": "string" },
+              "project_state": { "type": "string" },
+              "connectable": { "const": true },
+              "status": { "const": "ready" },
+              "reason": { "const": "ready" },
+              "retry_after_seconds": { "const": 0 }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["project_id", "project_state", "connectable", "status", "reason", "retry_after_seconds"],
+            "properties": {
+              "project_id": { "type": "string" },
+              "project_state": { "type": "string" },
+              "connectable": { "const": false },
+              "status": { "const": "machine_starting" },
+              "reason": { "type": "string", "enum": ["machine_start_queued", "machine_not_running"] },
+              "retry_after_seconds": { "type": "integer", "minimum": 1 }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["project_id", "project_state", "connectable", "status", "reason", "retry_after_seconds"],
+            "properties": {
+              "project_id": { "type": "string" },
+              "project_state": { "type": "string" },
+              "connectable": { "const": false },
+              "status": { "const": "tunnel_connecting" },
+              "reason": { "const": "tunnel_offline" },
+              "retry_after_seconds": { "type": "integer", "minimum": 1 }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["project_id", "project_state", "connectable", "status", "reason", "retry_after_seconds"],
+            "properties": {
+              "project_id": { "type": "string" },
+              "project_state": { "type": "string" },
+              "connectable": { "const": false },
+              "status": { "const": "papercode_starting" },
+              "reason": { "const": "papercode_unhealthy" },
+              "retry_after_seconds": { "type": "integer", "minimum": 1 }
+            }
+          }
+        ]
+      },
+      "JSONWebKeySet": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["keys"],
+        "properties": {
+          "keys": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kty", "crv", "alg", "use", "kid", "x"],
+              "properties": {
+                "kty": { "const": "OKP" },
+                "crv": { "const": "Ed25519" },
+                "alg": { "const": "EdDSA" },
+                "use": { "const": "sig" },
+                "kid": { "type": "string", "minLength": 1 },
+                "x": { "type": "string", "minLength": 1 }
+              }
+            }
           }
         }
       },
@@ -223,6 +487,16 @@
     }
   ],
   "paths": {
+    "/.well-known/jwks.json": {
+      "get": {
+        "summary": "Publish Paperboat mint-signing public keys",
+        "security": [],
+        "responses": {
+          "200": { "description": "Ed25519 JSON Web Key Set.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JSONWebKeySet" } } } },
+          "503": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
     "/healthz": {
       "get": {
         "summary": "Health check",
@@ -245,9 +519,125 @@
     "/api/me": {
       "get": {
         "summary": "Current user and entitlement state",
+        "security": [{ "cookieSession": [] }, { "bearerAccess": [] }],
         "responses": {
           "200": { "description": "Current authenticated user.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
           "401": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/auth/device/authorize": {
+      "post": {
+        "summary": "Create a CLI device authorization grant",
+        "security": [],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DeviceAuthorizationRequest" } } } },
+        "responses": {
+          "200": { "description": "Device grant created.", "headers": { "Cache-Control": { "schema": { "type": "string" } }, "Pragma": { "schema": { "type": "string" } } }, "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessResponse" }], "properties": { "data": { "$ref": "#/components/schemas/DeviceAuthorization" } } } } } },
+          "400": { "$ref": "#/components/responses/Error" },
+          "429": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/auth/device/token": {
+      "post": {
+        "summary": "Poll a CLI device grant",
+        "security": [],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DeviceTokenRequest" } } } },
+        "responses": {
+          "200": { "description": "Device grant consumed and token set issued.", "headers": { "Cache-Control": { "schema": { "type": "string" } }, "Pragma": { "schema": { "type": "string" } } }, "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessResponse" }], "properties": { "data": { "$ref": "#/components/schemas/TokenSet" } } } } } },
+          "400": { "$ref": "#/components/responses/Error" },
+          "429": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/auth/device/requests/{user_code}": {
+      "parameters": [{ "name": "user_code", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "get": {
+        "summary": "Read a pending CLI device request",
+        "security": [{ "cookieSession": [] }],
+        "responses": {
+          "200": { "description": "Device request.", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessResponse" }], "properties": { "data": { "$ref": "#/components/schemas/DeviceRequest" } } } } } },
+          "404": { "$ref": "#/components/responses/Error" },
+          "410": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/auth/device/requests/{user_code}/approve": {
+      "parameters": [{ "name": "user_code", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "post": {
+        "summary": "Approve a CLI device request",
+        "security": [{ "cookieSession": [], "csrfHeader": [] }],
+        "responses": {
+          "200": { "description": "Device request approved.", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessResponse" }], "properties": { "data": { "$ref": "#/components/schemas/DeviceRequest" } } } } } },
+          "404": { "$ref": "#/components/responses/Error" },
+          "409": { "$ref": "#/components/responses/Error" },
+          "410": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/auth/device/requests/{user_code}/deny": {
+      "parameters": [{ "name": "user_code", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "post": {
+        "summary": "Deny a CLI device request",
+        "security": [{ "cookieSession": [], "csrfHeader": [] }],
+        "responses": {
+          "200": { "description": "Device request denied.", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessResponse" }], "properties": { "data": { "$ref": "#/components/schemas/DeviceRequest" } } } } } },
+          "404": { "$ref": "#/components/responses/Error" },
+          "409": { "$ref": "#/components/responses/Error" },
+          "410": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/auth/token/refresh": {
+      "post": {
+        "summary": "Rotate a CLI refresh token",
+        "security": [{ "bearerRefresh": [] }],
+        "responses": {
+          "200": { "description": "Refresh token rotated.", "headers": { "Cache-Control": { "schema": { "type": "string" } }, "Pragma": { "schema": { "type": "string" } } }, "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessResponse" }], "properties": { "data": { "$ref": "#/components/schemas/TokenSet" } } } } } },
+          "401": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/auth/token/revoke": {
+      "post": {
+        "summary": "Revoke a CLI client-session family",
+        "security": [{ "bearerAccess": [] }, { "bearerRefresh": [] }],
+        "responses": {
+          "200": { "description": "Client session revoked or already revoked.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "401": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/auth/clients": {
+      "get": {
+        "summary": "List authorized Paperboat clients",
+        "description": "Cookie authentication requires no bearer scope. Bearer authentication requires account:read.",
+        "security": [{ "cookieSession": [] }, { "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["account:read"],
+        "parameters": [
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 } },
+          { "name": "offset", "in": "query", "schema": { "type": "integer", "minimum": 0, "default": 0 } },
+          { "name": "state", "in": "query", "schema": { "type": "string", "enum": ["active", "revoked"] } }
+        ],
+        "responses": {
+          "200": { "description": "Authorized clients.", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessResponse" }], "properties": { "data": { "$ref": "#/components/schemas/AuthorizedClientList" } } } } } },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/auth/clients/{client_session_id}": {
+      "parameters": [{ "name": "client_session_id", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "delete": {
+        "summary": "Revoke an authorized Paperboat client",
+        "description": "Cookie authentication requires CSRF. Bearer authentication requires clients:revoke.",
+        "security": [{ "cookieSession": [], "csrfHeader": [] }, { "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["clients:revoke"],
+        "responses": {
+          "204": { "description": "Client revoked or already revoked." },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" }
         }
       }
     },
@@ -344,6 +734,9 @@
     "/api/projects": {
       "get": {
         "summary": "List projects",
+        "description": "Cookie authentication requires no bearer scope. Bearer authentication requires projects:read.",
+        "security": [{ "cookieSession": [] }, { "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["projects:read"],
         "parameters": [
           { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 } },
           { "name": "offset", "in": "query", "schema": { "type": "integer", "minimum": 0, "default": 0 } },
@@ -361,7 +754,8 @@
               }
             }
           },
-          "401": { "$ref": "#/components/responses/Error" }
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" }
         }
       },
       "post": {
@@ -425,9 +819,9 @@
     "/api/projects/{project_id}/activity": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "post": { "summary": "Record papercode or CLI activity", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "responses": { "202": { "description": "Activity accepted.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "400": { "$ref": "#/components/responses/Error" } } } },
     "/api/projects/{project_id}/events": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "get": { "summary": "List project events", "responses": { "200": { "description": "Project events.", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessResponse" }], "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/ProjectEvent" } } } } } } }, "404": { "$ref": "#/components/responses/Error" } } } },
     "/api/projects/{project_id}/connect": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "post": { "summary": "Create generic access descriptor", "responses": { "200": { "description": "Access descriptor.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "409": { "$ref": "#/components/responses/Error" } } } },
-    "/api/projects/{project_id}/cli-connect": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "post": { "summary": "Create CLI access descriptor", "responses": { "200": { "description": "CLI descriptor.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "409": { "$ref": "#/components/responses/Error" } } } },
+    "/api/projects/{project_id}/cli-connect": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "post": { "summary": "Create CLI access descriptor", "description": "Bearer authentication requires projects:connect.", "security": [{ "bearerAccess": [] }], "x-required-bearer-scopes": ["projects:connect"], "responses": { "200": { "description": "Fresh CLI descriptor.", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessResponse" }], "properties": { "data": { "$ref": "#/components/schemas/CLIConnectDescriptor" } } } } } }, "202": { "description": "Project is starting; no credentials are returned.", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessResponse" }], "properties": { "data": { "$ref": "#/components/schemas/ConnectionStatus" } } } } } }, "401": { "$ref": "#/components/responses/Error" }, "403": { "$ref": "#/components/responses/Error" }, "404": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" } } } },
     "/api/projects/{project_id}/papercode-connect": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "post": { "summary": "Create papercode access descriptor", "responses": { "200": { "description": "Papercode descriptor.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "409": { "$ref": "#/components/responses/Error" } } } },
-    "/api/projects/{project_id}/connection-status": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "get": { "summary": "Read project connection status", "responses": { "200": { "description": "Connection status.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "404": { "$ref": "#/components/responses/Error" } } } },
+    "/api/projects/{project_id}/connection-status": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "get": { "summary": "Read project connection status without credentials", "description": "Bearer authentication requires projects:connect.", "security": [{ "bearerAccess": [] }], "x-required-bearer-scopes": ["projects:connect"], "responses": { "200": { "description": "Connection status.", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessResponse" }], "properties": { "data": { "$ref": "#/components/schemas/ConnectionStatus" } } } } } }, "401": { "$ref": "#/components/responses/Error" }, "403": { "$ref": "#/components/responses/Error" }, "404": { "$ref": "#/components/responses/Error" } } } },
     "/api/machine/activity-heartbeat": { "post": { "summary": "VM heartbeat callback", "security": [], "responses": { "202": { "description": "Heartbeat accepted.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "400": { "$ref": "#/components/responses/Error" } } } },
     "/api/admin/users/{user_id}/adjust-credits": { "post": { "summary": "Admin credit adjustment", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "parameters": [{ "name": "user_id", "in": "path", "required": true, "schema": { "type": "string" } }, { "$ref": "#/components/parameters/IdempotencyKey" }], "responses": { "200": { "description": "Credit adjustment applied.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "403": { "$ref": "#/components/responses/Error" } } } },
     "/api/admin/users/{user_id}/adjust-storage": { "post": { "summary": "Admin storage adjustment", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "parameters": [{ "name": "user_id", "in": "path", "required": true, "schema": { "type": "string" } }, { "$ref": "#/components/parameters/IdempotencyKey" }], "responses": { "200": { "description": "Storage adjustment applied.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "403": { "$ref": "#/components/responses/Error" } } } }

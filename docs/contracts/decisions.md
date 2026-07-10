@@ -154,7 +154,8 @@ Decision:
 
 - `paperboat-server` authorizes user/project/entitlement state.
 - `paperboat-server` provisions or looks up agentunnel resources.
-- Returned descriptors reference agentunnel-managed SSH/TCP/WebSocket/preview routes.
+- Returned descriptors reference agentunnel-managed HTTP/WebSocket/preview routes. SSH/TCP
+  remains operator/debug access and is not returned to the production CLI.
 - No agentunnel client tokens, API keys, SSH private keys, or raw credentials are
   returned to dashboard, papercode, or CLI clients.
 
@@ -162,11 +163,12 @@ See [access-handoff.md](access-handoff.md).
 
 ### papercode AccessEndpoint
 
-Status: approved baseline, final client field names versioned in `access-handoff.md`.
+Status: Phase 0 frozen; client field names are versioned in `access-handoff.md`.
 
 Decision:
 
-- Paperboat represents hosted project VMs as papercode environments.
+- Paperboat represents each project as one stable papercode environment whose current
+  server runs on that project's VM.
 - Remoteness is expressed as a tunneled `AccessEndpoint`.
 - The final papercode client connection is still HTTP/WebSocket to the per-VM T3 server
   through agentunnel.
@@ -176,15 +178,35 @@ See [access-handoff.md](access-handoff.md).
 
 ### paperboat-cli Descriptor
 
-Status: approved baseline, final credential issuer contract versioned in
-`access-handoff.md`.
+Status: Phase 0 frozen; authorization is versioned in `cli-authorization.md` and the
+descriptor/mint contract in `access-handoff.md`.
 
 Decision:
 
 - CLI asks `paperboat-server` for a project CLI connect descriptor.
-- Descriptor tells CLI how to open the agentunnel-mediated terminal/SSH path and how to
+- Descriptor tells CLI how to open the agentunnel-mediated papercode WebSocket path and how to
   reach the VM papercode server upload endpoint for image paste bridging.
-- CLI reuses papercode auth config; no separate login.
+- CLI uses dashboard-approved device authorization and its own revocable Paperboat client
+  session. It never synthesizes a browser cookie or treats a papercode token as a Paperboat
+  session.
+- CLI terminal auth is a single-use `terminal:operate` WebSocket ticket. Upload auth is a
+  separate short-lived bearer token scoped to `file:stage`.
+- Paperboat's downstream papercode mint profile is intentionally keyless: its signed proof
+  omits proof-key claims and its bootstrap exchanges omit DPoP. The terminal bearer stays
+  server-side to mint the ticket; only the separately scoped file bearer reaches the CLI.
+
+### Paperboat CLI Device Sessions
+
+Status: Phase 0 frozen in [cli-authorization.md](cli-authorization.md).
+
+Decision:
+
+- WorkOS plus `paperboat-server` is the only Paperboat identity authority.
+- Device grants are explicitly approved or denied through the dashboard and are single-use.
+- Each installation has an independently revocable client-session family with rotating
+  refresh tokens and family revocation on replay.
+- CLI and papercode may share only the documented Paperboat credential profile and OS
+  secure-store references, never private application state.
 
 ### Custom Fly Shapes
 
@@ -198,8 +220,9 @@ and catalog model remain compatible with future custom shapes.
 
 ## Open Blockers
 
-These block marking Phase 0 complete:
+These block release validation, not the Phase 0 wire-contract freeze:
 
-- Final cross-project sign-off links from dashboard, agentunnel, papercode, and CLI owners.
+- Immutable commit links for the approved dashboard, agentunnel, papercode, server, and CLI
+  contract changes.
 - Production environment values for WorkOS, Fly, GitHub, Polar, and public origins must be
   supplied as deployment configuration or catalog seed data before release validation.

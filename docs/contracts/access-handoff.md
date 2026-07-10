@@ -1,6 +1,6 @@
 # Access Handoff Contracts
 
-Status: implemented contract baseline, pending final client field-name sign-off.
+Status: Phase 0 frozen implementation target.
 
 ## Boundary
 
@@ -60,13 +60,16 @@ Purpose:
 
 - Generic access descriptor for dashboard or future clients.
 
-Response data shape:
+Ready response data shape (`200`):
 
 ```json
 {
   "project_id": "prj_...",
   "project_state": "running",
   "connectable": true,
+  "status": "ready",
+  "reason": "ready",
+  "retry_after_seconds": 0,
   "expires_at": "2026-07-05T12:00:00Z",
   "descriptors": []
 }
@@ -78,7 +81,7 @@ Purpose:
 
 - Return a papercode environment registration and tunneled WebSocket endpoint.
 
-Proposed response data shape:
+Frozen response data shape:
 
 ```json
 {
@@ -109,14 +112,15 @@ Proposed response data shape:
 
 Alignment with papercode docs:
 
-- Environment stays one per-VM T3 server.
+- Environment identity stays one per project and is served by the project's current VM-local
+  T3 server.
 - Access is modeled as an `AccessEndpoint`.
 - Client connection remains HTTP/WebSocket.
 - Endpoint reachability is a hint until client connects successfully.
 
 Approved baseline:
 
-- Papercode receives one Paperboat environment per project VM.
+- Papercode receives one stable Paperboat environment per project, served by the current VM.
 - The endpoint is an agentunnel-backed HTTP/WebSocket route to the VM-local T3 server.
 - Field names in this document are versioned contract names until papercode finalizes
   native `AccessEndpoint` naming.
@@ -134,21 +138,24 @@ Purpose:
 - The CLI is a headless papercode terminal client: it attaches over the
   tunneled papercode HTTP/WebSocket route, not over SSH.
 
-Proposed response data shape:
+Frozen ready response data shape:
 
 ```json
 {
   "project_id": "prj_...",
+  "project_state": "running",
   "connectable": true,
+  "status": "ready",
+  "reason": "ready",
+  "retry_after_seconds": 0,
   "expires_at": "2026-07-05T12:00:00Z",
   "environment": {
     "environment_id": "env_...",
     "display_name": "Project name",
-    "project_root": "/workspace"
+    "project_root": "/workspace/project"
   },
   "terminal": {
     "kind": "papercode_websocket",
-    "http_base_url": "https://...",
     "websocket_base_url": "wss://...",
     "auth": {
       "method": "websocket_ticket",
@@ -157,23 +164,44 @@ Proposed response data shape:
       "scopes": ["terminal:operate"]
     },
     "thread_id": "paperboat-cli",
-    "terminal_id": "term-1",
-    "cwd": "/workspace"
+    "terminal_id": "term_...",
+    "cwd": "/workspace/project"
   },
   "upload": {
-    "kind": "papercode_file_upload",
+    "kind": "papercode_staged_image",
     "http_base_url": "https://...",
+    "path": "/api/files/staged-images",
     "auth": {
       "method": "bearer",
       "token": "pat_...",
       "expires_at": "2026-07-05T12:00:00Z",
-      "scopes": ["terminal:operate"]
+      "scopes": ["file:stage"]
     },
     "max_bytes": 10485760,
-    "allowed_mime_types": ["image/png", "image/jpeg", "image/webp"]
+    "allowed_mime_types": ["image/png", "image/jpeg", "image/webp"],
+    "retention_seconds": 604800
   }
 }
 ```
+
+`thread_id` and `terminal_id` are server-authored protocol identifiers, not project or
+machine identities. `expires_at` is no later than any nested credential expiry. Endpoint
+URLs must be HTTPS/WSS agentunnel routes and never contain VM addresses or provider tokens.
+
+Not-ready `cli-connect` responses use HTTP `202`, `connectable: false`, and one of these
+stable statuses:
+
+- `machine_starting` with reason `machine_start_queued` or `machine_not_running`
+- `tunnel_connecting` with reason `tunnel_offline`
+- `papercode_starting` with reason `papercode_unhealthy`
+
+They include `project_id`, `project_state`, `status`, `reason`, and
+`retry_after_seconds`. Every pending combination has `connectable: false` and a positive
+retry interval. The only ready combination is `connectable: true`, `status: ready`,
+`reason: ready`, and `retry_after_seconds: 0`.
+`GET /api/projects/{project_id}/connection-status` reports those
+readiness fields but never returns terminal or upload credentials. Once it reports ready,
+the client calls `cli-connect` again to mint fresh auth material.
 
 Runtime status:
 
@@ -188,12 +216,51 @@ Approved baseline:
 
 - Real-provider `cli-connect` requires a configured papercode credential issuer. Without
   it, the endpoint fails closed with `credential_issuer_unavailable`.
-- Credential method is issuer-defined and short-lived. The server may return only
-  issuer-validated terminal/upload auth metadata.
+- Terminal auth is a single-use WebSocket ticket scoped to `terminal:operate`. Upload auth
+  is a short-lived bearer token scoped only to `file:stage`.
 - Terminal ids are per connect descriptor unless the credential issuer explicitly returns
   stable ids.
 - Upload endpoint path, image size limit, and MIME policy are dynamic credential issuer or
   server configuration values, never CLI constants.
+- The environment id is allocated with the project and is stable across machine stop/start,
+  machine replacement, and route reconciliation. It changes only when the project identity
+  is permanently deleted and recreated.
+
+## Papercode Mint Proof
+
+The production mint request is a compact Ed25519 JWS with `alg=EdDSA`,
+`typ=t3-cloud-mint+jwt`, and a required `kid` published by the Paperboat issuer's JWKS.
+The payload and verification rules are owned by papercode's
+`packages/contracts/src/paperboat.ts` contract:
+
+- Required claims: `iss`, `aud`, `sub`, `jti`, `iat`, `exp`, `environmentId`,
+  `clientSessionId`, `nonce`, and exactly `scope=["environment:connect"]`.
+- `iss` is the normalized Paperboat server issuer, `aud` is
+  `t3-env:<environmentId>`, and `sub` is the linked Paperboat owner id.
+- The Paperboat profile intentionally omits `clientProofKeyThumbprint` and `cnf`. Neither
+  the CLI nor `paperboat-server` generates, registers, or owns a downstream proof key.
+- Maximum proof lifetime is 300 seconds and maximum accepted clock skew is 60 seconds.
+- `jti` and `nonce` are atomically single-use and retained through expiry plus clock skew.
+- JWKS caching follows HTTP cache policy. An unknown `kid` triggers one refresh. Old keys
+  work only during the configured overlap while still published; unknown or unavailable
+  keys fail closed.
+- Every issued papercode session id is recorded against the Paperboat client session so
+  logout, entitlement loss, project suspension/deletion, account suspension, and refresh
+  replay can revoke downstream access.
+- `cli-connect` performs two independent mint/exchange flows: one session requests exactly
+  `terminal:operate` and produces the WebSocket ticket; the other requests exactly
+  `file:stage` and supplies the upload bearer. A bootstrap credential is never reused, and
+  both downstream session ids are recorded for revocation.
+- Papercode creates both pairing grants without a proof-key thumbprint. `paperboat-server`
+  exchanges each bootstrap credential without a DPoP header, so papercode issues scoped
+  bearer sessions. The terminal bearer remains server-side and is used only to mint the
+  single-use WebSocket ticket; the short-lived file bearer is the only access token returned
+  to the CLI. Papercode's separate proof-bound pairing profile remains DPoP-only.
+
+The normalized Paperboat issuer publishes `GET /.well-known/jwks.json`. It is
+unauthenticated and returns public signing keys with `kty=OKP`, `crv=Ed25519`, `alg=EdDSA`,
+`use=sig`, `kid`, and `x`. Cache lifetime and rotation overlap are dynamic configuration.
+Private key material is never exposed or stored in VM configuration.
 
 ## `POST /api/projects/{project_id}/activity`
 
