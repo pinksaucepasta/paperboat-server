@@ -76,6 +76,9 @@ type CLIAuth struct {
 	NetworkRequestsPerMinute int           `json:"network_requests_per_minute"`
 	GrantPollsPerMinute      int           `json:"grant_polls_per_minute"`
 	AccountActionsPerMinute  int           `json:"account_actions_per_minute"`
+	MintActiveKeyID          string        `json:"mint_active_key_id"`
+	MintJWKSMaxAge           time.Duration `json:"mint_jwks_max_age"`
+	MintProofLifetime        time.Duration `json:"mint_proof_lifetime"`
 }
 
 type GitHub struct {
@@ -139,6 +142,7 @@ type Secrets struct {
 	AgentunnelAPIKey       string   `json:"agentunnel_api_key"`
 	AgentunnelMachineToken string   `json:"agentunnel_machine_token"`
 	MachineActivityToken   string   `json:"machine_activity_token"`
+	MintSigningKeys        []string `json:"mint_signing_keys"`
 }
 
 type LoadOptions struct {
@@ -213,6 +217,8 @@ func Default() Config {
 			NetworkRequestsPerMinute: 30,
 			GrantPollsPerMinute:      30,
 			AccountActionsPerMinute:  30,
+			MintJWKSMaxAge:           5 * time.Minute,
+			MintProofLifetime:        2 * time.Minute,
 		},
 		Providers: Providers{
 			FakeMode: true,
@@ -312,6 +318,12 @@ func (c Config) Validate() error {
 	if c.CLIAuth.MaxClientLabelLength <= 0 || c.CLIAuth.NetworkRequestsPerMinute <= 0 || c.CLIAuth.GrantPollsPerMinute <= 0 || c.CLIAuth.AccountActionsPerMinute <= 0 {
 		errs = append(errs, fmt.Errorf("cli_auth limits must be positive"))
 	}
+	if c.CLIAuth.MintJWKSMaxAge <= 0 {
+		errs = append(errs, fmt.Errorf("cli_auth.mint_jwks_max_age must be positive"))
+	}
+	if c.CLIAuth.MintProofLifetime <= 0 || c.CLIAuth.MintProofLifetime > 5*time.Minute {
+		errs = append(errs, fmt.Errorf("cli_auth.mint_proof_lifetime must be positive and at most five minutes"))
+	}
 	switch c.Providers.Agentunnel.MachineMode {
 	case "required", "optional":
 	default:
@@ -374,6 +386,9 @@ func (c Config) Validate() error {
 		if c.Secrets.WorkOSAPIKey == "" || c.Secrets.WorkOSClientID == "" || c.Secrets.WorkOSClientSecret == "" || c.Secrets.PolarAPIKey == "" || c.Secrets.PolarWebhookSecret == "" || c.Secrets.GitHubClientID == "" || c.Secrets.GitHubClientSecret == "" || c.Secrets.FlyAPIToken == "" || c.Secrets.AgentunnelAPIKey == "" {
 			errs = append(errs, fmt.Errorf("production provider secrets are required"))
 		}
+		if strings.TrimSpace(c.CLIAuth.MintActiveKeyID) == "" || len(c.Secrets.MintSigningKeys) == 0 {
+			errs = append(errs, fmt.Errorf("production mint active key id and signing keys are required"))
+		}
 		for _, secret := range append(c.Secrets.SessionKeys, c.Secrets.EncryptionKey) {
 			if strings.Contains(secret, "development") || len(secret) < 32 {
 				errs = append(errs, fmt.Errorf("production secrets must be strong and non-development"))
@@ -412,6 +427,7 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_CATALOG_SEED_FILE", &c.Catalogs.SeedFile)
 	setString("PAPERBOAT_CLI_VERIFICATION_URL", &c.CLIAuth.VerificationURL)
 	setString("PAPERBOAT_CLI_CLIENT_ID", &c.CLIAuth.ClientID)
+	setString("PAPERBOAT_MINT_ACTIVE_KEY_ID", &c.CLIAuth.MintActiveKeyID)
 	setString("PAPERBOAT_GITHUB_OAUTH_AUTHORIZE_URL", &c.GitHub.OAuthAuthorizeURL)
 	setString("PAPERBOAT_GITHUB_OAUTH_TOKEN_URL", &c.GitHub.OAuthTokenURL)
 	setString("PAPERBOAT_GITHUB_CONFIG_REPO_NAME", &c.GitHub.ConfigRepoName)
@@ -450,6 +466,8 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 		"PAPERBOAT_CLI_ACCESS_TOKEN_LIFETIME":  &c.CLIAuth.AccessTokenLifetime,
 		"PAPERBOAT_CLI_REFRESH_TOKEN_LIFETIME": &c.CLIAuth.RefreshTokenLifetime,
 		"PAPERBOAT_CLI_POLL_INTERVAL":          &c.CLIAuth.PollInterval,
+		"PAPERBOAT_MINT_JWKS_MAX_AGE":          &c.CLIAuth.MintJWKSMaxAge,
+		"PAPERBOAT_MINT_PROOF_LIFETIME":        &c.CLIAuth.MintProofLifetime,
 	} {
 		if v, ok := lookup(name); ok {
 			parsed, err := time.ParseDuration(v)
@@ -594,6 +612,16 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	}
 	if v, ok := lookup("PAPERBOAT_SESSION_KEYS"); ok {
 		c.Secrets.SessionKeys = splitCSV(v)
+	}
+	if v, ok := lookup("PAPERBOAT_MINT_SIGNING_KEYS"); ok {
+		c.Secrets.MintSigningKeys = splitCSV(v)
+	}
+	if path, ok := lookup("PAPERBOAT_MINT_SIGNING_KEYS_FILE"); ok {
+		b, err := readFile(path)
+		if err != nil {
+			return fmt.Errorf("read PAPERBOAT_MINT_SIGNING_KEYS_FILE: %w", err)
+		}
+		c.Secrets.MintSigningKeys = splitCSV(string(b))
 	}
 	if path, ok := lookup("PAPERBOAT_SESSION_KEYS_FILE"); ok {
 		b, err := readFile(path)

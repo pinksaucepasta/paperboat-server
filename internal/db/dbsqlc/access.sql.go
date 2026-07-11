@@ -10,22 +10,26 @@ import (
 	"database/sql"
 	"encoding/json"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 const createAccessSession = `-- name: CreateAccessSession :exec
-INSERT INTO access_sessions (id,user_id,project_id,client_session_id,session_type,state,descriptor,expires_at,idempotency_key)
-VALUES ($1,$2,$3,nullif($4,''),$5,'active',$6::jsonb,$7,$8)
+INSERT INTO access_sessions (id,user_id,project_id,client_session_id,papercode_terminal_session_id,papercode_file_session_id,session_type,state,descriptor,expires_at,idempotency_key)
+VALUES ($1,$2,$3,nullif($4,''),nullif($5,''),nullif($6,''),$7,'active',$8::jsonb,$9,$10)
 `
 
 type CreateAccessSessionParams struct {
-	ID              string
-	UserID          string
-	ProjectID       string
-	ClientSessionID interface{}
-	SessionType     string
-	Descriptor      json.RawMessage
-	ExpiresAt       time.Time
-	IdempotencyKey  string
+	ID                         string
+	UserID                     string
+	ProjectID                  string
+	ClientSessionID            interface{}
+	PapercodeTerminalSessionID interface{}
+	PapercodeFileSessionID     interface{}
+	SessionType                string
+	Descriptor                 json.RawMessage
+	ExpiresAt                  time.Time
+	IdempotencyKey             string
 }
 
 func (q *Queries) CreateAccessSession(ctx context.Context, arg CreateAccessSessionParams) error {
@@ -34,10 +38,41 @@ func (q *Queries) CreateAccessSession(ctx context.Context, arg CreateAccessSessi
 		arg.UserID,
 		arg.ProjectID,
 		arg.ClientSessionID,
+		arg.PapercodeTerminalSessionID,
+		arg.PapercodeFileSessionID,
 		arg.SessionType,
 		arg.Descriptor,
 		arg.ExpiresAt,
 		arg.IdempotencyKey,
+	)
+	return err
+}
+
+const createPapercodeRevocationOutbox = `-- name: CreatePapercodeRevocationOutbox :exec
+INSERT INTO papercode_revocation_outbox
+(id,user_id,project_id,client_session_id,http_base_url,session_ids,reason)
+VALUES ($1,$2,$3,$4,$5,$6,$7)
+`
+
+type CreatePapercodeRevocationOutboxParams struct {
+	ID              string
+	UserID          string
+	ProjectID       string
+	ClientSessionID string
+	HttpBaseUrl     string
+	SessionIds      []string
+	Reason          string
+}
+
+func (q *Queries) CreatePapercodeRevocationOutbox(ctx context.Context, arg CreatePapercodeRevocationOutboxParams) error {
+	_, err := q.db.ExecContext(ctx, createPapercodeRevocationOutbox,
+		arg.ID,
+		arg.UserID,
+		arg.ProjectID,
+		arg.ClientSessionID,
+		arg.HttpBaseUrl,
+		pq.Array(arg.SessionIds),
+		arg.Reason,
 	)
 	return err
 }
@@ -107,6 +142,354 @@ func (q *Queries) HasConnectCredits(ctx context.Context, arg HasConnectCreditsPa
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const listClientPapercodeSessions = `-- name: ListClientPapercodeSessions :many
+SELECT user_id,project_id,coalesce(client_session_id,'') AS client_session_id,
+coalesce(papercode_terminal_session_id,'') AS papercode_terminal_session_id,
+coalesce(papercode_file_session_id,'') AS papercode_file_session_id,
+coalesce(descriptor #>> '{terminal,http_base_url}','') AS http_base_url
+FROM access_sessions WHERE client_session_id=$1
+AND (papercode_terminal_session_id IS NOT NULL OR papercode_file_session_id IS NOT NULL)
+`
+
+type ListClientPapercodeSessionsRow struct {
+	UserID                     string
+	ProjectID                  string
+	ClientSessionID            string
+	PapercodeTerminalSessionID string
+	PapercodeFileSessionID     string
+	HttpBaseUrl                interface{}
+}
+
+func (q *Queries) ListClientPapercodeSessions(ctx context.Context, clientSessionID sql.NullString) ([]ListClientPapercodeSessionsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listClientPapercodeSessions, clientSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListClientPapercodeSessionsRow
+	for rows.Next() {
+		var i ListClientPapercodeSessionsRow
+		if err := rows.Scan(
+			&i.UserID,
+			&i.ProjectID,
+			&i.ClientSessionID,
+			&i.PapercodeTerminalSessionID,
+			&i.PapercodeFileSessionID,
+			&i.HttpBaseUrl,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPendingAgentunnelCleanupOutbox = `-- name: ListPendingAgentunnelCleanupOutbox :many
+SELECT id,project_id,action,reason FROM agentunnel_cleanup_outbox
+WHERE propagated_at IS NULL ORDER BY created_at,id
+`
+
+type ListPendingAgentunnelCleanupOutboxRow struct {
+	ID        string
+	ProjectID string
+	Action    string
+	Reason    string
+}
+
+func (q *Queries) ListPendingAgentunnelCleanupOutbox(ctx context.Context) ([]ListPendingAgentunnelCleanupOutboxRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPendingAgentunnelCleanupOutbox)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPendingAgentunnelCleanupOutboxRow
+	for rows.Next() {
+		var i ListPendingAgentunnelCleanupOutboxRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.Action,
+			&i.Reason,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPendingPapercodeRevocationOutbox = `-- name: ListPendingPapercodeRevocationOutbox :many
+SELECT id,user_id,project_id,client_session_id,http_base_url,session_ids,reason
+FROM papercode_revocation_outbox
+WHERE propagated_at IS NULL
+ORDER BY created_at,id
+`
+
+type ListPendingPapercodeRevocationOutboxRow struct {
+	ID              string
+	UserID          string
+	ProjectID       string
+	ClientSessionID string
+	HttpBaseUrl     string
+	SessionIds      []string
+	Reason          string
+}
+
+func (q *Queries) ListPendingPapercodeRevocationOutbox(ctx context.Context) ([]ListPendingPapercodeRevocationOutboxRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPendingPapercodeRevocationOutbox)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPendingPapercodeRevocationOutboxRow
+	for rows.Next() {
+		var i ListPendingPapercodeRevocationOutboxRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.ProjectID,
+			&i.ClientSessionID,
+			&i.HttpBaseUrl,
+			pq.Array(&i.SessionIds),
+			&i.Reason,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPendingPapercodeRevocations = `-- name: ListPendingPapercodeRevocations :many
+SELECT id,user_id,project_id,coalesce(client_session_id,'') AS client_session_id,
+coalesce(papercode_terminal_session_id,'') AS papercode_terminal_session_id,
+coalesce(papercode_file_session_id,'') AS papercode_file_session_id,
+coalesce(descriptor #>> '{terminal,http_base_url}','') AS http_base_url,
+coalesce(descriptor->>'revocation_reason','revoked') AS reason
+FROM access_sessions WHERE state='revoked' AND papercode_revoked_at IS NULL
+AND (papercode_terminal_session_id IS NOT NULL OR papercode_file_session_id IS NOT NULL)
+`
+
+type ListPendingPapercodeRevocationsRow struct {
+	ID                         string
+	UserID                     string
+	ProjectID                  string
+	ClientSessionID            string
+	PapercodeTerminalSessionID string
+	PapercodeFileSessionID     string
+	HttpBaseUrl                interface{}
+	Reason                     interface{}
+}
+
+func (q *Queries) ListPendingPapercodeRevocations(ctx context.Context) ([]ListPendingPapercodeRevocationsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPendingPapercodeRevocations)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPendingPapercodeRevocationsRow
+	for rows.Next() {
+		var i ListPendingPapercodeRevocationsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.ProjectID,
+			&i.ClientSessionID,
+			&i.PapercodeTerminalSessionID,
+			&i.PapercodeFileSessionID,
+			&i.HttpBaseUrl,
+			&i.Reason,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProjectPapercodeSessions = `-- name: ListProjectPapercodeSessions :many
+SELECT user_id,project_id,coalesce(client_session_id,'') AS client_session_id,
+coalesce(papercode_terminal_session_id,'') AS papercode_terminal_session_id,
+coalesce(papercode_file_session_id,'') AS papercode_file_session_id,
+coalesce(descriptor #>> '{terminal,http_base_url}','') AS http_base_url
+FROM access_sessions WHERE project_id=$1
+AND (papercode_terminal_session_id IS NOT NULL OR papercode_file_session_id IS NOT NULL)
+`
+
+type ListProjectPapercodeSessionsRow struct {
+	UserID                     string
+	ProjectID                  string
+	ClientSessionID            string
+	PapercodeTerminalSessionID string
+	PapercodeFileSessionID     string
+	HttpBaseUrl                interface{}
+}
+
+func (q *Queries) ListProjectPapercodeSessions(ctx context.Context, projectID string) ([]ListProjectPapercodeSessionsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listProjectPapercodeSessions, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListProjectPapercodeSessionsRow
+	for rows.Next() {
+		var i ListProjectPapercodeSessionsRow
+		if err := rows.Scan(
+			&i.UserID,
+			&i.ProjectID,
+			&i.ClientSessionID,
+			&i.PapercodeTerminalSessionID,
+			&i.PapercodeFileSessionID,
+			&i.HttpBaseUrl,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUserPapercodeSessions = `-- name: ListUserPapercodeSessions :many
+SELECT user_id,project_id,coalesce(client_session_id,'') AS client_session_id,
+coalesce(papercode_terminal_session_id,'') AS papercode_terminal_session_id,
+coalesce(papercode_file_session_id,'') AS papercode_file_session_id,
+coalesce(descriptor #>> '{terminal,http_base_url}','') AS http_base_url
+FROM access_sessions WHERE user_id=$1
+AND (papercode_terminal_session_id IS NOT NULL OR papercode_file_session_id IS NOT NULL)
+`
+
+type ListUserPapercodeSessionsRow struct {
+	UserID                     string
+	ProjectID                  string
+	ClientSessionID            string
+	PapercodeTerminalSessionID string
+	PapercodeFileSessionID     string
+	HttpBaseUrl                interface{}
+}
+
+func (q *Queries) ListUserPapercodeSessions(ctx context.Context, userID string) ([]ListUserPapercodeSessionsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listUserPapercodeSessions, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListUserPapercodeSessionsRow
+	for rows.Next() {
+		var i ListUserPapercodeSessionsRow
+		if err := rows.Scan(
+			&i.UserID,
+			&i.ProjectID,
+			&i.ClientSessionID,
+			&i.PapercodeTerminalSessionID,
+			&i.PapercodeFileSessionID,
+			&i.HttpBaseUrl,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markAccessSessionPapercodeRevocationPropagated = `-- name: MarkAccessSessionPapercodeRevocationPropagated :exec
+UPDATE access_sessions SET papercode_revoked_at=now(),updated_at=now()
+WHERE id=$1 AND state='revoked' AND papercode_revoked_at IS NULL
+`
+
+func (q *Queries) MarkAccessSessionPapercodeRevocationPropagated(ctx context.Context, id string) error {
+	_, err := q.db.ExecContext(ctx, markAccessSessionPapercodeRevocationPropagated, id)
+	return err
+}
+
+const markAgentunnelCleanupOutboxPropagated = `-- name: MarkAgentunnelCleanupOutboxPropagated :exec
+UPDATE agentunnel_cleanup_outbox SET propagated_at=now(),updated_at=now()
+WHERE project_id=$1 AND propagated_at IS NULL
+`
+
+func (q *Queries) MarkAgentunnelCleanupOutboxPropagated(ctx context.Context, projectID string) error {
+	_, err := q.db.ExecContext(ctx, markAgentunnelCleanupOutboxPropagated, projectID)
+	return err
+}
+
+const markClientPapercodeRevocationPropagated = `-- name: MarkClientPapercodeRevocationPropagated :exec
+UPDATE access_sessions SET papercode_revoked_at=now(),updated_at=now()
+WHERE client_session_id=$1 AND state='revoked' AND papercode_revoked_at IS NULL
+AND (papercode_terminal_session_id IS NOT NULL OR papercode_file_session_id IS NOT NULL)
+`
+
+func (q *Queries) MarkClientPapercodeRevocationPropagated(ctx context.Context, clientSessionID sql.NullString) error {
+	_, err := q.db.ExecContext(ctx, markClientPapercodeRevocationPropagated, clientSessionID)
+	return err
+}
+
+const markPapercodeRevocationOutboxPropagated = `-- name: MarkPapercodeRevocationOutboxPropagated :exec
+UPDATE papercode_revocation_outbox SET propagated_at=now(),updated_at=now()
+WHERE id=$1 AND propagated_at IS NULL
+`
+
+func (q *Queries) MarkPapercodeRevocationOutboxPropagated(ctx context.Context, id string) error {
+	_, err := q.db.ExecContext(ctx, markPapercodeRevocationOutboxPropagated, id)
+	return err
+}
+
+const markProjectPapercodeRevocationPropagated = `-- name: MarkProjectPapercodeRevocationPropagated :exec
+UPDATE access_sessions SET papercode_revoked_at=now(),updated_at=now()
+WHERE project_id=$1 AND state='revoked' AND papercode_revoked_at IS NULL
+AND (papercode_terminal_session_id IS NOT NULL OR papercode_file_session_id IS NOT NULL)
+`
+
+func (q *Queries) MarkProjectPapercodeRevocationPropagated(ctx context.Context, projectID string) error {
+	_, err := q.db.ExecContext(ctx, markProjectPapercodeRevocationPropagated, projectID)
+	return err
+}
+
+const markUserPapercodeRevocationPropagated = `-- name: MarkUserPapercodeRevocationPropagated :exec
+UPDATE access_sessions SET papercode_revoked_at=now(),updated_at=now()
+WHERE user_id=$1 AND state='revoked' AND papercode_revoked_at IS NULL
+AND (papercode_terminal_session_id IS NOT NULL OR papercode_file_session_id IS NOT NULL)
+`
+
+func (q *Queries) MarkUserPapercodeRevocationPropagated(ctx context.Context, userID string) error {
+	_, err := q.db.ExecContext(ctx, markUserPapercodeRevocationPropagated, userID)
+	return err
 }
 
 const recordConnectionEvent = `-- name: RecordConnectionEvent :exec
@@ -182,6 +565,30 @@ type RevokeUserAccessSessionsParams struct {
 
 func (q *Queries) RevokeUserAccessSessions(ctx context.Context, arg RevokeUserAccessSessionsParams) error {
 	_, err := q.db.ExecContext(ctx, revokeUserAccessSessions, arg.Reason, arg.UserID)
+	return err
+}
+
+const upsertAgentunnelCleanupOutbox = `-- name: UpsertAgentunnelCleanupOutbox :exec
+INSERT INTO agentunnel_cleanup_outbox (id,project_id,action,reason)
+VALUES ($1,$2,$3,$4)
+ON CONFLICT (project_id) DO UPDATE SET action=EXCLUDED.action,reason=EXCLUDED.reason,
+propagated_at=NULL,updated_at=now()
+`
+
+type UpsertAgentunnelCleanupOutboxParams struct {
+	ID        string
+	ProjectID string
+	Action    string
+	Reason    string
+}
+
+func (q *Queries) UpsertAgentunnelCleanupOutbox(ctx context.Context, arg UpsertAgentunnelCleanupOutboxParams) error {
+	_, err := q.db.ExecContext(ctx, upsertAgentunnelCleanupOutbox,
+		arg.ID,
+		arg.ProjectID,
+		arg.Action,
+		arg.Reason,
+	)
 	return err
 }
 

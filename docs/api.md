@@ -124,10 +124,11 @@ are not accepted as CLI identity. CLI project APIs require scoped Paperboat bear
 Dashboard `POST /api/auth/logout` revokes only the current browser session; CLI family
 logout uses `POST /api/auth/token/revoke`. Account suspension and administrative account
 revocation revoke all authorized CLI clients.
-Client revocation also marks linked Paperboat access-session records revoked. Actual
-papercode terminal/file bearer invalidation is deferred to the signed control-plane
-revocation contract in CLI integration Phase 4; downstream credentials otherwise expire at
-their configured short lifetime.
+Client revocation also marks linked Paperboat access-session records revoked and those
+records now retain papercode terminal/file session IDs. Signed bearer invalidation is
+implemented for client, user, project, and metering/entitlement enforcement. Enforcement
+uses a durable delivery marker and retries failed downstream propagation. Downstream
+credentials otherwise expire at their configured short lifetime.
 `GET /api/projects` requires `projects:read`. `POST /api/projects/{project_id}/cli-connect`
 and `GET /api/projects/{project_id}/connection-status` require `projects:connect`.
 

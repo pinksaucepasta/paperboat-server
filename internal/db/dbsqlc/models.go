@@ -11,19 +11,32 @@ import (
 )
 
 type AccessSession struct {
-	ID              string
-	UserID          string
-	ProjectID       string
-	SessionType     string
-	State           string
-	Descriptor      json.RawMessage
-	ExpiresAt       time.Time
-	RevokedAt       sql.NullTime
-	IdempotencyKey  string
-	Version         int64
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-	ClientSessionID sql.NullString
+	ID                         string
+	UserID                     string
+	ProjectID                  string
+	SessionType                string
+	State                      string
+	Descriptor                 json.RawMessage
+	ExpiresAt                  time.Time
+	RevokedAt                  sql.NullTime
+	IdempotencyKey             string
+	Version                    int64
+	CreatedAt                  time.Time
+	UpdatedAt                  time.Time
+	ClientSessionID            sql.NullString
+	PapercodeTerminalSessionID sql.NullString
+	PapercodeFileSessionID     sql.NullString
+	PapercodeRevokedAt         sql.NullTime
+}
+
+type AgentunnelCleanupOutbox struct {
+	ID           string
+	ProjectID    string
+	Action       string
+	Reason       string
+	PropagatedAt sql.NullTime
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 type AgentunnelResource struct {
@@ -324,6 +337,19 @@ type OrchestrationJob struct {
 	Version        int64
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+}
+
+type PapercodeRevocationOutbox struct {
+	ID              string
+	UserID          string
+	ProjectID       string
+	ClientSessionID string
+	HttpBaseUrl     string
+	SessionIds      []string
+	Reason          string
+	PropagatedAt    sql.NullTime
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 type Plan struct {

@@ -593,6 +593,11 @@ func TestProvisionInjectsConfiguredMachineSecrets(t *testing.T) {
 		spec.Env["PAPERBOAT_CONFIG_REPO_BRANCH"] != "main" {
 		t.Fatalf("github config repo env was not injected: %#v", spec.Env)
 	}
+	if spec.Env["PAPERBOAT_PAPERCODE_ENVIRONMENT_ID"] != project.ID ||
+		spec.Env["PAPERBOAT_PAPERCODE_OWNER_ID"] != "usr_orch_secrets" ||
+		spec.Env["PAPERBOAT_PAPERCODE_ISSUER"] != cfg.HTTP.PublicBaseURL {
+		t.Fatalf("papercode trust config was not injected: %#v", spec.Env)
+	}
 	if strings.Contains(fmt.Sprint(spec.Env), "github-config-token") {
 		t.Fatalf("github config token leaked into env: %#v", spec.Env)
 	}

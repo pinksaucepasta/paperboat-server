@@ -51,3 +51,9 @@ func TestRunShutsDownHTTPServerBeforeReturningWorkerError(t *testing.T) {
 		t.Fatalf("server still accepted requests after Run returned")
 	}
 }
+
+func TestNormalizePapercodeIssuer(t *testing.T) {
+	if got := normalizePapercodeIssuer("  https://paperboat.example///  "); got != "https://paperboat.example" {
+		t.Fatalf("normalized issuer = %q", got)
+	}
+}

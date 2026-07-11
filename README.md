@@ -111,6 +111,10 @@ Common environment overrides:
 - `PAPERBOAT_FLY_GITHUB_SECRET`
 - `PAPERBOAT_AGENTUNNEL_API_KEY` or `PAPERBOAT_AGENTUNNEL_API_KEY_FILE`
 - `PAPERBOAT_AGENTUNNEL_MACHINE_TOKEN` or `PAPERBOAT_AGENTUNNEL_MACHINE_TOKEN_FILE`
+- `PAPERBOAT_MINT_ACTIVE_KEY_ID`
+- `PAPERBOAT_MINT_SIGNING_KEYS` or `PAPERBOAT_MINT_SIGNING_KEYS_FILE` as comma-separated
+  `kid:base64url` Ed25519 seeds/private keys. Publish the previous key alongside the active
+  key for the configured `PAPERBOAT_MINT_JWKS_MAX_AGE` rotation overlap.
 
 Fly.io TODO for real-provider smoke testing:
 

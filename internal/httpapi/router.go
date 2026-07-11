@@ -21,6 +21,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
+	"github.com/pinksaucepasta/paperboat-server/internal/mint"
 	"github.com/pinksaucepasta/paperboat-server/internal/observability"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 )
@@ -43,6 +44,7 @@ type Options struct {
 	Projects         *projects.Service
 	Agentunnel       *agentunnel.Service
 	MeteringRepo     *metering.RuntimeRepository
+	MintKeys         *mint.Provider
 	OverrideHandler  http.Handler
 }
 
@@ -57,6 +59,9 @@ func NewRouter(opts Options) http.Handler {
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /healthz", health)
 		mux.HandleFunc("GET /readyz", ready(opts.ReadinessChecker))
+		if opts.MintKeys != nil {
+			mux.Handle("GET /.well-known/jwks.json", opts.MintKeys)
+		}
 		if opts.Auth != nil {
 			registerAuthRoutes(mux, opts)
 		}

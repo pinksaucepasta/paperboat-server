@@ -13,6 +13,7 @@ import (
 	"hash/fnv"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -95,17 +96,33 @@ type TunnelStatus struct {
 type CredentialIssuer interface {
 	CheckCLI(ctx context.Context, input CredentialInput) error
 	IssueCLI(ctx context.Context, input CredentialInput) (CLICredentials, error)
+	RevokeCLI(ctx context.Context, input CredentialRevocationInput) error
+}
+
+type CredentialRevocationInput struct {
+	UserID          string
+	ProjectID       string
+	EnvironmentID   string
+	ClientSessionID string
+	HTTPBaseURL     string
+	SessionIDs      []string
+	Reason          string
 }
 
 type CredentialInput struct {
-	UserID    string
-	ProjectID string
-	ExpiresAt time.Time
+	UserID          string
+	ProjectID       string
+	EnvironmentID   string
+	ClientSessionID string
+	HTTPBaseURL     string
+	ExpiresAt       time.Time
 }
 
 type CLICredentials struct {
-	TerminalAuth map[string]any
-	UploadAuth   map[string]any
+	TerminalAuth      map[string]any
+	UploadAuth        map[string]any
+	TerminalSessionID string
+	FileSessionID     string
 }
 
 type DisabledCredentialIssuer struct{}
@@ -116,6 +133,10 @@ func (DisabledCredentialIssuer) CheckCLI(context.Context, CredentialInput) error
 
 func (DisabledCredentialIssuer) IssueCLI(context.Context, CredentialInput) (CLICredentials, error) {
 	return CLICredentials{}, ErrCredentialIssuerUnavailable
+}
+
+func (DisabledCredentialIssuer) RevokeCLI(context.Context, CredentialRevocationInput) error {
+	return ErrCredentialIssuerUnavailable
 }
 
 type FakeCredentialIssuer struct{}
@@ -141,6 +162,8 @@ func (FakeCredentialIssuer) IssueCLI(_ context.Context, input CredentialInput) (
 		},
 	}, nil
 }
+
+func (FakeCredentialIssuer) RevokeCLI(context.Context, CredentialRevocationInput) error { return nil }
 
 type FakeClient struct {
 	BaseURL string
@@ -691,13 +714,8 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 			_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, "", "denied", "github_config_not_ready", nil)
 			return ConnectResponse{}, err
 		}
-		credentialInput := CredentialInput{UserID: input.UserID, ProjectID: input.ProjectID, ExpiresAt: expires}
+		credentialInput := CredentialInput{UserID: input.UserID, ProjectID: input.ProjectID, EnvironmentID: input.ProjectID, ClientSessionID: input.ClientSessionID, ExpiresAt: expires}
 		if err := s.credentials.CheckCLI(ctx, credentialInput); err != nil {
-			_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, "", "denied", "credential_issuer_unavailable", nil)
-			return ConnectResponse{}, fmt.Errorf("%w: %v", ErrCredentialIssuerUnavailable, err)
-		}
-		credentials, err = s.credentials.IssueCLI(ctx, credentialInput)
-		if err != nil {
 			_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, "", "denied", "credential_issuer_unavailable", nil)
 			return ConnectResponse{}, fmt.Errorf("%w: %v", ErrCredentialIssuerUnavailable, err)
 		}
@@ -754,16 +772,61 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 		_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, "", "denied", "tunnel_not_ready", map[string]any{"status": status.Status, "reason": status.Reason})
 		return response, nil
 	}
+	if input.Kind == ConnectCLI {
+		credentialInput := CredentialInput{
+			UserID: input.UserID, ProjectID: input.ProjectID, EnvironmentID: input.ProjectID,
+			ClientSessionID: input.ClientSessionID, HTTPBaseURL: resource.HTTPBaseURL, ExpiresAt: expires,
+		}
+		credentials, err = s.credentials.IssueCLI(ctx, credentialInput)
+		if err != nil {
+			_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, "", "denied", "credential_issuer_unavailable", nil)
+			var outboxErr error
+			sessionIDs := compactSessionIDs(credentials.TerminalSessionID, credentials.FileSessionID)
+			if len(sessionIDs) > 0 {
+				_, outboxErr = s.repo.CreatePapercodeRevocationOutbox(ctx, CredentialRevocationInput{
+					UserID: input.UserID, ProjectID: input.ProjectID, EnvironmentID: input.ProjectID,
+					ClientSessionID: input.ClientSessionID, HTTPBaseURL: resource.HTTPBaseURL,
+					SessionIDs: sessionIDs, Reason: "partial_credential_issuance_failed",
+				})
+			}
+			return ConnectResponse{}, errors.Join(fmt.Errorf("%w: %v", ErrCredentialIssuerUnavailable, err), outboxErr)
+		}
+	}
 	_ = s.repo.RecordActivity(ctx, input.ProjectID, "agentunnel_connection", map[string]any{"kind": input.Kind, "status": status.Status})
 	response := buildResponse(input.Kind, project, resource, expires, credentials)
-	session, err := s.repo.CreateAccessSession(ctx, input.UserID, input.ProjectID, input.ClientSessionID, string(input.Kind), response, expires)
+	session, err := s.repo.CreateAccessSession(ctx, input.UserID, input.ProjectID, input.ClientSessionID, credentials.TerminalSessionID, credentials.FileSessionID, string(input.Kind), response, expires)
 	if err != nil {
+		if input.Kind == ConnectCLI {
+			revocation := CredentialRevocationInput{
+				UserID: input.UserID, ProjectID: input.ProjectID, EnvironmentID: input.ProjectID,
+				ClientSessionID: input.ClientSessionID, HTTPBaseURL: resource.HTTPBaseURL,
+				SessionIDs: []string{credentials.TerminalSessionID, credentials.FileSessionID},
+				Reason:     "access_session_persistence_failed",
+			}
+			outboxID, outboxErr := s.repo.CreatePapercodeRevocationOutbox(ctx, revocation)
+			cleanupErr := s.credentials.RevokeCLI(ctx, revocation)
+			var markErr error
+			if outboxErr == nil && cleanupErr == nil {
+				markErr = s.repo.MarkPapercodeRevocationOutboxPropagated(ctx, outboxID)
+			}
+			return ConnectResponse{}, errors.Join(err, outboxErr, cleanupErr, markErr)
+		}
 		return ConnectResponse{}, err
 	}
 	_ = s.repo.RecordActivity(ctx, input.ProjectID, "connect_session", map[string]any{"access_session_id": session.ID, "kind": input.Kind})
 	_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, session.ID, "approved", "", map[string]any{"kind": input.Kind, "project_state": project.State})
 	_ = s.audit.Write(ctx, audit.Event{ActorUserID: input.UserID, ActorType: audit.ActorUser, EventType: "access.connect_approved", ResourceType: "project", ResourceID: input.ProjectID, IdempotencyKey: "access.connect_approved:" + session.ID, Metadata: map[string]any{"kind": input.Kind}})
 	return response, nil
+}
+
+func compactSessionIDs(sessionIDs ...string) []string {
+	out := make([]string, 0, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		if sessionID != "" && !slices.Contains(out, sessionID) {
+			out = append(out, sessionID)
+		}
+	}
+	return out
 }
 
 func (s *Service) denyProviderFailure(ctx context.Context, userID, projectID string, err error) error {
@@ -874,26 +937,152 @@ func (s *Service) Status(ctx context.Context, userID, projectID string) (Connect
 }
 
 func (s *Service) RevokeUserSessions(ctx context.Context, userID, reason string) error {
-	return s.repo.RevokeUserAccessSessions(ctx, userID, reason)
+	if err := s.repo.RevokeUserAccessSessions(ctx, userID, reason); err != nil {
+		return err
+	}
+	rows, err := s.repo.UserPapercodeSessions(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if err := s.revokePapercodeSessions(ctx, rows, reason); err != nil {
+		return err
+	}
+	return s.repo.MarkUserPapercodeRevocationPropagated(ctx, userID)
 }
 
 func (s *Service) RevokeClientSessions(ctx context.Context, clientSessionID, reason string) error {
-	return s.repo.RevokeClientAccessSessions(ctx, clientSessionID, reason)
+	if err := s.repo.RevokeClientAccessSessions(ctx, clientSessionID, reason); err != nil {
+		return err
+	}
+	rows, err := s.repo.ClientPapercodeSessions(ctx, clientSessionID)
+	if err != nil {
+		return err
+	}
+	if err := s.revokePapercodeSessions(ctx, rows, reason); err != nil {
+		return err
+	}
+	return s.repo.MarkClientPapercodeRevocationPropagated(ctx, clientSessionID)
 }
 
 func (s *Service) RevokeProjectSessions(ctx context.Context, projectID, reason string) error {
-	if resource, ok, err := s.repo.Resource(ctx, projectID); err != nil {
+	if err := s.repo.RevokeProjectAccessSessions(ctx, projectID, reason); err != nil {
 		return err
+	}
+	var revokeErrors []error
+	papercodePropagated := false
+	rows, err := s.repo.ProjectPapercodeSessions(ctx, projectID)
+	if err != nil {
+		revokeErrors = append(revokeErrors, fmt.Errorf("list project papercode sessions: %w", err))
+	} else if err := s.revokePapercodeSessions(ctx, rows, reason); err != nil {
+		revokeErrors = append(revokeErrors, err)
+	} else {
+		papercodePropagated = true
+	}
+	if resource, ok, err := s.repo.Resource(ctx, projectID); err != nil {
+		revokeErrors = append(revokeErrors, fmt.Errorf("load project tunnel resource: %w", err))
 	} else if ok {
 		action := "suspend"
 		if reason == "project_delete" {
 			action = "close"
 		}
+		outboxErr := s.repo.UpsertAgentunnelCleanupOutbox(ctx, projectID, action, reason)
+		if outboxErr != nil {
+			revokeErrors = append(revokeErrors, fmt.Errorf("persist project tunnel cleanup: %w", outboxErr))
+		}
 		if err := s.client.CleanupProjectResources(ctx, resource, action, reason); err != nil {
-			return err
+			revokeErrors = append(revokeErrors, fmt.Errorf("cleanup project tunnel resources: %w", err))
+		} else if outboxErr == nil {
+			if err := s.repo.MarkAgentunnelCleanupOutboxPropagated(ctx, projectID); err != nil {
+				revokeErrors = append(revokeErrors, fmt.Errorf("mark project tunnel cleanup propagated: %w", err))
+			}
 		}
 	}
-	return s.repo.RevokeProjectAccessSessions(ctx, projectID, reason)
+	if papercodePropagated {
+		if err := s.repo.MarkProjectPapercodeRevocationPropagated(ctx, projectID); err != nil {
+			revokeErrors = append(revokeErrors, fmt.Errorf("mark project papercode revocation propagated: %w", err))
+		}
+	}
+	return errors.Join(revokeErrors...)
+}
+
+func (s *Service) RetryPendingPapercodeRevocations(ctx context.Context) error {
+	var retryErrors []error
+	rows, err := s.repo.PendingPapercodeRevocations(ctx)
+	if err != nil {
+		retryErrors = append(retryErrors, fmt.Errorf("list pending papercode revocations: %w", err))
+	} else {
+		for _, row := range rows {
+			if err := s.revokePapercodeSessions(ctx, []PapercodeSessionLink{row}, row.Reason); err != nil {
+				retryErrors = append(retryErrors, fmt.Errorf("retry access session %s: %w", row.AccessSessionID, err))
+				continue
+			}
+			if err := s.repo.MarkAccessSessionPapercodeRevocationPropagated(ctx, row.AccessSessionID); err != nil {
+				retryErrors = append(retryErrors, fmt.Errorf("mark access session %s revocation propagated: %w", row.AccessSessionID, err))
+			}
+		}
+	}
+	outbox, err := s.repo.PendingPapercodeRevocationOutbox(ctx)
+	if err != nil {
+		retryErrors = append(retryErrors, fmt.Errorf("list orphaned papercode revocations: %w", err))
+	} else {
+		for _, item := range outbox {
+			if err := s.credentials.RevokeCLI(ctx, item.Revocation); err != nil {
+				retryErrors = append(retryErrors, fmt.Errorf("retry orphaned papercode revocation %s: %w", item.ID, err))
+				continue
+			}
+			if err := s.repo.MarkPapercodeRevocationOutboxPropagated(ctx, item.ID); err != nil {
+				retryErrors = append(retryErrors, fmt.Errorf("mark orphaned papercode revocation %s propagated: %w", item.ID, err))
+			}
+		}
+	}
+	tunnelCleanups, err := s.repo.PendingAgentunnelCleanupOutbox(ctx)
+	if err != nil {
+		retryErrors = append(retryErrors, fmt.Errorf("list pending agentunnel cleanup: %w", err))
+	} else {
+		for _, cleanup := range tunnelCleanups {
+			resource, ok, err := s.repo.Resource(ctx, cleanup.ProjectID)
+			if err != nil {
+				retryErrors = append(retryErrors, fmt.Errorf("load tunnel cleanup project %s: %w", cleanup.ProjectID, err))
+				continue
+			}
+			if !ok {
+				retryErrors = append(retryErrors, fmt.Errorf("load tunnel cleanup project %s: resource is missing", cleanup.ProjectID))
+				continue
+			}
+			if err := s.client.CleanupProjectResources(ctx, resource, cleanup.Action, cleanup.Reason); err != nil {
+				retryErrors = append(retryErrors, fmt.Errorf("retry tunnel cleanup project %s: %w", cleanup.ProjectID, err))
+				continue
+			}
+			if err := s.repo.MarkAgentunnelCleanupOutboxPropagated(ctx, cleanup.ProjectID); err != nil {
+				retryErrors = append(retryErrors, fmt.Errorf("mark tunnel cleanup project %s propagated: %w", cleanup.ProjectID, err))
+			}
+		}
+	}
+	return errors.Join(retryErrors...)
+}
+
+func (s *Service) revokePapercodeSessions(ctx context.Context, rows []PapercodeSessionLink, reason string) error {
+	var revokeErrors []error
+	for _, row := range rows {
+		sessionIDs := make([]string, 0, 2)
+		if row.TerminalSessionID != "" {
+			sessionIDs = append(sessionIDs, row.TerminalSessionID)
+		}
+		if row.FileSessionID != "" && row.FileSessionID != row.TerminalSessionID {
+			sessionIDs = append(sessionIDs, row.FileSessionID)
+		}
+		if len(sessionIDs) == 0 {
+			continue
+		}
+		if err := s.credentials.RevokeCLI(ctx, CredentialRevocationInput{
+			UserID: row.UserID, ProjectID: row.ProjectID, EnvironmentID: row.ProjectID,
+			ClientSessionID: row.ClientSessionID, HTTPBaseURL: row.HTTPBaseURL,
+			SessionIDs: sessionIDs, Reason: reason,
+		}); err != nil {
+			revokeErrors = append(revokeErrors, fmt.Errorf("revoke papercode sessions for project %s: %w", row.ProjectID, err))
+		}
+	}
+	return errors.Join(revokeErrors...)
 }
 
 func terminalProjectState(state string) bool {
@@ -1102,6 +1291,28 @@ type AccessSession struct {
 	ID string
 }
 
+type PapercodeSessionLink struct {
+	AccessSessionID   string
+	UserID            string
+	ProjectID         string
+	ClientSessionID   string
+	TerminalSessionID string
+	FileSessionID     string
+	HTTPBaseURL       string
+	Reason            string
+}
+
+type PapercodeRevocationOutboxItem struct {
+	ID         string
+	Revocation CredentialRevocationInput
+}
+
+type AgentunnelCleanupOutboxItem struct {
+	ProjectID string
+	Action    string
+	Reason    string
+}
+
 type Repository struct {
 	db            *db.DB
 	encryptionKey string
@@ -1208,7 +1419,7 @@ func (r *Repository) LatestStopReason(ctx context.Context, projectID string) (st
 	return strings.TrimPrefix(eventType, "project.stop_queued."), true, nil
 }
 
-func (r *Repository) CreateAccessSession(ctx context.Context, userID, projectID, clientSessionID, sessionType string, descriptor ConnectResponse, expiresAt time.Time) (AccessSession, error) {
+func (r *Repository) CreateAccessSession(ctx context.Context, userID, projectID, clientSessionID, terminalSessionID, fileSessionID, sessionType string, descriptor ConnectResponse, expiresAt time.Time) (AccessSession, error) {
 	id := newID("acs")
 	descriptorBytes, err := json.Marshal(descriptor)
 	if err != nil {
@@ -1216,7 +1427,7 @@ func (r *Repository) CreateAccessSession(ctx context.Context, userID, projectID,
 	}
 	key := "access.session:" + id
 	err = r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		return tx.Queries().CreateAccessSession(ctx, dbsqlc.CreateAccessSessionParams{ID: id, UserID: userID, ProjectID: projectID, ClientSessionID: clientSessionID, SessionType: sessionType, Descriptor: descriptorBytes, ExpiresAt: expiresAt, IdempotencyKey: key})
+		return tx.Queries().CreateAccessSession(ctx, dbsqlc.CreateAccessSessionParams{ID: id, UserID: userID, ProjectID: projectID, ClientSessionID: clientSessionID, PapercodeTerminalSessionID: terminalSessionID, PapercodeFileSessionID: fileSessionID, SessionType: sessionType, Descriptor: descriptorBytes, ExpiresAt: expiresAt, IdempotencyKey: key})
 	})
 	return AccessSession{ID: id}, err
 }
@@ -1234,6 +1445,121 @@ func (r *Repository) RevokeUserAccessSessions(ctx context.Context, userID, reaso
 func (r *Repository) RevokeProjectAccessSessions(ctx context.Context, projectID, reason string) error {
 	reason = revocationReason(reason)
 	return r.db.Queries().RevokeProjectAccessSessions(ctx, dbsqlc.RevokeProjectAccessSessionsParams{ProjectID: projectID, Reason: reason})
+}
+
+func (r *Repository) ClientPapercodeSessions(ctx context.Context, clientSessionID string) ([]PapercodeSessionLink, error) {
+	rows, err := r.db.Queries().ListClientPapercodeSessions(ctx, sql.NullString{String: clientSessionID, Valid: true})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PapercodeSessionLink, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, PapercodeSessionLink{UserID: row.UserID, ProjectID: row.ProjectID, ClientSessionID: row.ClientSessionID, TerminalSessionID: row.PapercodeTerminalSessionID, FileSessionID: row.PapercodeFileSessionID, HTTPBaseURL: fmt.Sprint(row.HttpBaseUrl)})
+	}
+	return out, nil
+}
+
+func (r *Repository) UserPapercodeSessions(ctx context.Context, userID string) ([]PapercodeSessionLink, error) {
+	rows, err := r.db.Queries().ListUserPapercodeSessions(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PapercodeSessionLink, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, PapercodeSessionLink{UserID: row.UserID, ProjectID: row.ProjectID, ClientSessionID: row.ClientSessionID, TerminalSessionID: row.PapercodeTerminalSessionID, FileSessionID: row.PapercodeFileSessionID, HTTPBaseURL: fmt.Sprint(row.HttpBaseUrl)})
+	}
+	return out, nil
+}
+
+func (r *Repository) ProjectPapercodeSessions(ctx context.Context, projectID string) ([]PapercodeSessionLink, error) {
+	rows, err := r.db.Queries().ListProjectPapercodeSessions(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PapercodeSessionLink, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, PapercodeSessionLink{UserID: row.UserID, ProjectID: row.ProjectID, ClientSessionID: row.ClientSessionID, TerminalSessionID: row.PapercodeTerminalSessionID, FileSessionID: row.PapercodeFileSessionID, HTTPBaseURL: fmt.Sprint(row.HttpBaseUrl)})
+	}
+	return out, nil
+}
+
+func (r *Repository) MarkClientPapercodeRevocationPropagated(ctx context.Context, clientSessionID string) error {
+	return r.db.Queries().MarkClientPapercodeRevocationPropagated(ctx, sql.NullString{String: clientSessionID, Valid: true})
+}
+
+func (r *Repository) MarkUserPapercodeRevocationPropagated(ctx context.Context, userID string) error {
+	return r.db.Queries().MarkUserPapercodeRevocationPropagated(ctx, userID)
+}
+
+func (r *Repository) MarkProjectPapercodeRevocationPropagated(ctx context.Context, projectID string) error {
+	return r.db.Queries().MarkProjectPapercodeRevocationPropagated(ctx, projectID)
+}
+
+func (r *Repository) PendingPapercodeRevocations(ctx context.Context) ([]PapercodeSessionLink, error) {
+	rows, err := r.db.Queries().ListPendingPapercodeRevocations(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PapercodeSessionLink, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, PapercodeSessionLink{AccessSessionID: row.ID, UserID: row.UserID, ProjectID: row.ProjectID, ClientSessionID: row.ClientSessionID, TerminalSessionID: row.PapercodeTerminalSessionID, FileSessionID: row.PapercodeFileSessionID, HTTPBaseURL: fmt.Sprint(row.HttpBaseUrl), Reason: fmt.Sprint(row.Reason)})
+	}
+	return out, nil
+}
+
+func (r *Repository) MarkAccessSessionPapercodeRevocationPropagated(ctx context.Context, accessSessionID string) error {
+	return r.db.Queries().MarkAccessSessionPapercodeRevocationPropagated(ctx, accessSessionID)
+}
+
+func (r *Repository) CreatePapercodeRevocationOutbox(ctx context.Context, input CredentialRevocationInput) (string, error) {
+	id := newID("pro")
+	err := r.db.Queries().CreatePapercodeRevocationOutbox(ctx, dbsqlc.CreatePapercodeRevocationOutboxParams{
+		ID: id, UserID: input.UserID, ProjectID: input.ProjectID, ClientSessionID: input.ClientSessionID,
+		HttpBaseUrl: input.HTTPBaseURL, SessionIds: input.SessionIDs, Reason: input.Reason,
+	})
+	return id, err
+}
+
+func (r *Repository) PendingPapercodeRevocationOutbox(ctx context.Context) ([]PapercodeRevocationOutboxItem, error) {
+	rows, err := r.db.Queries().ListPendingPapercodeRevocationOutbox(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PapercodeRevocationOutboxItem, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, PapercodeRevocationOutboxItem{ID: row.ID, Revocation: CredentialRevocationInput{
+			UserID: row.UserID, ProjectID: row.ProjectID, EnvironmentID: row.ProjectID,
+			ClientSessionID: row.ClientSessionID, HTTPBaseURL: row.HttpBaseUrl,
+			SessionIDs: row.SessionIds, Reason: row.Reason,
+		}})
+	}
+	return out, nil
+}
+
+func (r *Repository) MarkPapercodeRevocationOutboxPropagated(ctx context.Context, id string) error {
+	return r.db.Queries().MarkPapercodeRevocationOutboxPropagated(ctx, id)
+}
+
+func (r *Repository) UpsertAgentunnelCleanupOutbox(ctx context.Context, projectID, action, reason string) error {
+	return r.db.Queries().UpsertAgentunnelCleanupOutbox(ctx, dbsqlc.UpsertAgentunnelCleanupOutboxParams{
+		ID: newID("aco"), ProjectID: projectID, Action: action, Reason: reason,
+	})
+}
+
+func (r *Repository) PendingAgentunnelCleanupOutbox(ctx context.Context) ([]AgentunnelCleanupOutboxItem, error) {
+	rows, err := r.db.Queries().ListPendingAgentunnelCleanupOutbox(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AgentunnelCleanupOutboxItem, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, AgentunnelCleanupOutboxItem{ProjectID: row.ProjectID, Action: row.Action, Reason: row.Reason})
+	}
+	return out, nil
+}
+
+func (r *Repository) MarkAgentunnelCleanupOutboxPropagated(ctx context.Context, projectID string) error {
+	return r.db.Queries().MarkAgentunnelCleanupOutboxPropagated(ctx, projectID)
 }
 
 func revocationReason(reason string) string {

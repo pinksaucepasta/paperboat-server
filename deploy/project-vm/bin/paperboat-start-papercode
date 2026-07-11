@@ -13,4 +13,26 @@ export T3CODE_HOME="${PAPERBOAT_PAPERCODE_BASE_DIR:-/workspace/.paperboat/paperc
 export T3CODE_NO_BROWSER=1
 export T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD=1
 
+environment_id="${PAPERBOAT_PAPERCODE_ENVIRONMENT_ID:?missing Paperboat papercode environment id}"
+owner_id="${PAPERBOAT_PAPERCODE_OWNER_ID:?missing Paperboat papercode owner id}"
+issuer="${PAPERBOAT_PAPERCODE_ISSUER:?missing Paperboat papercode issuer}"
+state_dir="$T3CODE_HOME/userdata"
+secrets_dir="$state_dir/secrets"
+
+install_value() {
+  local path="$1"
+  local value="$2"
+  local temporary="$path.tmp.$$"
+  umask 077
+  printf '%s\n' "$value" > "$temporary"
+  chmod 600 "$temporary"
+  mv -f "$temporary" "$path"
+}
+
+mkdir -p "$secrets_dir"
+chmod 700 "$state_dir" "$secrets_dir"
+install_value "$state_dir/environment-id" "$environment_id"
+install_value "$secrets_dir/cloud-linked-user-id.bin" "$owner_id"
+install_value "$secrets_dir/cloud-relay-issuer.bin" "$issuer"
+
 exec node /opt/papercode-server/dist/bin.mjs --no-browser "${PAPERBOAT_WORKSPACE:-/workspace}"

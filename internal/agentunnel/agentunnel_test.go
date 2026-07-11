@@ -775,6 +775,42 @@ func TestRecordActivityRejectsUnapprovedSource(t *testing.T) {
 	}
 }
 
+func TestRevokePapercodeSessionsContinuesAfterIndependentFailure(t *testing.T) {
+	issuer := &selectiveRevocationIssuer{failProjectID: "prj_unavailable"}
+	service := &Service{credentials: issuer}
+	err := service.revokePapercodeSessions(context.Background(), []PapercodeSessionLink{
+		{ProjectID: "prj_unavailable", UserID: "usr_1", ClientSessionID: "cls_1", TerminalSessionID: "session-1", HTTPBaseURL: "https://unavailable.example"},
+		{ProjectID: "prj_reachable", UserID: "usr_1", ClientSessionID: "cls_1", TerminalSessionID: "session-2", HTTPBaseURL: "https://reachable.example"},
+	}, "logout")
+	if err == nil || !strings.Contains(err.Error(), "prj_unavailable") {
+		t.Fatalf("revocation error=%v, want unavailable project failure", err)
+	}
+	if strings.Join(issuer.attemptedProjects, ",") != "prj_unavailable,prj_reachable" {
+		t.Fatalf("attempted projects=%v", issuer.attemptedProjects)
+	}
+}
+
+type selectiveRevocationIssuer struct {
+	failProjectID     string
+	attemptedProjects []string
+}
+
+func (*selectiveRevocationIssuer) CheckCLI(context.Context, CredentialInput) error {
+	return nil
+}
+
+func (*selectiveRevocationIssuer) IssueCLI(context.Context, CredentialInput) (CLICredentials, error) {
+	return CLICredentials{}, nil
+}
+
+func (i *selectiveRevocationIssuer) RevokeCLI(_ context.Context, input CredentialRevocationInput) error {
+	i.attemptedProjects = append(i.attemptedProjects, input.ProjectID)
+	if input.ProjectID == i.failProjectID {
+		return errors.New("environment unavailable")
+	}
+	return nil
+}
+
 type sequenceStatusClient struct {
 	statuses []TunnelStatus
 	calls    int

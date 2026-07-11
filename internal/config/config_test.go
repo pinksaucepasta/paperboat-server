@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"encoding/base64"
 	"strings"
 	"testing"
 )
@@ -111,6 +112,8 @@ func TestProductionValidationDoesNotRequireMachineActivityToken(t *testing.T) {
 	cfg.Secrets.FlyAPIToken = "fly-api-token"
 	cfg.Secrets.AgentunnelAPIKey = "agentunnel-api-key"
 	cfg.Secrets.MachineActivityToken = ""
+	cfg.CLIAuth.MintActiveKeyID = "current"
+	cfg.Secrets.MintSigningKeys = []string{"current:" + base64.RawURLEncoding.EncodeToString(make([]byte, 32))}
 
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/agentunnel"
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
@@ -19,6 +20,7 @@ import (
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
 	"github.com/pinksaucepasta/paperboat-server/internal/httpapi"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
+	"github.com/pinksaucepasta/paperboat-server/internal/mint"
 	"github.com/pinksaucepasta/paperboat-server/internal/orchestrator"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 	"github.com/pinksaucepasta/paperboat-server/internal/workers"
@@ -55,10 +57,24 @@ func New(opts Options) (*App, error) {
 	githubService := pbgithub.NewService(store, auditWriter, githubClient(opts.Config), opts.Config)
 	projectService := projects.NewService(store, auditWriter, opts.Config)
 	agentunnelProvider := agentunnelClient(opts.Config)
-	agentunnelService := agentunnel.NewService(store, projectService, agentunnelProvider, auditWriter, opts.Config)
+	mintKeys, err := mintKeyProvider(opts.Config)
+	if err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	credentialIssuer := agentunnel.CredentialIssuer(agentunnel.FakeCredentialIssuer{})
+	if !opts.Config.Providers.FakeMode {
+		credentialIssuer = &agentunnel.PapercodeCredentialIssuer{
+			Issuer: normalizePapercodeIssuer(opts.Config.HTTP.PublicBaseURL), Signer: mintKeys,
+			HTTPClient: &http.Client{Timeout: opts.Config.HTTP.RequestTimeout}, RequireHTTPS: true,
+			ProofTTL: opts.Config.CLIAuth.MintProofLifetime,
+		}
+	}
+	agentunnelService := agentunnel.NewServiceWithCredentials(store, projectService, agentunnelProvider, credentialIssuer, auditWriter, opts.Config)
 	deviceAuthService.SetDownstreamRevoker(agentunnelService)
 	orchestratorService := orchestrator.NewServiceWithAgentunnel(store, flyProvider, opts.Config, agentunnelProvider)
 	meteringService := metering.NewRuntimeService(store, flyProvider, billingRepo)
+	meteringService.SetDownstreamRevoker(agentunnelService)
 	checker := readinessChecker{cfg: opts.Config, db: store}
 	router := httpapi.NewRouter(httpapi.Options{
 		Config:           opts.Config,
@@ -74,6 +90,7 @@ func New(opts Options) (*App, error) {
 		Projects:         projectService,
 		Agentunnel:       agentunnelService,
 		MeteringRepo:     metering.NewRuntimeRepository(store, opts.Config.Secrets.EncryptionKey),
+		MintKeys:         mintKeys,
 	})
 	return &App{
 		cfg:    opts.Config,
@@ -89,6 +106,20 @@ func New(opts Options) (*App, error) {
 			meteringService.Worker(opts.Config.HTTP.RequestTimeout),
 		),
 	}, nil
+}
+
+func normalizePapercodeIssuer(raw string) string {
+	return strings.TrimRight(strings.TrimSpace(raw), "/")
+}
+
+func mintKeyProvider(cfg config.Config) (*mint.Provider, error) {
+	if len(cfg.Secrets.MintSigningKeys) > 0 {
+		return mint.ParseKeys(cfg.Secrets.MintSigningKeys, cfg.CLIAuth.MintActiveKeyID, cfg.CLIAuth.MintJWKSMaxAge)
+	}
+	if cfg.Environment != config.EnvironmentProduction {
+		return mint.NewEphemeral(cfg.CLIAuth.MintJWKSMaxAge)
+	}
+	return nil, errors.New("mint signing keys are not configured")
 }
 
 func flyClient(cfg config.Config) fly.Client {

@@ -20,11 +20,16 @@ import (
 )
 
 type RuntimeService struct {
-	repo    *RuntimeRepository
-	fly     fly.Client
-	billing *billing.Repository
-	now     func() time.Time
-	cfg     EnforcementConfig
+	repo       *RuntimeRepository
+	fly        fly.Client
+	billing    *billing.Repository
+	now        func() time.Time
+	cfg        EnforcementConfig
+	downstream ProjectSessionRevoker
+}
+
+type ProjectSessionRevoker interface {
+	RetryPendingPapercodeRevocations(context.Context) error
 }
 
 type EnforcementConfig struct {
@@ -67,7 +72,14 @@ func (s *RuntimeService) SetEnforcementConfig(cfg EnforcementConfig) {
 	}
 }
 
-func (s *RuntimeService) RunOnce(ctx context.Context) error {
+func (s *RuntimeService) SetDownstreamRevoker(revoker ProjectSessionRevoker) {
+	s.downstream = revoker
+}
+
+func (s *RuntimeService) RunOnce(ctx context.Context) (runErr error) {
+	defer func() {
+		runErr = errors.Join(runErr, s.propagatePapercodeRevocations(ctx))
+	}()
 	now := s.now().UTC()
 	if err := s.processPendingCheckpoints(ctx); err != nil {
 		return err
@@ -98,6 +110,13 @@ func (s *RuntimeService) RunOnce(ctx context.Context) error {
 		}
 	}
 	return s.repo.EnforceIdleAndReporterState(ctx, now, s.cfg)
+}
+
+func (s *RuntimeService) propagatePapercodeRevocations(ctx context.Context) error {
+	if s.downstream == nil {
+		return nil
+	}
+	return s.downstream.RetryPendingPapercodeRevocations(ctx)
 }
 
 func (s *RuntimeService) Worker(interval time.Duration) func(context.Context) error {

@@ -375,19 +375,22 @@ func (s *Service) findProviderMachine(ctx context.Context, name string, intent P
 func (s *Service) machineSpec(intent ProjectIntent, volumeID string) fly.MachineSpec {
 	machineName := providerName(s.cfg.Fly.MachineNamePrefix, intent.ID)
 	env := map[string]string{
-		"PAPERBOAT_PROJECT_ID":           intent.ID,
-		"PAPERBOAT_MACHINE_ID":           machineName,
-		"PAPERBOAT_REPOSITORY_URL":       intent.RepositoryURL,
-		"PAPERBOAT_DEFAULT_BRANCH":       intent.DefaultBranch,
-		"PAPERBOAT_PRESET_CODES":         strings.Join(intent.PresetCodes, ","),
-		"PAPERBOAT_IDLE_TIMEOUT_CODE":    intent.IdleTimeoutCode,
-		"PAPERBOAT_AGENTUNNEL_TOKEN_ENV": s.cfg.Fly.AgentunnelSecret,
-		"PAPERBOAT_GITHUB_TOKEN_ENV":     s.cfg.Fly.GitHubSecret,
-		"PAPERBOAT_SETUP_SCRIPT_REF":     intent.SetupScriptRef,
-		"PAPERBOAT_SETUP_SCRIPT_ENV":     s.cfg.Fly.SetupScriptSecret,
-		"PAPERBOAT_DESIRED_CONFIG_SHA":   intent.DesiredConfigHash,
-		"PAPERBOAT_ACTIVITY_ENDPOINT":    strings.TrimRight(s.cfg.HTTP.PublicBaseURL, "/") + "/api/machine/activity-heartbeat",
-		"PAPERBOAT_ACTIVITY_TOKEN_ENV":   "PAPERBOAT_MACHINE_ACTIVITY_TOKEN",
+		"PAPERBOAT_PROJECT_ID":               intent.ID,
+		"PAPERBOAT_MACHINE_ID":               machineName,
+		"PAPERBOAT_REPOSITORY_URL":           intent.RepositoryURL,
+		"PAPERBOAT_DEFAULT_BRANCH":           intent.DefaultBranch,
+		"PAPERBOAT_PRESET_CODES":             strings.Join(intent.PresetCodes, ","),
+		"PAPERBOAT_IDLE_TIMEOUT_CODE":        intent.IdleTimeoutCode,
+		"PAPERBOAT_AGENTUNNEL_TOKEN_ENV":     s.cfg.Fly.AgentunnelSecret,
+		"PAPERBOAT_GITHUB_TOKEN_ENV":         s.cfg.Fly.GitHubSecret,
+		"PAPERBOAT_SETUP_SCRIPT_REF":         intent.SetupScriptRef,
+		"PAPERBOAT_SETUP_SCRIPT_ENV":         s.cfg.Fly.SetupScriptSecret,
+		"PAPERBOAT_DESIRED_CONFIG_SHA":       intent.DesiredConfigHash,
+		"PAPERBOAT_ACTIVITY_ENDPOINT":        strings.TrimRight(s.cfg.HTTP.PublicBaseURL, "/") + "/api/machine/activity-heartbeat",
+		"PAPERBOAT_ACTIVITY_TOKEN_ENV":       "PAPERBOAT_MACHINE_ACTIVITY_TOKEN",
+		"PAPERBOAT_PAPERCODE_ENVIRONMENT_ID": intent.ID,
+		"PAPERBOAT_PAPERCODE_OWNER_ID":       intent.UserID,
+		"PAPERBOAT_PAPERCODE_ISSUER":         strings.TrimRight(s.cfg.HTTP.PublicBaseURL, "/"),
 	}
 	if strings.TrimSpace(intent.GitHubConfigRepoURL) != "" {
 		env["PAPERBOAT_CONFIG_REPO_URL"] = intent.GitHubConfigRepoURL
