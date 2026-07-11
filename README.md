@@ -14,7 +14,8 @@ through this server. paperboat-server decides, authorizes, meters, and orchestra
 ## Stack
 
 Go — single binary, part of the platform's Go infra/control-plane side alongside agentunnel
-and paperboat-cli.
+and paperboat-cli. Application SQL is generated with `sqlc` from `internal/db/queries`,
+while Goose owns forward-only Postgres migration execution from `internal/db/migrations`.
 
 ## Local Development
 
@@ -39,6 +40,7 @@ curl -i http://127.0.0.1:8080/readyz
 go test ./...
 go vet ./...
 gofmt -w .
+sqlc generate
 ```
 
 The server currently implements foundation endpoints (`/healthz` and

@@ -472,7 +472,7 @@ BEGIN
 	INTO tables
 	FROM pg_tables
 	WHERE schemaname = 'paperboat'
-	  AND tablename <> 'schema_migrations';
+	  AND tablename NOT IN ('schema_migrations', 'goose_db_version');
 
 	IF tables IS NOT NULL THEN
 		EXECUTE 'TRUNCATE TABLE ' || tables || ' CASCADE';

@@ -41,6 +41,9 @@ provider-managed or pre-existing `public` schema tables.
 Implementation rules:
 
 - `paperboat-server migrate` applies forward-only migrations.
+- Goose executes immutable SQL migrations from `internal/db/migrations`.
+- sqlc generates typed application queries from `internal/db/queries`; generated code is
+  checked in under `internal/db/dbsqlc`.
 - Runtime repositories use explicit transaction boundaries and set their transaction
   search path to the `paperboat` schema.
 - Dynamic catalogs are seeded with `paperboat-server seed-catalogs`; catalog values remain

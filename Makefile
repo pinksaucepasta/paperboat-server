@@ -11,7 +11,7 @@ ENV_FILE ?= .env.local
 # Load ENV_FILE (if present) into the environment, exporting every key.
 load-env = set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a
 
-.PHONY: run migrate seed-catalogs test vet fmt
+.PHONY: run migrate seed-catalogs generate test vet fmt check
 
 ## run: start the server with .env.local loaded (real providers)
 run:
@@ -24,6 +24,13 @@ migrate:
 ## seed-catalogs: seed dynamic catalogs with .env.local loaded
 seed-catalogs:
 	$(load-env); go run ./cmd/paperboat-server seed-catalogs -config $(CONFIG)
+
+## generate: regenerate type-safe database access
+generate:
+	sqlc generate
+
+## check: regenerate database code and run the standard Go verification suite
+check: generate fmt vet test
 
 ## test: run the test suite
 test:

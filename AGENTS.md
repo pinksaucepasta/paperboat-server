@@ -58,10 +58,16 @@ library and small, well-maintained dependencies; avoid heavy frameworks that obs
 auth, or orchestration. Single binary, explicit dependencies, strong concurrency for the
 orchestration workers.
 
+Database access follows the same tooling pattern as agentunnel: SQL migrations are executed
+with `pressly/goose`, and application queries are defined under `internal/db/queries` and
+generated with `sqlc`. Generated query code is checked in. Do not add handwritten application
+SQL in Go; raw SQL is limited to migration bootstrap compatibility and test fixtures.
+
 Follow standard Go hygiene before considering a change done:
 
 ```sh
 gofmt -w .
+sqlc generate
 go vet ./...
 go test ./...   # add -race when touching concurrent/orchestration code
 ```

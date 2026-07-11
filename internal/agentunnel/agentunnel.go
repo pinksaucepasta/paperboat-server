@@ -19,6 +19,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
+	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 	"github.com/pinksaucepasta/paperboat-server/internal/secrets"
 )
@@ -1114,14 +1115,7 @@ func (r *Repository) EnsureConnectCredits(ctx context.Context, userID, projectID
 	if window <= 0 {
 		return fmt.Errorf("minimum start credit window must be positive")
 	}
-	var enough bool
-	err := r.db.SQL().QueryRowContext(ctx, `
-SELECT coalesce(ca.balance, 0)::numeric >= ((($3::numeric / 3600.0) * mtv.credit_weight)::numeric(18,6))
-FROM paperboat.projects p
-JOIN paperboat.project_runtime_configs prc ON prc.project_id = p.id
-JOIN paperboat.machine_type_versions mtv ON mtv.id = prc.applied_machine_type_version_id
-LEFT JOIN paperboat.credit_accounts ca ON ca.user_id = p.user_id
-WHERE p.id = $1 AND p.user_id = $2`, projectID, userID, int(window.Seconds())).Scan(&enough)
+	enough, err := r.db.Queries().HasConnectCredits(ctx, dbsqlc.HasConnectCreditsParams{ProjectID: projectID, UserID: userID, WindowSeconds: int64(window.Seconds())})
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -1135,17 +1129,7 @@ WHERE p.id = $1 AND p.user_id = $2`, projectID, userID, int(window.Seconds())).S
 }
 
 func (r *Repository) EnsureGitHubConfigReady(ctx context.Context, userID string) error {
-	var ready bool
-	err := r.db.SQL().QueryRowContext(ctx, `
-SELECT EXISTS (
-	SELECT 1
-	FROM paperboat.github_oauth_tokens t
-	JOIN paperboat.github_config_repositories cr ON cr.user_id = t.user_id
-	WHERE t.user_id = $1
-	  AND t.revoked_at IS NULL
-	  AND (t.expires_at IS NULL OR t.expires_at > now())
-	  AND cr.provisioned_at IS NOT NULL
-)`, userID).Scan(&ready)
+	ready, err := r.db.Queries().GitHubConfigReady(ctx, userID)
 	if err != nil {
 		return err
 	}
@@ -1176,16 +1160,8 @@ func (r *Repository) UpsertResource(ctx context.Context, projectID string, resou
 		return ResourceDescriptor{}, err
 	}
 	err = r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		_, err := tx.Exec(ctx, `
-INSERT INTO agentunnel_resources (id, project_id, tunnel_id, client_id, resource_id, metadata)
-VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-ON CONFLICT (project_id) DO UPDATE
-SET tunnel_id = EXCLUDED.tunnel_id,
-    client_id = EXCLUDED.client_id,
-    resource_id = EXCLUDED.resource_id,
-    metadata = EXCLUDED.metadata,
-    version = agentunnel_resources.version + 1,
-    updated_at = now()`, newID("agr"), projectID, resource.TunnelID, resource.ClientID, resource.ResourceID, string(metadata))
+		q := tx.Queries()
+		err := q.UpsertAgentunnelResource(ctx, dbsqlc.UpsertAgentunnelResourceParams{ID: newID("agr"), ProjectID: projectID, TunnelID: resource.TunnelID, ClientID: resource.ClientID, ResourceID: resource.ResourceID, Metadata: metadata})
 		if err != nil {
 			return err
 		}
@@ -1194,34 +1170,21 @@ SET tunnel_id = EXCLUDED.tunnel_id,
 		if strings.TrimSpace(previewURL) == "" || strings.TrimSpace(localURL) == "" {
 			return nil
 		}
-		_, err = tx.Exec(ctx, `
-INSERT INTO preview_url_records (id, project_id, preview_key, target_url, public_url, state)
-VALUES ($1, $2, 'papercode', $3, $4, 'active')
-ON CONFLICT (project_id, preview_key) DO UPDATE
-SET target_url = EXCLUDED.target_url,
-    public_url = EXCLUDED.public_url,
-    state = 'active',
-    version = preview_url_records.version + 1,
-    updated_at = now()`, newID("pvr"), projectID, localURL, previewURL)
-		return err
+		return q.UpsertPreviewURLRecord(ctx, dbsqlc.UpsertPreviewURLRecordParams{ID: newID("pvr"), ProjectID: projectID, TargetUrl: localURL, PublicUrl: previewURL})
 	})
 	return resource, err
 }
 
 func (r *Repository) Resource(ctx context.Context, projectID string) (ResourceDescriptor, bool, error) {
-	var resource ResourceDescriptor
-	var metadata []byte
-	err := r.db.SQL().QueryRowContext(ctx, `
-SELECT tunnel_id, client_id, resource_id, metadata
-FROM paperboat.agentunnel_resources
-WHERE project_id = $1`, projectID).Scan(&resource.TunnelID, &resource.ClientID, &resource.ResourceID, &metadata)
+	row, err := r.db.Queries().GetAgentunnelResource(ctx, projectID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ResourceDescriptor{}, false, nil
 	}
 	if err != nil {
 		return ResourceDescriptor{}, false, err
 	}
-	_ = json.Unmarshal(metadata, &resource.Metadata)
+	resource := ResourceDescriptor{TunnelID: row.TunnelID, ClientID: row.ClientID, ResourceID: row.ResourceID}
+	_ = json.Unmarshal(row.Metadata, &resource.Metadata)
 	if resource.Metadata == nil {
 		resource.Metadata = map[string]any{}
 	}
@@ -1235,14 +1198,7 @@ WHERE project_id = $1`, projectID).Scan(&resource.TunnelID, &resource.ClientID, 
 }
 
 func (r *Repository) LatestStopReason(ctx context.Context, projectID string) (string, bool, error) {
-	var eventType string
-	err := r.db.SQL().QueryRowContext(ctx, `
-SELECT event_type
-FROM paperboat.project_events
-WHERE project_id = $1
-  AND event_type LIKE 'project.stop_queued.%'
-ORDER BY created_at DESC
-LIMIT 1`, projectID).Scan(&eventType)
+	eventType, err := r.db.Queries().GetLatestProjectStopEventType(ctx, projectID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
@@ -1260,48 +1216,24 @@ func (r *Repository) CreateAccessSession(ctx context.Context, userID, projectID,
 	}
 	key := "access.session:" + id
 	err = r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		_, err := tx.Exec(ctx, `
-INSERT INTO access_sessions (id, user_id, project_id, client_session_id, session_type, state, descriptor, expires_at, idempotency_key)
-VALUES ($1, $2, $3, nullif($4,''), $5, 'active', $6::jsonb, $7, $8)`, id, userID, projectID, clientSessionID, sessionType, string(descriptorBytes), expiresAt, key)
-		return err
+		return tx.Queries().CreateAccessSession(ctx, dbsqlc.CreateAccessSessionParams{ID: id, UserID: userID, ProjectID: projectID, ClientSessionID: clientSessionID, SessionType: sessionType, Descriptor: descriptorBytes, ExpiresAt: expiresAt, IdempotencyKey: key})
 	})
 	return AccessSession{ID: id}, err
 }
 
 func (r *Repository) RevokeClientAccessSessions(ctx context.Context, clientSessionID, reason string) error {
 	reason = revocationReason(reason)
-	_, err := r.db.SQL().ExecContext(ctx, `UPDATE paperboat.access_sessions SET state='revoked',revoked_at=coalesce(revoked_at,now()),updated_at=now(),version=version+1,descriptor=jsonb_set(descriptor,'{revocation_reason}',to_jsonb($2::text),true) WHERE client_session_id=$1 AND state='active' AND revoked_at IS NULL`, clientSessionID, reason)
-	return err
+	return r.db.Queries().RevokeClientAccessSessions(ctx, dbsqlc.RevokeClientAccessSessionsParams{ClientSessionID: sql.NullString{String: clientSessionID, Valid: true}, Reason: reason})
 }
 
 func (r *Repository) RevokeUserAccessSessions(ctx context.Context, userID, reason string) error {
 	reason = revocationReason(reason)
-	_, err := r.db.SQL().ExecContext(ctx, `
-UPDATE paperboat.access_sessions
-SET state = 'revoked',
-    revoked_at = now(),
-    updated_at = now(),
-    version = version + 1,
-    descriptor = jsonb_set(descriptor, '{revocation_reason}', to_jsonb($2::text), true)
-WHERE state = 'active'
-  AND revoked_at IS NULL
-  AND user_id = $1`, userID, reason)
-	return err
+	return r.db.Queries().RevokeUserAccessSessions(ctx, dbsqlc.RevokeUserAccessSessionsParams{UserID: userID, Reason: reason})
 }
 
 func (r *Repository) RevokeProjectAccessSessions(ctx context.Context, projectID, reason string) error {
 	reason = revocationReason(reason)
-	_, err := r.db.SQL().ExecContext(ctx, `
-UPDATE paperboat.access_sessions
-SET state = 'revoked',
-    revoked_at = now(),
-    updated_at = now(),
-    version = version + 1,
-    descriptor = jsonb_set(descriptor, '{revocation_reason}', to_jsonb($2::text), true)
-WHERE state = 'active'
-  AND revoked_at IS NULL
-  AND project_id = $1`, projectID, reason)
-	return err
+	return r.db.Queries().RevokeProjectAccessSessions(ctx, dbsqlc.RevokeProjectAccessSessionsParams{ProjectID: projectID, Reason: reason})
 }
 
 func revocationReason(reason string) string {
@@ -1319,16 +1251,7 @@ func (r *Repository) RecordConnectionEvent(ctx context.Context, userID, projectI
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(accessSessionID) == "" {
-		_, err = r.db.SQL().ExecContext(ctx, `
-INSERT INTO paperboat.connection_events (id, user_id, project_id, result, failure_reason, metadata)
-VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), $4, $5, $6::jsonb)`, newID("cev"), userID, projectID, result, reason, string(b))
-		return err
-	}
-	_, err = r.db.SQL().ExecContext(ctx, `
-INSERT INTO paperboat.connection_events (id, user_id, project_id, access_session_id, result, failure_reason, metadata)
-VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), $4, $5, $6, $7::jsonb)`, newID("cev"), userID, projectID, accessSessionID, result, reason, string(b))
-	return err
+	return r.db.Queries().RecordConnectionEvent(ctx, dbsqlc.RecordConnectionEventParams{ID: newID("cev"), UserID: userID, ProjectID: projectID, AccessSessionID: accessSessionID, Result: result, FailureReason: reason, Metadata: b})
 }
 
 func (r *Repository) RecordActivity(ctx context.Context, projectID, source string, metadata map[string]any) error {
@@ -1346,15 +1269,7 @@ func (r *Repository) RecordActivity(ctx context.Context, projectID, source strin
 	if err != nil {
 		return err
 	}
-	_, err = r.db.SQL().ExecContext(ctx, `
-INSERT INTO paperboat.project_activity_markers (project_id, last_activity_at, source, metadata)
-VALUES ($1, now(), $2, $3::jsonb)
-ON CONFLICT (project_id) DO UPDATE
-SET last_activity_at = greatest(project_activity_markers.last_activity_at, EXCLUDED.last_activity_at),
-    source = EXCLUDED.source,
-    metadata = EXCLUDED.metadata,
-    updated_at = now()`, projectID, source, string(b))
-	return err
+	return r.db.Queries().UpsertProjectActivity(ctx, dbsqlc.UpsertProjectActivityParams{ProjectID: projectID, Source: source, Metadata: b})
 }
 
 func validActivitySource(source string) bool {

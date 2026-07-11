@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
 )
 
 type Reader interface {
@@ -73,111 +75,71 @@ type RegionRecord struct {
 
 type Repository struct {
 	queryer *sql.DB
+	q       *dbsqlc.Queries
 }
 
 func NewRepository(queryer *sql.DB) *Repository {
-	return &Repository{queryer: queryer}
+	return &Repository{queryer: queryer, q: dbsqlc.New(queryer)}
 }
 
 func (r *Repository) ListPlans(ctx context.Context) ([]PlanRecord, error) {
-	rs, err := r.queryer.QueryContext(ctx, `
-SELECT p.id, p.code, p.name, p.active, p.current_version_id, pv.included_credits::text, pv.included_storage_gb, pv.metadata, p.version
-FROM paperboat.plans p
-JOIN paperboat.plan_versions pv ON pv.id = p.current_version_id
-ORDER BY p.code`)
+	rows, err := r.q.ListPlans(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list plans: %w", err)
 	}
-	defer rs.Close()
-	var out []PlanRecord
-	for rs.Next() {
-		var record PlanRecord
-		if err := rs.Scan(&record.ID, &record.Code, &record.Name, &record.Active, &record.CurrentVersionID, &record.IncludedCredits, &record.IncludedStorageGB, &record.Metadata, &record.Version); err != nil {
-			return nil, fmt.Errorf("scan plan: %w", err)
-		}
-		out = append(out, record)
+	out := make([]PlanRecord, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, PlanRecord{ID: row.ID, Code: row.Code, Name: row.Name, Active: row.Active, CurrentVersionID: row.CurrentVersionID.String, IncludedCredits: row.PvIncludedCredits, IncludedStorageGB: int(row.IncludedStorageGb), Metadata: row.Metadata, Version: row.Version})
 	}
-	return out, rs.Err()
+	return out, nil
 }
 
 func (r *Repository) ListMachineTypes(ctx context.Context) ([]MachineTypeRecord, error) {
-	rs, err := r.queryer.QueryContext(ctx, `
-SELECT id, code, name, vcpu, memory_mb, credit_weight::text, custom_shape_allowed, active, current_version_id, version
-FROM paperboat.machine_types
-ORDER BY code`)
+	rows, err := r.q.ListMachineTypes(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list machine types: %w", err)
 	}
-	defer rs.Close()
-	var out []MachineTypeRecord
-	for rs.Next() {
-		var record MachineTypeRecord
-		if err := rs.Scan(&record.ID, &record.Code, &record.Name, &record.VCPU, &record.MemoryMB, &record.CreditWeight, &record.CustomShapeAllowed, &record.Active, &record.CurrentVersionID, &record.Version); err != nil {
-			return nil, fmt.Errorf("scan machine type: %w", err)
-		}
-		out = append(out, record)
+	out := make([]MachineTypeRecord, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, MachineTypeRecord{ID: row.ID, Code: row.Code, Name: row.Name, VCPU: int(row.Vcpu), MemoryMB: int(row.MemoryMb), CreditWeight: row.CreditWeight, CustomShapeAllowed: row.CustomShapeAllowed, Active: row.Active, CurrentVersionID: row.CurrentVersionID.String, Version: row.Version})
 	}
-	return out, rs.Err()
+	return out, nil
 }
 
 func (r *Repository) ListPresets(ctx context.Context) ([]PresetRecord, error) {
-	rs, err := r.queryer.QueryContext(ctx, `
-SELECT id, code, name, description, active, current_version_id, version
-FROM paperboat.vm_presets
-ORDER BY code`)
+	rows, err := r.q.ListPresets(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list presets: %w", err)
 	}
-	defer rs.Close()
-	var out []PresetRecord
-	for rs.Next() {
-		var record PresetRecord
-		if err := rs.Scan(&record.ID, &record.Code, &record.Name, &record.Description, &record.Active, &record.CurrentVersionID, &record.Version); err != nil {
-			return nil, fmt.Errorf("scan preset: %w", err)
-		}
-		out = append(out, record)
+	out := make([]PresetRecord, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, PresetRecord{ID: row.ID, Code: row.Code, Name: row.Name, Description: row.Description, Active: row.Active, CurrentVersionID: row.CurrentVersionID.String, Version: row.Version})
 	}
-	return out, rs.Err()
+	return out, nil
 }
 
 func (r *Repository) ListIdleTimeouts(ctx context.Context) ([]IdleTimeoutRecord, error) {
-	rs, err := r.queryer.QueryContext(ctx, `
-SELECT id, code, duration_seconds, active, version
-FROM paperboat.idle_timeout_options
-ORDER BY duration_seconds`)
+	rows, err := r.q.ListIdleTimeouts(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list idle timeouts: %w", err)
 	}
-	defer rs.Close()
-	var out []IdleTimeoutRecord
-	for rs.Next() {
-		var record IdleTimeoutRecord
-		if err := rs.Scan(&record.ID, &record.Code, &record.DurationSeconds, &record.Active, &record.Version); err != nil {
-			return nil, fmt.Errorf("scan idle timeout: %w", err)
-		}
-		out = append(out, record)
+	out := make([]IdleTimeoutRecord, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, IdleTimeoutRecord{ID: row.ID, Code: row.Code, DurationSeconds: int(row.DurationSeconds), Active: row.Active, Version: row.Version})
 	}
-	return out, rs.Err()
+	return out, nil
 }
 
 func (r *Repository) ListRegions(ctx context.Context) ([]RegionRecord, error) {
-	rs, err := r.queryer.QueryContext(ctx, `
-SELECT id, code, name, enabled, version
-FROM paperboat.regions
-ORDER BY code`)
+	rows, err := r.q.ListRegions(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list regions: %w", err)
 	}
-	defer rs.Close()
-	var out []RegionRecord
-	for rs.Next() {
-		var record RegionRecord
-		if err := rs.Scan(&record.ID, &record.Code, &record.Name, &record.Enabled, &record.Version); err != nil {
-			return nil, fmt.Errorf("scan region: %w", err)
-		}
-		out = append(out, record)
+	out := make([]RegionRecord, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, RegionRecord{ID: row.ID, Code: row.Code, Name: row.Name, Enabled: row.Enabled, Version: row.Version})
 	}
-	return out, rs.Err()
+	return out, nil
 }
 
 func (r *Repository) SyncRegions(ctx context.Context, records []RegionRecord) error {
@@ -189,6 +151,7 @@ func (r *Repository) SyncRegions(ctx context.Context, records []RegionRecord) er
 		return fmt.Errorf("begin sync regions: %w", err)
 	}
 	defer tx.Rollback()
+	qtx := r.q.WithTx(tx)
 	for _, record := range records {
 		code := strings.ToLower(strings.TrimSpace(record.Code))
 		name := strings.TrimSpace(record.Name)
@@ -199,15 +162,7 @@ func (r *Repository) SyncRegions(ctx context.Context, records []RegionRecord) er
 		// offered to users is an operator decision made in the catalog
 		// (seed-catalogs). New provider regions arrive disabled, and a
 		// region deprecated at the provider is force-disabled.
-		if _, err := tx.ExecContext(ctx, `
-INSERT INTO paperboat.regions (id, code, name, enabled)
-VALUES ('reg_' || $1, $1, $2, false)
-ON CONFLICT (code) DO UPDATE SET
-	name = EXCLUDED.name,
-	enabled = regions.enabled AND $3,
-	version = CASE WHEN (regions.name, regions.enabled) IS DISTINCT FROM (EXCLUDED.name, regions.enabled AND $3) THEN regions.version + 1 ELSE regions.version END,
-	updated_at = CASE WHEN (regions.name, regions.enabled) IS DISTINCT FROM (EXCLUDED.name, regions.enabled AND $3) THEN now() ELSE regions.updated_at END`,
-			code, name, record.Enabled); err != nil {
+		if err := qtx.SyncRegion(ctx, dbsqlc.SyncRegionParams{Code: code, Name: name, ProviderEnabled: record.Enabled}); err != nil {
 			return fmt.Errorf("sync region %s: %w", code, err)
 		}
 	}

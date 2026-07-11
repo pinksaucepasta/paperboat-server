@@ -16,6 +16,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/agentunnel"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
+	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
 	"github.com/pinksaucepasta/paperboat-server/internal/secrets"
 )
@@ -686,27 +687,15 @@ type Finding struct {
 func (r *Repository) ClaimNextJob(ctx context.Context) (Job, bool, error) {
 	var job Job
 	err := r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		var payload []byte
-		if err := tx.QueryRow(ctx, `
-SELECT id, job_type, aggregate_id, payload
-FROM orchestration_jobs
-WHERE state = 'queued' AND next_run_at <= now()
-  AND NOT EXISTS (
-    SELECT 1
-    FROM projects
-    WHERE projects.id = orchestration_jobs.aggregate_id
-      AND projects.state IN ('deleted', 'deleting')
-      AND orchestration_jobs.job_type <> 'project.delete'
-  )
-ORDER BY created_at
-FOR UPDATE SKIP LOCKED
-LIMIT 1`).Scan(&job.ID, &job.Type, &job.AggregateID, &payload); err != nil {
+		row, err := tx.Queries().ClaimNextOrchestrationJob(ctx)
+		if err != nil {
 			return err
 		}
+		job = Job{ID: row.ID, Type: row.JobType, AggregateID: row.AggregateID}
 		var decoded struct {
 			PreviousState string `json:"previous_state"`
 		}
-		_ = json.Unmarshal(payload, &decoded)
+		_ = json.Unmarshal(row.Payload, &decoded)
 		job.PreviousState = decoded.PreviousState
 		return nil
 	})
@@ -718,15 +707,13 @@ LIMIT 1`).Scan(&job.ID, &job.Type, &job.AggregateID, &payload); err != nil {
 
 func (r *Repository) CompleteJob(ctx context.Context, jobID string) error {
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		_, err := tx.Exec(ctx, `UPDATE orchestration_jobs SET state = 'succeeded', last_error = '', version = version + 1, updated_at = now() WHERE id = $1`, jobID)
-		return err
+		return tx.Queries().CompleteOrchestrationJob(ctx, jobID)
 	})
 }
 
 func (r *Repository) FailJob(ctx context.Context, jobID string, cause error) error {
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		_, err := tx.Exec(ctx, `UPDATE orchestration_jobs SET state = 'queued', attempts = attempts + 1, next_run_at = now() + interval '30 seconds', last_error = $2, version = version + 1, updated_at = now() WHERE id = $1`, jobID, cause.Error())
-		return err
+		return tx.Queries().RetryOrchestrationJob(ctx, dbsqlc.RetryOrchestrationJobParams{ID: jobID, LastError: cause.Error()})
 	})
 }
 
@@ -735,38 +722,21 @@ func (r *Repository) BlockJobAndRestoreProject(ctx context.Context, jobID, proje
 		previousState = "ready"
 	}
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		if _, err := tx.Exec(ctx, `UPDATE orchestration_jobs SET state = 'blocked', attempts = attempts + 1, last_error = $2, version = version + 1, updated_at = now() WHERE id = $1`, jobID, cause.Error()); err != nil {
+		q := tx.Queries()
+		if err := q.BlockOrchestrationJob(ctx, dbsqlc.BlockOrchestrationJobParams{ID: jobID, LastError: cause.Error()}); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `UPDATE projects SET state = $2, version = version + 1, updated_at = now() WHERE id = $1 AND state = 'restarting'`, projectID, previousState)
-		return err
+		return q.RestoreRestartingProjectState(ctx, dbsqlc.RestoreRestartingProjectStateParams{ID: projectID, State: previousState})
 	})
 }
 
 func (r *Repository) ProjectIntent(ctx context.Context, projectID string) (ProjectIntent, error) {
-	var intent ProjectIntent
-	var presetsJSON []byte
-	err := r.db.SQL().QueryRowContext(ctx, `
-SELECT p.id, p.user_id, pr.source_url, pr.default_branch, psa.assigned_gb,
-       mt.code, mtv.vcpu, mtv.memory_mb, rg.code,
-       coalesce(json_agg(vp.code ORDER BY vp.code) FILTER (WHERE vp.code IS NOT NULL), '[]'::json),
-       ito.code, prc.setup_script_ref, prc.desired_config_hash, prc.pending_restart_apply
-FROM paperboat.projects p
-JOIN paperboat.project_repositories pr ON pr.project_id = p.id
-JOIN paperboat.project_storage_allocations psa ON psa.project_id = p.id
-JOIN paperboat.project_runtime_configs prc ON prc.project_id = p.id
-JOIN paperboat.machine_type_versions mtv ON mtv.id = prc.machine_type_version_id
-JOIN paperboat.machine_types mt ON mt.id = mtv.machine_type_id
-JOIN paperboat.regions rg ON rg.id = prc.region_id
-JOIN paperboat.idle_timeout_options ito ON ito.id = prc.idle_timeout_option_id
-LEFT JOIN paperboat.vm_preset_versions vpv ON vpv.id = ANY(prc.preset_version_ids)
-LEFT JOIN paperboat.vm_presets vp ON vp.id = vpv.preset_id
-WHERE p.id = $1
-GROUP BY p.id, pr.project_id, psa.project_id, prc.project_id, mt.code, mtv.vcpu, mtv.memory_mb, rg.code, ito.code`, projectID).Scan(&intent.ID, &intent.UserID, &intent.RepositoryURL, &intent.DefaultBranch, &intent.StorageGB, &intent.MachineTypeCode, &intent.VCPU, &intent.MemoryMB, &intent.RegionCode, &presetsJSON, &intent.IdleTimeoutCode, &intent.SetupScriptRef, &intent.DesiredConfigHash, &intent.PendingRestartApply)
+	row, err := r.db.Queries().GetOrchestrationProjectIntent(ctx, projectID)
 	if err != nil {
 		return ProjectIntent{}, err
 	}
-	_ = json.Unmarshal(presetsJSON, &intent.PresetCodes)
+	intent := ProjectIntent{ID: row.ID, UserID: row.UserID, RepositoryURL: row.SourceUrl, DefaultBranch: row.DefaultBranch, StorageGB: int(row.AssignedGb), MachineTypeCode: row.MachineTypeCode, VCPU: int(row.Vcpu), MemoryMB: int(row.MemoryMb), RegionCode: row.RegionCode, IdleTimeoutCode: row.IdleTimeoutCode, SetupScriptRef: row.SetupScriptRef, DesiredConfigHash: row.DesiredConfigHash, PendingRestartApply: row.PendingRestartApply}
+	_ = json.Unmarshal(databaseBytes(row.PresetCodes), &intent.PresetCodes)
 	token, err := r.githubConfigToken(ctx, intent.UserID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return ProjectIntent{}, err
@@ -794,13 +764,7 @@ GROUP BY p.id, pr.project_id, psa.project_id, prc.project_id, mt.code, mtv.vcpu,
 }
 
 func (r *Repository) githubConfigToken(ctx context.Context, userID string) (string, error) {
-	var ciphertext []byte
-	err := r.db.SQL().QueryRowContext(ctx, `
-SELECT token_ciphertext
-FROM paperboat.github_oauth_tokens
-WHERE user_id = $1 AND revoked_at IS NULL
-ORDER BY updated_at DESC
-LIMIT 1`, userID).Scan(&ciphertext)
+	ciphertext, err := r.db.Queries().GetLatestGitHubTokenCiphertext(ctx, userID)
 	if err != nil {
 		return "", err
 	}
@@ -808,24 +772,15 @@ LIMIT 1`, userID).Scan(&ciphertext)
 }
 
 func (r *Repository) githubConfigRepo(ctx context.Context, userID string) (string, string, error) {
-	var cloneURL, branch string
-	err := r.db.SQL().QueryRowContext(ctx, `
-SELECT clone_url, default_branch
-FROM paperboat.github_config_repositories
-WHERE user_id = $1 AND provisioned_at IS NOT NULL
-LIMIT 1`, userID).Scan(&cloneURL, &branch)
-	return cloneURL, branch, err
+	row, err := r.db.Queries().GetGitHubConfigRepository(ctx, userID)
+	return row.CloneUrl, row.DefaultBranch, err
 }
 
 func (r *Repository) setupScript(ctx context.Context, projectID, setupScriptRef string) (string, error) {
 	if strings.TrimSpace(setupScriptRef) == "" {
 		return "", nil
 	}
-	var ciphertext []byte
-	err := r.db.SQL().QueryRowContext(ctx, `
-SELECT script_ciphertext
-FROM paperboat.project_setup_script_revisions
-WHERE project_id = $1 AND id = $2`, projectID, setupScriptRef).Scan(&ciphertext)
+	ciphertext, err := r.db.Queries().GetProjectSetupScriptCiphertext(ctx, dbsqlc.GetProjectSetupScriptCiphertextParams{ProjectID: projectID, ID: setupScriptRef})
 	if err != nil {
 		return "", err
 	}
@@ -839,19 +794,15 @@ type agentunnelResource struct {
 }
 
 func (r *Repository) agentunnelResource(ctx context.Context, projectID string) (agentunnelResource, error) {
-	var resource agentunnelResource
-	var encoded string
-	err := r.db.SQL().QueryRowContext(ctx, `
-SELECT tunnel_id, client_id, metadata->>'machine_token_ciphertext'
-FROM paperboat.agentunnel_resources
-WHERE project_id = $1`, projectID).Scan(&resource.TunnelID, &resource.ClientID, &encoded)
+	row, err := r.db.Queries().GetOrchestrationAgentunnelResource(ctx, projectID)
 	if err != nil {
 		return agentunnelResource{}, err
 	}
-	if strings.TrimSpace(encoded) == "" {
+	resource := agentunnelResource{TunnelID: row.TunnelID, ClientID: row.ClientID}
+	if strings.TrimSpace(row.MachineTokenCiphertext) == "" {
 		return resource, nil
 	}
-	ciphertext, err := hex.DecodeString(encoded)
+	ciphertext, err := hex.DecodeString(row.MachineTokenCiphertext)
 	if err != nil {
 		return agentunnelResource{}, err
 	}
@@ -860,29 +811,23 @@ WHERE project_id = $1`, projectID).Scan(&resource.TunnelID, &resource.ClientID, 
 }
 
 func (r *Repository) ProjectMachine(ctx context.Context, projectID string) (MachineRecord, error) {
-	var machine MachineRecord
-	err := r.db.SQL().QueryRowContext(ctx, `SELECT fly_machine_id, state FROM paperboat.fly_machines WHERE project_id = $1`, projectID).Scan(&machine.FlyMachineID, &machine.State)
-	return machine, err
+	row, err := r.db.Queries().GetProjectMachine(ctx, projectID)
+	return MachineRecord{FlyMachineID: row.FlyMachineID, State: row.State}, err
 }
 
 func (r *Repository) ProjectVolume(ctx context.Context, projectID string) (VolumeRecord, error) {
-	var volume VolumeRecord
-	err := r.db.SQL().QueryRowContext(ctx, `SELECT fly_volume_id, size_gb, state FROM paperboat.fly_volumes WHERE project_id = $1`, projectID).Scan(&volume.FlyVolumeID, &volume.SizeGB, &volume.State)
-	return volume, err
+	row, err := r.db.Queries().GetProjectVolume(ctx, projectID)
+	return VolumeRecord{FlyVolumeID: row.FlyVolumeID, SizeGB: int(row.SizeGb), State: row.State}, err
 }
 
 func (r *Repository) RecordVolume(ctx context.Context, projectID, flyVolumeID string, sizeGB int, region, state string) (VolumeRecord, error) {
 	err := r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		_, err := tx.Exec(ctx, `
-INSERT INTO fly_volumes (id, project_id, fly_volume_id, size_gb, region, state)
-VALUES ($1, $2, $3, $4, $5, $6)
-ON CONFLICT (project_id) DO UPDATE SET fly_volume_id = fly_volumes.fly_volume_id
-`, newID("flv"), projectID, flyVolumeID, sizeGB, region, state)
+		q := tx.Queries()
+		err := q.InsertFlyVolumeRecord(ctx, dbsqlc.InsertFlyVolumeRecordParams{ID: newID("flv"), ProjectID: projectID, FlyVolumeID: flyVolumeID, SizeGb: int32(sizeGB), Region: region, State: state})
 		if err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `UPDATE project_storage_allocations SET fly_volume_id = $2, updated_at = now() WHERE project_id = $1`, projectID, flyVolumeID)
-		return err
+		return q.SetProjectFlyVolumeID(ctx, dbsqlc.SetProjectFlyVolumeIDParams{ProjectID: projectID, FlyVolumeID: sql.NullString{String: flyVolumeID, Valid: true}})
 	})
 	if err != nil {
 		return VolumeRecord{}, err
@@ -892,18 +837,7 @@ ON CONFLICT (project_id) DO UPDATE SET fly_volume_id = fly_volumes.fly_volume_id
 
 func (r *Repository) RecordMachine(ctx context.Context, projectID, flyMachineID, state, imageRef, region, configHash string) (MachineRecord, error) {
 	err := r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		_, err := tx.Exec(ctx, `
-INSERT INTO fly_machines (id, project_id, fly_machine_id, state, image_ref, region, observed_config_hash)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-ON CONFLICT (project_id) DO UPDATE SET
-    fly_machine_id = EXCLUDED.fly_machine_id,
-    state = EXCLUDED.state,
-    image_ref = EXCLUDED.image_ref,
-    region = EXCLUDED.region,
-    observed_config_hash = EXCLUDED.observed_config_hash,
-    updated_at = now()
-`, newID("flm"), projectID, flyMachineID, state, imageRef, region, configHash)
-		return err
+		return tx.Queries().UpsertFlyMachineRecord(ctx, dbsqlc.UpsertFlyMachineRecordParams{ID: newID("flm"), ProjectID: projectID, FlyMachineID: flyMachineID, State: state, ImageRef: imageRef, Region: region, ObservedConfigHash: configHash})
 	})
 	if err != nil {
 		return MachineRecord{}, err
@@ -916,7 +850,7 @@ func (r *Repository) MarkProvisionedStopped(ctx context.Context, intent ProjectI
 		if err := applyRuntimeConfigTx(ctx, tx, intent); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE projects SET state = 'stopped', version = version + 1, updated_at = now() WHERE id = $1 AND state <> 'deleted'`, intent.ID); err != nil {
+		if err := tx.Queries().MarkProvisionedProjectStopped(ctx, intent.ID); err != nil {
 			return err
 		}
 		return insertEvent(ctx, tx, intent.ID, "project.stopped", "Project machine and storage were provisioned. The machine is stopped until you start it.", map[string]any{"state": "stopped"})
@@ -933,28 +867,16 @@ func (r *Repository) ApplyRuntimeConfig(ctx context.Context, intent ProjectInten
 }
 
 func applyRuntimeConfigTx(ctx context.Context, tx *db.Tx, intent ProjectIntent) error {
-	_, err := tx.Exec(ctx, `
-UPDATE project_runtime_configs
-SET applied_storage_gb = $2,
-    applied_machine_type_version_id = machine_type_version_id,
-    applied_preset_version_ids = preset_version_ids,
-    applied_setup_script_ref = setup_script_ref,
-    applied_idle_timeout_option_id = idle_timeout_option_id,
-    applied_region_id = region_id,
-    applied_config_hash = desired_config_hash,
-    pending_restart_apply = false,
-    version = version + 1,
-    updated_at = now()
-WHERE project_id = $1`, intent.ID, intent.StorageGB)
-	return err
+	return tx.Queries().ApplyProjectRuntimeConfig(ctx, dbsqlc.ApplyProjectRuntimeConfigParams{ProjectID: intent.ID, AppliedStorageGb: int32(intent.StorageGB)})
 }
 
 func (r *Repository) RecordMachineState(ctx context.Context, projectID, providerState, projectState string) error {
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		if _, err := tx.Exec(ctx, `UPDATE fly_machines SET state = $2, version = version + 1, updated_at = now() WHERE project_id = $1`, projectID, providerState); err != nil {
+		q := tx.Queries()
+		if err := q.UpdateOrchestratedMachineState(ctx, dbsqlc.UpdateOrchestratedMachineStateParams{ProjectID: projectID, State: providerState}); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE projects SET state = $2, version = version + 1, updated_at = now() WHERE id = $1 AND state <> 'deleted'`, projectID, projectState); err != nil {
+		if err := q.UpdateOrchestratedProjectState(ctx, dbsqlc.UpdateOrchestratedProjectStateParams{ID: projectID, State: projectState}); err != nil {
 			return err
 		}
 		return insertEvent(ctx, tx, projectID, "project."+projectState, "Project machine state changed.", map[string]any{"state": projectState, "provider_state": providerState})
@@ -963,89 +885,76 @@ func (r *Repository) RecordMachineState(ctx context.Context, projectID, provider
 
 func (r *Repository) RemoveMachine(ctx context.Context, projectID string) error {
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		_, err := tx.Exec(ctx, `DELETE FROM fly_machines WHERE project_id = $1`, projectID)
-		return err
+		return tx.Queries().DeleteProjectMachineRecord(ctx, projectID)
 	})
 }
 
 func (r *Repository) RemoveVolume(ctx context.Context, projectID string) error {
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		_, err := tx.Exec(ctx, `DELETE FROM fly_volumes WHERE project_id = $1`, projectID)
-		return err
+		return tx.Queries().DeleteProjectVolumeRecord(ctx, projectID)
 	})
 }
 
 func (r *Repository) MarkDeletedAndReleaseStorage(ctx context.Context, projectID string) error {
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		var accountID string
-		var assigned int
-		if err := tx.QueryRow(ctx, `SELECT storage_account_id, assigned_gb FROM project_storage_allocations WHERE project_id = $1 FOR UPDATE`, projectID).Scan(&accountID, &assigned); err != nil {
+		q := tx.Queries()
+		allocation, err := q.GetProjectStorageForDelete(ctx, projectID)
+		if err != nil {
 			return err
 		}
-		var existing int
 		key := "project.storage.release.delete:" + projectID
-		err := tx.QueryRow(ctx, `SELECT amount_gb FROM storage_ledger_entries WHERE idempotency_key = $1`, key).Scan(&existing)
+		_, err = q.GetStorageLedgerAmountByKey(ctx, key)
 		if errors.Is(err, sql.ErrNoRows) {
-			if _, err := tx.Exec(ctx, `UPDATE storage_accounts SET allocated_gb = allocated_gb - $2, version = version + 1, updated_at = now() WHERE id = $1`, accountID, assigned); err != nil {
+			if err := q.DecreaseAllocatedStorage(ctx, dbsqlc.DecreaseAllocatedStorageParams{ID: allocation.StorageAccountID, AllocatedGb: allocation.AssignedGb}); err != nil {
 				return err
 			}
-			if _, err := tx.Exec(ctx, `INSERT INTO storage_ledger_entries (id, account_id, entry_type, amount_gb, source_type, source_id, idempotency_key) VALUES ($1, $2, 'release', $3, 'project', $4, $5)`, newID("sled"), accountID, assigned, projectID, key); err != nil {
+			if err := q.InsertProjectStorageLedger(ctx, dbsqlc.InsertProjectStorageLedgerParams{ID: newID("sled"), AccountID: allocation.StorageAccountID, EntryType: "release", AmountGb: allocation.AssignedGb, ProjectID: projectID, IdempotencyKey: key}); err != nil {
 				return err
 			}
 		} else if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE projects SET state = 'deleted', version = version + 1, updated_at = now() WHERE id = $1`, projectID); err != nil {
+		if err := q.MarkProjectDeleted(ctx, projectID); err != nil {
 			return err
 		}
-		return insertEvent(ctx, tx, projectID, "project.deleted", "Project provider resources were removed and storage was released.", map[string]any{"storage_gb": assigned})
+		return insertEvent(ctx, tx, projectID, "project.deleted", "Project provider resources were removed and storage was released.", map[string]any{"storage_gb": int(allocation.AssignedGb)})
 	})
 }
 
 func (r *Repository) StartReconciliation(ctx context.Context, run Run) error {
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		_, err := tx.Exec(ctx, `INSERT INTO reconciliation_runs (id, scope, state) VALUES ($1, $2, $3)`, run.ID, run.Scope, run.State)
-		return err
+		return tx.Queries().StartReconciliationRun(ctx, dbsqlc.StartReconciliationRunParams{ID: run.ID, Scope: run.Scope, State: run.State})
 	})
 }
 
 func (r *Repository) FinishReconciliation(ctx context.Context, run Run) error {
 	b, _ := json.Marshal(run.Findings)
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		_, err := tx.Exec(ctx, `UPDATE reconciliation_runs SET state = $2, findings = $3::jsonb, finished_at = now() WHERE id = $1`, run.ID, run.State, string(b))
-		return err
+		return tx.Queries().FinishReconciliationRun(ctx, dbsqlc.FinishReconciliationRunParams{ID: run.ID, State: run.State, Column3: b})
 	})
 }
 
 func (r *Repository) ReconcileFly(ctx context.Context, client fly.Client) ([]Finding, error) {
-	rows, err := r.db.SQL().QueryContext(ctx, `SELECT project_id, fly_machine_id, state FROM paperboat.fly_machines`)
+	rows, err := r.db.Queries().ListRecordedFlyMachines(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	var findings []Finding
 	knownMachineIDs := map[string]bool{}
-	for rows.Next() {
-		var projectID, machineID, storedState string
-		if err := rows.Scan(&projectID, &machineID, &storedState); err != nil {
-			return findings, err
-		}
-		knownMachineIDs[machineID] = true
-		actual, err := client.GetMachine(ctx, machineID)
+	for _, row := range rows {
+		knownMachineIDs[row.FlyMachineID] = true
+		actual, err := client.GetMachine(ctx, row.FlyMachineID)
 		if errors.Is(err, fly.ErrNotFound) {
-			findings = append(findings, Finding{ProjectID: projectID, Severity: "error", Message: "fly machine missing"})
+			findings = append(findings, Finding{ProjectID: row.ProjectID, Severity: "error", Message: "fly machine missing"})
 			continue
 		}
 		if err != nil {
 			return findings, err
 		}
-		if actual.State != storedState {
-			findings = append(findings, Finding{ProjectID: projectID, Severity: "warning", Message: fmt.Sprintf("machine state drift: stored=%s actual=%s", storedState, actual.State)})
-			_ = r.RecordMachineState(ctx, projectID, actual.State, mapProviderState(actual.State))
+		if actual.State != row.State {
+			findings = append(findings, Finding{ProjectID: row.ProjectID, Severity: "warning", Message: fmt.Sprintf("machine state drift: stored=%s actual=%s", row.State, actual.State)})
+			_ = r.RecordMachineState(ctx, row.ProjectID, actual.State, mapProviderState(actual.State))
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return findings, err
 	}
 	machines, err := client.ListMachines(ctx, map[string]string{"managed_by": "paperboat-server"})
 	if err != nil {
@@ -1074,12 +983,7 @@ func (r *Repository) QueueOrphanRemediation(ctx context.Context, machine fly.Mac
 		"action":         "operator_review_required",
 	})
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		_, err := tx.Exec(ctx, `
-INSERT INTO orchestration_jobs (id, job_type, aggregate_type, aggregate_id, idempotency_key, state, payload, last_error)
-VALUES ($1, 'fly.orphan.remediate', 'fly_machine', $2, $3, 'needs_review', $4::jsonb, 'Operator approval required before deleting or adopting orphan Fly machine.')
-ON CONFLICT (idempotency_key) DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()`,
-			newID("job"), machine.ID, "fly.orphan.remediate:"+machine.ID, string(payload))
-		return err
+		return tx.Queries().UpsertOrphanRemediationJob(ctx, dbsqlc.UpsertOrphanRemediationJobParams{ID: newID("job"), FlyMachineID: machine.ID, IdempotencyKey: "fly.orphan.remediate:" + machine.ID, Payload: payload})
 	})
 }
 
@@ -1102,8 +1006,18 @@ func isProviderRunning(state string) bool {
 
 func insertEvent(ctx context.Context, tx *db.Tx, projectID, eventType, message string, metadata map[string]any) error {
 	b, _ := json.Marshal(metadata)
-	_, err := tx.Exec(ctx, `INSERT INTO project_events (id, project_id, event_type, message, metadata) VALUES ($1, $2, $3, $4, $5::jsonb)`, newID("pevt"), projectID, eventType, message, string(b))
-	return err
+	return tx.Queries().InsertOrchestrationProjectEvent(ctx, dbsqlc.InsertOrchestrationProjectEventParams{ID: newID("pevt"), ProjectID: projectID, EventType: eventType, Message: message, Metadata: b})
+}
+
+func databaseBytes(value any) []byte {
+	switch typed := value.(type) {
+	case []byte:
+		return typed
+	case string:
+		return []byte(typed)
+	default:
+		return nil
+	}
 }
 
 func firstNonEmpty(values ...string) string {

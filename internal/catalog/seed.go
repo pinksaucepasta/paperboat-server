@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
+	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
 )
 
 var (
@@ -196,6 +197,7 @@ func Apply(ctx context.Context, store *db.DB, seed Seed) error {
 		return err
 	}
 	return store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		q := tx.Queries()
 		for _, plan := range seed.Plans {
 			if err := upsertPlan(ctx, tx, plan); err != nil {
 				return err
@@ -212,60 +214,23 @@ func Apply(ctx context.Context, store *db.DB, seed Seed) error {
 			}
 		}
 		for _, timeout := range seed.IdleTimeouts {
-			if _, err := tx.Exec(ctx, `
-INSERT INTO idle_timeout_options (id, code, duration_seconds, active)
-VALUES ('ito_' || $1, $1, $2, $3)
-ON CONFLICT (code) DO UPDATE SET
-	duration_seconds = EXCLUDED.duration_seconds,
-	active = EXCLUDED.active,
-	version = CASE WHEN (idle_timeout_options.duration_seconds, idle_timeout_options.active) IS DISTINCT FROM (EXCLUDED.duration_seconds, EXCLUDED.active) THEN idle_timeout_options.version + 1 ELSE idle_timeout_options.version END,
-	updated_at = CASE WHEN (idle_timeout_options.duration_seconds, idle_timeout_options.active) IS DISTINCT FROM (EXCLUDED.duration_seconds, EXCLUDED.active) THEN now() ELSE idle_timeout_options.updated_at END`,
-				timeout.Code, timeout.DurationSeconds, timeout.Active); err != nil {
+			if err := q.UpsertIdleTimeout(ctx, dbsqlc.UpsertIdleTimeoutParams{Code: timeout.Code, DurationSeconds: int32(timeout.DurationSeconds), Active: timeout.Active}); err != nil {
 				return fmt.Errorf("upsert idle timeout %s: %w", timeout.Code, err)
 			}
 		}
 		for _, region := range seed.Regions {
 			policy := jsonDefault(region.PlacementPolicy)
-			if _, err := tx.Exec(ctx, `
-INSERT INTO regions (id, code, name, enabled, placement_policy)
-VALUES ('reg_' || $1, $1, $2, $3, $4)
-ON CONFLICT (code) DO UPDATE SET
-	name = EXCLUDED.name,
-	enabled = EXCLUDED.enabled,
-	placement_policy = EXCLUDED.placement_policy,
-	version = CASE WHEN (regions.name, regions.enabled, regions.placement_policy) IS DISTINCT FROM (EXCLUDED.name, EXCLUDED.enabled, EXCLUDED.placement_policy) THEN regions.version + 1 ELSE regions.version END,
-	updated_at = CASE WHEN (regions.name, regions.enabled, regions.placement_policy) IS DISTINCT FROM (EXCLUDED.name, EXCLUDED.enabled, EXCLUDED.placement_policy) THEN now() ELSE regions.updated_at END`,
-				region.Code, region.Name, region.Enabled, policy); err != nil {
+			if err := q.UpsertCatalogRegion(ctx, dbsqlc.UpsertCatalogRegionParams{Code: region.Code, Name: region.Name, Enabled: region.Enabled, PlacementPolicy: json.RawMessage(policy)}); err != nil {
 				return fmt.Errorf("upsert region %s: %w", region.Code, err)
 			}
 		}
 		for _, product := range seed.BillingProducts {
-			if _, err := tx.Exec(ctx, `
-INSERT INTO billing_products (id, code, provider, provider_product_id, provider_price_id, catalog_type, catalog_ref, active)
-VALUES ('bp_' || $1, $1, $2, $3, $4, $5, $6, $7)
-ON CONFLICT (code) DO UPDATE SET
-	provider = EXCLUDED.provider,
-	provider_product_id = EXCLUDED.provider_product_id,
-	provider_price_id = EXCLUDED.provider_price_id,
-	catalog_type = EXCLUDED.catalog_type,
-	catalog_ref = EXCLUDED.catalog_ref,
-	active = EXCLUDED.active,
-	version = CASE WHEN (billing_products.provider, billing_products.provider_product_id, billing_products.provider_price_id, billing_products.catalog_type, billing_products.catalog_ref, billing_products.active) IS DISTINCT FROM (EXCLUDED.provider, EXCLUDED.provider_product_id, EXCLUDED.provider_price_id, EXCLUDED.catalog_type, EXCLUDED.catalog_ref, EXCLUDED.active) THEN billing_products.version + 1 ELSE billing_products.version END,
-	updated_at = CASE WHEN (billing_products.provider, billing_products.provider_product_id, billing_products.provider_price_id, billing_products.catalog_type, billing_products.catalog_ref, billing_products.active) IS DISTINCT FROM (EXCLUDED.provider, EXCLUDED.provider_product_id, EXCLUDED.provider_price_id, EXCLUDED.catalog_type, EXCLUDED.catalog_ref, EXCLUDED.active) THEN now() ELSE billing_products.updated_at END`,
-				product.Code, product.Provider, product.ProviderProductID, product.ProviderPriceID, product.CatalogType, product.CatalogRef, product.Active); err != nil {
+			if err := q.UpsertBillingProduct(ctx, dbsqlc.UpsertBillingProductParams{Code: product.Code, Provider: product.Provider, ProviderProductID: product.ProviderProductID, ProviderPriceID: product.ProviderPriceID, CatalogType: product.CatalogType, CatalogRef: product.CatalogRef, Active: product.Active}); err != nil {
 				return fmt.Errorf("upsert billing product %s: %w", product.Code, err)
 			}
 		}
 		for _, flag := range seed.FeatureFlags {
-			if _, err := tx.Exec(ctx, `
-INSERT INTO feature_flags (id, code, enabled, config)
-VALUES ('ff_' || $1, $1, $2, $3)
-ON CONFLICT (code) DO UPDATE SET
-	enabled = EXCLUDED.enabled,
-	config = EXCLUDED.config,
-	version = CASE WHEN (feature_flags.enabled, feature_flags.config) IS DISTINCT FROM (EXCLUDED.enabled, EXCLUDED.config) THEN feature_flags.version + 1 ELSE feature_flags.version END,
-	updated_at = CASE WHEN (feature_flags.enabled, feature_flags.config) IS DISTINCT FROM (EXCLUDED.enabled, EXCLUDED.config) THEN now() ELSE feature_flags.updated_at END`,
-				flag.Code, flag.Enabled, jsonDefault(flag.Config)); err != nil {
+			if err := q.UpsertFeatureFlag(ctx, dbsqlc.UpsertFeatureFlagParams{Code: flag.Code, Enabled: flag.Enabled, Config: json.RawMessage(jsonDefault(flag.Config))}); err != nil {
 				return fmt.Errorf("upsert feature flag %s: %w", flag.Code, err)
 			}
 		}
@@ -282,27 +247,13 @@ func upsertPlan(ctx context.Context, tx *db.Tx, plan Plan) error {
 	if err != nil {
 		return fmt.Errorf("upsert plan version %s: %w", plan.Code, err)
 	}
-	_, err = tx.Exec(ctx, `
-UPDATE plans
-SET
-	name = $2,
-	active = $3,
-	current_version_id = $4,
-	version = CASE WHEN NOT $5 AND (name, active, current_version_id) IS DISTINCT FROM ($2, $3, $4) THEN version + 1 ELSE version END,
-	updated_at = CASE WHEN NOT $5 AND (name, active, current_version_id) IS DISTINCT FROM ($2, $3, $4) THEN now() ELSE updated_at END
-WHERE id = $1`, planID, plan.Name, plan.Active, versionID, inserted)
-	return err
+	return tx.Queries().UpdatePlan(ctx, dbsqlc.UpdatePlanParams{ID: planID, Name: plan.Name, Active: plan.Active, CurrentVersionID: sql.NullString{String: versionID, Valid: true}, Inserted: inserted})
 }
 
 func insertPlan(ctx context.Context, tx *db.Tx, plan Plan) (string, bool, error) {
-	var planID string
-	var inserted bool
-	if err := tx.QueryRow(ctx, `
-INSERT INTO plans (id, code, name, active)
-VALUES ('plan_' || $1, $1, $2, $3)
-ON CONFLICT (code) DO UPDATE SET code = EXCLUDED.code
-RETURNING id, xmax = 0`, plan.Code, plan.Name, plan.Active).Scan(&planID, &inserted); err == nil {
-		return planID, inserted, nil
+	row, err := tx.Queries().InsertPlan(ctx, dbsqlc.InsertPlanParams{Code: plan.Code, Name: plan.Name, Active: plan.Active})
+	if err == nil {
+		return row.ID, row.Inserted, nil
 	} else {
 		return "", false, fmt.Errorf("insert plan %s: %w", plan.Code, err)
 	}
@@ -321,31 +272,13 @@ func upsertMachineType(ctx context.Context, tx *db.Tx, machine MachineType) erro
 	if err != nil {
 		return fmt.Errorf("upsert machine type version %s: %w", machine.Code, err)
 	}
-	_, err = tx.Exec(ctx, `
-UPDATE machine_types
-SET
-	name = $2,
-	vcpu = $3,
-	memory_mb = $4,
-	credit_weight = $5::numeric,
-	custom_shape_allowed = $6,
-	active = $7,
-	current_version_id = $8,
-	version = CASE WHEN NOT $9 AND (name, vcpu, memory_mb, credit_weight, custom_shape_allowed, active, current_version_id) IS DISTINCT FROM ($2, $3, $4, $5::numeric, $6, $7, $8) THEN version + 1 ELSE version END,
-	updated_at = CASE WHEN NOT $9 AND (name, vcpu, memory_mb, credit_weight, custom_shape_allowed, active, current_version_id) IS DISTINCT FROM ($2, $3, $4, $5::numeric, $6, $7, $8) THEN now() ELSE updated_at END
-WHERE id = $1`, machineID, machine.Name, machine.VCPU, machine.MemoryMB, seedWeight, machine.CustomShapeAllowed, machine.Active, versionID, inserted)
-	return err
+	return tx.Queries().UpdateMachineType(ctx, dbsqlc.UpdateMachineTypeParams{ID: machineID, Name: machine.Name, Vcpu: int32(machine.VCPU), MemoryMb: int32(machine.MemoryMB), CreditWeight: seedWeight, CustomShapeAllowed: machine.CustomShapeAllowed, Active: machine.Active, CurrentVersionID: sql.NullString{String: versionID, Valid: true}, Inserted: inserted})
 }
 
 func insertMachineType(ctx context.Context, tx *db.Tx, machine MachineType, seedWeight string) (string, bool, error) {
-	var machineID string
-	var inserted bool
-	if err := tx.QueryRow(ctx, `
-INSERT INTO machine_types (id, code, name, vcpu, memory_mb, credit_weight, custom_shape_allowed, active)
-VALUES ('mt_' || $1, $1, $2, $3, $4, $5, $6, $7)
-ON CONFLICT (code) DO UPDATE SET code = EXCLUDED.code
-RETURNING id, xmax = 0`, machine.Code, machine.Name, machine.VCPU, machine.MemoryMB, seedWeight, machine.CustomShapeAllowed, machine.Active).Scan(&machineID, &inserted); err == nil {
-		return machineID, inserted, nil
+	row, err := tx.Queries().InsertMachineType(ctx, dbsqlc.InsertMachineTypeParams{Code: machine.Code, Name: machine.Name, Vcpu: int32(machine.VCPU), MemoryMb: int32(machine.MemoryMB), CreditWeight: seedWeight, CustomShapeAllowed: machine.CustomShapeAllowed, Active: machine.Active})
+	if err == nil {
+		return row.ID, row.Inserted, nil
 	} else {
 		return "", false, fmt.Errorf("insert machine type %s: %w", machine.Code, err)
 	}
@@ -360,119 +293,74 @@ func upsertPreset(ctx context.Context, tx *db.Tx, preset Preset) error {
 	if err != nil {
 		return fmt.Errorf("upsert preset version %s: %w", preset.Code, err)
 	}
-	_, err = tx.Exec(ctx, `
-UPDATE vm_presets
-SET
-	name = $2,
-	description = $3,
-	active = $4,
-	current_version_id = $5,
-	version = CASE WHEN NOT $6 AND (name, description, active, current_version_id) IS DISTINCT FROM ($2, $3, $4, $5) THEN version + 1 ELSE version END,
-	updated_at = CASE WHEN NOT $6 AND (name, description, active, current_version_id) IS DISTINCT FROM ($2, $3, $4, $5) THEN now() ELSE updated_at END
-WHERE id = $1`, presetID, preset.Name, preset.Description, preset.Active, versionID, inserted)
-	return err
+	return tx.Queries().UpdatePreset(ctx, dbsqlc.UpdatePresetParams{ID: presetID, Name: preset.Name, Description: preset.Description, Active: preset.Active, CurrentVersionID: sql.NullString{String: versionID, Valid: true}, Inserted: inserted})
 }
 
 func insertPreset(ctx context.Context, tx *db.Tx, preset Preset) (string, bool, error) {
-	var presetID string
-	var inserted bool
-	if err := tx.QueryRow(ctx, `
-INSERT INTO vm_presets (id, code, name, description, active)
-VALUES ('preset_' || $1, $1, $2, $3, $4)
-ON CONFLICT (code) DO UPDATE SET code = EXCLUDED.code
-RETURNING id, xmax = 0`, preset.Code, preset.Name, preset.Description, preset.Active).Scan(&presetID, &inserted); err == nil {
-		return presetID, inserted, nil
+	row, err := tx.Queries().InsertPreset(ctx, dbsqlc.InsertPresetParams{Code: preset.Code, Name: preset.Name, Description: preset.Description, Active: preset.Active})
+	if err == nil {
+		return row.ID, row.Inserted, nil
 	} else {
 		return "", false, fmt.Errorf("insert preset %s: %w", preset.Code, err)
 	}
 }
 
 func ensurePlanVersion(ctx context.Context, tx *db.Tx, planID, code string, plan Plan) (string, error) {
-	var latestID, credits, metadata string
-	var versionNumber, storageGB int
-	err := tx.QueryRow(ctx, `
-SELECT id, version_number, included_credits::text, included_storage_gb, metadata::text
-FROM plan_versions
-WHERE plan_id = $1
-ORDER BY version_number DESC
-LIMIT 1`, planID).Scan(&latestID, &versionNumber, &credits, &storageGB, &metadata)
+	latest, queryErr := tx.Queries().LatestPlanVersion(ctx, planID)
 	seedCredits, err := canonicalDecimal(plan.IncludedCredits)
 	if err != nil {
 		return "", err
 	}
-	if err == nil && credits == seedCredits && storageGB == plan.IncludedStorageGB && jsonEqual(metadata, jsonDefault(plan.Metadata)) {
-		return latestID, nil
+	if queryErr == nil && latest.IncludedCredits == seedCredits && int(latest.IncludedStorageGb) == plan.IncludedStorageGB && jsonEqual(latest.Metadata, jsonDefault(plan.Metadata)) {
+		return latest.ID, nil
 	}
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return "", err
+	if queryErr != nil && !errors.Is(queryErr, sql.ErrNoRows) {
+		return "", queryErr
 	}
-	nextVersion := versionNumber + 1
+	nextVersion := int(latest.VersionNumber) + 1
 	if nextVersion == 0 {
 		nextVersion = 1
 	}
 	versionID := fmt.Sprintf("planv_%s_%d", code, nextVersion)
-	_, err = tx.Exec(ctx, `
-INSERT INTO plan_versions (id, plan_id, version_number, included_credits, included_storage_gb, metadata)
-VALUES ($1, $2, $3, $4, $5, $6)`,
-		versionID, planID, nextVersion, seedCredits, plan.IncludedStorageGB, jsonDefault(plan.Metadata))
+	err = tx.Queries().InsertPlanVersion(ctx, dbsqlc.InsertPlanVersionParams{ID: versionID, PlanID: planID, VersionNumber: int32(nextVersion), IncludedCredits: seedCredits, IncludedStorageGb: int32(plan.IncludedStorageGB), Metadata: json.RawMessage(jsonDefault(plan.Metadata))})
 	return versionID, err
 }
 
 func ensureMachineTypeVersion(ctx context.Context, tx *db.Tx, machineID, code string, machine MachineType) (string, error) {
-	var latestID, weight, metadata string
-	var versionNumber, vcpu, memoryMB int
-	err := tx.QueryRow(ctx, `
-SELECT id, version_number, vcpu, memory_mb, credit_weight::text, metadata::text
-FROM machine_type_versions
-WHERE machine_type_id = $1
-ORDER BY version_number DESC
-LIMIT 1`, machineID).Scan(&latestID, &versionNumber, &vcpu, &memoryMB, &weight, &metadata)
+	latest, queryErr := tx.Queries().LatestMachineTypeVersion(ctx, machineID)
 	seedWeight, err := canonicalDecimal(machine.CreditWeight)
 	if err != nil {
 		return "", err
 	}
-	if err == nil && vcpu == machine.VCPU && memoryMB == machine.MemoryMB && weight == seedWeight && jsonEqual(metadata, jsonDefault(machine.Metadata)) {
-		return latestID, nil
+	if queryErr == nil && int(latest.Vcpu) == machine.VCPU && int(latest.MemoryMb) == machine.MemoryMB && latest.CreditWeight == seedWeight && jsonEqual(latest.Metadata, jsonDefault(machine.Metadata)) {
+		return latest.ID, nil
 	}
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return "", err
+	if queryErr != nil && !errors.Is(queryErr, sql.ErrNoRows) {
+		return "", queryErr
 	}
-	nextVersion := versionNumber + 1
+	nextVersion := int(latest.VersionNumber) + 1
 	if nextVersion == 0 {
 		nextVersion = 1
 	}
 	versionID := fmt.Sprintf("mtv_%s_%d", code, nextVersion)
-	_, err = tx.Exec(ctx, `
-INSERT INTO machine_type_versions (id, machine_type_id, version_number, vcpu, memory_mb, credit_weight, metadata)
-VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		versionID, machineID, nextVersion, machine.VCPU, machine.MemoryMB, seedWeight, jsonDefault(machine.Metadata))
+	err = tx.Queries().InsertMachineTypeVersion(ctx, dbsqlc.InsertMachineTypeVersionParams{ID: versionID, MachineTypeID: machineID, VersionNumber: int32(nextVersion), Vcpu: int32(machine.VCPU), MemoryMb: int32(machine.MemoryMB), CreditWeight: seedWeight, Metadata: json.RawMessage(jsonDefault(machine.Metadata))})
 	return versionID, err
 }
 
 func ensurePresetVersion(ctx context.Context, tx *db.Tx, presetID, code string, preset Preset) (string, error) {
-	var latestID, manifest string
-	var versionNumber int
-	err := tx.QueryRow(ctx, `
-SELECT id, version_number, manifest::text
-FROM vm_preset_versions
-WHERE preset_id = $1
-ORDER BY version_number DESC
-LIMIT 1`, presetID).Scan(&latestID, &versionNumber, &manifest)
-	if err == nil && jsonEqual(manifest, jsonDefault(preset.Manifest)) {
-		return latestID, nil
+	latest, err := tx.Queries().LatestPresetVersion(ctx, presetID)
+	if err == nil && jsonEqual(latest.Manifest, jsonDefault(preset.Manifest)) {
+		return latest.ID, nil
 	}
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return "", err
 	}
-	nextVersion := versionNumber + 1
+	nextVersion := int(latest.VersionNumber) + 1
 	if nextVersion == 0 {
 		nextVersion = 1
 	}
 	versionID := fmt.Sprintf("presetv_%s_%d", code, nextVersion)
-	_, err = tx.Exec(ctx, `
-INSERT INTO vm_preset_versions (id, preset_id, version_number, manifest)
-VALUES ($1, $2, $3, $4)`,
-		versionID, presetID, nextVersion, jsonDefault(preset.Manifest))
+	err = tx.Queries().InsertPresetVersion(ctx, dbsqlc.InsertPresetVersionParams{ID: versionID, PresetID: presetID, VersionNumber: int32(nextVersion), Manifest: json.RawMessage(jsonDefault(preset.Manifest))})
 	return versionID, err
 }
 

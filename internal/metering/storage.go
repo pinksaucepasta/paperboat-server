@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
+	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
 )
 
 var ErrInsufficientStorage = errors.New("insufficient storage available")
@@ -41,44 +42,33 @@ func (r *StorageRepository) Allocate(ctx context.Context, accountID, projectID, 
 
 func (r *StorageRepository) allocateOnce(ctx context.Context, accountID, projectID, entryID, idempotencyKey string, amountGB int) error {
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		var included, purchased, allocated int
-		if err := tx.QueryRow(ctx, `
-SELECT included_gb, purchased_gb, allocated_gb
-FROM storage_accounts
-WHERE id = $1
-FOR UPDATE`, accountID).Scan(&included, &purchased, &allocated); err != nil {
+		q := tx.Queries()
+		account, err := q.GetStorageAccountForUpdate(ctx, accountID)
+		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return fmt.Errorf("storage account not found")
 			}
 			return err
 		}
-		var existing storageLedgerEntry
-		if err := tx.QueryRow(ctx, `
-SELECT account_id, entry_type, amount_gb, source_type, source_id
-FROM storage_ledger_entries
-WHERE idempotency_key = $1`, idempotencyKey).Scan(&existing.accountID, &existing.entryType, &existing.amountGB, &existing.sourceType, &existing.sourceID); err != nil {
+		existingRow, err := q.GetStorageLedgerEntryByIdempotencyKey(ctx, idempotencyKey)
+		if err != nil {
 			if !errors.Is(err, sql.ErrNoRows) {
 				return err
 			}
 		} else {
+			existing := storageLedgerEntry{accountID: existingRow.AccountID, entryType: existingRow.EntryType, amountGB: int(existingRow.AmountGb), sourceType: existingRow.SourceType, sourceID: existingRow.SourceID}
 			if existing.matches(accountID, projectID, amountGB) {
 				return nil
 			}
 			return ErrIdempotencyConflict
 		}
-		if allocated+amountGB > included+purchased {
+		if int(account.AllocatedGb)+amountGB > int(account.IncludedGb+account.PurchasedGb) {
 			return ErrInsufficientStorage
 		}
-		if _, err := tx.Exec(ctx, `
-UPDATE storage_accounts
-SET allocated_gb = allocated_gb + $2, version = version + 1, updated_at = now()
-WHERE id = $1`, accountID, amountGB); err != nil {
+		if err := q.IncreaseAllocatedStorage(ctx, dbsqlc.IncreaseAllocatedStorageParams{ID: accountID, AllocatedGb: int32(amountGB)}); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `
-INSERT INTO storage_ledger_entries (id, account_id, entry_type, amount_gb, source_type, source_id, idempotency_key)
-VALUES ($1, $2, 'allocation', $3, 'project', $4, $5)
-`, entryID, accountID, amountGB, projectID, idempotencyKey); err != nil {
+		if err := q.CreateStorageAllocationEntry(ctx, dbsqlc.CreateStorageAllocationEntryParams{ID: entryID, AccountID: accountID, AmountGb: int32(amountGB), SourceID: projectID, IdempotencyKey: idempotencyKey}); err != nil {
 			return err
 		}
 		return nil

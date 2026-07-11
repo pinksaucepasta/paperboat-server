@@ -25,11 +25,11 @@ func TestMigrateRequiresPostgresIntegrationDSN(t *testing.T) {
 		t.Fatal(err)
 	}
 	var applied bool
-	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (SELECT 1 FROM paperboat.schema_migrations WHERE version = 1)`).Scan(&applied); err != nil {
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (SELECT 1 FROM paperboat.goose_db_version WHERE version_id = 10 AND is_applied)`).Scan(&applied); err != nil {
 		t.Fatal(err)
 	}
 	if !applied {
-		t.Fatal("migration version 1 was not recorded")
+		t.Fatal("Goose migration version 10 was not recorded")
 	}
 	var hasRole bool
 	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (

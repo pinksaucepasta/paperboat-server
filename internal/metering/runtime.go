@@ -14,6 +14,7 @@ import (
 
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
+	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
 	"github.com/pinksaucepasta/paperboat-server/internal/secrets"
 )
@@ -246,81 +247,59 @@ type ActivityHeartbeat struct {
 	Signals         map[string]string
 }
 
+func runtimeIntervalFromOpenRow(row dbsqlc.GetOpenRuntimeIntervalRow) RuntimeInterval {
+	return RuntimeInterval{ID: row.ID, ProjectID: row.ProjectID, UserID: row.UserID, FlyMachineID: row.FlyMachineID, CreditWeight: row.CreditWeight, LastMeteredAt: row.LastMeteredAt, ObservedState: row.ObservedState, Confidence: row.Confidence, ObservationSrc: row.ObservationSource}
+}
+
+func checkpointFromPendingRow(row dbsqlc.ListPendingMeteringCheckpointsRow) Checkpoint {
+	return Checkpoint{ID: row.ID, RuntimeIntervalID: row.RuntimeIntervalID, ProjectID: row.ProjectID, UserID: row.UserID, PeriodStart: row.PeriodStart, PeriodEnd: row.PeriodEnd, RuntimeSeconds: int(row.RuntimeSeconds), CreditWeight: row.CreditWeight, CreditsDebited: row.CreditsDebited, IdempotencyKey: row.IdempotencyKey}
+}
+
+func meteringCheckpointParams(checkpoint Checkpoint) dbsqlc.InsertMeteringCheckpointParams {
+	return dbsqlc.InsertMeteringCheckpointParams{ID: checkpoint.ID, RuntimeIntervalID: checkpoint.RuntimeIntervalID, ProjectID: checkpoint.ProjectID, UserID: checkpoint.UserID, PeriodStart: checkpoint.PeriodStart, PeriodEnd: checkpoint.PeriodEnd, RuntimeSeconds: int32(checkpoint.RuntimeSeconds), CreditWeight: checkpoint.CreditWeight, CreditsDebited: checkpoint.CreditsDebited, IdempotencyKey: checkpoint.IdempotencyKey}
+}
+
 func (r *RuntimeRepository) MeterableMachines(ctx context.Context) ([]MeterableMachine, error) {
-	rows, err := r.db.SQL().QueryContext(ctx, `
-SELECT p.id, p.user_id, fm.fly_machine_id, prc.applied_machine_type_version_id,
-       mtv.credit_weight::text, ito.duration_seconds
-FROM paperboat.projects p
-JOIN paperboat.fly_machines fm ON fm.project_id = p.id
-JOIN paperboat.project_runtime_configs prc ON prc.project_id = p.id
-JOIN paperboat.machine_type_versions mtv ON mtv.id = prc.applied_machine_type_version_id
-JOIN paperboat.idle_timeout_options ito ON ito.id = prc.applied_idle_timeout_option_id
-WHERE p.state IN ('ready', 'running', 'starting', 'stopping', 'restarting', 'suspended')
-  AND prc.applied_machine_type_version_id IS NOT NULL`)
+	rows, err := r.db.Queries().ListMeterableMachines(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []MeterableMachine
-	for rows.Next() {
-		var machine MeterableMachine
-		if err := rows.Scan(&machine.ProjectID, &machine.UserID, &machine.FlyMachineID, &machine.MachineTypeVersionID, &machine.CreditWeight, &machine.IdleTimeoutSeconds); err != nil {
-			return nil, err
-		}
-		out = append(out, machine)
+	out := make([]MeterableMachine, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, MeterableMachine{ProjectID: row.ProjectID, UserID: row.UserID, FlyMachineID: row.FlyMachineID, MachineTypeVersionID: row.AppliedMachineTypeVersionID.String, CreditWeight: row.CreditWeight, IdleTimeoutSeconds: int(row.DurationSeconds)})
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (r *RuntimeRepository) OpenInterval(ctx context.Context, projectID string) (RuntimeInterval, bool, error) {
-	var interval RuntimeInterval
-	err := r.db.SQL().QueryRowContext(ctx, `
-SELECT id, project_id, user_id, fly_machine_id, credit_weight::text, last_metered_at, observed_state, confidence, observation_source
-FROM paperboat.machine_runtime_intervals
-WHERE project_id = $1 AND stopped_at IS NULL`, projectID).Scan(&interval.ID, &interval.ProjectID, &interval.UserID, &interval.FlyMachineID, &interval.CreditWeight, &interval.LastMeteredAt, &interval.ObservedState, &interval.Confidence, &interval.ObservationSrc)
+	row, err := r.db.Queries().GetOpenRuntimeInterval(ctx, projectID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RuntimeInterval{}, false, nil
 	}
-	return interval, err == nil, err
+	return runtimeIntervalFromOpenRow(row), err == nil, err
 }
 
 func (r *RuntimeRepository) PendingCheckpoints(ctx context.Context) ([]Checkpoint, error) {
-	rows, err := r.db.SQL().QueryContext(ctx, `
-SELECT id, runtime_interval_id, project_id, user_id, period_start, period_end,
-       runtime_seconds, credit_weight::text, credits_debited::text, idempotency_key
-FROM paperboat.metering_checkpoints
-WHERE state IN ('created', 'failed')
-ORDER BY period_end ASC, created_at ASC
-LIMIT 100`)
+	rows, err := r.db.Queries().ListPendingMeteringCheckpoints(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []Checkpoint
-	for rows.Next() {
-		var checkpoint Checkpoint
-		if err := rows.Scan(&checkpoint.ID, &checkpoint.RuntimeIntervalID, &checkpoint.ProjectID, &checkpoint.UserID, &checkpoint.PeriodStart, &checkpoint.PeriodEnd, &checkpoint.RuntimeSeconds, &checkpoint.CreditWeight, &checkpoint.CreditsDebited, &checkpoint.IdempotencyKey); err != nil {
-			return nil, err
-		}
-		out = append(out, checkpoint)
+	out := make([]Checkpoint, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, checkpointFromPendingRow(row))
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (r *RuntimeRepository) EnsureOpenInterval(ctx context.Context, machine MeterableMachine, now time.Time) (RuntimeInterval, bool, error) {
 	var interval RuntimeInterval
 	opened := false
 	err := r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		err := tx.QueryRow(ctx, `
-SELECT id, project_id, user_id, fly_machine_id, credit_weight::text, last_metered_at, observed_state, confidence, observation_source
-FROM machine_runtime_intervals
-WHERE project_id = $1 AND stopped_at IS NULL
-FOR UPDATE`, machine.ProjectID).Scan(&interval.ID, &interval.ProjectID, &interval.UserID, &interval.FlyMachineID, &interval.CreditWeight, &interval.LastMeteredAt, &interval.ObservedState, &interval.Confidence, &interval.ObservationSrc)
+		q := tx.Queries()
+		row, err := q.GetOpenRuntimeIntervalForUpdate(ctx, machine.ProjectID)
 		if err == nil {
-			_, err = tx.Exec(ctx, `
-UPDATE machine_runtime_intervals
-SET observed_state = 'running', observation_source = 'fly_poll', confidence = 'high', updated_at = now()
-WHERE id = $1`, interval.ID)
+			interval = RuntimeInterval{ID: row.ID, ProjectID: row.ProjectID, UserID: row.UserID, FlyMachineID: row.FlyMachineID, CreditWeight: row.CreditWeight, LastMeteredAt: row.LastMeteredAt, ObservedState: row.ObservedState, Confidence: row.Confidence, ObservationSrc: row.ObservationSource}
+			err = q.MarkRuntimeIntervalRunning(ctx, interval.ID)
 			interval.ObservedState = "running"
 			interval.ObservationSrc = "fly_poll"
 			interval.Confidence = "high"
@@ -341,12 +320,7 @@ WHERE id = $1`, interval.ID)
 			ObservationSrc: "fly_poll",
 			Confidence:     "high",
 		}
-		_, err = tx.Exec(ctx, `
-INSERT INTO machine_runtime_intervals
-	(id, project_id, user_id, fly_machine_id, machine_type_version_id, credit_weight, started_at, last_metered_at, observed_state, observation_source, confidence)
-VALUES ($1, $2, $3, $4, $5, $6::numeric, $7, $7, 'running', 'fly_poll', 'high')`,
-			interval.ID, machine.ProjectID, machine.UserID, machine.FlyMachineID, machine.MachineTypeVersionID, machine.CreditWeight, now)
-		return err
+		return q.InsertRuntimeInterval(ctx, dbsqlc.InsertRuntimeIntervalParams{ID: interval.ID, ProjectID: machine.ProjectID, UserID: machine.UserID, FlyMachineID: machine.FlyMachineID, MachineTypeVersionID: machine.MachineTypeVersionID, CreditWeight: machine.CreditWeight, StartedAt: now})
 	})
 	return interval, opened, err
 }
@@ -357,16 +331,15 @@ func (r *RuntimeRepository) CreateCheckpoint(ctx context.Context, interval Runti
 	}
 	var checkpoint Checkpoint
 	err := r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		if err := tx.QueryRow(ctx, `
-SELECT id, project_id, user_id, fly_machine_id, credit_weight::text, last_metered_at
-FROM machine_runtime_intervals
-WHERE id = $1 AND stopped_at IS NULL
-FOR UPDATE`, interval.ID).Scan(&interval.ID, &interval.ProjectID, &interval.UserID, &interval.FlyMachineID, &interval.CreditWeight, &interval.LastMeteredAt); err != nil {
+		q := tx.Queries()
+		row, err := q.GetRuntimeIntervalForCheckpoint(ctx, interval.ID)
+		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return nil
 			}
 			return err
 		}
+		interval = RuntimeInterval{ID: row.ID, ProjectID: row.ProjectID, UserID: row.UserID, FlyMachineID: row.FlyMachineID, CreditWeight: row.CreditWeight, LastMeteredAt: row.LastMeteredAt}
 		existing, ok, err := pendingCheckpointTx(ctx, tx, interval.ID)
 		if err != nil || ok {
 			checkpoint = existing
@@ -390,16 +363,11 @@ FOR UPDATE`, interval.ID).Scan(&interval.ID, &interval.ProjectID, &interval.User
 			CreditWeight:      interval.CreditWeight,
 			IdempotencyKey:    fmt.Sprintf("metering.runtime:%s:%d:%d", interval.ID, interval.LastMeteredAt.UnixNano(), now.UnixNano()),
 		}
-		if err := tx.QueryRow(ctx, `SELECT (($1::numeric / 3600.0) * $2::numeric)::numeric(18,6)::text`, seconds, interval.CreditWeight).Scan(&checkpoint.CreditsDebited); err != nil {
+		checkpoint.CreditsDebited, err = q.CalculateRuntimeCredits(ctx, dbsqlc.CalculateRuntimeCreditsParams{RuntimeSeconds: int64(seconds), CreditWeight: interval.CreditWeight})
+		if err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `
-INSERT INTO metering_checkpoints
-	(id, runtime_interval_id, project_id, user_id, period_start, period_end, runtime_seconds, credit_weight, credits_debited, idempotency_key, state)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8::numeric, $9::numeric, $10, 'created')
-ON CONFLICT (idempotency_key) DO NOTHING`,
-			checkpoint.ID, checkpoint.RuntimeIntervalID, checkpoint.ProjectID, checkpoint.UserID, checkpoint.PeriodStart, checkpoint.PeriodEnd, checkpoint.RuntimeSeconds, checkpoint.CreditWeight, checkpoint.CreditsDebited, checkpoint.IdempotencyKey)
-		return err
+		return q.InsertMeteringCheckpoint(ctx, meteringCheckpointParams(checkpoint))
 	})
 	if err != nil || checkpoint.ID == "" {
 		return Checkpoint{}, false, err
@@ -410,23 +378,21 @@ ON CONFLICT (idempotency_key) DO NOTHING`,
 func (r *RuntimeRepository) EnsureFinalCheckpoint(ctx context.Context, interval RuntimeInterval, stoppedAt time.Time) (Checkpoint, bool, error) {
 	var checkpoint Checkpoint
 	err := r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		if err := tx.QueryRow(ctx, `
-SELECT id, project_id, user_id, fly_machine_id, credit_weight::text, last_metered_at
-FROM machine_runtime_intervals
-WHERE id = $1
-FOR UPDATE`, interval.ID).Scan(&interval.ID, &interval.ProjectID, &interval.UserID, &interval.FlyMachineID, &interval.CreditWeight, &interval.LastMeteredAt); err != nil {
+		q := tx.Queries()
+		row, err := q.GetRuntimeIntervalForFinalCheckpoint(ctx, interval.ID)
+		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return nil
 			}
 			return err
 		}
+		interval = RuntimeInterval{ID: row.ID, ProjectID: row.ProjectID, UserID: row.UserID, FlyMachineID: row.FlyMachineID, CreditWeight: row.CreditWeight, LastMeteredAt: row.LastMeteredAt}
 		periodStart := interval.LastMeteredAt
-		var maxEnd sql.NullTime
-		if err := tx.QueryRow(ctx, `SELECT max(period_end) FROM metering_checkpoints WHERE runtime_interval_id = $1`, interval.ID).Scan(&maxEnd); err != nil {
+		latestEnd, err := q.GetLatestCheckpointEnd(ctx, interval.ID)
+		if err == nil && latestEnd.After(periodStart) {
+			periodStart = latestEnd
+		} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
-		}
-		if maxEnd.Valid && maxEnd.Time.After(periodStart) {
-			periodStart = maxEnd.Time
 		}
 		seconds := int(stoppedAt.Sub(periodStart).Seconds())
 		if seconds > 0 {
@@ -441,15 +407,11 @@ FOR UPDATE`, interval.ID).Scan(&interval.ID, &interval.ProjectID, &interval.User
 				CreditWeight:      interval.CreditWeight,
 				IdempotencyKey:    fmt.Sprintf("metering.runtime:%s:%d:%d", interval.ID, periodStart.UnixNano(), stoppedAt.UnixNano()),
 			}
-			if err := tx.QueryRow(ctx, `SELECT (($1::numeric / 3600.0) * $2::numeric)::numeric(18,6)::text`, seconds, interval.CreditWeight).Scan(&tail.CreditsDebited); err != nil {
+			tail.CreditsDebited, err = q.CalculateRuntimeCredits(ctx, dbsqlc.CalculateRuntimeCreditsParams{RuntimeSeconds: int64(seconds), CreditWeight: interval.CreditWeight})
+			if err != nil {
 				return err
 			}
-			if _, err := tx.Exec(ctx, `
-INSERT INTO metering_checkpoints
-	(id, runtime_interval_id, project_id, user_id, period_start, period_end, runtime_seconds, credit_weight, credits_debited, idempotency_key, state)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8::numeric, $9::numeric, $10, 'created')
-ON CONFLICT (idempotency_key) DO NOTHING`,
-				tail.ID, tail.RuntimeIntervalID, tail.ProjectID, tail.UserID, tail.PeriodStart, tail.PeriodEnd, tail.RuntimeSeconds, tail.CreditWeight, tail.CreditsDebited, tail.IdempotencyKey); err != nil {
+			if err := q.InsertMeteringCheckpoint(ctx, meteringCheckpointParams(tail)); err != nil {
 				return err
 			}
 		}
@@ -467,44 +429,33 @@ ON CONFLICT (idempotency_key) DO NOTHING`,
 }
 
 func pendingCheckpointTx(ctx context.Context, tx *db.Tx, intervalID string) (Checkpoint, bool, error) {
-	var checkpoint Checkpoint
-	err := tx.QueryRow(ctx, `
-SELECT id, runtime_interval_id, project_id, user_id, period_start, period_end,
-       runtime_seconds, credit_weight::text, credits_debited::text, idempotency_key
-FROM metering_checkpoints
-WHERE runtime_interval_id = $1 AND state IN ('created', 'failed')
-ORDER BY period_end ASC, created_at ASC
-LIMIT 1
-FOR UPDATE`, intervalID).Scan(&checkpoint.ID, &checkpoint.RuntimeIntervalID, &checkpoint.ProjectID, &checkpoint.UserID, &checkpoint.PeriodStart, &checkpoint.PeriodEnd, &checkpoint.RuntimeSeconds, &checkpoint.CreditWeight, &checkpoint.CreditsDebited, &checkpoint.IdempotencyKey)
+	row, err := tx.Queries().GetPendingCheckpointForUpdate(ctx, intervalID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Checkpoint{}, false, nil
 	}
+	checkpoint := Checkpoint{ID: row.ID, RuntimeIntervalID: row.RuntimeIntervalID, ProjectID: row.ProjectID, UserID: row.UserID, PeriodStart: row.PeriodStart, PeriodEnd: row.PeriodEnd, RuntimeSeconds: int(row.RuntimeSeconds), CreditWeight: row.CreditWeight, CreditsDebited: row.CreditsDebited, IdempotencyKey: row.IdempotencyKey}
 	return checkpoint, err == nil, err
 }
 
 func (r *RuntimeRepository) MarkCheckpointProcessed(ctx context.Context, checkpoint Checkpoint) error {
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		if _, err := tx.Exec(ctx, `UPDATE metering_checkpoints SET state = 'processed', processed_at = now() WHERE id = $1`, checkpoint.ID); err != nil {
+		q := tx.Queries()
+		if err := q.MarkMeteringCheckpointProcessed(ctx, checkpoint.ID); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `
-UPDATE machine_runtime_intervals
-SET last_metered_at = $2, updated_at = now()
-WHERE id = $1 AND last_metered_at = $3`, checkpoint.RuntimeIntervalID, checkpoint.PeriodEnd, checkpoint.PeriodStart)
-		return err
+		return q.AdvanceRuntimeIntervalMetering(ctx, dbsqlc.AdvanceRuntimeIntervalMeteringParams{ID: checkpoint.RuntimeIntervalID, LastMeteredAt: checkpoint.PeriodEnd, LastMeteredAt_2: checkpoint.PeriodStart})
 	})
 }
 
 func (r *RuntimeRepository) MarkCheckpointFailed(ctx context.Context, checkpointID string, cause error) error {
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		_, err := tx.Exec(ctx, `UPDATE metering_checkpoints SET state = 'failed', last_error = $2 WHERE id = $1`, checkpointID, cause.Error())
-		return err
+		return tx.Queries().MarkMeteringCheckpointFailed(ctx, dbsqlc.MarkMeteringCheckpointFailedParams{ID: checkpointID, LastError: cause.Error()})
 	})
 }
 
 func (r *RuntimeRepository) MarkCheckpointFailedAndQueueCreditStop(ctx context.Context, checkpoint Checkpoint, cause error) error {
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		if _, err := tx.Exec(ctx, `UPDATE metering_checkpoints SET state = 'failed', last_error = $2 WHERE id = $1`, checkpoint.ID, cause.Error()); err != nil {
+		if err := tx.Queries().MarkMeteringCheckpointFailed(ctx, dbsqlc.MarkMeteringCheckpointFailedParams{ID: checkpoint.ID, LastError: cause.Error()}); err != nil {
 			return err
 		}
 		return queueSystemStopTx(ctx, tx, checkpoint.ProjectID, "credit_exhausted", map[string]any{
@@ -517,63 +468,30 @@ func (r *RuntimeRepository) MarkCheckpointFailedAndQueueCreditStop(ctx context.C
 
 func (r *RuntimeRepository) CloseOpenInterval(ctx context.Context, projectID string, stoppedAt time.Time, source, confidence, observedState string) error {
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		_, err := tx.Exec(ctx, `
-UPDATE machine_runtime_intervals
-SET stopped_at = $2, observed_state = $3, observation_source = $4, confidence = $5, updated_at = now()
-WHERE project_id = $1 AND stopped_at IS NULL`, projectID, stoppedAt, observedState, source, confidence)
-		return err
+		return tx.Queries().CloseRuntimeInterval(ctx, dbsqlc.CloseRuntimeIntervalParams{ProjectID: projectID, StoppedAt: sql.NullTime{Time: stoppedAt, Valid: true}, ObservedState: observedState, ObservationSource: source, Confidence: confidence})
 	})
 }
 
 func (r *RuntimeRepository) RecordObservedProjectState(ctx context.Context, projectID, providerState, projectState string) error {
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		if _, err := tx.Exec(ctx, `UPDATE fly_machines SET state = $2, version = version + 1, updated_at = now() WHERE project_id = $1`, projectID, providerState); err != nil {
+		q := tx.Queries()
+		if err := q.UpdateObservedFlyMachineState(ctx, dbsqlc.UpdateObservedFlyMachineStateParams{ProjectID: projectID, State: providerState}); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `UPDATE projects SET state = $2, version = version + 1, updated_at = now() WHERE id = $1 AND state NOT IN ('deleted', 'deleting', 'provisioning_storage', 'provisioning_machine', 'stopping', 'restarting', 'suspended')`, projectID, projectState)
-		return err
+		return q.UpdateObservedProjectState(ctx, dbsqlc.UpdateObservedProjectStateParams{ID: projectID, State: projectState})
 	})
 }
 
 func (r *RuntimeRepository) EnforceIdleAndReporterState(ctx context.Context, now time.Time, cfg EnforcementConfig) error {
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		rows, err := tx.Query(ctx, `
-SELECT p.id, coalesce(pam.last_activity_at, mri.started_at), ito.duration_seconds, pam.keep_alive_until
-FROM projects p
-JOIN machine_runtime_intervals mri ON mri.project_id = p.id AND mri.stopped_at IS NULL
-JOIN project_runtime_configs prc ON prc.project_id = p.id
-JOIN idle_timeout_options ito ON ito.id = prc.applied_idle_timeout_option_id
-LEFT JOIN project_activity_markers pam ON pam.project_id = p.id
-WHERE p.state = 'running'
-  AND (pam.keep_alive_until IS NULL OR pam.keep_alive_until <= $1)
-FOR UPDATE OF p SKIP LOCKED`, now)
+		rows, err := tx.Queries().ListIdleProjectsForUpdate(ctx, sql.NullTime{Time: now, Valid: true})
 		if err != nil {
 			return err
 		}
-		type idleStop struct {
-			projectID      string
-			lastActivity   time.Time
-			timeoutSeconds int
-			keepAliveUntil sql.NullTime
-		}
-		var stops []idleStop
-		for rows.Next() {
-			var stop idleStop
-			if err := rows.Scan(&stop.projectID, &stop.lastActivity, &stop.timeoutSeconds, &stop.keepAliveUntil); err != nil {
-				rows.Close()
-				return err
-			}
-			stops = append(stops, stop)
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return err
-		}
-		rows.Close()
-		for _, stop := range stops {
-			deadline := stop.lastActivity.Add(time.Duration(stop.timeoutSeconds) * time.Second)
+		for _, stop := range rows {
+			deadline := stop.LastActivityAt.Add(time.Duration(stop.DurationSeconds) * time.Second)
 			if cfg.IdleWarningLead > 0 && now.Before(deadline) && !now.Before(deadline.Add(-cfg.IdleWarningLead)) {
-				if err := emitIdleWarningTx(ctx, tx, stop.projectID, stop.lastActivity, deadline); err != nil {
+				if err := emitIdleWarningTx(ctx, tx, stop.ProjectID, stop.LastActivityAt, deadline); err != nil {
 					return err
 				}
 				continue
@@ -581,9 +499,9 @@ FOR UPDATE OF p SKIP LOCKED`, now)
 			if now.Before(deadline) {
 				continue
 			}
-			if err := queueSystemStopTx(ctx, tx, stop.projectID, "idle_timeout", map[string]any{
-				"last_activity_at":     stop.lastActivity.UTC().Format(time.RFC3339Nano),
-				"idle_timeout_seconds": stop.timeoutSeconds,
+			if err := queueSystemStopTx(ctx, tx, stop.ProjectID, "idle_timeout", map[string]any{
+				"last_activity_at":     stop.LastActivityAt.UTC().Format(time.RFC3339Nano),
+				"idle_timeout_seconds": int(stop.DurationSeconds),
 			}); err != nil {
 				return err
 			}
@@ -601,43 +519,13 @@ FOR UPDATE OF p SKIP LOCKED`, now)
 }
 
 func (r *RuntimeRepository) enforceEntitlementLossTx(ctx context.Context, tx *db.Tx, now time.Time) error {
-	rows, err := tx.Query(ctx, `
-SELECT p.id, p.user_id
-FROM projects p
-WHERE p.state = 'running'
-  AND EXISTS (
-    SELECT 1 FROM machine_runtime_intervals mri
-    WHERE mri.project_id = p.id AND mri.stopped_at IS NULL
-  )
-  AND NOT EXISTS (
-    SELECT 1 FROM subscriptions s
-    WHERE s.user_id = p.user_id
-      AND s.state IN ('active', 'trialing')
-      AND (s.current_period_end IS NULL OR s.current_period_end > $1)
-  )
-FOR UPDATE OF p SKIP LOCKED`, now)
+	rows, err := tx.Queries().ListEntitlementLostProjectsForUpdate(ctx, sql.NullTime{Time: now, Valid: true})
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	type stop struct {
-		projectID string
-		userID    string
-	}
-	var stops []stop
-	for rows.Next() {
-		var item stop
-		if err := rows.Scan(&item.projectID, &item.userID); err != nil {
-			return err
-		}
-		stops = append(stops, item)
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	for _, item := range stops {
-		if err := queueSystemStopTx(ctx, tx, item.projectID, "entitlement_lost", map[string]any{
-			"user_id": item.userID,
+	for _, item := range rows {
+		if err := queueSystemStopTx(ctx, tx, item.ProjectID, "entitlement_lost", map[string]any{
+			"user_id": item.UserID,
 		}); err != nil {
 			return err
 		}
@@ -646,57 +534,29 @@ FOR UPDATE OF p SKIP LOCKED`, now)
 }
 
 func (r *RuntimeRepository) enforceReporterLossTx(ctx context.Context, tx *db.Tx, now time.Time, cfg EnforcementConfig) error {
-	rows, err := tx.Query(ctx, `
-SELECT p.id, pam.last_heartbeat_at, pam.reporter_lost_since
-FROM projects p
-JOIN machine_runtime_intervals mri ON mri.project_id = p.id AND mri.stopped_at IS NULL
-LEFT JOIN project_activity_markers pam ON pam.project_id = p.id
-WHERE p.state = 'running'
-  AND pam.last_heartbeat_at IS NOT NULL
-  AND pam.last_heartbeat_at <= $1::timestamptz
-FOR UPDATE OF p SKIP LOCKED`, now.Add(-cfg.HeartbeatGrace))
+	q := tx.Queries()
+	rows, err := q.ListReporterLostProjectsForUpdate(ctx, sql.NullTime{Time: now.Add(-cfg.HeartbeatGrace), Valid: true})
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	type lost struct {
-		projectID string
-		heartbeat time.Time
-		lostSince sql.NullTime
-	}
-	var lostRows []lost
-	for rows.Next() {
-		var item lost
-		if err := rows.Scan(&item.projectID, &item.heartbeat, &item.lostSince); err != nil {
-			return err
-		}
-		lostRows = append(lostRows, item)
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	for _, item := range lostRows {
-		lostSince := item.heartbeat.Add(cfg.HeartbeatGrace)
-		if item.lostSince.Valid {
-			lostSince = item.lostSince.Time
-		} else if _, err := tx.Exec(ctx, `UPDATE project_activity_markers SET reporter_lost_since = $2, updated_at = now() WHERE project_id = $1`, item.projectID, lostSince); err != nil {
+	for _, item := range rows {
+		heartbeat := item.LastHeartbeatAt.Time
+		lostSince := heartbeat.Add(cfg.HeartbeatGrace)
+		if item.ReporterLostSince.Valid {
+			lostSince = item.ReporterLostSince.Time
+		} else if err := q.SetReporterLostSince(ctx, dbsqlc.SetReporterLostSinceParams{ProjectID: item.ProjectID, ReporterLostSince: sql.NullTime{Time: lostSince, Valid: true}}); err != nil {
 			return err
 		}
 		if !now.Before(lostSince.Add(cfg.ReporterLostStopGrace)) {
-			if err := queueSystemStopTx(ctx, tx, item.projectID, "activity_reporter_lost", map[string]any{
-				"last_heartbeat_at": item.heartbeat.UTC().Format(time.RFC3339Nano),
+			if err := queueSystemStopTx(ctx, tx, item.ProjectID, "activity_reporter_lost", map[string]any{
+				"last_heartbeat_at": heartbeat.UTC().Format(time.RFC3339Nano),
 				"lost_since":        lostSince.UTC().Format(time.RFC3339Nano),
 			}); err != nil {
 				return err
 			}
 		}
 	}
-	_, err = tx.Exec(ctx, `
-UPDATE project_activity_markers
-SET reporter_lost_since = NULL, updated_at = now()
-WHERE reporter_lost_since IS NOT NULL
-  AND last_heartbeat_at > $1::timestamptz`, now.Add(-cfg.HeartbeatGrace))
-	return err
+	return q.ClearRecoveredReporterLoss(ctx, sql.NullTime{Time: now.Add(-cfg.HeartbeatGrace), Valid: true})
 }
 
 func (r *RuntimeRepository) RecordActivity(ctx context.Context, projectID string, at time.Time, source string, metadata map[string]any) error {
@@ -715,15 +575,7 @@ func (r *RuntimeRepository) RecordActivity(ctx context.Context, projectID string
 		return err
 	}
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		_, err := tx.Exec(ctx, `
-INSERT INTO project_activity_markers (project_id, last_activity_at, source, metadata)
-VALUES ($1, $2, $3, coalesce($4::jsonb, '{}'::jsonb))
-ON CONFLICT (project_id) DO UPDATE
-SET last_activity_at = greatest(project_activity_markers.last_activity_at, EXCLUDED.last_activity_at),
-    source = EXCLUDED.source,
-    metadata = EXCLUDED.metadata,
-    updated_at = now()`, projectID, at, source, string(b))
-		return err
+		return tx.Queries().UpsertMeteringActivity(ctx, dbsqlc.UpsertMeteringActivityParams{ProjectID: projectID, LastActivityAt: at, Source: source, Metadata: b})
 	})
 }
 
@@ -752,25 +604,7 @@ func (r *RuntimeRepository) RecordHeartbeat(ctx context.Context, heartbeat Activ
 		return err
 	}
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		_, err := tx.Exec(ctx, `
-INSERT INTO project_activity_markers
-	(project_id, machine_id, last_activity_at, source, metadata, last_heartbeat_at, reporter_version, signals)
-VALUES ($1, $2, $3, 'vm_heartbeat', '{}'::jsonb, $4, $5, $6::jsonb)
-ON CONFLICT (project_id) DO UPDATE
-SET machine_id = EXCLUDED.machine_id,
-    last_activity_at = greatest(project_activity_markers.last_activity_at, EXCLUDED.last_activity_at),
-    source = EXCLUDED.source,
-    last_heartbeat_at = greatest(coalesce(project_activity_markers.last_heartbeat_at, '-infinity'::timestamptz), EXCLUDED.last_heartbeat_at),
-    reporter_version = EXCLUDED.reporter_version,
-    signals = EXCLUDED.signals,
-    reporter_lost_since = NULL,
-    idle_warning_sent_at = CASE
-      WHEN EXCLUDED.last_activity_at > project_activity_markers.last_activity_at THEN NULL
-      ELSE project_activity_markers.idle_warning_sent_at
-    END,
-    updated_at = now()`,
-			heartbeat.ProjectID, heartbeat.MachineID, heartbeat.LastActivityAt, heartbeat.LastHeartbeatAt, heartbeat.ReporterVersion, string(b))
-		return err
+		return tx.Queries().UpsertActivityHeartbeat(ctx, dbsqlc.UpsertActivityHeartbeatParams{ProjectID: heartbeat.ProjectID, MachineID: heartbeat.MachineID, LastActivityAt: heartbeat.LastActivityAt, LastHeartbeatAt: sql.NullTime{Time: heartbeat.LastHeartbeatAt, Valid: true}, ReporterVersion: heartbeat.ReporterVersion, Signals: b})
 	})
 }
 
@@ -778,12 +612,7 @@ func (r *RuntimeRepository) VerifyHeartbeatCredential(ctx context.Context, proje
 	if projectID == "" || machineID == "" || token == "" || r.encryptionKey == "" {
 		return ErrInvalidHeartbeatCredential
 	}
-	var encoded string
-	err := r.db.SQL().QueryRowContext(ctx, `
-SELECT ar.metadata->>'machine_token_ciphertext'
-FROM paperboat.fly_machines fm
-JOIN paperboat.agentunnel_resources ar ON ar.project_id = fm.project_id
-WHERE fm.project_id = $1 AND fm.fly_machine_id = $2`, projectID, machineID).Scan(&encoded)
+	encoded, err := r.db.Queries().GetHeartbeatMachineTokenCiphertext(ctx, dbsqlc.GetHeartbeatMachineTokenCiphertextParams{ProjectID: projectID, FlyMachineID: machineID})
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrInvalidHeartbeatCredential
 	}
@@ -808,16 +637,7 @@ WHERE fm.project_id = $1 AND fm.fly_machine_id = $2`, projectID, machineID).Scan
 }
 
 func emitIdleWarningTx(ctx context.Context, tx *db.Tx, projectID string, lastActivity, deadline time.Time) error {
-	result, err := tx.Exec(ctx, `
-INSERT INTO project_activity_markers (project_id, last_activity_at, source, metadata, idle_warning_sent_at)
-VALUES ($1, $2, 'server', '{}'::jsonb, now())
-ON CONFLICT (project_id) DO UPDATE
-SET idle_warning_sent_at = now(), updated_at = now()
-WHERE project_activity_markers.idle_warning_sent_at IS NULL`, projectID, lastActivity)
-	if err != nil {
-		return err
-	}
-	rows, err := result.RowsAffected()
+	rows, err := tx.Queries().EmitIdleWarning(ctx, dbsqlc.EmitIdleWarningParams{ProjectID: projectID, LastActivityAt: lastActivity})
 	if err != nil {
 		return err
 	}
@@ -831,38 +651,24 @@ WHERE project_activity_markers.idle_warning_sent_at IS NULL`, projectID, lastAct
 }
 
 func queueSystemStopTx(ctx context.Context, tx *db.Tx, projectID, reason string, metadata map[string]any) error {
-	if _, err := tx.Exec(ctx, `UPDATE projects SET state = 'stopping', version = version + 1, updated_at = now() WHERE id = $1 AND state NOT IN ('deleted', 'deleting', 'stopping', 'stopped')`, projectID); err != nil {
+	q := tx.Queries()
+	if err := q.MarkProjectStoppingForEnforcement(ctx, projectID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `
-UPDATE access_sessions
-SET state = 'revoked',
-    revoked_at = now(),
-    updated_at = now(),
-    version = version + 1,
-    descriptor = jsonb_set(descriptor, '{revocation_reason}', to_jsonb($2::text), true)
-WHERE project_id = $1
-  AND state = 'active'
-  AND revoked_at IS NULL`, projectID, reason); err != nil {
+	if err := q.RevokeProjectSessionsForEnforcement(ctx, dbsqlc.RevokeProjectSessionsForEnforcementParams{ProjectID: projectID, Reason: reason}); err != nil {
 		return err
 	}
 	payload := fmt.Sprintf(`{"previous_state":"running","reason":%q}`, reason)
 	key := "project.stop." + reason + ":" + projectID
 	jobID := newID("job")
-	err := tx.QueryRow(ctx, `
-INSERT INTO orchestration_jobs (id, job_type, aggregate_type, aggregate_id, idempotency_key, state, payload)
-VALUES ($1, 'project.stop', 'project', $2, $3, 'queued', $4::jsonb)
-ON CONFLICT (idempotency_key) DO NOTHING
-RETURNING id`, jobID, projectID, key, payload).Scan(&jobID)
+	insertedID, err := q.InsertEnforcementStopJob(ctx, dbsqlc.InsertEnforcementStopJobParams{ID: jobID, ProjectID: projectID, IdempotencyKey: key, Payload: json.RawMessage(payload)})
+	jobID = insertedID
 	inserted := err == nil
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `
-UPDATE orchestration_jobs
-SET state = 'queued', next_run_at = now(), payload = $2::jsonb, updated_at = now()
-WHERE idempotency_key = $1`, key, payload); err != nil {
+		if err := q.RequeueEnforcementStopJob(ctx, dbsqlc.RequeueEnforcementStopJobParams{IdempotencyKey: key, Payload: json.RawMessage(payload)}); err != nil {
 			return err
 		}
 	}
@@ -893,8 +699,7 @@ func insertEvent(ctx context.Context, tx *db.Tx, projectID, eventType, message s
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO project_events (id, project_id, event_type, message, metadata) VALUES ($1, $2, $3, $4, $5::jsonb)`, newID("pevt"), projectID, eventType, message, string(b))
-	return err
+	return tx.Queries().InsertMeteringProjectEvent(ctx, dbsqlc.InsertMeteringProjectEventParams{ID: newID("pevt"), ProjectID: projectID, EventType: eventType, Message: message, Metadata: b})
 }
 
 func mapProviderState(state string) string {

@@ -19,6 +19,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
+	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
 	"github.com/pinksaucepasta/paperboat-server/internal/secrets"
 )
 
@@ -178,39 +179,20 @@ func (s *Service) CompleteOAuth(ctx context.Context, userID, code, redirectURI s
 			return Status{}, err
 		}
 	}
-	var expiresAt any
+	var expiresAt sql.NullTime
 	if !token.ExpiresAt.IsZero() {
-		expiresAt = token.ExpiresAt
+		expiresAt = sql.NullTime{Time: token.ExpiresAt, Valid: true}
 	}
 	err = s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		var linkedUserID string
-		err := tx.QueryRow(ctx, `
-INSERT INTO user_identities (id, user_id, provider, provider_subject, email, created_at, updated_at)
-VALUES ($1, $2, 'github', $3, '', now(), now())
-ON CONFLICT (provider, provider_subject) DO UPDATE SET updated_at = now()
-RETURNING user_id`,
-			newID("uid"), userID, ghUser.Login).Scan(&linkedUserID)
+		q := tx.Queries()
+		linkedUserID, err := q.LinkGitHubIdentity(ctx, dbsqlc.LinkGitHubIdentityParams{ID: newID("uid"), UserID: userID, ProviderSubject: ghUser.Login})
 		if err != nil {
 			return err
 		}
 		if linkedUserID != userID {
 			return ErrIdentityLinkedToAnotherUser
 		}
-		_, err = tx.Exec(ctx, `
-INSERT INTO github_oauth_tokens
-	(id, user_id, token_ciphertext, refresh_token_ciphertext, scopes, expires_at, provider_account_login, last_validated_at, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, now(), now(), now())
-ON CONFLICT (user_id) DO UPDATE SET
-	token_ciphertext = EXCLUDED.token_ciphertext,
-	refresh_token_ciphertext = EXCLUDED.refresh_token_ciphertext,
-	scopes = EXCLUDED.scopes,
-	expires_at = EXCLUDED.expires_at,
-	provider_account_login = EXCLUDED.provider_account_login,
-	revoked_at = NULL,
-	last_validated_at = now(),
-	updated_at = now(),
-	version = github_oauth_tokens.version + 1`,
-			newID("ght"), userID, accessCiphertext, refreshCiphertext, token.Scopes, expiresAt, ghUser.Login)
+		err = q.UpsertGitHubOAuthToken(ctx, dbsqlc.UpsertGitHubOAuthTokenParams{ID: newID("ght"), UserID: userID, TokenCiphertext: accessCiphertext, RefreshTokenCiphertext: refreshCiphertext, Scopes: token.Scopes, ExpiresAt: expiresAt, ProviderAccountLogin: ghUser.Login})
 		if err != nil {
 			return err
 		}
@@ -228,13 +210,7 @@ ON CONFLICT (user_id) DO UPDATE SET
 
 func (s *Service) Status(ctx context.Context, userID string) (Status, error) {
 	var status Status
-	var scopes []string
-	err := s.db.SQL().QueryRowContext(ctx, `
-SELECT scopes, last_validated_at
-FROM paperboat.github_oauth_tokens
-WHERE user_id = $1 AND revoked_at IS NULL
-ORDER BY updated_at DESC
-LIMIT 1`, userID).Scan((*stringArray)(&scopes), &status.LastValidatedAt)
+	connection, err := s.db.Queries().GetGitHubConnectionStatus(ctx, userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return status.normalized(), nil
 	}
@@ -242,13 +218,12 @@ LIMIT 1`, userID).Scan((*stringArray)(&scopes), &status.LastValidatedAt)
 		return Status{}, err
 	}
 	status.Connected = true
-	status.Scopes = scopes
-	status.MissingScopes = missingScopes(scopes, s.cfg.GitHub.OAuthScopes)
-	row := s.db.SQL().QueryRowContext(ctx, `
-SELECT owner, name, default_branch
-FROM paperboat.github_config_repositories
-WHERE user_id = $1 AND provisioned_at IS NOT NULL`, userID)
-	if err := row.Scan(&status.ConfigRepoOwner, &status.ConfigRepoName, &status.ConfigRepoBranch); err == nil {
+	status.Scopes = connection.Scopes
+	status.LastValidatedAt = connection.LastValidatedAt.Time
+	status.MissingScopes = missingScopes(connection.Scopes, s.cfg.GitHub.OAuthScopes)
+	repo, err := s.db.Queries().GetGitHubConfigRepoStatus(ctx, userID)
+	if err == nil {
+		status.ConfigRepoOwner, status.ConfigRepoName, status.ConfigRepoBranch = repo.Owner, repo.Name, repo.DefaultBranch
 		status.ConfigRepoProvisioned = true
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return Status{}, err
@@ -307,13 +282,7 @@ func (s *Service) CredentialForConfigSync(ctx context.Context, userID string) ([
 }
 
 func (s *Service) EnsureConnected(ctx context.Context, userID string) error {
-	var scopes []string
-	err := s.db.SQL().QueryRowContext(ctx, `
-SELECT scopes
-FROM paperboat.github_oauth_tokens
-WHERE user_id = $1 AND revoked_at IS NULL
-ORDER BY updated_at DESC
-LIMIT 1`, userID).Scan((*stringArray)(&scopes))
+	scopes, err := s.db.Queries().GetGitHubScopes(ctx, userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotConnected
 	}
@@ -337,26 +306,18 @@ func (s *Service) ListRepos(ctx context.Context, userID string) ([]Repo, error) 
 }
 
 func (s *Service) githubToken(ctx context.Context, userID string) (string, string, error) {
-	var ciphertext []byte
-	var login string
-	var scopes []string
-	err := s.db.SQL().QueryRowContext(ctx, `
-SELECT token_ciphertext, provider_account_login, scopes
-FROM paperboat.github_oauth_tokens
-WHERE user_id = $1 AND revoked_at IS NULL
-ORDER BY updated_at DESC
-LIMIT 1`, userID).Scan(&ciphertext, &login, (*stringArray)(&scopes))
+	row, err := s.db.Queries().GetGitHubToken(ctx, userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", ErrNotConnected
 	}
 	if err != nil {
 		return "", "", err
 	}
-	if missing := missingScopes(scopes, s.cfg.GitHub.OAuthScopes); len(missing) > 0 {
+	if missing := missingScopes(row.Scopes, s.cfg.GitHub.OAuthScopes); len(missing) > 0 {
 		return "", "", ErrMissingScopes
 	}
-	token, err := secrets.Decrypt(s.cfg.Secrets.EncryptionKey, ciphertext)
-	return token, login, err
+	token, err := secrets.Decrypt(s.cfg.Secrets.EncryptionKey, row.TokenCiphertext)
+	return token, row.ProviderAccountLogin, err
 }
 
 func (s *Service) initializeRepo(ctx context.Context, token string, repo Repo) error {
@@ -382,41 +343,18 @@ func (s *Service) initializeRepo(ctx context.Context, token string, repo Repo) e
 
 func (s *Service) recordAttempt(ctx context.Context, userID, idempotencyKey, state, owner, name, lastErr string) error {
 	return s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		_, err := tx.Exec(ctx, `
-INSERT INTO github_repo_provisioning_attempts (id, user_id, idempotency_key, state, repo_owner, repo_name, last_error, attempts, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, 1, now(), now())
-ON CONFLICT (idempotency_key) DO UPDATE SET
-	state = EXCLUDED.state,
-	repo_owner = EXCLUDED.repo_owner,
-	repo_name = EXCLUDED.repo_name,
-	last_error = EXCLUDED.last_error,
-	attempts = github_repo_provisioning_attempts.attempts + 1,
-	updated_at = now()`, newID("ghp"), userID, idempotencyKey, state, owner, name, lastErr)
-		return err
+		return tx.Queries().UpsertGitHubProvisioningAttempt(ctx, dbsqlc.UpsertGitHubProvisioningAttemptParams{ID: newID("ghp"), UserID: userID, IdempotencyKey: idempotencyKey, State: state, RepoOwner: owner, RepoName: name, LastError: lastErr})
 	})
 }
 
 func (s *Service) storeRepo(ctx context.Context, userID, idempotencyKey string, repo Repo) error {
 	return s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		_, err := tx.Exec(ctx, `
-INSERT INTO github_config_repositories (id, user_id, provider_repo_id, owner, name, default_branch, clone_url, html_url, private, provisioned_at, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), now(), now())
-ON CONFLICT (user_id) DO UPDATE SET
-	provider_repo_id = EXCLUDED.provider_repo_id,
-	owner = EXCLUDED.owner,
-	name = EXCLUDED.name,
-	default_branch = EXCLUDED.default_branch,
-	clone_url = EXCLUDED.clone_url,
-	html_url = EXCLUDED.html_url,
-	private = EXCLUDED.private,
-	provisioned_at = now(),
-	updated_at = now(),
-	version = github_config_repositories.version + 1`,
-			newID("ghr"), userID, repo.ID, repo.Owner, repo.Name, repo.DefaultBranch, repo.CloneURL, repo.HTMLURL, repo.Private)
+		q := tx.Queries()
+		err := q.UpsertGitHubConfigRepository(ctx, dbsqlc.UpsertGitHubConfigRepositoryParams{ID: newID("ghr"), UserID: userID, ProviderRepoID: repo.ID, Owner: repo.Owner, Name: repo.Name, DefaultBranch: repo.DefaultBranch, CloneUrl: repo.CloneURL, HtmlUrl: repo.HTMLURL, Private: repo.Private})
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE github_repo_provisioning_attempts SET state = 'succeeded', updated_at = now() WHERE idempotency_key = $1`, idempotencyKey); err != nil {
+		if err := q.MarkGitHubProvisioningSucceeded(ctx, idempotencyKey); err != nil {
 			return err
 		}
 		return s.audit.WriteTx(ctx, tx, audit.Event{

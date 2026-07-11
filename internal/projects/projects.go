@@ -18,6 +18,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
+	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
 	"github.com/pinksaucepasta/paperboat-server/internal/secrets"
 )
@@ -529,18 +530,17 @@ func NewRepository(store *db.DB, encryptionKey string) *Repository {
 }
 
 func (r *Repository) FindByIdempotencyKey(ctx context.Context, userID, key, requestHash string) (Project, bool, error) {
-	var id, existingHash string
-	err := r.db.SQL().QueryRowContext(ctx, `SELECT id, create_request_hash FROM paperboat.projects WHERE user_id = $1 AND idempotency_key = $2`, userID, key).Scan(&id, &existingHash)
+	row, err := r.db.Queries().FindProjectByIdempotencyKey(ctx, dbsqlc.FindProjectByIdempotencyKeyParams{UserID: userID, IdempotencyKey: key})
 	if errors.Is(err, sql.ErrNoRows) {
 		return Project{}, false, nil
 	}
 	if err != nil {
 		return Project{}, false, fmt.Errorf("find project idempotency key: %w", err)
 	}
-	if existingHash != requestHash {
+	if row.CreateRequestHash != requestHash {
 		return Project{}, true, ErrIdempotencyConflict
 	}
-	project, err := r.Get(ctx, userID, id)
+	project, err := r.Get(ctx, userID, row.ID)
 	return project, true, err
 }
 
@@ -549,39 +549,37 @@ func (r *Repository) ResolveCatalog(ctx context.Context, machineTypeCode, region
 	if machineTypeCode == "" || regionCode == "" || idleTimeoutCode == "" {
 		return refs, ErrCatalogUnavailable
 	}
-	if err := r.db.SQL().QueryRowContext(ctx, `
-SELECT mt.current_version_id
-FROM paperboat.machine_types mt
-WHERE mt.code = $1 AND mt.active AND mt.current_version_id IS NOT NULL`, machineTypeCode).Scan(&refs.machineTypeVersionID); err != nil {
+	machineVersion, err := r.db.Queries().GetActiveMachineTypeVersion(ctx, machineTypeCode)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return refs, ErrCatalogUnavailable
 		}
 		return refs, err
 	}
-	if err := r.db.SQL().QueryRowContext(ctx, `SELECT id FROM paperboat.regions WHERE code = $1 AND enabled`, regionCode).Scan(&refs.regionID); err != nil {
+	refs.machineTypeVersionID = machineVersion.String
+	refs.regionID, err = r.db.Queries().GetEnabledRegionID(ctx, regionCode)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return refs, ErrCatalogUnavailable
 		}
 		return refs, err
 	}
-	if err := r.db.SQL().QueryRowContext(ctx, `SELECT id FROM paperboat.idle_timeout_options WHERE code = $1 AND active`, idleTimeoutCode).Scan(&refs.idleTimeoutID); err != nil {
+	refs.idleTimeoutID, err = r.db.Queries().GetActiveIdleTimeoutID(ctx, idleTimeoutCode)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return refs, ErrCatalogUnavailable
 		}
 		return refs, err
 	}
 	for _, code := range presetCodes {
-		var versionID string
-		if err := r.db.SQL().QueryRowContext(ctx, `
-SELECT current_version_id
-FROM paperboat.vm_presets
-WHERE code = $1 AND active AND current_version_id IS NOT NULL`, code).Scan(&versionID); err != nil {
+		version, err := r.db.Queries().GetActivePresetVersion(ctx, code)
+		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return refs, ErrCatalogUnavailable
 			}
 			return refs, err
 		}
-		refs.presetVersionIDs = append(refs.presetVersionIDs, versionID)
+		refs.presetVersionIDs = append(refs.presetVersionIDs, version.String)
 	}
 	return refs, nil
 }
@@ -605,6 +603,7 @@ func (r *Repository) CreateIntent(ctx context.Context, input CreateInput, refs c
 func (r *Repository) createIntentOnce(ctx context.Context, input CreateInput, refs catalogRefs) (string, error) {
 	projectID := newID("prj")
 	err := r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		q := tx.Queries()
 		accountID, err := ensureStorageAccount(ctx, tx, input.UserID)
 		if err != nil {
 			return err
@@ -619,21 +618,19 @@ func (r *Repository) createIntentOnce(ctx context.Context, input CreateInput, re
 			setupRef = newID("pss")
 		}
 		hash := hashConfig(configHashInput{StorageGB: input.StorageGB, MachineVersionID: refs.machineTypeVersionID, RegionID: refs.regionID, PresetVersionIDs: refs.presetVersionIDs, IdleTimeoutID: refs.idleTimeoutID, SetupScriptRef: setupRef, SetupScriptSHA256: setupSHA})
-		if _, err := tx.Exec(ctx, `INSERT INTO projects (id, user_id, name, state, idempotency_key, create_request_hash) VALUES ($1, $2, $3, 'creating', $4, $5)`, projectID, input.UserID, input.Name, input.IdempotencyKey, createRequestHash(input)); err != nil {
+		if err := q.InsertProject(ctx, dbsqlc.InsertProjectParams{ID: projectID, UserID: input.UserID, Name: input.Name, IdempotencyKey: input.IdempotencyKey, CreateRequestHash: createRequestHash(input)}); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO project_repositories (project_id, provider, source_url, default_branch) VALUES ($1, 'github', $2, $3)`, projectID, input.RepositoryURL, input.DefaultBranch); err != nil {
+		if err := q.InsertProjectRepository(ctx, dbsqlc.InsertProjectRepositoryParams{ProjectID: projectID, SourceUrl: input.RepositoryURL, DefaultBranch: input.DefaultBranch}); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO project_storage_allocations (project_id, storage_account_id, assigned_gb) VALUES ($1, $2, $3)`, projectID, accountID, input.StorageGB); err != nil {
+		if err := q.InsertProjectStorageAllocation(ctx, dbsqlc.InsertProjectStorageAllocationParams{ProjectID: projectID, StorageAccountID: accountID, AssignedGb: int32(input.StorageGB)}); err != nil {
 			return err
 		}
 		if err := reserveStorageTx(ctx, tx, accountID, projectID, input.StorageGB, "project.storage.allocate:"+projectID); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `
-INSERT INTO project_runtime_configs (project_id, machine_type_version_id, preset_version_ids, setup_script_ref, idle_timeout_option_id, region_id, pending_restart_apply, desired_config_hash)
-VALUES ($1, $2, $3, $4, $5, $6, true, $7)`, projectID, refs.machineTypeVersionID, refs.presetVersionIDs, setupRef, refs.idleTimeoutID, refs.regionID, hash); err != nil {
+		if err := q.InsertProjectRuntimeConfig(ctx, dbsqlc.InsertProjectRuntimeConfigParams{ProjectID: projectID, MachineTypeVersionID: sql.NullString{String: refs.machineTypeVersionID, Valid: true}, PresetVersionIds: refs.presetVersionIDs, SetupScriptRef: setupRef, IdleTimeoutOptionID: sql.NullString{String: refs.idleTimeoutID, Valid: true}, RegionID: sql.NullString{String: refs.regionID, Valid: true}, DesiredConfigHash: hash}); err != nil {
 			return err
 		}
 		if setupRef != "" {
@@ -641,22 +638,17 @@ VALUES ($1, $2, $3, $4, $5, $6, true, $7)`, projectID, refs.machineTypeVersionID
 			if err != nil {
 				return err
 			}
-			if _, err := tx.Exec(ctx, `
-INSERT INTO project_setup_script_revisions (id, project_id, revision_number, script_sha256, script_ciphertext, guidance, created_by_user_id)
-VALUES ($1, $2, 1, $3, $4, $5, $6)`, setupRef, projectID, setupSHA, ciphertext, "Do not include secrets in setup scripts; use provider-managed project credentials for secret material.", input.UserID); err != nil {
+			if err := q.InsertProjectSetupScriptRevision(ctx, dbsqlc.InsertProjectSetupScriptRevisionParams{ID: setupRef, ProjectID: projectID, RevisionNumber: 1, ScriptSha256: setupSHA, ScriptCiphertext: ciphertext, Guidance: "Do not include secrets in setup scripts; use provider-managed project credentials for secret material.", CreatedByUserID: input.UserID}); err != nil {
 				return err
 			}
 		}
 		if err := insertEvent(ctx, tx, projectID, "project.created", "Project intent was recorded.", map[string]any{"state": "creating"}); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE projects SET state = 'provisioning_storage', version = version + 1, updated_at = now() WHERE id = $1 AND user_id = $2`, projectID, input.UserID); err != nil {
+		if err := q.MarkProjectProvisioningStorage(ctx, dbsqlc.MarkProjectProvisioningStorageParams{ID: projectID, UserID: input.UserID}); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `
-INSERT INTO orchestration_jobs (id, job_type, aggregate_type, aggregate_id, idempotency_key, state, payload)
-VALUES ($1, 'project.create', 'project', $2, $3, 'queued', $4::jsonb)
-ON CONFLICT (idempotency_key) DO NOTHING`, newID("job"), projectID, "project.create:"+projectID, `{"phase":"provision_storage"}`); err != nil {
+		if err := q.InsertProjectCreateJob(ctx, dbsqlc.InsertProjectCreateJobParams{ID: newID("job"), AggregateID: projectID, IdempotencyKey: "project.create:" + projectID, Column4: json.RawMessage(`{"phase":"provision_storage"}`)}); err != nil {
 			return err
 		}
 		return insertEvent(ctx, tx, projectID, "project.provisioning_queued", "Project provisioning was queued.", map[string]any{"state": "provisioning_storage"})
@@ -665,33 +657,30 @@ ON CONFLICT (idempotency_key) DO NOTHING`, newID("job"), projectID, "project.cre
 }
 
 func (r *Repository) List(ctx context.Context, userID string) ([]Project, error) {
-	rows, err := r.db.SQL().QueryContext(ctx, `
-SELECT p.id
-FROM paperboat.projects p
-WHERE p.user_id = $1 AND p.state <> 'deleted'
-ORDER BY p.created_at DESC`, userID)
+	ids, err := r.db.Queries().ListProjectIDs(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []Project
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
+	out := make([]Project, 0, len(ids))
+	for _, id := range ids {
 		project, err := r.Get(ctx, userID, id)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, project)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (r *Repository) Get(ctx context.Context, userID, projectID string) (Project, error) {
-	row := r.db.SQL().QueryRowContext(ctx, projectSelectSQL+` WHERE p.id = $1 AND p.user_id = $2 `+projectGroupSQL, projectID, userID)
-	return scanProject(row)
+	row, err := r.db.Queries().GetProject(ctx, dbsqlc.GetProjectParams{ID: projectID, UserID: userID})
+	if errors.Is(err, sql.ErrNoRows) {
+		return Project{}, ErrNotFound
+	}
+	if err != nil {
+		return Project{}, err
+	}
+	return projectFromRow(row), nil
 }
 
 func (r *Repository) UpdateDesiredConfig(ctx context.Context, userID, projectID string, change desiredChange, expectedVersion *int64) (Project, error) {
@@ -749,8 +738,9 @@ func (r *Repository) updateDesiredConfigOnce(ctx context.Context, userID, projec
 			}
 		}
 		if change.setup != nil {
-			var next int
-			if err := tx.QueryRow(ctx, `SELECT coalesce(max(revision_number), 0) + 1 FROM project_setup_script_revisions WHERE project_id = $1`, projectID).Scan(&next); err != nil {
+			q := tx.Queries()
+			next, err := q.NextProjectSetupScriptRevision(ctx, projectID)
+			if err != nil {
 				return err
 			}
 			ref := newID("pss")
@@ -758,35 +748,21 @@ func (r *Repository) updateDesiredConfigOnce(ctx context.Context, userID, projec
 			if err != nil {
 				return err
 			}
-			if _, err := tx.Exec(ctx, `
-INSERT INTO project_setup_script_revisions (id, project_id, revision_number, script_sha256, script_ciphertext, guidance, created_by_user_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7)`, ref, projectID, next, change.setup.sha256, ciphertext, "Do not include secrets in setup scripts; use provider-managed project credentials for secret material.", userID); err != nil {
+			if err := q.InsertProjectSetupScriptRevision(ctx, dbsqlc.InsertProjectSetupScriptRevisionParams{ID: ref, ProjectID: projectID, RevisionNumber: next, ScriptSha256: change.setup.sha256, ScriptCiphertext: ciphertext, Guidance: "Do not include secrets in setup scripts; use provider-managed project credentials for secret material.", CreatedByUserID: userID}); err != nil {
 				return err
 			}
-			if _, err := tx.Exec(ctx, `UPDATE project_runtime_configs SET setup_script_ref = $2 WHERE project_id = $1`, projectID, ref); err != nil {
+			if err := q.SetProjectSetupScriptRef(ctx, dbsqlc.SetProjectSetupScriptRefParams{ProjectID: projectID, SetupScriptRef: ref}); err != nil {
 				return err
 			}
 		}
-		if _, err := tx.Exec(ctx, `
-UPDATE project_runtime_configs
-SET machine_type_version_id = $3,
-    preset_version_ids = $4,
-    idle_timeout_option_id = $5,
-    region_id = $6,
-    pending_restart_apply = true,
-    desired_config_hash = $7,
-    version = version + 1,
-    updated_at = now()
-WHERE project_id = $1 AND EXISTS (SELECT 1 FROM projects WHERE id = $1 AND user_id = $2)`, projectID, userID, change.refs.machineTypeVersionID, change.refs.presetVersionIDs, change.refs.idleTimeoutID, change.refs.regionID, change.configHash); err != nil {
+		q := tx.Queries()
+		if err := q.UpdateProjectDesiredRuntimeConfig(ctx, dbsqlc.UpdateProjectDesiredRuntimeConfigParams{ProjectID: projectID, UserID: userID, MachineTypeVersionID: sql.NullString{String: change.refs.machineTypeVersionID, Valid: true}, PresetVersionIds: change.refs.presetVersionIDs, IdleTimeoutOptionID: sql.NullString{String: change.refs.idleTimeoutID, Valid: true}, RegionID: sql.NullString{String: change.refs.regionID, Valid: true}, DesiredConfigHash: change.configHash}); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `
-UPDATE project_storage_allocations
-SET assigned_gb = $3, version = version + 1, updated_at = now()
-WHERE project_id = $1 AND EXISTS (SELECT 1 FROM projects WHERE id = $1 AND user_id = $2)`, projectID, userID, change.storageGB); err != nil {
+		if err := q.UpdateProjectAssignedStorage(ctx, dbsqlc.UpdateProjectAssignedStorageParams{ProjectID: projectID, UserID: userID, AssignedGb: int32(change.storageGB)}); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE projects SET version = version + 1, updated_at = now() WHERE id = $1 AND user_id = $2`, projectID, userID); err != nil {
+		if err := q.TouchProjectVersion(ctx, dbsqlc.TouchProjectVersionParams{ID: projectID, UserID: userID}); err != nil {
 			return err
 		}
 		return insertEvent(ctx, tx, projectID, "project.config_updated", "Desired project configuration was updated.", map[string]any{"restart_required": true})
@@ -794,30 +770,21 @@ WHERE project_id = $1 AND EXISTS (SELECT 1 FROM projects WHERE id = $1 AND user_
 }
 
 func projectStorageAllocationTx(ctx context.Context, tx *db.Tx, userID, projectID string) (storageAllocation, error) {
-	var allocation storageAllocation
-	err := tx.QueryRow(ctx, `
-SELECT psa.storage_account_id, psa.assigned_gb, psa.version, p.version, p.state
-FROM project_storage_allocations psa
-JOIN projects p ON p.id = psa.project_id
-WHERE p.id = $1 AND p.user_id = $2
-FOR UPDATE OF p, psa`, projectID, userID).Scan(&allocation.accountID, &allocation.assignedGB, &allocation.version, &allocation.projectVersion, &allocation.state)
+	row, err := tx.Queries().GetProjectStorageAllocationForUpdate(ctx, dbsqlc.GetProjectStorageAllocationForUpdateParams{ID: projectID, UserID: userID})
 	if errors.Is(err, sql.ErrNoRows) {
 		return storageAllocation{}, ErrNotFound
 	}
 	if err != nil {
 		return storageAllocation{}, err
 	}
-	return allocation, nil
+	return storageAllocation{accountID: row.StorageAccountID, assignedGB: int(row.AssignedGb), version: row.AllocationVersion, projectVersion: row.ProjectVersion, state: row.State}, nil
 }
 
 func reserveStorageTx(ctx context.Context, tx *db.Tx, accountID, projectID string, amountGB int, idempotencyKey string) error {
-	var existing int
-	err := tx.QueryRow(ctx, `
-SELECT amount_gb
-FROM storage_ledger_entries
-WHERE idempotency_key = $1 AND account_id = $2 AND source_type = 'project' AND source_id = $3 AND entry_type = 'allocation'`, idempotencyKey, accountID, projectID).Scan(&existing)
+	q := tx.Queries()
+	existing, err := q.GetProjectStorageLedgerAmount(ctx, dbsqlc.GetProjectStorageLedgerAmountParams{IdempotencyKey: idempotencyKey, AccountID: accountID, ProjectID: projectID, EntryType: "allocation"})
 	if err == nil {
-		if existing == amountGB {
+		if int(existing) == amountGB {
 			return nil
 		}
 		return ErrIdempotencyConflict
@@ -825,30 +792,24 @@ WHERE idempotency_key = $1 AND account_id = $2 AND source_type = 'project' AND s
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	var included, purchased, allocated int
-	if err := tx.QueryRow(ctx, `SELECT included_gb, purchased_gb, allocated_gb FROM storage_accounts WHERE id = $1 FOR UPDATE`, accountID).Scan(&included, &purchased, &allocated); err != nil {
+	account, err := q.GetStorageAccountForUpdate(ctx, accountID)
+	if err != nil {
 		return err
 	}
-	if allocated+amountGB > included+purchased {
+	if int(account.AllocatedGb)+amountGB > int(account.IncludedGb+account.PurchasedGb) {
 		return ErrInsufficientStorage
 	}
-	if _, err := tx.Exec(ctx, `UPDATE storage_accounts SET allocated_gb = allocated_gb + $2, version = version + 1, updated_at = now() WHERE id = $1`, accountID, amountGB); err != nil {
+	if err := q.IncreaseAllocatedStorage(ctx, dbsqlc.IncreaseAllocatedStorageParams{ID: accountID, AllocatedGb: int32(amountGB)}); err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `
-INSERT INTO storage_ledger_entries (id, account_id, entry_type, amount_gb, source_type, source_id, idempotency_key)
-VALUES ($1, $2, 'allocation', $3, 'project', $4, $5)`, newID("sled"), accountID, amountGB, projectID, idempotencyKey)
-	return err
+	return q.InsertProjectStorageLedger(ctx, dbsqlc.InsertProjectStorageLedgerParams{ID: newID("sled"), AccountID: accountID, EntryType: "allocation", AmountGb: int32(amountGB), ProjectID: projectID, IdempotencyKey: idempotencyKey})
 }
 
 func releaseStorageReservationTx(ctx context.Context, tx *db.Tx, accountID, projectID string, amountGB int, idempotencyKey string) error {
-	var existing int
-	err := tx.QueryRow(ctx, `
-SELECT amount_gb
-FROM storage_ledger_entries
-WHERE idempotency_key = $1 AND account_id = $2 AND source_type = 'project' AND source_id = $3 AND entry_type = 'release'`, idempotencyKey, accountID, projectID).Scan(&existing)
+	q := tx.Queries()
+	existing, err := q.GetProjectStorageLedgerAmount(ctx, dbsqlc.GetProjectStorageLedgerAmountParams{IdempotencyKey: idempotencyKey, AccountID: accountID, ProjectID: projectID, EntryType: "release"})
 	if err == nil {
-		if existing == amountGB {
+		if int(existing) == amountGB {
 			return nil
 		}
 		return ErrIdempotencyConflict
@@ -856,51 +817,40 @@ WHERE idempotency_key = $1 AND account_id = $2 AND source_type = 'project' AND s
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	var allocated int
-	if err := tx.QueryRow(ctx, `SELECT allocated_gb FROM storage_accounts WHERE id = $1 FOR UPDATE`, accountID).Scan(&allocated); err != nil {
+	allocated, err := q.GetAllocatedStorageForUpdate(ctx, accountID)
+	if err != nil {
 		return err
 	}
-	if allocated < amountGB {
+	if int(allocated) < amountGB {
 		return fmt.Errorf("storage release exceeds allocated storage")
 	}
-	if _, err := tx.Exec(ctx, `UPDATE storage_accounts SET allocated_gb = allocated_gb - $2, version = version + 1, updated_at = now() WHERE id = $1`, accountID, amountGB); err != nil {
+	if err := q.DecreaseAllocatedStorage(ctx, dbsqlc.DecreaseAllocatedStorageParams{ID: accountID, AllocatedGb: int32(amountGB)}); err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `
-INSERT INTO storage_ledger_entries (id, account_id, entry_type, amount_gb, source_type, source_id, idempotency_key)
-VALUES ($1, $2, 'release', $3, 'project', $4, $5)`, newID("sled"), accountID, amountGB, projectID, idempotencyKey)
-	return err
+	return q.InsertProjectStorageLedger(ctx, dbsqlc.InsertProjectStorageLedgerParams{ID: newID("sled"), AccountID: accountID, EntryType: "release", AmountGb: int32(amountGB), ProjectID: projectID, IdempotencyKey: idempotencyKey})
 }
 
 func (r *Repository) MarkDeleting(ctx context.Context, userID, projectID string) (Project, error) {
 	err := r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		res, err := tx.Exec(ctx, `UPDATE projects SET state = 'deleting', version = version + 1, updated_at = now() WHERE id = $1 AND user_id = $2 AND state <> 'deleted'`, projectID, userID)
+		q := tx.Queries()
+		affected, err := q.MarkProjectDeleting(ctx, dbsqlc.MarkProjectDeletingParams{ID: projectID, UserID: userID})
 		if err != nil {
 			return err
 		}
-		affected, _ := res.RowsAffected()
 		if affected == 0 {
 			return ErrNotFound
 		}
 		// Deletion supersedes any lifecycle work still waiting in the queue;
 		// a stale create/start/restart must never run for a deleting project.
-		if _, err := tx.Exec(ctx, `
-UPDATE orchestration_jobs SET state = 'superseded', updated_at = now()
-WHERE aggregate_type = 'project' AND aggregate_id = $1 AND state = 'queued' AND job_type <> 'project.delete'`, projectID); err != nil {
+		if err := q.SupersedeQueuedProjectJobs(ctx, projectID); err != nil {
 			return err
 		}
-		var provisioned bool
-		if err := tx.QueryRow(ctx, `
-SELECT EXISTS (SELECT 1 FROM fly_volumes WHERE project_id = $1)
-    OR EXISTS (SELECT 1 FROM fly_machines WHERE project_id = $1)
-    OR EXISTS (SELECT 1 FROM agentunnel_resources WHERE project_id = $1)`, projectID).Scan(&provisioned); err != nil {
+		provisioned, err := q.ProjectHasProviderResources(ctx, projectID)
+		if err != nil {
 			return err
 		}
-		if provisioned {
-			if _, err := tx.Exec(ctx, `
-INSERT INTO orchestration_jobs (id, job_type, aggregate_type, aggregate_id, idempotency_key, state, payload)
-VALUES ($1, 'project.delete', 'project', $2, $3, 'queued', '{}'::jsonb)
-ON CONFLICT (idempotency_key) DO NOTHING`, newID("job"), projectID, "project.delete:"+projectID); err != nil {
+		if provisioned.Valid && provisioned.Bool {
+			if err := q.InsertProjectDeleteJob(ctx, dbsqlc.InsertProjectDeleteJobParams{ID: newID("job"), AggregateID: projectID, IdempotencyKey: "project.delete:" + projectID}); err != nil {
 				return err
 			}
 			return insertEvent(ctx, tx, projectID, "project.delete_queued", "Project deletion was queued.", map[string]any{"storage_release": "after_provider_cleanup"})
@@ -920,34 +870,34 @@ ON CONFLICT (idempotency_key) DO NOTHING`, newID("job"), projectID, "project.del
 // keyed by the same ledger idempotency key the orchestrator uses) and the
 // project is marked deleted.
 func markDeletedAndReleaseStorageTx(ctx context.Context, tx *db.Tx, projectID string) error {
-	var accountID string
-	var assigned int
-	if err := tx.QueryRow(ctx, `SELECT storage_account_id, assigned_gb FROM project_storage_allocations WHERE project_id = $1 FOR UPDATE`, projectID).Scan(&accountID, &assigned); err != nil {
+	q := tx.Queries()
+	allocation, err := q.GetProjectStorageForDelete(ctx, projectID)
+	if err != nil {
 		return err
 	}
-	var existing int
 	key := "project.storage.release.delete:" + projectID
-	err := tx.QueryRow(ctx, `SELECT amount_gb FROM storage_ledger_entries WHERE idempotency_key = $1`, key).Scan(&existing)
+	_, err = q.GetStorageLedgerAmountByKey(ctx, key)
 	if errors.Is(err, sql.ErrNoRows) {
-		if _, err := tx.Exec(ctx, `UPDATE storage_accounts SET allocated_gb = allocated_gb - $2, version = version + 1, updated_at = now() WHERE id = $1`, accountID, assigned); err != nil {
+		if err := q.DecreaseAllocatedStorage(ctx, dbsqlc.DecreaseAllocatedStorageParams{ID: allocation.StorageAccountID, AllocatedGb: allocation.AssignedGb}); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO storage_ledger_entries (id, account_id, entry_type, amount_gb, source_type, source_id, idempotency_key) VALUES ($1, $2, 'release', $3, 'project', $4, $5)`, newID("sled"), accountID, assigned, projectID, key); err != nil {
+		if err := q.InsertProjectStorageLedger(ctx, dbsqlc.InsertProjectStorageLedgerParams{ID: newID("sled"), AccountID: allocation.StorageAccountID, EntryType: "release", AmountGb: allocation.AssignedGb, ProjectID: projectID, IdempotencyKey: key}); err != nil {
 			return err
 		}
 	} else if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE projects SET state = 'deleted', version = version + 1, updated_at = now() WHERE id = $1`, projectID); err != nil {
+	if err := q.MarkProjectDeleted(ctx, projectID); err != nil {
 		return err
 	}
-	return insertEvent(ctx, tx, projectID, "project.deleted", "Project was deleted before provisioning; storage was released.", map[string]any{"storage_gb": assigned})
+	return insertEvent(ctx, tx, projectID, "project.deleted", "Project was deleted before provisioning; storage was released.", map[string]any{"storage_gb": int(allocation.AssignedGb)})
 }
 
 func (r *Repository) QueueLifecycleJob(ctx context.Context, userID, projectID, jobType, nextState string) (Project, error) {
 	err := r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		var state string
-		if err := tx.QueryRow(ctx, `SELECT state FROM projects WHERE id = $1 AND user_id = $2 FOR UPDATE`, projectID, userID).Scan(&state); err != nil {
+		q := tx.Queries()
+		state, err := q.GetProjectStateForUpdate(ctx, dbsqlc.GetProjectStateForUpdateParams{ID: projectID, UserID: userID})
+		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrNotFound
 			}
@@ -959,14 +909,11 @@ func (r *Repository) QueueLifecycleJob(ctx context.Context, userID, projectID, j
 		if state == "creating" || state == "provisioning_storage" || state == "provisioning_machine" || state == "failed" || state == "suspended" {
 			return ErrInvalidState
 		}
-		if _, err := tx.Exec(ctx, `UPDATE projects SET state = $3, version = version + 1, updated_at = now() WHERE id = $1 AND user_id = $2`, projectID, userID, nextState); err != nil {
+		if err := q.UpdateProjectLifecycleState(ctx, dbsqlc.UpdateProjectLifecycleStateParams{ID: projectID, UserID: userID, State: nextState}); err != nil {
 			return err
 		}
 		payload, _ := json.Marshal(map[string]string{"previous_state": state})
-		if _, err := tx.Exec(ctx, `
-INSERT INTO orchestration_jobs (id, job_type, aggregate_type, aggregate_id, idempotency_key, state, payload)
-VALUES ($1, $2, 'project', $3, $4, 'queued', $5::jsonb)
-ON CONFLICT (idempotency_key) DO UPDATE SET state = 'queued', payload = EXCLUDED.payload, next_run_at = now(), updated_at = now()`, newID("job"), jobType, projectID, jobType+":"+projectID, string(payload)); err != nil {
+		if err := q.UpsertProjectLifecycleJob(ctx, dbsqlc.UpsertProjectLifecycleJobParams{ID: newID("job"), JobType: jobType, ProjectID: projectID, IdempotencyKey: jobType + ":" + projectID, Payload: payload}); err != nil {
 			return err
 		}
 		return insertEvent(ctx, tx, projectID, jobType+"_queued", "Project lifecycle operation was queued.", map[string]any{"state": nextState})
@@ -981,14 +928,7 @@ func (r *Repository) EnsureStartCredits(ctx context.Context, userID, projectID s
 	if window <= 0 {
 		return fmt.Errorf("minimum start credit window must be positive")
 	}
-	var enough bool
-	err := r.db.SQL().QueryRowContext(ctx, `
-SELECT coalesce(ca.balance, 0)::numeric >= ((($3::numeric / 3600.0) * mtv.credit_weight)::numeric(18,6))
-FROM paperboat.projects p
-JOIN paperboat.project_runtime_configs prc ON prc.project_id = p.id
-JOIN paperboat.machine_type_versions mtv ON mtv.id = CASE WHEN $4 THEN prc.machine_type_version_id ELSE prc.applied_machine_type_version_id END
-LEFT JOIN paperboat.credit_accounts ca ON ca.user_id = p.user_id
-WHERE p.id = $1 AND p.user_id = $2`, projectID, userID, int(window.Seconds()), useDesiredConfig).Scan(&enough)
+	enough, err := r.db.Queries().HasProjectStartCredits(ctx, dbsqlc.HasProjectStartCreditsParams{WindowSeconds: int64(window.Seconds()), UseDesiredConfig: useDesiredConfig, ProjectID: projectID, UserID: userID})
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -1017,15 +957,7 @@ func (r *Repository) RecordActivity(ctx context.Context, projectID string, at ti
 		return err
 	}
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		_, err := tx.Exec(ctx, `
-INSERT INTO project_activity_markers (project_id, last_activity_at, source, metadata)
-VALUES ($1, $2, $3, $4::jsonb)
-ON CONFLICT (project_id) DO UPDATE
-SET last_activity_at = greatest(project_activity_markers.last_activity_at, EXCLUDED.last_activity_at),
-    source = EXCLUDED.source,
-    metadata = EXCLUDED.metadata,
-    updated_at = now()`, projectID, at, source, string(b))
-		return err
+		return tx.Queries().UpsertProjectActivityRecord(ctx, dbsqlc.UpsertProjectActivityRecordParams{ProjectID: projectID, LastActivityAt: at, Source: source, Metadata: b})
 	})
 }
 
@@ -1033,26 +965,20 @@ func (r *Repository) SetKeepAlive(ctx context.Context, userID, projectID string,
 	if _, err := r.Get(ctx, userID, projectID); err != nil {
 		return err
 	}
-	var value any
+	var value sql.NullTime
 	eventType := "project.keep_alive_cleared"
 	message := "Project keep-alive pin was cleared."
 	metadata := map[string]any{}
 	if until != nil {
-		value = until.UTC()
+		value = sql.NullTime{Time: until.UTC(), Valid: true}
 		eventType = "project.keep_alive_set"
 		message = "Project keep-alive pin was set."
 		metadata["keep_alive_until"] = until.UTC().Format(time.RFC3339Nano)
 	} else {
-		value = nil
+		value = sql.NullTime{}
 	}
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		_, err := tx.Exec(ctx, `
-INSERT INTO project_activity_markers (project_id, last_activity_at, source, metadata, keep_alive_until, idle_warning_sent_at)
-VALUES ($1, now(), 'connect_session', '{}'::jsonb, $2, NULL)
-ON CONFLICT (project_id) DO UPDATE
-SET keep_alive_until = EXCLUDED.keep_alive_until,
-    idle_warning_sent_at = NULL,
-    updated_at = now()`, projectID, value)
+		err := tx.Queries().UpsertProjectKeepAlive(ctx, dbsqlc.UpsertProjectKeepAliveParams{ProjectID: projectID, KeepAliveUntil: value})
 		if err != nil {
 			return err
 		}
@@ -1073,80 +999,33 @@ func (r *Repository) Events(ctx context.Context, userID, projectID string) ([]Ev
 	if _, err := r.Get(ctx, userID, projectID); err != nil {
 		return nil, err
 	}
-	rows, err := r.db.SQL().QueryContext(ctx, `
-SELECT id, event_type, message, metadata, created_at
-FROM paperboat.project_events
-WHERE project_id = $1
-ORDER BY created_at ASC`, projectID)
+	rows, err := r.db.Queries().ListProjectEvents(ctx, projectID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []Event
-	for rows.Next() {
-		var event Event
-		var metadata []byte
-		if err := rows.Scan(&event.ID, &event.Type, &event.Message, &metadata, &event.CreatedAt); err != nil {
-			return nil, err
-		}
-		_ = json.Unmarshal(metadata, &event.Metadata)
+	out := make([]Event, 0, len(rows))
+	for _, row := range rows {
+		event := Event{ID: row.ID, Type: row.EventType, Message: row.Message, CreatedAt: row.CreatedAt}
+		_ = json.Unmarshal(row.Metadata, &event.Metadata)
 		if event.Metadata == nil {
 			event.Metadata = map[string]any{}
 		}
 		out = append(out, event)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
-const projectSelectSQL = `
-SELECT p.id, p.version, p.name, p.state, p.created_at, p.updated_at,
-       pr.provider, pr.source_url, pr.default_branch,
-       psa.assigned_gb,
-       mt.code, r.code, coalesce(string_agg(DISTINCT vp.code, ',' ORDER BY vp.code) FILTER (WHERE vp.code IS NOT NULL), '') AS preset_codes,
-       ito.code, prc.setup_script_ref, prc.pending_restart_apply, prc.desired_config_hash, prc.applied_config_hash,
-       prc.applied_storage_gb,
-       coalesce(amt.code, ''), coalesce(ar.code, ''), coalesce(string_agg(DISTINCT avp.code, ',' ORDER BY avp.code) FILTER (WHERE avp.code IS NOT NULL), '') AS applied_preset_codes,
-       coalesce(aito.code, ''), prc.applied_setup_script_ref,
-       (SELECT count(*) FROM paperboat.project_setup_script_revisions psr WHERE psr.project_id = p.id)
-FROM paperboat.projects p
-JOIN paperboat.project_repositories pr ON pr.project_id = p.id
-JOIN paperboat.project_storage_allocations psa ON psa.project_id = p.id
-JOIN paperboat.project_runtime_configs prc ON prc.project_id = p.id
-LEFT JOIN paperboat.machine_type_versions mtv ON mtv.id = prc.machine_type_version_id
-LEFT JOIN paperboat.machine_types mt ON mt.id = mtv.machine_type_id
-LEFT JOIN paperboat.regions r ON r.id = prc.region_id
-LEFT JOIN paperboat.idle_timeout_options ito ON ito.id = prc.idle_timeout_option_id
-LEFT JOIN paperboat.vm_preset_versions vpv ON vpv.id = ANY(prc.preset_version_ids)
-LEFT JOIN paperboat.vm_presets vp ON vp.id = vpv.preset_id
-LEFT JOIN paperboat.machine_type_versions amtv ON amtv.id = prc.applied_machine_type_version_id
-LEFT JOIN paperboat.machine_types amt ON amt.id = amtv.machine_type_id
-LEFT JOIN paperboat.regions ar ON ar.id = prc.applied_region_id
-LEFT JOIN paperboat.idle_timeout_options aito ON aito.id = prc.applied_idle_timeout_option_id
-LEFT JOIN paperboat.vm_preset_versions avpv ON avpv.id = ANY(prc.applied_preset_version_ids)
-LEFT JOIN paperboat.vm_presets avp ON avp.id = avpv.preset_id`
-
-const projectGroupSQL = `
-GROUP BY p.id, pr.project_id, psa.project_id, prc.project_id, mt.code, r.code, ito.code, amt.code, ar.code, aito.code`
-
-func scanProject(row *sql.Row) (Project, error) {
-	var p Project
-	var presetCodes string
-	var appliedMachine, appliedRegion, appliedPresets, appliedIdle string
-	var appliedHash string
-	err := row.Scan(&p.ID, &p.Version, &p.Name, &p.State, &p.CreatedAt, &p.UpdatedAt, &p.Repository.Provider, &p.Repository.SourceURL, &p.Repository.DefaultBranch, &p.DesiredConfig.StorageGB, &p.DesiredConfig.MachineTypeCode, &p.DesiredConfig.RegionCode, &presetCodes, &p.DesiredConfig.IdleTimeoutCode, &p.DesiredConfig.SetupScriptRef, &p.PendingRestartApply, &p.DesiredConfig.ConfigHash, &appliedHash, &p.CurrentConfig.StorageGB, &appliedMachine, &appliedRegion, &appliedPresets, &appliedIdle, &p.CurrentConfig.SetupScriptRef, &p.SetupScriptRevisions)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Project{}, ErrNotFound
-	}
-	if err != nil {
-		return Project{}, err
-	}
+func projectFromRow(row dbsqlc.GetProjectRow) Project {
+	p := Project{ID: row.ID, Version: row.Version, Name: row.Name, State: row.State, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+		Repository:          Repo{Provider: row.Provider, SourceURL: row.SourceUrl, DefaultBranch: row.DefaultBranch},
+		DesiredConfig:       Config{StorageGB: int(row.AssignedGb), MachineTypeCode: row.MachineTypeCode.String, RegionCode: row.RegionCode.String, IdleTimeoutCode: row.IdleTimeoutCode.String, SetupScriptRef: row.SetupScriptRef, ConfigHash: row.DesiredConfigHash},
+		CurrentConfig:       Config{StorageGB: int(row.AppliedStorageGb), MachineTypeCode: row.AppliedMachineTypeCode, RegionCode: row.AppliedRegionCode, IdleTimeoutCode: row.AppliedIdleTimeoutCode, SetupScriptRef: row.AppliedSetupScriptRef, ConfigHash: row.AppliedConfigHash},
+		PendingRestartApply: row.PendingRestartApply, SetupScriptRevisions: int(row.SetupScriptRevisions)}
+	presetCodes := databaseText(row.PresetCodes)
 	if presetCodes != "" {
 		p.DesiredConfig.PresetCodes = strings.Split(presetCodes, ",")
 	}
-	p.CurrentConfig.ConfigHash = appliedHash
-	p.CurrentConfig.MachineTypeCode = appliedMachine
-	p.CurrentConfig.RegionCode = appliedRegion
-	p.CurrentConfig.IdleTimeoutCode = appliedIdle
+	appliedPresets := databaseText(row.AppliedPresetCodes)
 	if appliedPresets != "" {
 		p.CurrentConfig.PresetCodes = strings.Split(appliedPresets, ",")
 	}
@@ -1155,57 +1034,44 @@ func scanProject(row *sql.Row) (Project, error) {
 		p.PendingRestartApply = false
 	}
 	p.RestartRequired = p.PendingRestartApply
-	return p.normalized(), nil
+	return p.normalized()
+}
+
+func databaseText(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case []byte:
+		return string(typed)
+	default:
+		return ""
+	}
 }
 
 func ensureStorageAccount(ctx context.Context, tx *db.Tx, userID string) (string, error) {
-	id := newID("stor")
-	if err := tx.QueryRow(ctx, `
-INSERT INTO storage_accounts (id, user_id)
-VALUES ($1, $2)
-ON CONFLICT (user_id) DO UPDATE SET updated_at = storage_accounts.updated_at
-RETURNING id`, id, userID).Scan(&id); err != nil {
-		return "", err
-	}
-	return id, nil
+	return tx.Queries().EnsureStorageAccount(ctx, dbsqlc.EnsureStorageAccountParams{ID: newID("stor"), UserID: userID})
 }
 
 func ensureFreeStorage(ctx context.Context, tx *db.Tx, userID, accountID string) error {
-	var hasPaid bool
-	if err := tx.QueryRow(ctx, `
-SELECT EXISTS (
-	SELECT 1 FROM subscriptions
-	WHERE user_id = $1
-	  AND state IN ('active', 'trialing')
-	  AND (current_period_end IS NULL OR current_period_end > now())
-)`, userID).Scan(&hasPaid); err != nil {
+	q := tx.Queries()
+	hasPaid, err := q.UserHasActiveSubscription(ctx, userID)
+	if err != nil {
 		return err
 	}
 	if hasPaid {
 		return nil
 	}
-	var planVersionID string
-	var includedGB int
-	err := tx.QueryRow(ctx, `
-SELECT pv.id, pv.included_storage_gb
-FROM plans p
-JOIN plan_versions pv ON pv.id = p.current_version_id
-WHERE p.code = 'free' AND p.active
-LIMIT 1`).Scan(&planVersionID, &includedGB)
+	plan, err := q.GetFreePlanStorage(ctx)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	idempotencyKey := "free-plan:" + planVersionID + ":storage:" + userID
-	var existing int
-	err = tx.QueryRow(ctx, `
-SELECT amount_gb
-FROM storage_ledger_entries
-WHERE idempotency_key = $1 AND account_id = $2 AND source_type = 'plan' AND source_id = $3 AND entry_type = 'included_set'`, idempotencyKey, accountID, planVersionID).Scan(&existing)
+	idempotencyKey := "free-plan:" + plan.ID + ":storage:" + userID
+	existing, err := q.GetFreePlanStorageLedgerAmount(ctx, dbsqlc.GetFreePlanStorageLedgerAmountParams{IdempotencyKey: idempotencyKey, AccountID: accountID, PlanVersionID: plan.ID})
 	if err == nil {
-		if existing == includedGB {
+		if existing == plan.IncludedStorageGb {
 			return nil
 		}
 		return ErrIdempotencyConflict
@@ -1213,26 +1079,22 @@ WHERE idempotency_key = $1 AND account_id = $2 AND source_type = 'plan' AND sour
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	var purchased, allocated int
-	if err := tx.QueryRow(ctx, `SELECT purchased_gb, allocated_gb FROM storage_accounts WHERE id = $1 FOR UPDATE`, accountID).Scan(&purchased, &allocated); err != nil {
+	usage, err := q.GetStorageUsageForUpdate(ctx, accountID)
+	if err != nil {
 		return err
 	}
-	if allocated > includedGB+purchased {
+	if usage.AllocatedGb > plan.IncludedStorageGb+usage.PurchasedGb {
 		return ErrInsufficientStorage
 	}
-	if _, err := tx.Exec(ctx, `UPDATE storage_accounts SET included_gb = $2, version = version + 1, updated_at = now() WHERE id = $1`, accountID, includedGB); err != nil {
+	if err := q.SetIncludedStorage(ctx, dbsqlc.SetIncludedStorageParams{ID: accountID, IncludedGb: plan.IncludedStorageGb}); err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `
-INSERT INTO storage_ledger_entries (id, account_id, entry_type, amount_gb, source_type, source_id, idempotency_key, metadata)
-VALUES ($1, $2, 'included_set', $3, 'plan', $4, $5, $6::jsonb)`, newID("sled"), accountID, includedGB, planVersionID, idempotencyKey, `{"plan_code":"free"}`)
-	return err
+	return q.InsertFreePlanStorageLedger(ctx, dbsqlc.InsertFreePlanStorageLedgerParams{ID: newID("sled"), AccountID: accountID, AmountGb: plan.IncludedStorageGb, PlanVersionID: plan.ID, IdempotencyKey: idempotencyKey})
 }
 
 func insertEvent(ctx context.Context, tx *db.Tx, projectID, eventType, message string, metadata map[string]any) error {
 	b, _ := json.Marshal(metadata)
-	_, err := tx.Exec(ctx, `INSERT INTO project_events (id, project_id, event_type, message, metadata) VALUES ($1, $2, $3, $4, $5::jsonb)`, newID("pevt"), projectID, eventType, message, string(b))
-	return err
+	return tx.Queries().InsertProjectEvent(ctx, dbsqlc.InsertProjectEventParams{ID: newID("pevt"), ProjectID: projectID, EventType: eventType, Message: message, Metadata: b})
 }
 
 func isUniqueViolation(err error) bool {

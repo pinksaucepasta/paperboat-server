@@ -3,13 +3,13 @@ package audit
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
+	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
 )
 
 type ActorType string
@@ -44,19 +44,17 @@ func (w *Writer) Write(ctx context.Context, event Event) error {
 	if w == nil || w.db == nil {
 		return nil
 	}
-	return write(ctx, w.db.SQL().ExecContext, event)
+	return write(ctx, w.db.Queries(), event)
 }
-
-type execContextFunc func(context.Context, string, ...any) (sql.Result, error)
 
 func (w *Writer) WriteTx(ctx context.Context, tx *db.Tx, event Event) error {
 	if w == nil || tx == nil {
 		return nil
 	}
-	return write(ctx, tx.Exec, event)
+	return write(ctx, tx.Queries(), event)
 }
 
-func write(ctx context.Context, exec execContextFunc, event Event) error {
+func write(ctx context.Context, q *dbsqlc.Queries, event Event) error {
 	if event.ID == "" {
 		event.ID = newID("aud")
 	}
@@ -70,14 +68,7 @@ func write(ctx context.Context, exec execContextFunc, event Event) error {
 	if err != nil {
 		return fmt.Errorf("marshal audit metadata: %w", err)
 	}
-	_, err = exec(ctx, `
-INSERT INTO paperboat.audit_events
-	(id, actor_user_id, actor_type, event_type, resource_type, resource_id, idempotency_key, metadata, created_at)
-VALUES
-	($1, nullif($2, ''), $3, $4, $5, $6, nullif($7, ''), $8::jsonb, now())
-ON CONFLICT (idempotency_key) DO NOTHING`,
-		event.ID, event.ActorUserID, string(event.ActorType), event.EventType, event.ResourceType,
-		event.ResourceID, event.IdempotencyKey, string(metadata))
+	err = q.InsertAuditEvent(ctx, dbsqlc.InsertAuditEventParams{ID: event.ID, ActorUserID: event.ActorUserID, ActorType: string(event.ActorType), EventType: event.EventType, ResourceType: event.ResourceType, ResourceID: event.ResourceID, IdempotencyKey: event.IdempotencyKey, Metadata: metadata})
 	if err != nil {
 		return fmt.Errorf("insert audit event: %w", err)
 	}
@@ -96,34 +87,19 @@ func (w *Writer) List(ctx context.Context, query Query) ([]Event, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	rows, err := w.db.SQL().QueryContext(ctx, `
-SELECT id, coalesce(actor_user_id, ''), actor_type, event_type, resource_type, resource_id,
-       coalesce(idempotency_key, ''), metadata, created_at
-FROM paperboat.audit_events
-WHERE ($1 = '' OR resource_type = $1)
-  AND ($2 = '' OR resource_id = $2)
-  AND ($3 = '' OR actor_user_id = $3)
-ORDER BY created_at DESC
-LIMIT $4`, query.ResourceType, query.ResourceID, query.ActorUserID, limit)
+	rows, err := w.db.Queries().ListAuditEvents(ctx, dbsqlc.ListAuditEventsParams{ResourceType: query.ResourceType, ResourceID: query.ResourceID, ActorUserID: query.ActorUserID, RowLimit: int32(limit)})
 	if err != nil {
 		return nil, fmt.Errorf("query audit events: %w", err)
 	}
-	defer rows.Close()
-	var events []Event
-	for rows.Next() {
-		var event Event
-		var actorType string
-		var metadata []byte
-		if err := rows.Scan(&event.ID, &event.ActorUserID, &actorType, &event.EventType, &event.ResourceType, &event.ResourceID, &event.IdempotencyKey, &metadata, &event.CreatedAt); err != nil {
-			return nil, fmt.Errorf("scan audit event: %w", err)
-		}
-		event.ActorType = ActorType(actorType)
-		if err := json.Unmarshal(metadata, &event.Metadata); err != nil {
+	events := make([]Event, 0, len(rows))
+	for _, row := range rows {
+		event := Event{ID: row.ID, ActorUserID: row.ActorUserID, ActorType: ActorType(row.ActorType), EventType: row.EventType, ResourceType: row.ResourceType, ResourceID: row.ResourceID, IdempotencyKey: row.IdempotencyKey, CreatedAt: row.CreatedAt}
+		if err := json.Unmarshal(row.Metadata, &event.Metadata); err != nil {
 			return nil, fmt.Errorf("unmarshal audit metadata: %w", err)
 		}
 		events = append(events, event)
 	}
-	return events, rows.Err()
+	return events, nil
 }
 
 func newID(prefix string) string {
