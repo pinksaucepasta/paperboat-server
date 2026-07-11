@@ -440,7 +440,8 @@ const specHashTag = "paperboat_spec_hash"
 func machineSpecHash(spec fly.MachineSpec) string {
 	secretRefs := make([]string, 0, len(spec.Secrets))
 	for _, secret := range spec.Secrets {
-		secretRefs = append(secretRefs, secret.EnvVar+"="+secret.Name)
+		valueHash := sha256.Sum256([]byte(secret.Value))
+		secretRefs = append(secretRefs, secret.EnvVar+"="+secret.Name+":"+hex.EncodeToString(valueHash[:]))
 	}
 	sort.Strings(secretRefs)
 	payload, _ := json.Marshal(map[string]any{

@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"encoding/base64"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -12,24 +13,26 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 		"/run/secrets/encryption": []byte("secret-from-file\n"),
 	}
 	env := map[string]string{
-		"PAPERBOAT_ENV":                               "test",
-		"PAPERBOAT_HTTP_ADDRESS":                      "127.0.0.1:9090",
-		"PAPERBOAT_CATALOG_SEED_FILE":                 "/etc/paperboat/catalogs.json",
-		"PAPERBOAT_POLAR_WEBHOOK_TOLERANCE_SECONDS":   "120",
-		"PAPERBOAT_ENCRYPTION_KEY_FILE":               "/run/secrets/encryption",
-		"PAPERBOAT_AGENTUNNEL_API_KEY":                "agentunnel-api-key-from-env",
-		"PAPERBOAT_AGENTUNNEL_PAPERCODE_LOCAL_URL":    "http://127.0.0.1:4999",
-		"PAPERBOAT_AGENTUNNEL_ROUTE_EXPIRES_IN":       "12h",
-		"PAPERBOAT_AGENTUNNEL_ROUTE_SUBDOMAIN_PREFIX": "pc",
-		"PAPERBOAT_AGENTUNNEL_CONNECT_READY_TIMEOUT":  "7s",
-		"PAPERBOAT_AGENTUNNEL_CONNECT_POLL_INTERVAL":  "250ms",
-		"PAPERBOAT_AGENTUNNEL_SSH_LOCAL_HOST":         "127.0.0.2",
-		"PAPERBOAT_AGENTUNNEL_SSH_LOCAL_PORT":         "2222",
-		"PAPERBOAT_AGENTUNNEL_SSH_REMOTE_PORT_START":  "26000",
-		"PAPERBOAT_AGENTUNNEL_SSH_REMOTE_PORT_END":    "26999",
-		"PAPERBOAT_AGENTUNNEL_ACCESS_POLICY_ID":       "apol_test",
-		"PAPERBOAT_FLY_SETUP_SCRIPT_SECRET":           "PAPERBOAT_SETUP_SCRIPT_FROM_ENV",
-		"PAPERBOAT_SESSION_KEYS":                      "one,two",
+		"PAPERBOAT_ENV":                                  "test",
+		"PAPERBOAT_HTTP_ADDRESS":                         "127.0.0.1:9090",
+		"PAPERBOAT_CATALOG_SEED_FILE":                    "/etc/paperboat/catalogs.json",
+		"PAPERBOAT_POLAR_WEBHOOK_TOLERANCE_SECONDS":      "120",
+		"PAPERBOAT_ENCRYPTION_KEY_FILE":                  "/run/secrets/encryption",
+		"PAPERBOAT_AGENTUNNEL_API_KEY":                   "agentunnel-api-key-from-env",
+		"PAPERBOAT_AGENTUNNEL_PAPERCODE_LOCAL_URL":       "http://127.0.0.1:4999",
+		"PAPERBOAT_AGENTUNNEL_ROUTE_EXPIRES_IN":          "12h",
+		"PAPERBOAT_AGENTUNNEL_ROUTE_SUBDOMAIN_PREFIX":    "pc",
+		"PAPERBOAT_AGENTUNNEL_CONNECT_READY_TIMEOUT":     "7s",
+		"PAPERBOAT_AGENTUNNEL_CONNECT_POLL_INTERVAL":     "250ms",
+		"PAPERBOAT_AGENTUNNEL_SSH_LOCAL_HOST":            "127.0.0.2",
+		"PAPERBOAT_AGENTUNNEL_SSH_LOCAL_PORT":            "2222",
+		"PAPERBOAT_AGENTUNNEL_SSH_REMOTE_PORT_START":     "26000",
+		"PAPERBOAT_AGENTUNNEL_SSH_REMOTE_PORT_END":       "26999",
+		"PAPERBOAT_AGENTUNNEL_ACCESS_POLICY_ID":          "apol_test",
+		"PAPERBOAT_AGENTUNNEL_UPLOAD_MAX_BYTES":          "7340032",
+		"PAPERBOAT_AGENTUNNEL_UPLOAD_ALLOWED_MIME_TYPES": "image/png,image/webp",
+		"PAPERBOAT_FLY_SETUP_SCRIPT_SECRET":              "PAPERBOAT_SETUP_SCRIPT_FROM_ENV",
+		"PAPERBOAT_SESSION_KEYS":                         "one,two",
 	}
 	cfg, err := Load(context.Background(), LoadOptions{
 		LookupEnv: func(key string) (string, bool) {
@@ -70,7 +73,9 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 		cfg.Providers.Agentunnel.SSHLocalPort != 2222 ||
 		cfg.Providers.Agentunnel.SSHRemotePortStart != 26000 ||
 		cfg.Providers.Agentunnel.SSHRemotePortEnd != 26999 ||
-		cfg.Providers.Agentunnel.AccessPolicyID != "apol_test" {
+		cfg.Providers.Agentunnel.AccessPolicyID != "apol_test" ||
+		cfg.Providers.Agentunnel.UploadMaxBytes != 7340032 ||
+		!slices.Equal(cfg.Providers.Agentunnel.UploadAllowedMIMEs, []string{"image/png", "image/webp"}) {
 		t.Fatalf("agentunnel route config was not loaded from env: %#v", cfg.Providers.Agentunnel)
 	}
 	if got := strings.Join(cfg.Secrets.SessionKeys, ","); got != "one,two" {

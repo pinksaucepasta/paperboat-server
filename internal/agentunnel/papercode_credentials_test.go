@@ -170,6 +170,65 @@ func TestPapercodeCredentialIssuerRequiresHTTPSInProduction(t *testing.T) {
 	}
 }
 
+func TestPapercodeCredentialIssuerChecksHealthContract(t *testing.T) {
+	var requestProof string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/paperboat/health" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		var request struct {
+			Proof string `json:"proof"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		requestProof = request.Proof
+		writeTestJSON(t, w, map[string]any{"status": "ready", "environmentId": "env_1"})
+	}))
+	defer server.Close()
+
+	issuer := testPapercodeIssuer(t, server)
+	input := CredentialInput{UserID: "usr_1", ProjectID: "prj_1", EnvironmentID: "env_1", ClientSessionID: "cls_1", HTTPBaseURL: server.URL}
+	if err := issuer.CheckHealth(t.Context(), input); err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(requestProof, ".")
+	if len(parts) != 3 {
+		t.Fatalf("proof parts = %d", len(parts))
+	}
+	var header map[string]any
+	var payload map[string]any
+	decodeJWTPart(t, parts[0], &header)
+	decodeJWTPart(t, parts[1], &payload)
+	if header["typ"] != mint.HealthType || payload["environmentId"] != "env_1" || payload["scope"].([]any)[0] != mint.HealthScope {
+		t.Fatalf("header=%#v payload=%#v", header, payload)
+	}
+}
+
+func TestPapercodeCredentialIssuerRejectsInvalidHealthReadiness(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeTestJSON(t, w, map[string]any{"status": "ready", "environmentId": "env_wrong"})
+	}))
+	defer server.Close()
+	err := testPapercodeIssuer(t, server).CheckHealth(t.Context(), CredentialInput{
+		UserID: "usr_1", ProjectID: "prj_1", EnvironmentID: "env_1", ClientSessionID: "cls_1", HTTPBaseURL: server.URL,
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid health readiness") {
+		t.Fatalf("health error = %v", err)
+	}
+}
+
+func decodeJWTPart(t *testing.T, part string, target any) {
+	t.Helper()
+	raw, err := base64.RawURLEncoding.DecodeString(part)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, target); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPapercodeCredentialIssuerRequiresCompleteRevocationAcknowledgement(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/paperboat/revoke-sessions" {

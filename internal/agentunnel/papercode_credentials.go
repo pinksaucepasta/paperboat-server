@@ -38,6 +38,52 @@ func (p *PapercodeCredentialIssuer) CheckCLI(_ context.Context, input Credential
 	return nil
 }
 
+func (p *PapercodeCredentialIssuer) CheckHealth(ctx context.Context, input CredentialInput) error {
+	if err := p.CheckCLI(ctx, input); err != nil {
+		return err
+	}
+	base, err := p.validateBaseURL(input.HTTPBaseURL)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	ttl := p.ProofTTL
+	if ttl <= 0 || ttl > mint.MaxProofTTL {
+		ttl = mint.MaxProofTTL
+	}
+	jti, err := randomOpaqueID("jti")
+	if err != nil {
+		return err
+	}
+	nonce, err := randomOpaqueID("nonce")
+	if err != nil {
+		return err
+	}
+	proof, err := p.Signer.SignHealth(mint.ProofInput{
+		Issuer: p.Issuer, EnvironmentID: input.EnvironmentID, UserID: input.UserID,
+		ClientSessionID: input.ClientSessionID, JTI: jti, Nonce: nonce,
+		IssuedAt: now, ExpiresAt: now.Add(ttl),
+	})
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(map[string]string{"proof": proof})
+	if err != nil {
+		return err
+	}
+	var response struct {
+		Status        string `json:"status"`
+		EnvironmentID string `json:"environmentId"`
+	}
+	if err := p.requestJSON(ctx, http.MethodPost, base+"/api/paperboat/health", "application/json", body, "", &response); err != nil {
+		return err
+	}
+	if response.Status != "ready" || response.EnvironmentID != input.EnvironmentID {
+		return errors.New("papercode returned invalid health readiness")
+	}
+	return nil
+}
+
 func (p *PapercodeCredentialIssuer) IssueCLI(ctx context.Context, input CredentialInput) (CLICredentials, error) {
 	if err := p.CheckCLI(ctx, input); err != nil {
 		return CLICredentials{}, err

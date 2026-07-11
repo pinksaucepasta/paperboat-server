@@ -96,6 +96,7 @@ func commandAgentunnelClient(cfg config.Config) agentunnel.Client {
 		SSHRemotePortStart:   cfg.Providers.Agentunnel.SSHRemotePortStart,
 		SSHRemotePortEnd:     cfg.Providers.Agentunnel.SSHRemotePortEnd,
 		AccessPolicyID:       cfg.Providers.Agentunnel.AccessPolicyID,
+		UploadMaxBytes:       cfg.Providers.Agentunnel.UploadMaxBytes,
 	}
 }
 

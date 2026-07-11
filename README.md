@@ -129,6 +129,9 @@ Fly.io TODO for real-provider smoke testing:
   `PAPERBOAT_AGENTUNNEL_ROUTE_EXPIRES_IN`, and
   `PAPERBOAT_AGENTUNNEL_ROUTE_SUBDOMAIN_PREFIX` for papercode HTTP/WSS route
   reconciliation.
+- Set `PAPERBOAT_AGENTUNNEL_UPLOAD_MAX_BYTES` and
+  `PAPERBOAT_AGENTUNNEL_UPLOAD_ALLOWED_MIME_TYPES` for the staged-image policy. Connect
+  remains pending when Agentunnel reports a smaller proxy request-body limit.
 - Do not configure a shared production `PAPERBOAT_AGENTUNNEL_MACHINE_TOKEN`; project VM
   tokens are issued through agentunnel client provisioning and injected per machine. The
   env var remains only as a local development fallback.

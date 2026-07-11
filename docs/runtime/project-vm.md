@@ -44,3 +44,7 @@ healthy only when the readiness JSON state is `ready`.
 `PAPERBOAT_AGENTUNNEL_FORWARD_COMMAND` can override the default client launch command.
 Use it when the hosted dev agentunnel exposes a more specific HTTP/WSS machine-client
 forwarder than `agentunnel client run --config`.
+
+Project Fly machine configs intentionally contain no `services` entries. Papercode binds
+inside the machine and is reachable only through its assigned Agentunnel HTTP/WSS route;
+no public Fly application port is created.

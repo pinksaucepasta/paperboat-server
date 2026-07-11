@@ -19,6 +19,8 @@ const (
 	ProofScope    = "environment:connect"
 	RevokeType    = "t3-cloud-revoke+jwt"
 	RevokeScope   = "environment:revoke"
+	HealthType    = "t3-cloud-health+jwt"
+	HealthScope   = "environment:health"
 	MaxProofTTL   = 5 * time.Minute
 	defaultMaxAge = 5 * time.Minute
 )
@@ -118,6 +120,23 @@ func (p *Provider) Sign(input ProofInput) (string, error) {
 		"jti": input.JTI, "iat": issuedAt.Unix(), "exp": expiresAt.Unix(),
 		"environmentId": input.EnvironmentID, "clientSessionId": input.ClientSessionID,
 		"nonce": input.Nonce, "scope": []string{ProofScope},
+	})
+}
+
+func (p *Provider) SignHealth(input ProofInput) (string, error) {
+	if strings.TrimSpace(input.Issuer) == "" || strings.TrimSpace(input.EnvironmentID) == "" || strings.TrimSpace(input.UserID) == "" || strings.TrimSpace(input.ClientSessionID) == "" || strings.TrimSpace(input.JTI) == "" || strings.TrimSpace(input.Nonce) == "" {
+		return "", errors.New("health proof claims are incomplete")
+	}
+	issuedAt := input.IssuedAt.UTC()
+	expiresAt := input.ExpiresAt.UTC()
+	if !expiresAt.After(issuedAt) || expiresAt.Sub(issuedAt) > MaxProofTTL {
+		return "", errors.New("health proof lifetime must be positive and at most five minutes")
+	}
+	return p.signClaims(HealthType, map[string]any{
+		"iss": input.Issuer, "aud": "t3-env:" + input.EnvironmentID, "sub": input.UserID,
+		"jti": input.JTI, "iat": issuedAt.Unix(), "exp": expiresAt.Unix(),
+		"environmentId": input.EnvironmentID, "clientSessionId": input.ClientSessionID,
+		"nonce": input.Nonce, "scope": []string{HealthScope},
 	})
 }
 

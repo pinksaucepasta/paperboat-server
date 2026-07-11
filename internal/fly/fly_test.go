@@ -45,6 +45,9 @@ func TestSDKMachineConfigUsesFlySDKShape(t *testing.T) {
 	if len(cfg.Processes[0].Secrets) != 1 || cfg.Processes[0].Secrets[0].EnvVar != "SECRET" || cfg.Processes[0].Secrets[0].Name != "secret-name" {
 		t.Fatalf("process secrets = %#v", cfg.Processes[0].Secrets)
 	}
+	if len(cfg.Services) != 0 {
+		t.Fatalf("project machine exposes public Fly services: %#v", cfg.Services)
+	}
 }
 
 func TestSDKMachineConfigSetsHostname(t *testing.T) {

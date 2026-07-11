@@ -126,6 +126,8 @@ type ProviderConfig struct {
 	SSHRemotePortStart   int           `json:"ssh_remote_port_start,omitempty"`
 	SSHRemotePortEnd     int           `json:"ssh_remote_port_end,omitempty"`
 	AccessPolicyID       string        `json:"access_policy_id,omitempty"`
+	UploadMaxBytes       int64         `json:"upload_max_bytes,omitempty"`
+	UploadAllowedMIMEs   []string      `json:"upload_allowed_mime_types,omitempty"`
 }
 
 type Secrets struct {
@@ -236,6 +238,8 @@ func Default() Config {
 				SSHLocalPort:         22,
 				SSHRemotePortStart:   25000,
 				SSHRemotePortEnd:     25999,
+				UploadMaxBytes:       10 << 20,
+				UploadAllowedMIMEs:   []string{"image/png", "image/jpeg", "image/webp"},
 			},
 		},
 		GitHub: GitHub{
@@ -352,6 +356,9 @@ func (c Config) Validate() error {
 	if c.Providers.Agentunnel.SSHRemotePortStart <= 0 || c.Providers.Agentunnel.SSHRemotePortEnd < c.Providers.Agentunnel.SSHRemotePortStart || c.Providers.Agentunnel.SSHRemotePortEnd > 65535 {
 		errs = append(errs, fmt.Errorf("agentunnel ssh remote port range must be valid"))
 	}
+	if c.Providers.Agentunnel.UploadMaxBytes <= 0 || len(c.Providers.Agentunnel.UploadAllowedMIMEs) == 0 {
+		errs = append(errs, fmt.Errorf("agentunnel upload_max_bytes and upload_allowed_mime_types are required"))
+	}
 	if strings.TrimSpace(c.GitHub.OAuthAuthorizeURL) == "" || strings.TrimSpace(c.GitHub.OAuthTokenURL) == "" {
 		errs = append(errs, fmt.Errorf("github oauth urls are required"))
 	}
@@ -452,6 +459,16 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_AGENTUNNEL_ROUTE_SUBDOMAIN_PREFIX", &c.Providers.Agentunnel.RouteSubdomainPrefix)
 	setString("PAPERBOAT_AGENTUNNEL_SSH_LOCAL_HOST", &c.Providers.Agentunnel.SSHLocalHost)
 	setString("PAPERBOAT_AGENTUNNEL_ACCESS_POLICY_ID", &c.Providers.Agentunnel.AccessPolicyID)
+	if v, ok := lookup("PAPERBOAT_AGENTUNNEL_UPLOAD_ALLOWED_MIME_TYPES"); ok {
+		c.Providers.Agentunnel.UploadAllowedMIMEs = splitCSV(v)
+	}
+	if v, ok := lookup("PAPERBOAT_AGENTUNNEL_UPLOAD_MAX_BYTES"); ok {
+		parsed, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return fmt.Errorf("parse PAPERBOAT_AGENTUNNEL_UPLOAD_MAX_BYTES: %w", err)
+		}
+		c.Providers.Agentunnel.UploadMaxBytes = parsed
+	}
 	if v, ok := lookup("PAPERBOAT_ALLOWED_ORIGINS"); ok {
 		c.HTTP.AllowedOrigins = splitCSV(v)
 	}

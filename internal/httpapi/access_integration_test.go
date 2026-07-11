@@ -76,6 +76,20 @@ func TestAccessConnectIssuesPapercodeDescriptorAndRecordsSession(t *testing.T) {
 	if events != 2 {
 		t.Fatalf("approved events = %d, want 2", events)
 	}
+	var eventSessionID, eventMetadata string
+	if err := store.SQL().QueryRowContext(context.Background(), `
+		SELECT access_session_id, metadata::text FROM paperboat.connection_events
+		WHERE project_id = $1 AND result = 'approved' ORDER BY created_at DESC LIMIT 1`, projectID).Scan(&eventSessionID, &eventMetadata); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{projectID, eventSessionID, "agentunnel_tunnel_id", "agentunnel_client_id", "environment_id"} {
+		if !strings.Contains(eventMetadata, value) {
+			t.Fatalf("connection event lacks correlation %q: %s", value, eventMetadata)
+		}
+	}
+	if strings.Contains(eventMetadata, "token") || strings.Contains(eventMetadata, previewURL) {
+		t.Fatalf("connection event contains credential or route URL: %s", eventMetadata)
+	}
 }
 
 func TestPapercodeConnectDoesNotRequireConfigRepoReadiness(t *testing.T) {
@@ -1247,6 +1261,12 @@ type offlineAccessClient struct{}
 
 func (offlineAccessClient) EnsureProjectResources(context.Context, agentunnel.ProjectRef) (agentunnel.ResourceDescriptor, error) {
 	return agentunnel.ResourceDescriptor{}, agentunnel.ErrTunnelUnavailable
+}
+
+func (offlineAccessClient) ReattachProjectResources(_ context.Context, _ agentunnel.ProjectRef, resource agentunnel.ResourceDescriptor) (agentunnel.ResourceDescriptor, error) {
+	resource.ClientID = "cli_replacement"
+	resource.MachineToken = "replacement-token"
+	return resource, nil
 }
 
 func (offlineAccessClient) Status(context.Context, agentunnel.ResourceDescriptor) (agentunnel.TunnelStatus, error) {

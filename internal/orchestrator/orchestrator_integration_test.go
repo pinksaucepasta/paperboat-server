@@ -673,6 +673,70 @@ func TestProvisionPrefersProjectScopedAgentunnelToken(t *testing.T) {
 	}
 }
 
+func TestStartAppliesRotatedAgentunnelCredentialBeforeMachineStart(t *testing.T) {
+	store := newOrchestratorTestDB(t)
+	ctx := context.Background()
+	seedOrchestratorCatalogs(t, store)
+	insertOrchestratorUser(t, store, "usr_orch_rotated_tunnel", 20)
+
+	cfg := orchestratorTestConfig()
+	projectService := projects.NewService(store, audit.NewWriter(store), cfg)
+	project, _, err := projectService.Create(ctx, projects.CreateInput{
+		UserID:          "usr_orch_rotated_tunnel",
+		IdempotencyKey:  "orch-rotated-tunnel",
+		RepositoryURL:   "https://github.com/paperboat/example.git",
+		StorageGB:       8,
+		MachineTypeCode: "standard-1x",
+		RegionCode:      "iad",
+		PresetCodes:     []string{"codex"},
+		IdleTimeoutCode: "15m",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertAgentunnelToken(t, store, project.ID, "old-agentunnel-machine-token")
+
+	fakeFly := fly.NewFakeClient()
+	service := NewService(store, fakeFly, cfg)
+	if err := service.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	updateAgentunnelToken(t, store, project.ID, "rotated-agentunnel-machine-token")
+	fakeFly.Calls = nil
+
+	if err := service.startProject(ctx, project.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(fakeFly.Calls) != 2 || !strings.HasPrefix(fakeFly.Calls[0], "UpdateMachine:") || !strings.HasPrefix(fakeFly.Calls[1], "StartMachine:") {
+		t.Fatalf("Fly calls = %v, want UpdateMachine before StartMachine", fakeFly.Calls)
+	}
+	for _, spec := range fakeFly.MachineSpecs {
+		if !hasSecret(spec.Secrets, cfg.Fly.AgentunnelSecret, "rotated-agentunnel-machine-token") {
+			t.Fatalf("rotated credential was not installed before start: %#v", spec.Secrets)
+		}
+		if hasSecret(spec.Secrets, cfg.Fly.AgentunnelSecret, "old-agentunnel-machine-token") {
+			t.Fatalf("old credential remained installed: %#v", spec.Secrets)
+		}
+	}
+}
+
+func TestMachineSpecHashChangesWhenSecretValueRotates(t *testing.T) {
+	base := fly.MachineSpec{
+		Name: "paperboat-project",
+		Secrets: []fly.MachineSecret{{
+			EnvVar: "AGENTUNNEL_MACHINE_TOKEN",
+			Name:   "PBSECRET_AGENTUNNEL_PROJECT",
+			Value:  "old-agentunnel-machine-token",
+		}},
+	}
+	rotated := base
+	rotated.Secrets = append([]fly.MachineSecret(nil), base.Secrets...)
+	rotated.Secrets[0].Value = "rotated-agentunnel-machine-token"
+	if machineSpecHash(base) == machineSpecHash(rotated) {
+		t.Fatal("machine spec hash did not detect rotated secret value")
+	}
+}
+
 func TestRestartBlocksPendingStorageResizeUntilPolicyApproved(t *testing.T) {
 	store := newOrchestratorTestDB(t)
 	ctx := context.Background()
@@ -816,6 +880,20 @@ func insertAgentunnelToken(t *testing.T, store *db.DB, projectID, token string) 
 	if _, err := store.SQL().ExecContext(context.Background(), `
 INSERT INTO paperboat.agentunnel_resources (id, project_id, tunnel_id, client_id, resource_id, metadata)
 VALUES ($1, $2, $3, $4, $5, $6::jsonb)`, "agr_"+projectID, projectID, "tun_"+projectID, "cli_"+projectID, "tun_"+projectID, metadata); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func updateAgentunnelToken(t *testing.T, store *db.DB, projectID, token string) {
+	t.Helper()
+	ciphertext, err := secrets.Encrypt(orchestratorTestConfig().Secrets.EncryptionKey, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(context.Background(), `
+UPDATE paperboat.agentunnel_resources
+SET metadata = jsonb_set(metadata, '{machine_token_ciphertext}', to_jsonb($2::text))
+WHERE project_id = $1`, projectID, hex.EncodeToString(ciphertext)); err != nil {
 		t.Fatal(err)
 	}
 }

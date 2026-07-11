@@ -61,6 +61,8 @@ func writeAccessError(w http.ResponseWriter, r *http.Request, err error) bool {
 		writeError(w, r, http.StatusConflict, "project_deleted", "Deleted projects cannot be connected.")
 	case errors.Is(err, agentunnel.ErrInvalidState):
 		writeError(w, r, http.StatusConflict, "machine_not_ready", "Machine is not ready for connection.")
+	case errors.Is(err, agentunnel.ErrMachineFailed):
+		writeError(w, r, http.StatusConflict, "machine_failed", "The project machine failed to start.")
 	case errors.Is(err, agentunnel.ErrInsufficientCredit):
 		writeError(w, r, http.StatusConflict, "credits_exhausted", "Credits are too low to connect to this project.")
 	case errors.Is(err, agentunnel.ErrTunnelUnavailable):

@@ -132,6 +132,33 @@ func TestSignRevocationUsesSeparateTypeAndScope(t *testing.T) {
 	}
 }
 
+func TestSignHealthUsesDedicatedTypeAndScope(t *testing.T) {
+	provider, _ := New([]Key{{ID: "health-key", PrivateKey: testKey(9)}}, "health-key", time.Minute)
+	now := time.Unix(1_700_000_000, 0)
+	token, err := provider.SignHealth(ProofInput{
+		Issuer: "https://paperboat.example", EnvironmentID: "env_1", UserID: "usr_1",
+		ClientSessionID: "cls_1", JTI: "health-jti", Nonce: "health-nonce",
+		IssuedAt: now, ExpiresAt: now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(token, ".")
+	var header map[string]any
+	var payload map[string]any
+	decodeJSONPart(t, parts[0], &header)
+	decodeJSONPart(t, parts[1], &payload)
+	if header["typ"] != HealthType || header["kid"] != "health-key" {
+		t.Fatalf("header=%#v", header)
+	}
+	if payload["aud"] != "t3-env:env_1" || payload["sub"] != "usr_1" || payload["environmentId"] != "env_1" || payload["clientSessionId"] != "cls_1" {
+		t.Fatalf("payload=%#v", payload)
+	}
+	if scope := payload["scope"].([]any); len(scope) != 1 || scope[0] != HealthScope {
+		t.Fatalf("scope=%#v", scope)
+	}
+}
+
 func decodeJSONPart(t *testing.T, part string, target any) {
 	t.Helper()
 	if err := json.Unmarshal(mustDecode(t, part), target); err != nil {

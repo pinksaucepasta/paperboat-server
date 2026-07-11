@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -82,9 +83,8 @@ func TestHTTPClientEnsureProjectResourcesCreatesClientAndHTTPTunnel(t *testing.T
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"ok": true,
 				"data": map[string]any{
-					"tunnel_id":   "tun_http_1",
-					"preview_url": "https://pb-prj-1.agentunnel.example",
-					"status":      "active",
+					"tunnel_id": "tun_http_1", "preview_url": "https://pb-prj-1.agentunnel.example",
+					"status": "active", "forwarding_status": "online", "client_connected": true,
 				},
 			})
 		case "/api/tcp-tunnels":
@@ -209,6 +209,57 @@ func TestHTTPClientEnsureProjectResourcesAllowsHTTPOnlyWhenTCPDisabled(t *testin
 	}
 	if resource.Metadata["tcp_status"] != "disabled" || resource.Metadata["tcp_error_code"] != "TCP_TUNNELS_DISABLED" {
 		t.Fatalf("tcp disabled metadata = %#v", resource.Metadata)
+	}
+}
+
+func TestHTTPClientReattachProjectResourcesPreservesHTTPRoute(t *testing.T) {
+	var reassignedClientID string
+	var reassignedExpiresIn string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/clients":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "data": map[string]any{
+				"client_id": "cli_replacement", "client_token": "clt_replacement_token",
+			}})
+		case "/api/http-tunnels/tun_stable/reassign":
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			reassignedClientID = body["client_id"]
+			reassignedExpiresIn = body["expires_in"]
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "data": map[string]any{
+				"tunnel_id": "tun_stable", "client_id": "cli_replacement",
+				"preview_url": "https://pb-stable.agentunnel.example", "status": "active",
+			}})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	resource, err := (HTTPClient{BaseURL: server.URL, RouteExpiresIn: 30 * 24 * time.Hour}).ReattachProjectResources(context.Background(), ProjectRef{ID: "prj_1"}, ResourceDescriptor{
+		TunnelID: "tun_stable", ResourceID: "tun_stable", ClientID: "cli_old",
+		HTTPBaseURL: "https://pb-stable.agentunnel.example", WebSocketBaseURL: "wss://pb-stable.agentunnel.example",
+		Metadata: map[string]any{"resource_kind": "http_tunnel", "tcp_tunnel_id": "tun_tcp_old"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reassignedClientID != "cli_replacement" || resource.ClientID != "cli_replacement" || resource.MachineToken != "clt_replacement_token" {
+		t.Fatalf("reattached resource = %#v, requested client = %q", resource, reassignedClientID)
+	}
+	if reassignedExpiresIn != "never" {
+		t.Fatalf("reassignment expires_in = %q, want persistent lifetime", reassignedExpiresIn)
+	}
+	if resource.Metadata["superseded_client_id"] != "cli_old" {
+		t.Fatalf("superseded client cleanup was not persisted: %#v", resource.Metadata)
+	}
+	if resource.TunnelID != "tun_stable" || resource.HTTPBaseURL != "https://pb-stable.agentunnel.example" || resource.WebSocketBaseURL != "wss://pb-stable.agentunnel.example" {
+		t.Fatalf("stable route changed: %#v", resource)
+	}
+	if _, ok := resource.Metadata["tcp_tunnel_id"]; ok {
+		t.Fatalf("stale optional SSH assignment retained: %#v", resource.Metadata)
 	}
 }
 
@@ -507,9 +558,8 @@ func TestHTTPClientStatusUsesHTTPTunnelRoute(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"ok": true,
 				"data": map[string]any{
-					"tunnel_id":   "tun_http_1",
-					"preview_url": "https://pb-prj-1.agentunnel.example",
-					"status":      "active",
+					"tunnel_id": "tun_http_1", "preview_url": "https://pb-prj-1.agentunnel.example",
+					"status": "active", "forwarding_status": "online", "client_connected": true,
 				},
 			})
 		case "/api/tcp-tunnels/tun_tcp_1/connect-info":
@@ -548,16 +598,15 @@ func TestHTTPClientStatusUsesHTTPTunnelRoute(t *testing.T) {
 	}
 }
 
-func TestHTTPClientStatusRequiresCombinedTCPTunnelReadiness(t *testing.T) {
+func TestHTTPClientStatusDoesNotGateHTTPReadinessOnOptionalSSH(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/http-tunnels/tun_http_1":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"ok": true,
 				"data": map[string]any{
-					"tunnel_id":   "tun_http_1",
-					"preview_url": "https://pb-prj-1.agentunnel.example",
-					"status":      "active",
+					"tunnel_id": "tun_http_1", "preview_url": "https://pb-prj-1.agentunnel.example",
+					"status": "active", "forwarding_status": "online", "client_connected": true,
 				},
 			})
 		case "/api/tcp-tunnels/tun_tcp_1/connect-info":
@@ -587,7 +636,7 @@ func TestHTTPClientStatusRequiresCombinedTCPTunnelReadiness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.Ready || status.Status != "offline" || status.Reason != "CLIENT_OFFLINE" {
+	if !status.Ready || status.Status != "online" || status.Reason != "" {
 		t.Fatalf("status = %#v", status)
 	}
 	if status.HTTPBaseURL != "https://pb-prj-1.agentunnel.example" || status.WebSocketBaseURL != "wss://pb-prj-1.agentunnel.example" {
@@ -595,7 +644,7 @@ func TestHTTPClientStatusRequiresCombinedTCPTunnelReadiness(t *testing.T) {
 	}
 }
 
-func TestHTTPClientStatusRejectsCombinedResourceWithoutTCPTunnelID(t *testing.T) {
+func TestHTTPClientStatusAllowsHTTPResourceWithoutOptionalSSHTunnel(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/http-tunnels/tun_http_1" {
 			t.Fatalf("path = %q", r.URL.Path)
@@ -603,9 +652,8 @@ func TestHTTPClientStatusRejectsCombinedResourceWithoutTCPTunnelID(t *testing.T)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"ok": true,
 			"data": map[string]any{
-				"tunnel_id":   "tun_http_1",
-				"preview_url": "https://pb-prj-1.agentunnel.example",
-				"status":      "active",
+				"tunnel_id": "tun_http_1", "preview_url": "https://pb-prj-1.agentunnel.example",
+				"status": "active", "forwarding_status": "online", "client_connected": true,
 			},
 		})
 	}))
@@ -620,7 +668,27 @@ func TestHTTPClientStatusRejectsCombinedResourceWithoutTCPTunnelID(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.Ready || status.Reason != "TCP_TUNNEL_MISSING" {
+	if !status.Ready || status.Reason != "" {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestHTTPClientStatusMapsOfflineHTTPRoute(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "data": map[string]any{
+			"tunnel_id": "tun_http_1", "preview_url": "https://pb-prj-1.agentunnel.example",
+			"status": "active", "forwarding_status": "offline", "client_connected": false,
+		}})
+	}))
+	defer server.Close()
+
+	status, err := (HTTPClient{BaseURL: server.URL}).Status(context.Background(), ResourceDescriptor{
+		TunnelID: "tun_http_1", Metadata: map[string]any{"resource_kind": "http_tunnel"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Ready || status.Status != "offline" || status.Reason != "CLIENT_OFFLINE" {
 		t.Fatalf("status = %#v", status)
 	}
 }
@@ -716,13 +784,87 @@ func TestBuildCLIResponseDoesNotInventUnvalidatedAuth(t *testing.T) {
 	resp := buildResponse(ConnectCLI, projects.Project{ID: "prj_1", Name: "Demo"}, ResourceDescriptor{
 		HTTPBaseURL:      "https://agentunnel.example/projects/prj_1",
 		WebSocketBaseURL: "wss://agentunnel.example/projects/prj_1",
-	}, time.Now().UTC().Add(time.Minute), CLICredentials{})
+	}, time.Now().UTC().Add(time.Minute), CLICredentials{}, 7<<20, []string{"image/png"})
 
 	if _, ok := resp.Terminal["auth"]; ok {
 		t.Fatalf("terminal descriptor should not include unvalidated auth: %#v", resp.Terminal)
 	}
 	if _, ok := resp.PapercodeUpload["auth"]; ok {
 		t.Fatalf("upload descriptor should not include unvalidated auth: %#v", resp.PapercodeUpload)
+	}
+	if resp.PapercodeUpload["max_bytes"] != int64(7<<20) || !slices.Equal(resp.PapercodeUpload["allowed_mime_types"].([]string), []string{"image/png"}) {
+		t.Fatalf("upload policy was not sourced from config: %#v", resp.PapercodeUpload)
+	}
+}
+
+func TestHTTPClientStatusRejectsProxyBelowUploadLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "data": map[string]any{
+			"tunnel_id": "tun_http_1", "preview_url": "https://pb-prj-1.agentunnel.example",
+			"status": "active", "forwarding_status": "online", "client_connected": true,
+			"max_request_body_bytes": 4 << 20,
+		}})
+	}))
+	defer server.Close()
+	status, err := (HTTPClient{BaseURL: server.URL, UploadMaxBytes: 8 << 20}).Status(context.Background(), ResourceDescriptor{
+		TunnelID: "tun_http_1", Metadata: map[string]any{"resource_kind": "http_tunnel"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Ready || status.Status != "proxy_limit_incompatible" || status.Reason != "PROXY_BODY_LIMIT_TOO_LOW" {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestHTTPClientStatusRejectsUnknownProxyUploadLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "data": map[string]any{
+			"tunnel_id": "tun_http_1", "preview_url": "https://pb-prj-1.agentunnel.example",
+			"status": "active", "forwarding_status": "online", "client_connected": true,
+		}})
+	}))
+	defer server.Close()
+	status, err := (HTTPClient{BaseURL: server.URL, UploadMaxBytes: 8 << 20}).Status(context.Background(), ResourceDescriptor{
+		TunnelID: "tun_http_1", Metadata: map[string]any{"resource_kind": "http_tunnel"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Ready || status.Status != "proxy_limit_incompatible" || status.Reason != "PROXY_BODY_LIMIT_UNKNOWN" {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestHTTPClientStatusRequiresMultipartHeadroom(t *testing.T) {
+	const uploadLimit int64 = 8 << 20
+	for _, tc := range []struct {
+		name       string
+		proxyLimit int64
+		wantReady  bool
+	}{
+		{name: "one byte short", proxyLimit: uploadLimit + (64 << 10) - 1},
+		{name: "exact headroom", proxyLimit: uploadLimit + (64 << 10), wantReady: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "data": map[string]any{
+					"tunnel_id": "tun_http_1", "preview_url": "https://pb-prj-1.agentunnel.example",
+					"status": "active", "forwarding_status": "online", "client_connected": true,
+					"max_request_body_bytes": tc.proxyLimit,
+				}})
+			}))
+			defer server.Close()
+			status, err := (HTTPClient{BaseURL: server.URL, UploadMaxBytes: uploadLimit}).Status(context.Background(), ResourceDescriptor{
+				TunnelID: "tun_http_1", Metadata: map[string]any{"resource_kind": "http_tunnel"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status.Ready != tc.wantReady {
+				t.Fatalf("status = %#v", status)
+			}
+		})
 	}
 }
 
@@ -764,6 +906,17 @@ func TestWaitForReadyReturnsLastNotReadyStatusOnTimeout(t *testing.T) {
 	}
 	if client.calls < 2 {
 		t.Fatalf("status calls = %d, want repeated polling", client.calls)
+	}
+}
+
+func TestRetryAfterSecondsUsesConfiguredPollInterval(t *testing.T) {
+	service := &Service{connectPollInterval: 1250 * time.Millisecond}
+	if got := service.retryAfterSeconds(); got != 2 {
+		t.Fatalf("retry_after_seconds = %d, want 2", got)
+	}
+	service.connectPollInterval = 0
+	if got := service.retryAfterSeconds(); got != 1 {
+		t.Fatalf("default retry_after_seconds = %d, want 1", got)
 	}
 }
 
@@ -817,6 +970,10 @@ type sequenceStatusClient struct {
 }
 
 func (c *sequenceStatusClient) EnsureProjectResources(context.Context, ProjectRef) (ResourceDescriptor, error) {
+	return ResourceDescriptor{}, ErrTunnelUnavailable
+}
+
+func (c *sequenceStatusClient) ReattachProjectResources(context.Context, ProjectRef, ResourceDescriptor) (ResourceDescriptor, error) {
 	return ResourceDescriptor{}, ErrTunnelUnavailable
 }
 
