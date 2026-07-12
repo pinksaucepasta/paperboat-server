@@ -180,7 +180,7 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 			mux.Handle("POST /api/projects/{project_id}/stop", requireAuth(opts.Auth, requireEntitlement(opts.Auth, requireCSRF(opts.Auth, projectsStop(opts.Projects, opts.Agentunnel)))))
 			mux.Handle("POST /api/projects/{project_id}/restart", requireAuth(opts.Auth, requireEntitlement(opts.Auth, requireCSRF(opts.Auth, projectsRestart(opts.Projects)))))
 			mux.Handle("POST /api/projects/{project_id}/keep-alive", requireAuth(opts.Auth, requireEntitlement(opts.Auth, requireCSRF(opts.Auth, projectsKeepAlive(opts.Projects)))))
-			mux.Handle("POST /api/projects/{project_id}/activity", requireAuth(opts.Auth, requireEntitlement(opts.Auth, requireCSRF(opts.Auth, projectsActivity(opts.Projects)))))
+			mux.Handle("POST /api/projects/{project_id}/activity", projectAuth("projects:connect", requireEntitlement(opts.Auth, projectsActivity(opts.Projects))))
 			mux.Handle("GET /api/projects/{project_id}/events", requireAuth(opts.Auth, requireEntitlement(opts.Auth, projectsEvents(opts.Projects))))
 			if opts.Agentunnel != nil {
 				mux.Handle("POST /api/projects/{project_id}/connect", requireAuth(opts.Auth, requireEntitlement(opts.Auth, projectsConnect(opts.Agentunnel, agentunnel.ConnectGeneric))))

@@ -278,6 +278,16 @@ func TestProjectActivityCallbackRecordsPapercodeAndCLIActivity(t *testing.T) {
 	if source != "cli_activity" {
 		t.Fatalf("activity source = %q, want cli_activity", source)
 	}
+
+	tokens := authorizeCLI(t, router, cookies)
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/activity", strings.NewReader(`{"source":"cli_activity","metadata":{"event":"agent_output"}}`))
+	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("bearer CLI activity status = %d, body = %s", rec.Code, rec.Body.String())
+	}
 }
 
 func TestProjectActivityCallbackRequiresCSRF(t *testing.T) {

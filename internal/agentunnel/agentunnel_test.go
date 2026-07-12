@@ -999,3 +999,16 @@ func mustJSONForTest(value any) string {
 	b, _ := json.Marshal(value)
 	return string(b)
 }
+
+func TestFakeCredentialIssuerUsesSeparatedScopes(t *testing.T) {
+	credentials, err := (FakeCredentialIssuer{}).IssueCLI(context.Background(), CredentialInput{ProjectID: "prj_1", ExpiresAt: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := credentials.TerminalAuth["scopes"].([]string); len(got) != 1 || got[0] != "terminal:operate" {
+		t.Fatalf("terminal scopes = %#v", got)
+	}
+	if got := credentials.UploadAuth["scopes"].([]string); len(got) != 1 || got[0] != "file:stage" {
+		t.Fatalf("upload scopes = %#v", got)
+	}
+}

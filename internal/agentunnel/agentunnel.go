@@ -159,19 +159,20 @@ func (FakeCredentialIssuer) CheckCLI(context.Context, CredentialInput) error {
 func (FakeCredentialIssuer) CheckHealth(context.Context, CredentialInput) error { return nil }
 
 func (FakeCredentialIssuer) IssueCLI(_ context.Context, input CredentialInput) (CLICredentials, error) {
-	scopes := []string{"terminal:operate"}
+	terminalScopes := []string{"terminal:operate"}
+	fileScopes := []string{"file:stage"}
 	return CLICredentials{
 		TerminalAuth: map[string]any{
 			"method":     "websocket_ticket",
 			"ticket":     "pct_" + input.ProjectID,
 			"expires_at": input.ExpiresAt,
-			"scopes":     scopes,
+			"scopes":     terminalScopes,
 		},
 		UploadAuth: map[string]any{
 			"method":     "bearer",
 			"token":      "pat_" + input.ProjectID,
 			"expires_at": input.ExpiresAt,
-			"scopes":     scopes,
+			"scopes":     fileScopes,
 		},
 	}, nil
 }
@@ -707,6 +708,7 @@ func (c HTTPClient) remotePortsForProject(projectID string) []int {
 }
 
 type Service struct {
+	issuer                   string
 	repo                     *Repository
 	projects                 *projects.Service
 	client                   Client
@@ -737,6 +739,7 @@ func NewServiceWithCredentials(store *db.DB, projectService *projects.Service, c
 		issuer = DisabledCredentialIssuer{}
 	}
 	return &Service{
+		issuer:                   strings.TrimRight(strings.TrimSpace(cfg.HTTP.PublicBaseURL), "/"),
 		repo:                     NewRepository(store, cfg.Secrets.EncryptionKey),
 		projects:                 projectService,
 		client:                   client,
@@ -768,6 +771,7 @@ type ConnectInput struct {
 }
 
 type ConnectResponse struct {
+	Issuer            string         `json:"issuer,omitempty"`
 	ProjectID         string         `json:"project_id"`
 	ProjectState      string         `json:"project_state"`
 	Connectable       bool           `json:"connectable"`
@@ -964,6 +968,9 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 		"agentunnel_tunnel_id": resource.TunnelID, "agentunnel_client_id": resource.ClientID,
 	})
 	response := buildResponse(input.Kind, project, resource, expires, credentials, s.uploadMaxBytes, s.uploadAllowedMIMEs, s.uploadRetentionSeconds)
+	if input.Kind == ConnectCLI {
+		response.Issuer = s.issuer
+	}
 	session, err := s.repo.CreateAccessSession(ctx, input.UserID, input.ProjectID, input.ClientSessionID, credentials.TerminalSessionID, credentials.FileSessionID, string(input.Kind), response, expires)
 	if err != nil {
 		if input.Kind == ConnectCLI {
@@ -1286,6 +1293,7 @@ func buildResponse(kind ConnectKind, project projects.Project, resource Resource
 	case ConnectPapercode:
 		base.Environment = map[string]any{
 			"environment_id": project.ID,
+			"project_id":     project.ID,
 			"display_name":   project.Name,
 			"repository_identity": map[string]any{
 				"provider": project.Repository.Provider,
@@ -1318,6 +1326,7 @@ func buildResponse(kind ConnectKind, project projects.Project, resource Resource
 		}
 		base.Environment = map[string]any{
 			"environment_id": project.ID,
+			"project_id":     project.ID,
 			"display_name":   project.Name,
 			"project_root":   "/workspace",
 		}

@@ -146,8 +146,9 @@
       "CLIConnectDescriptor": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["project_id", "project_state", "connectable", "status", "reason", "retry_after_seconds", "expires_at", "environment", "terminal", "upload"],
+        "required": ["issuer", "project_id", "project_state", "connectable", "status", "reason", "retry_after_seconds", "expires_at", "environment", "terminal", "upload"],
         "properties": {
+          "issuer": { "type": "string", "format": "uri", "pattern": "^https://" },
           "project_id": { "type": "string" },
           "project_state": { "type": "string" },
           "connectable": { "const": true },
@@ -157,9 +158,10 @@
           "expires_at": { "type": "string", "format": "date-time" },
           "environment": {
             "type": "object",
-            "required": ["environment_id", "display_name", "project_root"],
+            "required": ["environment_id", "project_id", "display_name", "project_root"],
             "properties": {
               "environment_id": { "type": "string" },
+              "project_id": { "type": "string" },
               "display_name": { "type": "string" },
               "project_root": { "type": "string" }
             }
@@ -818,7 +820,7 @@
     "/api/projects/{project_id}/stop": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "post": { "summary": "Queue project stop", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "responses": { "202": { "description": "Stop accepted.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "409": { "$ref": "#/components/responses/Error" } } } },
     "/api/projects/{project_id}/restart": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "post": { "summary": "Queue project restart", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "responses": { "202": { "description": "Restart accepted.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "409": { "$ref": "#/components/responses/Error" } } } },
     "/api/projects/{project_id}/keep-alive": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "post": { "summary": "Temporarily prevent idle stop", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "responses": { "200": { "description": "Keep-alive updated.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "400": { "$ref": "#/components/responses/Error" } } } },
-    "/api/projects/{project_id}/activity": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "post": { "summary": "Record papercode or CLI activity", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "responses": { "202": { "description": "Activity accepted.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "400": { "$ref": "#/components/responses/Error" } } } },
+    "/api/projects/{project_id}/activity": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "post": { "summary": "Record papercode or CLI activity", "security": [{ "cookieSession": [] }, { "bearerAccess": [] }], "x-required-bearer-scopes": ["projects:connect"], "responses": { "202": { "description": "Activity accepted.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "400": { "$ref": "#/components/responses/Error" } } } },
     "/api/projects/{project_id}/events": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "get": { "summary": "List project events", "responses": { "200": { "description": "Project events.", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessResponse" }], "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/ProjectEvent" } } } } } } }, "404": { "$ref": "#/components/responses/Error" } } } },
     "/api/projects/{project_id}/connect": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "post": { "summary": "Create generic access descriptor", "responses": { "200": { "description": "Access descriptor.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "409": { "$ref": "#/components/responses/Error" } } } },
     "/api/projects/{project_id}/cli-connect": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "post": { "summary": "Create CLI access descriptor", "description": "Bearer authentication requires projects:connect.", "security": [{ "bearerAccess": [] }], "x-required-bearer-scopes": ["projects:connect"], "responses": { "200": { "description": "Fresh CLI descriptor.", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessResponse" }], "properties": { "data": { "$ref": "#/components/schemas/CLIConnectDescriptor" } } } } } }, "202": { "description": "Project is starting; no credentials are returned.", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessResponse" }], "properties": { "data": { "$ref": "#/components/schemas/ConnectionStatus" } } } } } }, "401": { "$ref": "#/components/responses/Error" }, "403": { "$ref": "#/components/responses/Error" }, "404": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" } } } },

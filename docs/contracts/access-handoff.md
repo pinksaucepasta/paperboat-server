@@ -132,6 +132,18 @@ Approved baseline:
 
 ## `POST /api/projects/{project_id}/cli-connect`
 
+Ready CLI descriptors include `issuer`, the normalized Paperboat public issuer. Clients
+must compare it to the normalized issuer of their active credential profile before using
+any terminal or upload endpoint.
+
+The descriptor's `environment` object includes both `environment_id` (the stable runtime
+identity) and `project_id` (the owning Paperboat project). These identifiers are distinct;
+clients bind the environment to `project_id` and do not infer one from the other.
+
+`POST /api/projects/{project_id}/activity` accepts either the dashboard cookie plus CSRF
+header or a Paperboat bearer session with `projects:connect`; CLI activity uses the latter
+and sends `source: "cli_activity"` with the event name in metadata.
+
 Purpose:
 
 - Return CLI-safe connection metadata for terminal attach and image paste upload.
