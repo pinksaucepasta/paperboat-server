@@ -48,6 +48,25 @@ func TestDeviceAuthorizationApprovalBearerRefreshAndReplay(t *testing.T) {
 	}
 
 	tokens := pollDevice(t, router, grant.DeviceCode, http.StatusOK)
+	me := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
+	router.ServeHTTP(me, req)
+	if me.Code != http.StatusOK {
+		t.Fatalf("me status=%d body=%s", me.Code, me.Body.String())
+	}
+	if !bytes.Contains(me.Body.Bytes(), []byte(`"email":"device@example.com"`)) {
+		t.Fatalf("me body missing authenticated CLI user: %s", me.Body.String())
+	}
+
+	invalidMe := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	req.Header.Set("Authorization", "Bearer invalid-token")
+	router.ServeHTTP(invalidMe, req)
+	if invalidMe.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid bearer me status=%d body=%s", invalidMe.Code, invalidMe.Body.String())
+	}
+
 	list := httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/api/auth/clients", nil)
 	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)

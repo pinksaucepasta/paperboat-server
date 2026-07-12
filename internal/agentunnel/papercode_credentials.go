@@ -114,8 +114,12 @@ func (p *PapercodeCredentialIssuer) IssueCLI(ctx context.Context, input Credenti
 		cleanupErr := p.cleanupIssued(ctx, input, []papercodeAccess{terminal, file}, "ticket_invalid")
 		return failedCleanupCredentials(cleanupErr, terminal, file), errors.Join(errors.New("papercode returned an invalid websocket ticket"), cleanupErr)
 	}
+	terminalExpiresAt := ticket.ExpiresAt
+	if terminalExpiresAt.After(input.ExpiresAt) {
+		terminalExpiresAt = input.ExpiresAt
+	}
 	return CLICredentials{
-		TerminalAuth:      map[string]any{"method": "websocket_ticket", "ticket": ticket.Ticket, "expires_at": ticket.ExpiresAt, "scopes": []string{"terminal:operate"}},
+		TerminalAuth:      map[string]any{"method": "websocket_ticket", "ticket": ticket.Ticket, "expires_at": terminalExpiresAt, "scopes": []string{"terminal:operate"}},
 		UploadAuth:        map[string]any{"method": "bearer", "token": file.AccessToken, "expires_at": file.ExpiresAt, "scopes": []string{"file:stage"}},
 		TerminalSessionID: terminal.SessionID,
 		FileSessionID:     file.SessionID,

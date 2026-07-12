@@ -79,6 +79,10 @@ func billingCheckout(service *billing.Service) http.Handler {
 			writeError(w, r, http.StatusBadRequest, "validation_failed", "Billing product is not available.")
 			return
 		}
+		if errors.Is(err, billing.ErrSamePlan) {
+			writeError(w, r, http.StatusBadRequest, "validation_failed", "You are already subscribed to this plan.")
+			return
+		}
 		if err != nil {
 			writeError(w, r, http.StatusServiceUnavailable, "provider_unavailable", "Billing provider is unavailable.")
 			return

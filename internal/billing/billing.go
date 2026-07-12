@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"strconv"
 	"strings"
@@ -29,11 +30,13 @@ var (
 	ErrInsufficientStorage = errors.New("insufficient storage available")
 	ErrInvalidSignature    = errors.New("invalid polar webhook signature")
 	ErrUnknownProduct      = errors.New("billing product is not active or mapped")
+	ErrSamePlan            = errors.New("billing subscription is already on this plan")
 	ErrRetryableWebhook    = errors.New("webhook could not be processed yet")
 )
 
 type PolarClient interface {
 	CreateCheckout(ctx context.Context, input CheckoutInput) (CheckoutSession, error)
+	UpdateSubscription(ctx context.Context, input SubscriptionUpdateInput) error
 	CreateCustomerPortal(ctx context.Context, input CustomerPortalInput) (CustomerPortalSession, error)
 }
 
@@ -51,6 +54,13 @@ type CheckoutSession struct {
 	URL                string
 	ProviderSessionID  string
 	ProviderCustomerID string
+}
+
+type SubscriptionUpdateInput struct {
+	ProviderSubscriptionID string
+	ProviderProductID      string
+	ProrationBehavior      string
+	IdempotencyKey         string
 }
 
 type CustomerPortalInput struct {
@@ -104,6 +114,19 @@ type Product struct {
 	CatalogRef        string
 	ProviderProductID string
 	ProviderPriceID   string
+}
+
+type ActivePolarSubscription struct {
+	ProviderSubscriptionID string
+	PlanCode               string
+}
+
+func (r *Repository) ActivePolarSubscription(ctx context.Context, userID string) (ActivePolarSubscription, error) {
+	row, err := r.db.Queries().GetActivePolarSubscriptionForUser(ctx, userID)
+	if err != nil {
+		return ActivePolarSubscription{}, err
+	}
+	return ActivePolarSubscription{ProviderSubscriptionID: row.ProviderSubscriptionID, PlanCode: row.PlanCode}, nil
 }
 
 func (r *Repository) Entitlement(ctx context.Context, userID string) (Entitlement, error) {
@@ -380,6 +403,27 @@ func (s *Service) CreateCheckout(ctx context.Context, userID, email, productCode
 	if err != nil {
 		return CheckoutSession{}, err
 	}
+	if product.CatalogType == "plan" {
+		active, lookupErr := s.repo.ActivePolarSubscription(ctx, userID)
+		if lookupErr != nil && !errors.Is(lookupErr, sql.ErrNoRows) {
+			return CheckoutSession{}, fmt.Errorf("query active subscription: %w", lookupErr)
+		}
+		if lookupErr == nil {
+			if active.PlanCode == product.CatalogRef {
+				return CheckoutSession{}, ErrSamePlan
+			}
+			if err := s.client.UpdateSubscription(ctx, SubscriptionUpdateInput{
+				ProviderSubscriptionID: active.ProviderSubscriptionID,
+				ProviderProductID:      product.ProviderProductID,
+				ProrationBehavior:      "invoice",
+				IdempotencyKey:         idempotencyKey,
+			}); err != nil {
+				return CheckoutSession{}, err
+			}
+			_ = s.audit.Write(ctx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "billing.subscription_update_requested", ResourceType: "subscription", ResourceID: active.ProviderSubscriptionID, IdempotencyKey: "billing.subscription_update:" + idempotencyKey, Metadata: map[string]any{"from_plan": active.PlanCode, "to_plan": product.CatalogRef, "proration_behavior": "invoice"}})
+			return CheckoutSession{URL: successURL, ProviderSessionID: active.ProviderSubscriptionID}, nil
+		}
+	}
 	session, err := s.client.CreateCheckout(ctx, CheckoutInput{UserID: userID, UserEmail: email, ProductCode: productCode, ProviderProductID: product.ProviderProductID, ProviderPriceID: product.ProviderPriceID, IdempotencyKey: idempotencyKey, SuccessURL: successURL})
 	if err != nil {
 		return CheckoutSession{}, err
@@ -520,6 +564,11 @@ func (s *Service) applyPlanWebhook(ctx context.Context, tx *db.Tx, event Webhook
 	if subscriptionID == "" {
 		subscriptionID = event.ID
 	}
+	previous, previousErr := q.GetPolarSubscriptionForUpdate(ctx, dbsqlc.GetPolarSubscriptionForUpdateParams{ProviderSubscriptionID: subscriptionID, UserID: userID})
+	if previousErr != nil && !errors.Is(previousErr, sql.ErrNoRows) {
+		return previousErr
+	}
+	previousFound := previousErr == nil
 	state := subscriptionState(payload.firstString("subscription.status", "status", "state"), event.Type)
 	start := payload.firstTime("subscription.current_period_start", "current_period_start", "period_start")
 	end := payload.firstTime("subscription.current_period_end", "current_period_end", "period_end", "ends_at")
@@ -529,12 +578,42 @@ func (s *Service) applyPlanWebhook(ctx context.Context, tx *db.Tx, event Webhook
 	if state == "active" || state == "trialing" {
 		periodKey := event.ID
 		ledgerSourceID := event.ID
-		if startTime, ok := start.(time.Time); subscriptionID != "" && ok {
+		startTime, startOK := start.(time.Time)
+		endTime, endOK := end.(time.Time)
+		if subscriptionID != "" && startOK {
 			periodKey = "subscription:" + subscriptionID + ":period:" + startTime.UTC().Format(time.RFC3339Nano)
 			ledgerSourceID = subscriptionID
 		}
-		if err := grantCreditsTx(ctx, tx, userID, newID("cled"), periodKey+":plan-credits:"+product.Code, "polar_subscription", ledgerSourceID, plan.IncludedCredits, map[string]any{"event_type": event.Type, "plan_code": product.CatalogRef}); err != nil {
-			return err
+		periodCreditsApplied := false
+		if startOK {
+			periodCreditsApplied, err = q.HasSubscriptionPeriodCredits(ctx, dbsqlc.HasSubscriptionPeriodCreditsParams{UserID: userID, ProviderSubscriptionID: subscriptionID, PeriodKeyPrefix: periodKey + ":"})
+			if err != nil {
+				return err
+			}
+		}
+		isMidPeriodSwitch := previousFound && previous.ActivePlanVersionID.Valid &&
+			previous.ActivePlanVersionID.String != plan.ID && periodCreditsApplied &&
+			startOK && endOK && sameBillingPeriod(previous.CurrentPeriodStart, previous.CurrentPeriodEnd, startTime, endTime)
+		if isMidPeriodSwitch {
+			effectiveAt := webhookEffectiveTime(payload)
+			if effectiveAt.IsZero() {
+				effectiveAt = time.Now().UTC()
+			}
+			delta, err := proratedCreditDelta(previous.IncludedCredits, plan.IncludedCredits, startTime, endTime, effectiveAt)
+			if err != nil {
+				return err
+			}
+			if err := applyPlanSwitchCreditDeltaTx(ctx, tx, userID, newID("cled"), periodKey+":plan-switch:"+event.ID, subscriptionID, delta, map[string]any{
+				"event_type": event.Type, "old_plan_version_id": previous.ActivePlanVersionID.String,
+				"new_plan_version_id": plan.ID, "old_included_credits": previous.IncludedCredits,
+				"new_included_credits": plan.IncludedCredits, "effective_at": effectiveAt.UTC().Format(time.RFC3339Nano),
+			}); err != nil {
+				return err
+			}
+		} else if !periodCreditsApplied {
+			if err := grantCreditsTx(ctx, tx, userID, newID("cled"), periodKey+":plan-credits:"+product.Code, "polar_subscription", ledgerSourceID, plan.IncludedCredits, map[string]any{"event_type": event.Type, "plan_code": product.CatalogRef}); err != nil {
+				return err
+			}
 		}
 		accountID, err := ensureStorageAccount(ctx, tx, userID)
 		if err != nil {
@@ -546,10 +625,99 @@ func (s *Service) applyPlanWebhook(ctx context.Context, tx *db.Tx, event Webhook
 	return nil
 }
 
+func sameBillingPeriod(previousStart, previousEnd sql.NullTime, start, end time.Time) bool {
+	return previousStart.Valid && previousEnd.Valid && previousStart.Time.Equal(start) && previousEnd.Time.Equal(end)
+}
+
+func webhookEffectiveTime(payload webhookMap) time.Time {
+	value := payload.firstTime("modified_at", "updated_at", "effective_at", "created_at")
+	if timestamp, ok := value.(time.Time); ok {
+		return timestamp.UTC()
+	}
+	return time.Time{}
+}
+
+func proratedCreditDelta(oldCredits, newCredits string, periodStart, periodEnd, effectiveAt time.Time) (string, error) {
+	oldValue, ok := new(big.Rat).SetString(strings.TrimSpace(oldCredits))
+	if !ok {
+		return "", fmt.Errorf("invalid old plan credits %q", oldCredits)
+	}
+	newValue, ok := new(big.Rat).SetString(strings.TrimSpace(newCredits))
+	if !ok {
+		return "", fmt.Errorf("invalid new plan credits %q", newCredits)
+	}
+	if !periodEnd.After(periodStart) {
+		return "", fmt.Errorf("billing period end must be after its start")
+	}
+	if effectiveAt.Before(periodStart) {
+		effectiveAt = periodStart
+	}
+	if effectiveAt.After(periodEnd) {
+		effectiveAt = periodEnd
+	}
+	total := periodEnd.Sub(periodStart).Nanoseconds()
+	remaining := periodEnd.Sub(effectiveAt).Nanoseconds()
+	delta := new(big.Rat).Sub(newValue, oldValue)
+	delta.Mul(delta, new(big.Rat).SetFrac(big.NewInt(remaining), big.NewInt(total)))
+	return delta.FloatString(6), nil
+}
+
+func applyPlanSwitchCreditDeltaTx(ctx context.Context, tx *db.Tx, userID, entryID, idempotencyKey, subscriptionID, signedDelta string, metadata map[string]any) error {
+	delta, ok := new(big.Rat).SetString(strings.TrimSpace(signedDelta))
+	if !ok {
+		return fmt.Errorf("invalid plan switch credit delta %q", signedDelta)
+	}
+	if delta.Sign() == 0 {
+		return nil
+	}
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	if delta.Sign() > 0 {
+		metadata["prorated_credit_delta"] = signedDelta
+		return grantCreditsTx(ctx, tx, userID, entryID, idempotencyKey, "polar_subscription", subscriptionID, signedDelta, metadata)
+	}
+	requested := new(big.Rat).Abs(delta).FloatString(6)
+	accountID, err := ensureCreditAccount(ctx, tx, userID)
+	if err != nil {
+		return err
+	}
+	balance, err := tx.Queries().GetCreditBalanceForUpdate(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	available, ok := new(big.Rat).SetString(balance)
+	if !ok {
+		return fmt.Errorf("invalid credit balance %q", balance)
+	}
+	if available.Sign() <= 0 {
+		return nil
+	}
+	applied := requested
+	requestedValue, _ := new(big.Rat).SetString(requested)
+	if available.Cmp(requestedValue) < 0 {
+		applied = available.FloatString(6)
+	}
+	metadata["prorated_credit_delta"] = "-" + requested
+	metadata["applied_credit_delta"] = "-" + applied
+	return insertCreditLedger(ctx, tx, accountID, entryID, "debit", applied, "polar_subscription", subscriptionID, idempotencyKey, metadata, false)
+}
+
 type HTTPPolarClient struct {
 	BaseURL string
 	APIKey  string
 	Client  *http.Client
+}
+
+func (c HTTPPolarClient) UpdateSubscription(ctx context.Context, input SubscriptionUpdateInput) error {
+	if c.Client == nil {
+		c.Client = http.DefaultClient
+	}
+	payload := map[string]any{
+		"product_id":         input.ProviderProductID,
+		"proration_behavior": input.ProrationBehavior,
+	}
+	return c.patch(ctx, "/v1/subscriptions/"+input.ProviderSubscriptionID, input.IdempotencyKey, payload)
 }
 
 func (c HTTPPolarClient) CreateCheckout(ctx context.Context, input CheckoutInput) (CheckoutSession, error) {
@@ -588,6 +756,31 @@ func (c HTTPPolarClient) CreateCustomerPortal(ctx context.Context, input Custome
 	return CustomerPortalSession{URL: out.URL}, nil
 }
 
+func (c HTTPPolarClient) patch(ctx context.Context, path, idempotencyKey string, payload any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, strings.TrimRight(c.BaseURL, "/")+path, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", idempotencyKey)
+	if c.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
+	resp, err := c.Client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("polar api returned status %d", resp.StatusCode)
+	}
+	return nil
+}
+
 func (c HTTPPolarClient) post(ctx context.Context, path, idempotencyKey string, payload, out any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -617,6 +810,10 @@ type FakePolarClient struct{}
 
 func (FakePolarClient) CreateCheckout(_ context.Context, input CheckoutInput) (CheckoutSession, error) {
 	return CheckoutSession{URL: "https://polar.example.test/checkout/" + input.IdempotencyKey, ProviderSessionID: "fake_checkout_" + input.IdempotencyKey}, nil
+}
+
+func (FakePolarClient) UpdateSubscription(_ context.Context, _ SubscriptionUpdateInput) error {
+	return nil
 }
 
 func (FakePolarClient) CreateCustomerPortal(_ context.Context, input CustomerPortalInput) (CustomerPortalSession, error) {

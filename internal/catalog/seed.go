@@ -247,7 +247,55 @@ func upsertPlan(ctx context.Context, tx *db.Tx, plan Plan) error {
 	if err != nil {
 		return fmt.Errorf("upsert plan version %s: %w", plan.Code, err)
 	}
-	return tx.Queries().UpdatePlan(ctx, dbsqlc.UpdatePlanParams{ID: planID, Name: plan.Name, Active: plan.Active, CurrentVersionID: sql.NullString{String: versionID, Valid: true}, Inserted: inserted})
+	if err := tx.Queries().UpdatePlan(ctx, dbsqlc.UpdatePlanParams{ID: planID, Name: plan.Name, Active: plan.Active, CurrentVersionID: sql.NullString{String: versionID, Valid: true}, Inserted: inserted}); err != nil {
+		return err
+	}
+	return reconcileActivePlanSubscriptions(ctx, tx, plan.Code, versionID)
+}
+
+// Catalog versions are immutable, but an active subscription must follow the
+// plan's current version when the catalog is upgraded. Reconcile the credit
+// delta once through the ledger before moving the subscription pointer.
+func reconcileActivePlanSubscriptions(ctx context.Context, tx *db.Tx, planCode, versionID string) error {
+	_, err := tx.Exec(ctx, `
+WITH candidates AS (
+  SELECT s.id AS subscription_id, s.user_id, s.active_plan_version_id AS old_version_id,
+         new_pv.id AS new_version_id, old_pv.included_credits AS old_credits,
+         new_pv.included_credits AS new_credits, ca.id AS account_id
+  FROM subscriptions s
+  JOIN plan_versions old_pv ON old_pv.id = s.active_plan_version_id
+  JOIN plans p ON p.id = old_pv.plan_id
+  JOIN plan_versions new_pv ON new_pv.id = $2
+  JOIN credit_accounts ca ON ca.user_id = s.user_id
+  WHERE p.code = $1
+    AND s.state IN ('active', 'trialing')
+    AND s.active_plan_version_id <> new_pv.id
+), grants AS (
+  INSERT INTO credit_ledger_entries
+    (id, account_id, entry_type, amount, source_type, source_id, idempotency_key, metadata)
+  SELECT 'cled_plan_reconcile_' || md5(c.user_id || ':' || c.new_version_id),
+         c.account_id, 'grant', c.new_credits - c.old_credits,
+         'plan_version_reconcile', c.new_version_id,
+         'plan-version-reconcile:' || $1 || ':' || c.user_id || ':' || c.new_version_id,
+         jsonb_build_object('plan_code', $1, 'old_plan_version_id', c.old_version_id,
+                            'new_plan_version_id', c.new_version_id,
+                            'old_included_credits', c.old_credits,
+                            'new_included_credits', c.new_credits)
+  FROM candidates c
+  WHERE c.new_credits > c.old_credits
+  ON CONFLICT (idempotency_key) DO NOTHING
+  RETURNING account_id, amount
+), balances AS (
+  UPDATE credit_accounts ca
+  SET balance = ca.balance + g.amount, version = ca.version + 1, updated_at = now()
+  FROM grants g
+  WHERE ca.id = g.account_id
+)
+UPDATE subscriptions s
+SET active_plan_version_id = c.new_version_id, version = s.version + 1, updated_at = now()
+FROM candidates c
+WHERE s.id = c.subscription_id`, planCode, versionID)
+	return err
 }
 
 func insertPlan(ctx context.Context, tx *db.Tx, plan Plan) (string, bool, error) {

@@ -5,25 +5,26 @@
 # make recipe runs in its own shell, so the source + command must stay on one
 # logical line.
 
-CONFIG ?= config/local.example.json
+CONFIG ?=
 ENV_FILE ?= .env.local
 
 # Load ENV_FILE (if present) into the environment, exporting every key.
 load-env = set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a
+config-arg = $(if $(strip $(CONFIG)),-config $(CONFIG),)
 
 .PHONY: run migrate seed-catalogs generate test vet fmt check
 
 ## run: start the server with .env.local loaded (real providers)
 run:
-	$(load-env); go run ./cmd/paperboat-server serve -config $(CONFIG)
+	$(load-env); go run ./cmd/paperboat-server serve $(config-arg)
 
 ## migrate: apply database migrations with .env.local loaded
 migrate:
-	$(load-env); go run ./cmd/paperboat-server migrate -config $(CONFIG)
+	$(load-env); go run ./cmd/paperboat-server migrate $(config-arg)
 
 ## seed-catalogs: seed dynamic catalogs with .env.local loaded
 seed-catalogs:
-	$(load-env); go run ./cmd/paperboat-server seed-catalogs -config $(CONFIG)
+	$(load-env); go run ./cmd/paperboat-server seed-catalogs $(config-arg)
 
 ## generate: regenerate type-safe database access
 generate:

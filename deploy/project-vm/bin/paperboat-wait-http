@@ -6,7 +6,12 @@ timeout="${2:-60}"
 deadline=$((SECONDS + timeout))
 
 while [ "$SECONDS" -lt "$deadline" ]; do
-  if curl -fsS "$url" >/dev/null 2>&1; then
+  remaining=$((deadline - SECONDS))
+  request_timeout=2
+  if [ "$remaining" -lt "$request_timeout" ]; then
+    request_timeout="$remaining"
+  fi
+  if curl -fsS --connect-timeout "$request_timeout" --max-time "$request_timeout" "$url" >/dev/null 2>&1; then
     exit 0
   fi
   sleep 1

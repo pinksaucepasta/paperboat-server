@@ -165,6 +165,38 @@ func TestHTTPPolarClientCreateCustomerPortalUsesCustomerSession(t *testing.T) {
 	}
 }
 
+func TestHTTPPolarClientUpdateSubscriptionUsesInvoiceProration(t *testing.T) {
+	var gotMethod, gotPath, gotIDKey string
+	var gotPayload map[string]any
+	client := HTTPPolarClient{
+		BaseURL: "https://polar.example.test",
+		APIKey:  "polar_oat_test",
+		Client: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			gotMethod = req.Method
+			gotPath = req.URL.Path
+			gotIDKey = req.Header.Get("Idempotency-Key")
+			if err := json.NewDecoder(req.Body).Decode(&gotPayload); err != nil {
+				t.Fatal(err)
+			}
+			return jsonResponse(`{"id":"sub_test","status":"active"}`), nil
+		}).client(),
+	}
+	if err := client.UpdateSubscription(context.Background(), SubscriptionUpdateInput{
+		ProviderSubscriptionID: "sub_test",
+		ProviderProductID:      "prod_navigator",
+		ProrationBehavior:      "invoice",
+		IdempotencyKey:         "switch-key",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if gotMethod != http.MethodPatch || gotPath != "/v1/subscriptions/sub_test" || gotIDKey != "switch-key" {
+		t.Fatalf("method/path/idempotency = %q/%q/%q", gotMethod, gotPath, gotIDKey)
+	}
+	if gotPayload["product_id"] != "prod_navigator" || gotPayload["proration_behavior"] != "invoice" {
+		t.Fatalf("payload = %#v", gotPayload)
+	}
+}
+
 func TestEntitlementActiveStates(t *testing.T) {
 	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
 	future := now.Add(time.Hour)
@@ -265,5 +297,32 @@ func TestSubscriptionStateMapping(t *testing.T) {
 	}
 	if got := subscriptionState("", "subscription.canceled"); got != "canceled" {
 		t.Fatalf("event-derived state = %q", got)
+	}
+}
+
+func TestProratedCreditDelta(t *testing.T) {
+	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(30 * 24 * time.Hour)
+	tests := []struct {
+		name      string
+		old       string
+		new       string
+		effective time.Time
+		want      string
+	}{
+		{name: "half-period upgrade", old: "100", new: "300", effective: start.Add(15 * 24 * time.Hour), want: "100.000000"},
+		{name: "quarter-period downgrade", old: "300", new: "100", effective: start.Add(22*24*time.Hour + 12*time.Hour), want: "-50.000000"},
+		{name: "after period", old: "100", new: "300", effective: end.Add(time.Hour), want: "0.000000"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := proratedCreditDelta(tc.old, tc.new, start, end, tc.effective)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("delta = %s, want %s", got, tc.want)
+			}
+		})
 	}
 }

@@ -6,13 +6,16 @@ FROM ${NODE_BASE_IMAGE} AS papercode
 WORKDIR /opt/papercode
 RUN corepack enable
 COPY papercode/package.json papercode/pnpm-lock.yaml papercode/pnpm-workspace.yaml ./
+COPY papercode/tsconfig.base.json papercode/vite.config.ts ./
+COPY papercode/patches ./patches
 COPY papercode/apps ./apps
 COPY papercode/packages ./packages
 COPY papercode/scripts ./scripts
 COPY papercode/oxlint-plugin-t3code ./oxlint-plugin-t3code
 RUN pnpm install --frozen-lockfile
+COPY papercode/assets ./assets
 RUN pnpm run build
-RUN pnpm --filter t3 deploy --prod /opt/papercode-server
+RUN pnpm --filter t3 deploy --prod --legacy /opt/papercode-server
 
 FROM ${GO_BASE_IMAGE} AS agentunnel
 
@@ -32,6 +35,8 @@ RUN go build -o /out/paperboat-activity-reporter-go ./cmd/paperboat-activity-rep
 
 FROM ${NODE_BASE_IMAGE}
 
+ARG NODE_BASE_IMAGE
+ARG GO_BASE_IMAGE
 ARG PAPERCODE_REVISION
 ARG AGENTUNNEL_REVISION
 ARG PAPERBOAT_SERVER_REVISION

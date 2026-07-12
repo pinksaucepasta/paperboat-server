@@ -943,6 +943,7 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 		}
 		s.recordConnectDenied(ctx, input.UserID, input.ProjectID, "papercode_unhealthy", map[string]any{
 			"environment_id": project.ID, "agentunnel_tunnel_id": resource.TunnelID,
+			"error": healthErr.Error(),
 		})
 		return response, nil
 	}
@@ -1087,6 +1088,12 @@ func (s *Service) reconcileResource(ctx context.Context, project projects.Projec
 
 func staleHTTPStatus(resource ResourceDescriptor, status TunnelStatus) bool {
 	if resourceKind(resource) != "http_tunnel" {
+		return false
+	}
+	// An offline client still owns a valid, stable route. Rotating its credential
+	// here strands a booting VM on the previous token and causes every connect
+	// retry to rotate the token again before the VM can reconnect.
+	if status.Reason == "CLIENT_OFFLINE" {
 		return false
 	}
 	switch status.Status {

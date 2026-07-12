@@ -5,6 +5,17 @@ LEFT JOIN plan_versions pv ON pv.id = s.active_plan_version_id
 LEFT JOIN plans p ON p.id = pv.plan_id
 WHERE s.user_id = $1 ORDER BY s.updated_at DESC, s.created_at DESC LIMIT 1;
 
+-- name: GetActivePolarSubscriptionForUser :one
+SELECT s.provider_subscription_id, p.code AS plan_code
+FROM subscriptions s
+JOIN plan_versions pv ON pv.id = s.active_plan_version_id
+JOIN plans p ON p.id = pv.plan_id
+WHERE s.user_id = $1
+  AND s.provider = 'polar'
+  AND s.state IN ('active', 'trialing')
+ORDER BY s.updated_at DESC, s.created_at DESC
+LIMIT 1;
+
 -- name: GetBillingUsage :one
 SELECT coalesce(ca.balance, 0)::text AS credits_balance,
        coalesce(sa.included_gb, 0) AS included_storage_gb,
@@ -56,6 +67,27 @@ WHERE provider = 'polar' AND provider_subscription_id = sqlc.arg(provider_subscr
 -- name: GetActivePlanVersionForWebhook :one
 SELECT pv.id, pv.included_credits::text AS included_credits, pv.included_storage_gb
 FROM plans p JOIN plan_versions pv ON pv.id = p.current_version_id WHERE p.code = $1 AND p.active;
+
+-- name: GetPolarSubscriptionForUpdate :one
+SELECT s.id, s.active_plan_version_id, pv.included_credits::text AS included_credits,
+       s.current_period_start, s.current_period_end
+FROM subscriptions s
+LEFT JOIN plan_versions pv ON pv.id = s.active_plan_version_id
+WHERE s.provider = 'polar'
+  AND s.provider_subscription_id = sqlc.arg(provider_subscription_id)
+  AND s.user_id = sqlc.arg(user_id)
+FOR UPDATE OF s;
+
+-- name: HasSubscriptionPeriodCredits :one
+SELECT EXISTS (
+  SELECT 1
+  FROM credit_ledger_entries cle
+  JOIN credit_accounts ca ON ca.id = cle.account_id
+  WHERE ca.user_id = sqlc.arg(user_id)
+    AND cle.source_type = 'polar_subscription'
+    AND cle.source_id = sqlc.arg(provider_subscription_id)
+    AND cle.idempotency_key LIKE sqlc.arg(period_key_prefix)::text || '%'
+);
 
 -- name: UpsertPolarSubscription :exec
 INSERT INTO subscriptions (id, user_id, provider, provider_subscription_id, state, active_plan_version_id, current_period_start, current_period_end)

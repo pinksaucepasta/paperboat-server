@@ -915,6 +915,18 @@ func TestWaitForReadyReturnsLastNotReadyStatusOnTimeout(t *testing.T) {
 	}
 }
 
+func TestStaleHTTPStatusPreservesOfflineClientRoute(t *testing.T) {
+	resource := ResourceDescriptor{
+		HTTPBaseURL:      "https://project.example",
+		WebSocketBaseURL: "wss://project.example",
+		Metadata:         map[string]any{"resource_kind": "http_tunnel"},
+	}
+	status := TunnelStatus{Status: "offline", Reason: "CLIENT_OFFLINE"}
+	if staleHTTPStatus(resource, status) {
+		t.Fatal("offline client route must not be reprovisioned")
+	}
+}
+
 func TestRetryAfterSecondsUsesConfiguredPollInterval(t *testing.T) {
 	service := &Service{connectPollInterval: 1250 * time.Millisecond}
 	if got := service.retryAfterSeconds(); got != 2 {

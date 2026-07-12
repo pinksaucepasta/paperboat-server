@@ -123,7 +123,8 @@ func TestPapercodeCredentialIssuerCreatesSeparatedBearerSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 	issuer := &PapercodeCredentialIssuer{Issuer: "https://paperboat.example", Signer: signer, HTTPClient: server.Client(), ProofTTL: time.Minute}
-	credentials, err := issuer.IssueCLI(t.Context(), CredentialInput{UserID: "usr_1", ProjectID: "prj_1", EnvironmentID: "env_1", ClientSessionID: "cls_1", HTTPBaseURL: server.URL, ExpiresAt: time.Now().Add(time.Minute)})
+	descriptorExpiresAt := time.Now().Add(time.Minute)
+	credentials, err := issuer.IssueCLI(t.Context(), CredentialInput{UserID: "usr_1", ProjectID: "prj_1", EnvironmentID: "env_1", ClientSessionID: "cls_1", HTTPBaseURL: server.URL, ExpiresAt: descriptorExpiresAt})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,6 +133,9 @@ func TestPapercodeCredentialIssuerCreatesSeparatedBearerSessions(t *testing.T) {
 	}
 	if credentials.TerminalAuth["ticket"] != "ticket-1" {
 		t.Fatalf("terminal auth = %#v", credentials.TerminalAuth)
+	}
+	if expiresAt := credentials.TerminalAuth["expires_at"].(time.Time); expiresAt.After(descriptorExpiresAt) {
+		t.Fatalf("terminal credential expires at %s after descriptor expiry %s", expiresAt, descriptorExpiresAt)
 	}
 	if credentials.UploadAuth["token"] != "access-file:stage" {
 		t.Fatalf("upload auth = %#v", credentials.UploadAuth)

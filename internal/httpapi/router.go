@@ -126,7 +126,11 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 	mux.HandleFunc("POST /api/auth/workos/callback", workOSCallback(opts.Auth))
 	mux.Handle("POST /api/auth/logout", requireAuth(opts.Auth, logout(opts.Auth, opts.Agentunnel)))
 	mux.Handle("GET /api/auth/csrf", requireAuth(opts.Auth, csrf(opts.Auth)))
-	mux.Handle("GET /api/me", requireAuth(opts.Auth, me(opts.Auth)))
+	meHandler := requireAuth(opts.Auth, me(opts.Auth))
+	if opts.DeviceAuth != nil {
+		meHandler = requireAnyAuth(opts.Auth, opts.DeviceAuth, me(opts.Auth))
+	}
+	mux.Handle("GET /api/me", meHandler)
 	if opts.DeviceAuth != nil {
 		requestNetwork := newRequestNetwork(opts.Config.HTTP.TrustedProxyCIDRs)
 		mux.HandleFunc("POST /api/auth/device/authorize", deviceAuthorize(opts.DeviceAuth, requestNetwork))

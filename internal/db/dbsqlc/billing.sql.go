@@ -57,6 +57,30 @@ func (q *Queries) GetActivePlanVersionForWebhook(ctx context.Context, code strin
 	return i, err
 }
 
+const getActivePolarSubscriptionForUser = `-- name: GetActivePolarSubscriptionForUser :one
+SELECT s.provider_subscription_id, p.code AS plan_code
+FROM subscriptions s
+JOIN plan_versions pv ON pv.id = s.active_plan_version_id
+JOIN plans p ON p.id = pv.plan_id
+WHERE s.user_id = $1
+  AND s.provider = 'polar'
+  AND s.state IN ('active', 'trialing')
+ORDER BY s.updated_at DESC, s.created_at DESC
+LIMIT 1
+`
+
+type GetActivePolarSubscriptionForUserRow struct {
+	ProviderSubscriptionID string
+	PlanCode               string
+}
+
+func (q *Queries) GetActivePolarSubscriptionForUser(ctx context.Context, userID string) (GetActivePolarSubscriptionForUserRow, error) {
+	row := q.db.QueryRowContext(ctx, getActivePolarSubscriptionForUser, userID)
+	var i GetActivePolarSubscriptionForUserRow
+	err := row.Scan(&i.ProviderSubscriptionID, &i.PlanCode)
+	return i, err
+}
+
 const getAllocatedStorageForUpdate = `-- name: GetAllocatedStorageForUpdate :one
 SELECT allocated_gb FROM storage_accounts WHERE id = $1 FOR UPDATE
 `
@@ -267,6 +291,68 @@ func (q *Queries) GetIncludedAndAllocatedStorageForUpdate(ctx context.Context, i
 	var i GetIncludedAndAllocatedStorageForUpdateRow
 	err := row.Scan(&i.IncludedGb, &i.AllocatedGb)
 	return i, err
+}
+
+const getPolarSubscriptionForUpdate = `-- name: GetPolarSubscriptionForUpdate :one
+SELECT s.id, s.active_plan_version_id, pv.included_credits::text AS included_credits,
+       s.current_period_start, s.current_period_end
+FROM subscriptions s
+LEFT JOIN plan_versions pv ON pv.id = s.active_plan_version_id
+WHERE s.provider = 'polar'
+  AND s.provider_subscription_id = $1
+  AND s.user_id = $2
+FOR UPDATE OF s
+`
+
+type GetPolarSubscriptionForUpdateParams struct {
+	ProviderSubscriptionID string
+	UserID                 string
+}
+
+type GetPolarSubscriptionForUpdateRow struct {
+	ID                  string
+	ActivePlanVersionID sql.NullString
+	IncludedCredits     string
+	CurrentPeriodStart  sql.NullTime
+	CurrentPeriodEnd    sql.NullTime
+}
+
+func (q *Queries) GetPolarSubscriptionForUpdate(ctx context.Context, arg GetPolarSubscriptionForUpdateParams) (GetPolarSubscriptionForUpdateRow, error) {
+	row := q.db.QueryRowContext(ctx, getPolarSubscriptionForUpdate, arg.ProviderSubscriptionID, arg.UserID)
+	var i GetPolarSubscriptionForUpdateRow
+	err := row.Scan(
+		&i.ID,
+		&i.ActivePlanVersionID,
+		&i.IncludedCredits,
+		&i.CurrentPeriodStart,
+		&i.CurrentPeriodEnd,
+	)
+	return i, err
+}
+
+const hasSubscriptionPeriodCredits = `-- name: HasSubscriptionPeriodCredits :one
+SELECT EXISTS (
+  SELECT 1
+  FROM credit_ledger_entries cle
+  JOIN credit_accounts ca ON ca.id = cle.account_id
+  WHERE ca.user_id = $1
+    AND cle.source_type = 'polar_subscription'
+    AND cle.source_id = $2
+    AND cle.idempotency_key LIKE $3::text || '%'
+)
+`
+
+type HasSubscriptionPeriodCreditsParams struct {
+	UserID                 string
+	ProviderSubscriptionID string
+	PeriodKeyPrefix        string
+}
+
+func (q *Queries) HasSubscriptionPeriodCredits(ctx context.Context, arg HasSubscriptionPeriodCreditsParams) (bool, error) {
+	row := q.db.QueryRowContext(ctx, hasSubscriptionPeriodCredits, arg.UserID, arg.ProviderSubscriptionID, arg.PeriodKeyPrefix)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const insertCreditLedgerEntry = `-- name: InsertCreditLedgerEntry :execrows

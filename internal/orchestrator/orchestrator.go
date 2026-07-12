@@ -530,7 +530,7 @@ func (s *Service) applyMachineSpecDrift(ctx context.Context, intent ProjectInten
 	if _, err := s.fly.UpdateMachine(ctx, machineID, spec); err != nil {
 		return err
 	}
-	return s.repo.RecordProjectEvent(ctx, intent.ID, "project.machine_spec_drift_applied", "Machine configuration drifted from the desired spec and was reconciled.", map[string]any{"spec_hash": spec.Tags[specHashTag]})
+	return s.repo.RecordProjectEvent(ctx, intent.ID, "project.machine_spec_drift_applied", "Machine configuration was updated to match the current project settings.", map[string]any{"severity": "info", "spec_hash": spec.Tags[specHashTag]})
 }
 
 func (s *Service) projectSecrets(intent ProjectIntent) []fly.MachineSecret {
