@@ -128,6 +128,7 @@ type ProviderConfig struct {
 	AccessPolicyID       string        `json:"access_policy_id,omitempty"`
 	UploadMaxBytes       int64         `json:"upload_max_bytes,omitempty"`
 	UploadAllowedMIMEs   []string      `json:"upload_allowed_mime_types,omitempty"`
+	UploadRetention      time.Duration `json:"upload_retention,omitempty"`
 }
 
 type Secrets struct {
@@ -240,6 +241,7 @@ func Default() Config {
 				SSHRemotePortEnd:     25999,
 				UploadMaxBytes:       10 << 20,
 				UploadAllowedMIMEs:   []string{"image/png", "image/jpeg", "image/webp"},
+				UploadRetention:      7 * 24 * time.Hour,
 			},
 		},
 		GitHub: GitHub{
@@ -356,8 +358,15 @@ func (c Config) Validate() error {
 	if c.Providers.Agentunnel.SSHRemotePortStart <= 0 || c.Providers.Agentunnel.SSHRemotePortEnd < c.Providers.Agentunnel.SSHRemotePortStart || c.Providers.Agentunnel.SSHRemotePortEnd > 65535 {
 		errs = append(errs, fmt.Errorf("agentunnel ssh remote port range must be valid"))
 	}
-	if c.Providers.Agentunnel.UploadMaxBytes <= 0 || len(c.Providers.Agentunnel.UploadAllowedMIMEs) == 0 {
-		errs = append(errs, fmt.Errorf("agentunnel upload_max_bytes and upload_allowed_mime_types are required"))
+	if c.Providers.Agentunnel.UploadMaxBytes <= 0 || len(c.Providers.Agentunnel.UploadAllowedMIMEs) == 0 || c.Providers.Agentunnel.UploadRetention <= 0 {
+		errs = append(errs, fmt.Errorf("agentunnel upload_max_bytes, upload_allowed_mime_types, and upload_retention are required"))
+	}
+	for _, mimeType := range c.Providers.Agentunnel.UploadAllowedMIMEs {
+		switch mimeType {
+		case "image/png", "image/jpeg", "image/webp":
+		default:
+			errs = append(errs, fmt.Errorf("agentunnel upload MIME type %q is not supported", mimeType))
+		}
 	}
 	if strings.TrimSpace(c.GitHub.OAuthAuthorizeURL) == "" || strings.TrimSpace(c.GitHub.OAuthTokenURL) == "" {
 		errs = append(errs, fmt.Errorf("github oauth urls are required"))
@@ -471,6 +480,13 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 			return fmt.Errorf("parse PAPERBOAT_AGENTUNNEL_UPLOAD_MAX_BYTES: %w", err)
 		}
 		c.Providers.Agentunnel.UploadMaxBytes = parsed
+	}
+	if v, ok := lookup("PAPERBOAT_AGENTUNNEL_UPLOAD_RETENTION"); ok {
+		parsed, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("parse PAPERBOAT_AGENTUNNEL_UPLOAD_RETENTION: %w", err)
+		}
+		c.Providers.Agentunnel.UploadRetention = parsed
 	}
 	if v, ok := lookup("PAPERBOAT_ALLOWED_ORIGINS"); ok {
 		c.HTTP.AllowedOrigins = splitCSV(v)

@@ -784,7 +784,7 @@ func TestBuildCLIResponseDoesNotInventUnvalidatedAuth(t *testing.T) {
 	resp := buildResponse(ConnectCLI, projects.Project{ID: "prj_1", Name: "Demo"}, ResourceDescriptor{
 		HTTPBaseURL:      "https://agentunnel.example/projects/prj_1",
 		WebSocketBaseURL: "wss://agentunnel.example/projects/prj_1",
-	}, time.Now().UTC().Add(time.Minute), CLICredentials{}, 7<<20, []string{"image/png"})
+	}, time.Now().UTC().Add(time.Minute), CLICredentials{}, 7<<20, []string{"image/png"}, 604800)
 
 	if _, ok := resp.Terminal["auth"]; ok {
 		t.Fatalf("terminal descriptor should not include unvalidated auth: %#v", resp.Terminal)
@@ -794,6 +794,12 @@ func TestBuildCLIResponseDoesNotInventUnvalidatedAuth(t *testing.T) {
 	}
 	if resp.PapercodeUpload["max_bytes"] != int64(7<<20) || !slices.Equal(resp.PapercodeUpload["allowed_mime_types"].([]string), []string{"image/png"}) {
 		t.Fatalf("upload policy was not sourced from config: %#v", resp.PapercodeUpload)
+	}
+	if resp.PapercodeUpload["path"] != "/projects/prj_1/api/files/staged-images" {
+		t.Fatalf("upload path was not derived from route base: %#v", resp.PapercodeUpload)
+	}
+	if resp.PapercodeUpload["kind"] != "papercode_staged_image" || resp.PapercodeUpload["retention_seconds"] != int64(604800) {
+		t.Fatalf("upload contract metadata is incomplete: %#v", resp.PapercodeUpload)
 	}
 }
 

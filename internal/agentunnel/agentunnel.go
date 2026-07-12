@@ -718,6 +718,7 @@ type Service struct {
 	connectPollInterval      time.Duration
 	uploadMaxBytes           int64
 	uploadAllowedMIMEs       []string
+	uploadRetentionSeconds   int64
 }
 
 func NewService(store *db.DB, projectService *projects.Service, client Client, auditWriter *audit.Writer, cfg config.Config) *Service {
@@ -747,6 +748,7 @@ func NewServiceWithCredentials(store *db.DB, projectService *projects.Service, c
 		connectPollInterval:      cfg.Providers.Agentunnel.ConnectPollInterval,
 		uploadMaxBytes:           cfg.Providers.Agentunnel.UploadMaxBytes,
 		uploadAllowedMIMEs:       slices.Clone(cfg.Providers.Agentunnel.UploadAllowedMIMEs),
+		uploadRetentionSeconds:   int64(cfg.Providers.Agentunnel.UploadRetention / time.Second),
 	}
 }
 
@@ -961,7 +963,7 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 		"kind": input.Kind, "status": status.Status, "environment_id": project.ID,
 		"agentunnel_tunnel_id": resource.TunnelID, "agentunnel_client_id": resource.ClientID,
 	})
-	response := buildResponse(input.Kind, project, resource, expires, credentials, s.uploadMaxBytes, s.uploadAllowedMIMEs)
+	response := buildResponse(input.Kind, project, resource, expires, credentials, s.uploadMaxBytes, s.uploadAllowedMIMEs, s.uploadRetentionSeconds)
 	session, err := s.repo.CreateAccessSession(ctx, input.UserID, input.ProjectID, input.ClientSessionID, credentials.TerminalSessionID, credentials.FileSessionID, string(input.Kind), response, expires)
 	if err != nil {
 		if input.Kind == ConnectCLI {
@@ -1278,7 +1280,7 @@ func terminalProjectState(state string) bool {
 	}
 }
 
-func buildResponse(kind ConnectKind, project projects.Project, resource ResourceDescriptor, expires time.Time, credentials CLICredentials, uploadMaxBytes int64, uploadAllowedMIMEs []string) ConnectResponse {
+func buildResponse(kind ConnectKind, project projects.Project, resource ResourceDescriptor, expires time.Time, credentials CLICredentials, uploadMaxBytes int64, uploadAllowedMIMEs []string, uploadRetentionSeconds int64) ConnectResponse {
 	base := ConnectResponse{ProjectID: project.ID, ProjectState: project.State, Connectable: true, ExpiresAt: expires, Status: "ready", Reason: "ready"}
 	switch kind {
 	case ConnectPapercode:
@@ -1320,10 +1322,12 @@ func buildResponse(kind ConnectKind, project projects.Project, resource Resource
 			"project_root":   "/workspace",
 		}
 		base.PapercodeUpload = map[string]any{
-			"kind":               "papercode_file_upload",
+			"kind":               "papercode_staged_image",
 			"http_base_url":      resource.HTTPBaseURL,
+			"path":               uploadPath(resource.HTTPBaseURL),
 			"max_bytes":          uploadMaxBytes,
 			"allowed_mime_types": slices.Clone(uploadAllowedMIMEs),
+			"retention_seconds":  uploadRetentionSeconds,
 		}
 		if credentials.UploadAuth != nil {
 			base.PapercodeUpload["auth"] = credentials.UploadAuth
@@ -1336,6 +1340,16 @@ func buildResponse(kind ConnectKind, project projects.Project, resource Resource
 		}}
 	}
 	return base
+}
+
+func uploadPath(httpBaseURL string) string {
+	u, err := url.Parse(httpBaseURL)
+	if err != nil {
+		return ""
+	}
+	u.Path = strings.TrimRight(u.Path, "/") + "/api/files/staged-images"
+	u.RawPath = ""
+	return u.Path
 }
 
 func (s *Service) retryAfterSeconds() int {
