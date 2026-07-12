@@ -1,9 +1,7 @@
-# PAPERCODE selects whether the papercode server is baked into the image:
-#   enabled  (default) — requires the papercode repo in the build context
-#   disabled           — runtime boots with PAPERBOAT_PAPERCODE_MODE=disabled
-ARG PAPERCODE=enabled
+ARG NODE_BASE_IMAGE
+ARG GO_BASE_IMAGE
 
-FROM node:24-bookworm-slim AS papercode-enabled
+FROM ${NODE_BASE_IMAGE} AS papercode
 
 WORKDIR /opt/papercode
 RUN corepack enable
@@ -16,12 +14,7 @@ RUN pnpm install --frozen-lockfile
 RUN pnpm run build
 RUN pnpm --filter t3 deploy --prod /opt/papercode-server
 
-FROM node:24-bookworm-slim AS papercode-disabled
-RUN mkdir -p /opt/papercode-server
-
-FROM papercode-${PAPERCODE} AS papercode
-
-FROM golang:1.25-bookworm AS agentunnel
+FROM ${GO_BASE_IMAGE} AS agentunnel
 
 WORKDIR /src/agentunnel
 COPY agentunnel/go.mod agentunnel/go.sum ./
@@ -29,7 +22,7 @@ RUN go mod download
 COPY agentunnel ./
 RUN go build -o /out/agentunnel ./cmd/agentunnel
 
-FROM golang:1.25-bookworm AS paperboat-server-tools
+FROM ${GO_BASE_IMAGE} AS paperboat-server-tools
 
 WORKDIR /src/paperboat-server
 COPY paperboat-server/go.mod paperboat-server/go.sum ./
@@ -37,10 +30,17 @@ RUN go mod download
 COPY paperboat-server ./
 RUN go build -o /out/paperboat-activity-reporter-go ./cmd/paperboat-activity-reporter
 
-FROM node:24-bookworm-slim
+FROM ${NODE_BASE_IMAGE}
 
-ARG PAPERCODE=enabled
-ENV PAPERBOAT_PAPERCODE_MODE=${PAPERCODE}
+ARG PAPERCODE_REVISION
+ARG AGENTUNNEL_REVISION
+ARG PAPERBOAT_SERVER_REVISION
+LABEL org.opencontainers.image.source="https://github.com/pinksaucepasta/paperboat-server" \
+  io.paperboat.base.node="${NODE_BASE_IMAGE}" \
+  io.paperboat.base.go="${GO_BASE_IMAGE}" \
+  io.paperboat.source.papercode.revision="${PAPERCODE_REVISION}" \
+  io.paperboat.source.agentunnel.revision="${AGENTUNNEL_REVISION}" \
+  io.paperboat.source.server.revision="${PAPERBOAT_SERVER_REVISION}"
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl git openssh-client tini bzip2 xz-utils \

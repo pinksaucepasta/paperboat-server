@@ -9,6 +9,7 @@ bin_dir="${PAPERBOAT_BIN_DIR:-/usr/local/bin}"
 child_pids=()
 activity_pid=""
 activity_restart_count=0
+current_stage="initializing"
 
 mkdir -p "$runtime_dir" "$log_dir" "$workspace"
 export GIT_ASKPASS="${PAPERBOAT_GIT_ASKPASS:-$bin_dir/paperboat-git-askpass}"
@@ -22,9 +23,26 @@ log() {
 write_readiness() {
   local state="$1"
   local reason="${2:-}"
-  cat > "$readiness_file" <<EOF
+  local temporary="$readiness_file.tmp.$$"
+  umask 077
+  cat > "$temporary" <<EOF
 {"state":"$state","reason":"$reason","updated_at":"$(date -Iseconds)"}
 EOF
+  chmod 600 "$temporary"
+  mv -f "$temporary" "$readiness_file"
+}
+
+start_stage() {
+  current_stage="$1"
+  write_readiness starting "$current_stage"
+}
+
+record_boot_failure() {
+  local status=$?
+  trap - ERR
+  write_readiness failed "$current_stage"
+  log error "boot stage failed: $current_stage"
+  exit "$status"
 }
 
 require_env() {
@@ -43,30 +61,25 @@ require_env PAPERBOAT_AGENTUNNEL_CLIENT_ID
 require_env PAPERBOAT_AGENTUNNEL_TUNNEL_ID
 require_env "${PAPERBOAT_AGENTUNNEL_TOKEN_ENV:-AGENTUNNEL_MACHINE_TOKEN}"
 
-write_readiness starting ""
+trap record_boot_failure ERR
+start_stage workspace_restore
 
 log info "preparing workspace"
 "${PAPERBOAT_PREPARE_WORKSPACE_COMMAND:-$bin_dir/paperboat-prepare-workspace}"
 
+start_stage config_restore
 log info "syncing config repo"
 "${PAPERBOAT_CONFIG_SYNC_COMMAND:-$bin_dir/paperboat-config-sync}" restore
 
+start_stage presets
 log info "applying presets"
 "${PAPERBOAT_PRESET_APPLY_COMMAND:-$bin_dir/paperboat-apply-presets}"
 
-# papercode is optional: images built without the papercode component set
-# PAPERBOAT_PAPERCODE_MODE=disabled so the rest of the runtime (workspace
-# clone, config sync, agentunnel, activity reporting) still runs.
-papercode_mode="${PAPERBOAT_PAPERCODE_MODE:-enabled}"
-papercode_pid=""
-if [ "$papercode_mode" != "disabled" ]; then
-  log info "starting papercode"
-  "${PAPERBOAT_PAPERCODE_COMMAND:-$bin_dir/paperboat-start-papercode}" &
-  papercode_pid=$!
-  child_pids+=("$papercode_pid")
-else
-  log info "papercode disabled for this image; skipping"
-fi
+start_stage papercode_start
+log info "starting papercode"
+"${PAPERBOAT_PAPERCODE_COMMAND:-$bin_dir/paperboat-start-papercode}" &
+papercode_pid=$!
+child_pids+=("$papercode_pid")
 
 cleanup() {
   log info "shutting down"
@@ -78,9 +91,8 @@ cleanup() {
 }
 trap cleanup TERM INT EXIT
 
-if [ "$papercode_mode" != "disabled" ]; then
-  "${PAPERBOAT_WAIT_HTTP_COMMAND:-$bin_dir/paperboat-wait-http}" "${PAPERBOAT_PAPERCODE_LOCAL_URL:-http://127.0.0.1:4099}" 60
-fi
+current_stage="papercode_readiness"
+"${PAPERBOAT_WAIT_HTTP_COMMAND:-$bin_dir/paperboat-wait-http}" "${PAPERBOAT_PAPERCODE_LOCAL_URL:-http://127.0.0.1:4099}" 60
 
 # PAPERBOAT_AGENTUNNEL_MODE=required (default) treats an agentunnel exit as
 # fatal. The control plane sets "optional" while the hosted HTTP machine-client
@@ -94,11 +106,14 @@ start_agentunnel() {
   child_pids+=("$agentunnel_pid")
 }
 
+start_stage agentunnel_start
 log info "starting agentunnel"
 start_agentunnel
 
+current_stage="agentunnel_readiness"
 "${PAPERBOAT_WAIT_AGENTUNNEL_COMMAND:-$bin_dir/paperboat-wait-agentunnel}" 60
 
+start_stage activity_reporter
 log info "starting activity reporter"
 start_activity() {
   "${PAPERBOAT_ACTIVITY_COMMAND:-$bin_dir/paperboat-activity-reporter}" &
@@ -108,10 +123,24 @@ start_activity() {
 }
 start_activity
 
-write_readiness ready ""
+current_stage="ready"
+write_readiness ready "ready"
 log info "runtime ready"
+route_ready=true
 
 while :; do
+  agentunnel_status_file="${PAPERBOAT_AGENTUNNEL_STATUS_FILE:-$runtime_dir/agentunnel-status.json}"
+  if grep -q '"status":"connected"' "$agentunnel_status_file" 2>/dev/null; then
+    if [ "$route_ready" != "true" ]; then
+      write_readiness ready "ready"
+      log info "agentunnel route reconnected"
+      route_ready=true
+    fi
+  elif [ "$route_ready" = "true" ]; then
+    write_readiness failed "agentunnel_disconnected"
+    log error "agentunnel route disconnected"
+    route_ready=false
+  fi
   for child_pid in "$papercode_pid" "$agentunnel_pid"; do
     if [ -z "$child_pid" ]; then
       continue

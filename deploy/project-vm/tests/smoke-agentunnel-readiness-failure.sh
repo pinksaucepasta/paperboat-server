@@ -86,3 +86,29 @@ if [ -f "$PAPERBOAT_READINESS_FILE" ] && grep -q '"state":"ready"' "$PAPERBOAT_R
   printf 'entrypoint wrote ready despite agentunnel readiness failure\n' >&2
   exit 1
 fi
+grep -q '"state":"failed"' "$PAPERBOAT_READINESS_FILE"
+grep -q '"reason":"agentunnel_readiness"' "$PAPERBOAT_READINESS_FILE"
+
+cat > "$bin/wait-agentunnel" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+exit 0
+EOF
+cat > "$bin/activity" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+while :; do sleep 1; done
+EOF
+chmod +x "$bin/wait-agentunnel" "$bin/activity"
+
+"$root/bin/paperboat-entrypoint" >"$tmp/recovery.out" 2>"$tmp/recovery.err" &
+recovery_pid=$!
+trap 'kill "$recovery_pid" 2>/dev/null || true; wait "$recovery_pid" 2>/dev/null || true; rm -rf "$tmp"' EXIT
+for _ in $(seq 1 50); do
+  if grep -q '"state":"ready"' "$PAPERBOAT_READINESS_FILE" 2>/dev/null; then
+    break
+  fi
+  sleep 0.1
+done
+grep -q '"state":"ready"' "$PAPERBOAT_READINESS_FILE"
+grep -q '"reason":"ready"' "$PAPERBOAT_READINESS_FILE"

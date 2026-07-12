@@ -2,9 +2,12 @@
 set -Eeuo pipefail
 
 readiness_file="${PAPERBOAT_READINESS_FILE:-${PAPERBOAT_RUNTIME_DIR:-/var/lib/paperboat}/readiness.json}"
+agentunnel_status_file="${PAPERBOAT_AGENTUNNEL_STATUS_FILE:-${PAPERBOAT_RUNTIME_DIR:-/var/lib/paperboat}/agentunnel-status.json}"
 
 if [ ! -f "$readiness_file" ]; then
   exit 1
 fi
 
 grep -q '"state":"ready"' "$readiness_file"
+test -f "$agentunnel_status_file"
+grep -q '"status":"connected"' "$agentunnel_status_file"

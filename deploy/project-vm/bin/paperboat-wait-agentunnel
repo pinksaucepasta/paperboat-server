@@ -2,20 +2,14 @@
 set -Eeuo pipefail
 
 timeout="${1:-60}"
-status_file="${PAPERBOAT_AGENTUNNEL_STATUS_FILE:-}"
+status_file="${PAPERBOAT_AGENTUNNEL_STATUS_FILE:-${PAPERBOAT_RUNTIME_DIR:-/var/lib/paperboat}/agentunnel-status.json}"
 deadline=$((SECONDS + timeout))
 
-if [ -n "$status_file" ]; then
-  while [ "$SECONDS" -lt "$deadline" ]; do
-    if [ -f "$status_file" ] && grep -q '"status":"connected"' "$status_file"; then
-      exit 0
-    fi
-    sleep 1
-  done
-  printf 'timed out waiting for agentunnel status file %s\n' "$status_file" >&2
-  exit 1
-fi
-
-# The hosted HTTP/WSS machine-client command is finalized during hosted validation.
-# Until then, a live agentunnel process is the local readiness signal.
-exit 0
+while [ "$SECONDS" -lt "$deadline" ]; do
+  if [ -f "$status_file" ] && grep -q '"status":"connected"' "$status_file"; then
+    exit 0
+  fi
+  sleep 1
+done
+printf 'timed out waiting for agentunnel status file %s\n' "$status_file" >&2
+exit 1

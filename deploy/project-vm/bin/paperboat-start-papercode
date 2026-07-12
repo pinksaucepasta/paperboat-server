@@ -7,8 +7,36 @@ host_port="${host_port#https://}"
 host="${host_port%%:*}"
 port="${host_port##*:}"
 
+case "$host" in
+  127.*|localhost)
+    ;;
+  *)
+    printf 'papercode must bind to loopback, got host %s\n' "$host" >&2
+    exit 64
+    ;;
+esac
+
+case "$port" in
+  ''|*[!0-9]*)
+    printf 'papercode local URL must include a numeric port\n' >&2
+    exit 64
+    ;;
+esac
+if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+  printf 'papercode local port is out of range\n' >&2
+  exit 64
+fi
+
 export T3CODE_HOST="${PAPERBOAT_PAPERCODE_HOST:-$host}"
 export T3CODE_PORT="${PAPERBOAT_PAPERCODE_PORT:-$port}"
+case "$T3CODE_HOST" in
+  127.*|localhost)
+    ;;
+  *)
+    printf 'PAPERBOAT_PAPERCODE_HOST must be loopback, got %s\n' "$T3CODE_HOST" >&2
+    exit 64
+    ;;
+esac
 export T3CODE_HOME="${PAPERBOAT_PAPERCODE_BASE_DIR:-/workspace/.paperboat/papercode}"
 export T3CODE_NO_BROWSER=1
 export T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD=1

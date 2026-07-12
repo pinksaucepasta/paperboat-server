@@ -22,6 +22,8 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 grep -q '"client_token": "custom-agentunnel-token"' "$config"
+grep -q '"serve_http_tunnels"' "$config"
+grep -q '"status_file"' "$config"
 EOF
 chmod +x "$agentunnel"
 

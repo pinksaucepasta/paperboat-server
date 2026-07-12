@@ -387,6 +387,9 @@ func (c Config) Validate() error {
 		if c.Providers.FakeMode {
 			errs = append(errs, fmt.Errorf("providers.fake_mode cannot be enabled in production"))
 		}
+		if c.Providers.Agentunnel.MachineMode != "required" {
+			errs = append(errs, fmt.Errorf("agentunnel.machine_mode must be \"required\" in production"))
+		}
 		if len(c.HTTP.AllowedOrigins) == 0 {
 			errs = append(errs, fmt.Errorf("http.allowed_origins is required in production"))
 		}

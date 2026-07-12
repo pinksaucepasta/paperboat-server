@@ -50,6 +50,7 @@ cat > "$bin/agentunnel" <<'EOF'
 set -Eeuo pipefail
 printf 'agentunnel:start\n' >> "$PAPERBOAT_TEST_EVENT_LOG"
 printf ready > "$PAPERBOAT_TEST_AGENTUNNEL_STARTED_FILE"
+printf '{"status":"connected"}\n' > "$PAPERBOAT_AGENTUNNEL_STATUS_FILE"
 while :; do sleep 1; done
 EOF
 
@@ -60,6 +61,7 @@ for _ in $(seq 1 50); do
   [ -f "$PAPERBOAT_TEST_AGENTUNNEL_STARTED_FILE" ] && break
   sleep 0.1
 done
+printf '{"status":"connected"}\n' > "$PAPERBOAT_AGENTUNNEL_STATUS_FILE"
 printf 'wait-agentunnel:%s\n' "${1:-}" >> "$PAPERBOAT_TEST_EVENT_LOG"
 EOF
 
@@ -79,6 +81,7 @@ export PAPERBOAT_RUNTIME_DIR="$tmp/runtime"
 export PAPERBOAT_LOG_DIR="$tmp/logs"
 export PAPERBOAT_WORKSPACE="$tmp/workspace"
 export PAPERBOAT_READINESS_FILE="$tmp/runtime/readiness.json"
+export PAPERBOAT_AGENTUNNEL_STATUS_FILE="$tmp/runtime/agentunnel-status.json"
 export PAPERBOAT_PREPARE_WORKSPACE_COMMAND="$bin/prepare"
 export PAPERBOAT_CONFIG_SYNC_COMMAND="$bin/config-sync"
 export PAPERBOAT_PRESET_APPLY_COMMAND="$bin/presets"

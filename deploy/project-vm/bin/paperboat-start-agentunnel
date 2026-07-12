@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 config_dir="${PAPERBOAT_AGENTUNNEL_CONFIG_DIR:-/var/lib/paperboat/agentunnel}"
 token_env="${PAPERBOAT_AGENTUNNEL_TOKEN_ENV:-AGENTUNNEL_MACHINE_TOKEN}"
+status_file="${PAPERBOAT_AGENTUNNEL_STATUS_FILE:-${PAPERBOAT_RUNTIME_DIR:-/var/lib/paperboat}/agentunnel-status.json}"
 mkdir -p "$config_dir"
 chmod 700 "$config_dir"
 
@@ -25,7 +26,8 @@ cat > "$config_dir/client.json" <<EOF
   "server_url": "${PAPERBOAT_AGENTUNNEL_SERVER_URL:?PAPERBOAT_AGENTUNNEL_SERVER_URL is required}",
   "client_token": "${!token_env:?agentunnel token env is required}",
   "machine_id": "${PAPERBOAT_AGENTUNNEL_CLIENT_ID:?PAPERBOAT_AGENTUNNEL_CLIENT_ID is required}",
-  "serve_http_tunnels": [${serve_http_entry}]
+  "serve_http_tunnels": [${serve_http_entry}],
+  "status_file": "${status_file}"
 }
 EOF
 chmod 600 "$config_dir/client.json"

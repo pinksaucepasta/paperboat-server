@@ -413,6 +413,12 @@ func TestStartAndRestartRecreateMissingMachineOnExistingVolume(t *testing.T) {
 	if spec.Hostname != cfg.Fly.Hostname {
 		t.Fatalf("replacement machine hostname = %q, want %q", spec.Hostname, cfg.Fly.Hostname)
 	}
+	if spec.Env["PAPERBOAT_PROJECT_ID"] != project.ID || spec.Env["PAPERBOAT_PAPERCODE_ENVIRONMENT_ID"] != project.ID {
+		t.Fatalf("replacement identity env = project %q environment %q, want %q", spec.Env["PAPERBOAT_PROJECT_ID"], spec.Env["PAPERBOAT_PAPERCODE_ENVIRONMENT_ID"], project.ID)
+	}
+	if spec.Env["PAPERBOAT_AGENTUNNEL_CLIENT_ID"] != "cli_"+project.ID || spec.Env["PAPERBOAT_AGENTUNNEL_TUNNEL_ID"] != "tun_"+project.ID {
+		t.Fatalf("replacement route env = client %q tunnel %q", spec.Env["PAPERBOAT_AGENTUNNEL_CLIENT_ID"], spec.Env["PAPERBOAT_AGENTUNNEL_TUNNEL_ID"])
+	}
 	if len(fakeFly.Volumes) != 1 {
 		t.Fatalf("healing created extra volumes: %d", len(fakeFly.Volumes))
 	}

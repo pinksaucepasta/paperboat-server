@@ -125,6 +125,17 @@ func TestProductionValidationDoesNotRequireMachineActivityToken(t *testing.T) {
 	}
 }
 
+func TestProductionValidationRequiresFailFastAgentunnel(t *testing.T) {
+	cfg := Default()
+	cfg.Environment = EnvironmentProduction
+	cfg.Providers.Agentunnel.MachineMode = "optional"
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), `agentunnel.machine_mode must be "required" in production`) {
+		t.Fatalf("Validate() error = %v, want production agentunnel mode rejection", err)
+	}
+}
+
 func TestValidationRequiresPostgresAndCatalogSeedFile(t *testing.T) {
 	cfg := Default()
 	cfg.Database.Driver = "memory"

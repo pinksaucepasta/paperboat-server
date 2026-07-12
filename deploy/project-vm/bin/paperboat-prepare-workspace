@@ -4,6 +4,8 @@ set -Eeuo pipefail
 workspace="${PAPERBOAT_WORKSPACE:-/workspace}"
 repo_url="${PAPERBOAT_REPOSITORY_URL:?PAPERBOAT_REPOSITORY_URL is required}"
 branch="${PAPERBOAT_DEFAULT_BRANCH:-}"
+project_id="${PAPERBOAT_PROJECT_ID:?PAPERBOAT_PROJECT_ID is required}"
+environment_id="${PAPERBOAT_PAPERCODE_ENVIRONMENT_ID:-$project_id}"
 
 # The repository is cloned into its own folder under the workspace
 # (e.g. /workspace/<repo-name>), keeping the workspace root free for
@@ -15,9 +17,42 @@ if [ -z "$project_dir" ]; then
   project_dir="${project_dir##*/}"
   project_dir="${project_dir%.git}"
 fi
+case "$project_dir" in
+  ''|.|..|.paperboat|*/*|*\\*)
+    printf 'invalid Paperboat project directory %s\n' "$project_dir" >&2
+    exit 64
+    ;;
+esac
 target="$workspace/$project_dir"
 
 mkdir -p "$workspace"
+state_dir="$workspace/.paperboat"
+identity_dir="$state_dir/identity"
+mkdir -p "$identity_dir"
+chmod 700 "$state_dir" "$identity_dir"
+
+ensure_identity() {
+  local path="$1"
+  local expected="$2"
+  local label="$3"
+  if [ -f "$path" ]; then
+    local actual
+    actual="$(tr -d '\r\n' < "$path")"
+    if [ "$actual" != "$expected" ]; then
+      printf 'workspace %s identity mismatch: expected %s, found %s\n' "$label" "$expected" "$actual" >&2
+      exit 65
+    fi
+    return
+  fi
+  local temporary="$path.tmp.$$"
+  umask 077
+  printf '%s\n' "$expected" > "$temporary"
+  chmod 600 "$temporary"
+  mv -f "$temporary" "$path"
+}
+
+ensure_identity "$identity_dir/project-id" "$project_id" "project"
+ensure_identity "$identity_dir/environment-id" "$environment_id" "environment"
 
 if [ ! -d "$target/.git" ]; then
   tmp="$workspace/.paperboat-clone"
@@ -31,8 +66,6 @@ if [ ! -d "$target/.git" ]; then
   mv "$tmp" "$target"
 fi
 
-mkdir -p "$workspace/.paperboat"
-
 # Record the resolved repository path so interactive shells (SSH, agent
 # terminals) can open directly inside the project instead of the workspace root.
-printf '%s\n' "$target" > "$workspace/.paperboat/project-dir"
+printf '%s\n' "$target" > "$state_dir/project-dir"

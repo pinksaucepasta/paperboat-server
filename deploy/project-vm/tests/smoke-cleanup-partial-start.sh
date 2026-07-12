@@ -73,6 +73,8 @@ if [ "$status" -eq 0 ]; then
 fi
 grep -q 'config-sync:save' "$PAPERBOAT_TEST_EVENT_LOG"
 grep -q 'terminated' "$PAPERBOAT_TEST_CHILD_TERMINATED_FILE"
+grep -q '"state":"failed"' "$PAPERBOAT_READINESS_FILE"
+grep -q '"reason":"papercode_readiness"' "$PAPERBOAT_READINESS_FILE"
 if [ "$(tail -n 2 "$PAPERBOAT_TEST_EVENT_LOG")" != "$(printf 'child:terminated\nconfig-sync:save')" ]; then
   printf 'cleanup did not stop children before saving config\n' >&2
   cat "$PAPERBOAT_TEST_EVENT_LOG" >&2
