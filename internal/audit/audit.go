@@ -6,10 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
+	"github.com/pinksaucepasta/paperboat-server/internal/observability"
 )
 
 type ActorType string
@@ -61,8 +63,12 @@ func write(ctx context.Context, q *dbsqlc.Queries, event Event) error {
 	if event.ActorType == "" {
 		event.ActorType = ActorSystem
 	}
+	event.Metadata = maps.Clone(event.Metadata)
 	if event.Metadata == nil {
-		event.Metadata = map[string]any{}
+		event.Metadata = make(map[string]any)
+	}
+	if requestID := observability.NormalizeRequestID(observability.RequestID(ctx)); requestID != "" {
+		event.Metadata["request_id"] = requestID
 	}
 	metadata, err := json.Marshal(event.Metadata)
 	if err != nil {

@@ -3,7 +3,21 @@ package observability
 import (
 	"context"
 	"log/slog"
+	"strings"
 )
+
+func NormalizeRequestID(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 200 {
+		return ""
+	}
+	for _, r := range value {
+		if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') && !strings.ContainsRune("_.:-", r) {
+			return ""
+		}
+	}
+	return value
+}
 
 type contextKey string
 

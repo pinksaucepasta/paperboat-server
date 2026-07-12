@@ -20,6 +20,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
+	"github.com/pinksaucepasta/paperboat-server/internal/observability"
 )
 
 type DeviceError struct {
@@ -128,10 +129,17 @@ func (s *DeviceService) Authorize(ctx context.Context, in DeviceAuthorizationInp
 	now := s.now()
 	expires := now.Add(s.cfg.DeviceGrantLifetime)
 	interval := max(1, int(s.cfg.PollInterval/time.Second))
-	err = s.db.Queries().CreateDeviceGrant(ctx, dbsqlc.CreateDeviceGrantParams{ID: newID("dgr"), ClientID: in.ClientID, ClientLabel: in.ClientLabel, DeviceType: in.DeviceType, Os: strings.TrimSpace(in.OS), Scopes: normalizedScopes(in.Scopes), DeviceCodeHash: s.hash(deviceCode), UserCodeHash: s.hashUserCode(userCode), IssuedAt: now, ExpiresAt: expires, PollIntervalSeconds: int32(interval), CreatedNetworkHash: s.hash(in.Network)})
+	grantID := newID("dgr")
+	err = s.inTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := tx.Queries().CreateDeviceGrant(ctx, dbsqlc.CreateDeviceGrantParams{ID: grantID, ClientID: in.ClientID, ClientLabel: in.ClientLabel, DeviceType: in.DeviceType, Os: strings.TrimSpace(in.OS), Scopes: normalizedScopes(in.Scopes), DeviceCodeHash: s.hash(deviceCode), UserCodeHash: s.hashUserCode(userCode), IssuedAt: now, ExpiresAt: expires, PollIntervalSeconds: int32(interval), CreatedNetworkHash: s.hash(in.Network)}); err != nil {
+			return err
+		}
+		return s.audit.WriteTx(ctx, tx, audit.Event{ActorType: audit.ActorSystem, EventType: "auth.device.requested", ResourceType: "device_grant", ResourceID: grantID, IdempotencyKey: "auth.device.requested:" + grantID, Metadata: map[string]any{"client_id": in.ClientID, "device_type": in.DeviceType}})
+	})
 	if err != nil {
 		return DeviceAuthorization{}, fmt.Errorf("create device grant: %w", err)
 	}
+	observability.DeviceRequested()
 	q := u.Query()
 	q.Set("code", userCode)
 	u.RawQuery = q.Encode()
@@ -153,6 +161,7 @@ func (s *DeviceService) Poll(ctx context.Context, in DeviceTokenInput) (TokenSet
 	}
 	var out TokenSet
 	var outcomeErr error
+	var completionLatency int64 = -1
 	err := s.inTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		q := tx.Queries()
 		grant, err := q.GetDeviceGrantForPoll(ctx, s.hashList(in.DeviceCode))
@@ -244,11 +253,21 @@ func (s *DeviceService) Poll(ctx context.Context, in DeviceTokenInput) (TokenSet
 		if err := s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: grant.UserID, ActorType: audit.ActorUser, EventType: "auth.client.approved", ResourceType: "client_session", ResourceID: sessionID, IdempotencyKey: "auth.client.approved:" + sessionID, Metadata: map[string]any{"client_id": grant.ClientID}}); err != nil {
 			return err
 		}
+		completionLatency = now.Sub(grant.IssuedAt).Milliseconds()
+		if completionLatency < 0 {
+			completionLatency = 0
+		}
+		if err := s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: grant.UserID, ActorType: audit.ActorUser, EventType: "auth.device.completed", ResourceType: "device_grant", ResourceID: grant.ID, IdempotencyKey: "auth.device.completed:" + grant.ID, Metadata: map[string]any{"client_id": grant.ClientID, "client_session_id": sessionID, "latency_ms": completionLatency}}); err != nil {
+			return err
+		}
 		out = TokenSet{AccessToken: access, RefreshToken: refresh, TokenType: "Bearer", ExpiresIn: int(s.cfg.AccessTokenLifetime / time.Second), Scope: grant.Scopes, ClientSessionID: sessionID}
 		return nil
 	})
 	if err != nil {
 		return TokenSet{}, err
+	}
+	if completionLatency >= 0 {
+		observability.DeviceCompleted(completionLatency)
 	}
 	return out, outcomeErr
 }

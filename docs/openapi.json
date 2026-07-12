@@ -508,6 +508,16 @@
         }
       }
     },
+    "/metrics": {
+      "get": {
+        "summary": "Local operational metrics snapshot",
+        "security": [],
+        "responses": {
+          "200": { "description": "Bounded process-local platform counters.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "403": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
     "/readyz": {
       "get": {
         "summary": "Readiness check",

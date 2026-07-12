@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -21,6 +22,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
+	"github.com/pinksaucepasta/paperboat-server/internal/observability"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 	"github.com/pinksaucepasta/paperboat-server/internal/secrets"
 )
@@ -787,16 +789,17 @@ type ConnectResponse struct {
 }
 
 func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectResponse, error) {
+	observability.ConnectAttempted()
 	if input.Kind == "" {
 		input.Kind = ConnectGeneric
 	}
 	project, err := s.projects.Get(ctx, input.UserID, input.ProjectID)
 	if err != nil {
-		_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, "", "denied", "project_not_found", nil)
+		s.recordConnectDenied(ctx, input.UserID, input.ProjectID, "project_not_found", nil)
 		return ConnectResponse{}, err
 	}
 	if terminalProjectState(project.State) {
-		_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, "", "denied", "invalid_project_state", map[string]any{"project_state": project.State})
+		s.recordConnectDenied(ctx, input.UserID, input.ProjectID, "invalid_project_state", map[string]any{"project_state": project.State})
 		if project.State == "deleted" || project.State == "deleting" {
 			return ConnectResponse{}, ErrDeleted
 		}
@@ -806,19 +809,19 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 		return ConnectResponse{}, ErrInvalidState
 	}
 	if err := s.repo.EnsureConnectCredits(ctx, input.UserID, input.ProjectID, s.minimumStartCreditWindow); err != nil {
-		_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, "", "denied", "credits_exhausted", nil)
+		s.recordConnectDenied(ctx, input.UserID, input.ProjectID, "credits_exhausted", nil)
 		return ConnectResponse{}, err
 	}
 	expires := time.Now().UTC().Add(s.ttl)
 	var credentials CLICredentials
 	if input.Kind == ConnectCLI {
 		if err := s.repo.EnsureGitHubConfigReady(ctx, input.UserID); err != nil {
-			_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, "", "denied", "github_config_not_ready", nil)
+			s.recordConnectDenied(ctx, input.UserID, input.ProjectID, "github_config_not_ready", nil)
 			return ConnectResponse{}, err
 		}
 		credentialInput := CredentialInput{UserID: input.UserID, ProjectID: input.ProjectID, EnvironmentID: input.ProjectID, ClientSessionID: input.ClientSessionID, ExpiresAt: expires}
 		if err := s.credentials.CheckCLI(ctx, credentialInput); err != nil {
-			_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, "", "denied", "credential_issuer_unavailable", nil)
+			s.recordConnectDenied(ctx, input.UserID, input.ProjectID, "credential_issuer_unavailable", nil)
 			return ConnectResponse{}, fmt.Errorf("%w: %v", ErrCredentialIssuerUnavailable, err)
 		}
 	}
@@ -864,7 +867,7 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 	if project.State == "stopped" || project.State == "ready" {
 		project, err = s.projects.Start(ctx, input.UserID, input.ProjectID)
 		if err != nil {
-			_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, "", "denied", "start_failed", map[string]any{"project_state": project.State})
+			s.recordConnectDenied(ctx, input.UserID, input.ProjectID, "start_failed", map[string]any{"project_state": project.State})
 			return ConnectResponse{}, err
 		}
 		resumeQueued = true
@@ -915,7 +918,7 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 			response.Status = "tunnel_connecting"
 			response.Reason = "tunnel_offline"
 		}
-		_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, "", "denied", "tunnel_not_ready", map[string]any{
+		s.recordConnectDenied(ctx, input.UserID, input.ProjectID, "tunnel_not_ready", map[string]any{
 			"status": response.Status, "reason": response.Reason, "environment_id": project.ID,
 			"agentunnel_tunnel_id": resource.TunnelID, "agentunnel_client_id": resource.ClientID,
 		})
@@ -938,11 +941,13 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 			ProjectID: project.ID, ProjectState: project.State, Connectable: false, ExpiresAt: expires,
 			Status: "papercode_starting", Reason: "papercode_unhealthy", RetryAfterSeconds: s.retryAfterSeconds(),
 		}
-		_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, "", "denied", "papercode_unhealthy", map[string]any{
+		s.recordConnectDenied(ctx, input.UserID, input.ProjectID, "papercode_unhealthy", map[string]any{
 			"environment_id": project.ID, "agentunnel_tunnel_id": resource.TunnelID,
 		})
 		return response, nil
 	}
+	_ = s.audit.Write(ctx, audit.Event{ActorUserID: input.UserID, ActorType: audit.ActorUser, EventType: "access.route_ready", ResourceType: "project", ResourceID: input.ProjectID, IdempotencyKey: "access.route_ready:" + newID("attempt"), Metadata: map[string]any{"environment_id": project.ID, "agentunnel_tunnel_id": resource.TunnelID, "agentunnel_client_id": resource.ClientID, "status": status.Status}})
+	observability.RouteReady()
 	if input.Kind == ConnectCLI {
 		credentialInput := CredentialInput{
 			UserID: input.UserID, ProjectID: input.ProjectID, EnvironmentID: input.ProjectID,
@@ -950,7 +955,7 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 		}
 		credentials, err = s.credentials.IssueCLI(ctx, credentialInput)
 		if err != nil {
-			_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, "", "denied", "credential_issuer_unavailable", nil)
+			s.recordConnectDenied(ctx, input.UserID, input.ProjectID, "credential_issuer_unavailable", nil)
 			var outboxErr error
 			sessionIDs := compactSessionIDs(credentials.TerminalSessionID, credentials.FileSessionID)
 			if len(sessionIDs) > 0 {
@@ -962,6 +967,8 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 			}
 			return ConnectResponse{}, errors.Join(fmt.Errorf("%w: %v", ErrCredentialIssuerUnavailable, err), outboxErr)
 		}
+		_ = s.audit.Write(ctx, audit.Event{ActorUserID: input.UserID, ActorType: audit.ActorUser, EventType: "access.credentials_minted", ResourceType: "project", ResourceID: input.ProjectID, IdempotencyKey: "access.credentials_minted:" + credentials.TerminalSessionID, Metadata: map[string]any{"environment_id": input.ProjectID, "client_session_id": input.ClientSessionID, "terminal_session_id": credentials.TerminalSessionID, "file_session_id": credentials.FileSessionID}})
+		observability.CredentialsMinted()
 	}
 	_ = s.repo.RecordActivity(ctx, input.ProjectID, "agentunnel_connection", map[string]any{
 		"kind": input.Kind, "status": status.Status, "environment_id": project.ID,
@@ -998,6 +1005,7 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 	_ = s.repo.RecordActivity(ctx, input.ProjectID, "connect_session", correlation)
 	_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, session.ID, "approved", "", correlation)
 	_ = s.audit.Write(ctx, audit.Event{ActorUserID: input.UserID, ActorType: audit.ActorUser, EventType: "access.connect_approved", ResourceType: "project", ResourceID: input.ProjectID, IdempotencyKey: "access.connect_approved:" + session.ID, Metadata: correlation})
+	observability.ConnectApproved()
 	return response, nil
 }
 
@@ -1018,8 +1026,21 @@ func (s *Service) denyProviderFailure(ctx context.Context, userID, projectID str
 		reason = "provider_error"
 		out = ErrProvider
 	}
-	_ = s.repo.RecordConnectionEvent(ctx, userID, projectID, "", "denied", reason, nil)
+	s.recordConnectDenied(ctx, userID, projectID, reason, nil)
 	return out
+}
+
+func (s *Service) recordConnectDenied(ctx context.Context, userID, projectID, reason string, metadata map[string]any) {
+	if metadata == nil {
+		metadata = map[string]any{}
+	} else {
+		metadata = maps.Clone(metadata)
+	}
+	metadata["reason"] = reason
+	metadata["environment_id"] = projectID
+	_ = s.repo.RecordConnectionEvent(ctx, userID, projectID, "", "denied", reason, metadata)
+	_ = s.audit.Write(ctx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "access.connect_denied", ResourceType: "project", ResourceID: projectID, IdempotencyKey: "access.connect_denied:" + newID("attempt"), Metadata: metadata})
+	observability.ConnectDenied()
 }
 
 func (s *Service) waitForReady(ctx context.Context, resource ResourceDescriptor) (TunnelStatus, error) {
@@ -1140,7 +1161,11 @@ func (s *Service) RevokeUserSessions(ctx context.Context, userID, reason string)
 	if err := s.revokePapercodeSessions(ctx, rows, reason); err != nil {
 		return err
 	}
-	return s.repo.MarkUserPapercodeRevocationPropagated(ctx, userID)
+	if err := s.repo.MarkUserPapercodeRevocationPropagated(ctx, userID); err != nil {
+		return err
+	}
+	s.recordRevocationPropagated(ctx, "user", userID, reason, "papercode", map[string]any{"user_id": userID})
+	return nil
 }
 
 func (s *Service) RevokeClientSessions(ctx context.Context, clientSessionID, reason string) error {
@@ -1154,7 +1179,11 @@ func (s *Service) RevokeClientSessions(ctx context.Context, clientSessionID, rea
 	if err := s.revokePapercodeSessions(ctx, rows, reason); err != nil {
 		return err
 	}
-	return s.repo.MarkClientPapercodeRevocationPropagated(ctx, clientSessionID)
+	if err := s.repo.MarkClientPapercodeRevocationPropagated(ctx, clientSessionID); err != nil {
+		return err
+	}
+	s.recordRevocationPropagated(ctx, "client_session", clientSessionID, reason, "papercode", map[string]any{"client_session_id": clientSessionID})
+	return nil
 }
 
 func (s *Service) RevokeProjectSessions(ctx context.Context, projectID, reason string) error {
@@ -1187,6 +1216,8 @@ func (s *Service) RevokeProjectSessions(ctx context.Context, projectID, reason s
 		} else if outboxErr == nil {
 			if err := s.repo.MarkAgentunnelCleanupOutboxPropagated(ctx, projectID); err != nil {
 				revokeErrors = append(revokeErrors, fmt.Errorf("mark project tunnel cleanup propagated: %w", err))
+			} else {
+				s.recordRevocationPropagated(ctx, "project", projectID, reason, "agentunnel", map[string]any{"environment_id": projectID})
 			}
 		}
 	}
@@ -1194,6 +1225,7 @@ func (s *Service) RevokeProjectSessions(ctx context.Context, projectID, reason s
 		if err := s.repo.MarkProjectPapercodeRevocationPropagated(ctx, projectID); err != nil {
 			revokeErrors = append(revokeErrors, fmt.Errorf("mark project papercode revocation propagated: %w", err))
 		}
+		s.recordRevocationPropagated(ctx, "project", projectID, reason, "papercode", map[string]any{"environment_id": projectID})
 	}
 	return errors.Join(revokeErrors...)
 }
@@ -1211,6 +1243,8 @@ func (s *Service) RetryPendingPapercodeRevocations(ctx context.Context) error {
 			}
 			if err := s.repo.MarkAccessSessionPapercodeRevocationPropagated(ctx, row.AccessSessionID); err != nil {
 				retryErrors = append(retryErrors, fmt.Errorf("mark access session %s revocation propagated: %w", row.AccessSessionID, err))
+			} else {
+				s.recordRevocationPropagated(ctx, "access_session", row.AccessSessionID, row.Reason, "papercode", map[string]any{"access_session_id": row.AccessSessionID, "project_id": row.ProjectID, "environment_id": row.ProjectID, "client_session_id": row.ClientSessionID})
 			}
 		}
 	}
@@ -1225,6 +1259,8 @@ func (s *Service) RetryPendingPapercodeRevocations(ctx context.Context) error {
 			}
 			if err := s.repo.MarkPapercodeRevocationOutboxPropagated(ctx, item.ID); err != nil {
 				retryErrors = append(retryErrors, fmt.Errorf("mark orphaned papercode revocation %s propagated: %w", item.ID, err))
+			} else {
+				s.recordRevocationPropagated(ctx, "project", item.Revocation.ProjectID, item.Revocation.Reason, "papercode", map[string]any{"environment_id": item.Revocation.EnvironmentID, "client_session_id": item.Revocation.ClientSessionID})
 			}
 		}
 	}
@@ -1248,10 +1284,23 @@ func (s *Service) RetryPendingPapercodeRevocations(ctx context.Context) error {
 			}
 			if err := s.repo.MarkAgentunnelCleanupOutboxPropagated(ctx, cleanup.ProjectID); err != nil {
 				retryErrors = append(retryErrors, fmt.Errorf("mark tunnel cleanup project %s propagated: %w", cleanup.ProjectID, err))
+			} else {
+				s.recordRevocationPropagated(ctx, "project", cleanup.ProjectID, cleanup.Reason, "agentunnel", map[string]any{"environment_id": cleanup.ProjectID})
 			}
 		}
 	}
 	return errors.Join(retryErrors...)
+}
+
+func (s *Service) recordRevocationPropagated(ctx context.Context, resourceType, resourceID, reason, target string, metadata map[string]any) {
+	metadata = maps.Clone(metadata)
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	metadata["reason"] = reason
+	metadata["target"] = target
+	_ = s.audit.Write(ctx, audit.Event{ActorType: audit.ActorSystem, EventType: "access.revocation_propagated", ResourceType: resourceType, ResourceID: resourceID, IdempotencyKey: "access.revocation_propagated:" + resourceType + ":" + resourceID + ":" + target + ":" + reason, Metadata: metadata})
+	observability.RevocationPropagated()
 }
 
 func (s *Service) revokePapercodeSessions(ctx context.Context, rows []PapercodeSessionLink, reason string) error {

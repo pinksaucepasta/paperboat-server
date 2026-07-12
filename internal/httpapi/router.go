@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"runtime/debug"
 	"slices"
@@ -59,6 +60,7 @@ func NewRouter(opts Options) http.Handler {
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /healthz", health)
 		mux.HandleFunc("GET /readyz", ready(opts.ReadinessChecker))
+		mux.HandleFunc("GET /metrics", metrics)
 		if opts.MintKeys != nil {
 			mux.Handle("GET /.well-known/jwks.json", opts.MintKeys)
 		}
@@ -88,6 +90,15 @@ func health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]any{
 		"status": "healthy",
 	}})
+}
+
+func metrics(w http.ResponseWriter, r *http.Request) {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil || !net.ParseIP(host).IsLoopback() {
+		writeError(w, r, http.StatusForbidden, "forbidden", "Metrics are available only from localhost.")
+		return
+	}
+	writeJSON(w, http.StatusOK, SuccessResponse{Data: observability.MetricsSnapshot()})
 }
 
 func ready(checker ReadinessChecker) http.HandlerFunc {
@@ -205,7 +216,7 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 
 func requestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestID := strings.TrimSpace(r.Header.Get("Request-Id"))
+		requestID := observability.NormalizeRequestID(r.Header.Get("Request-Id"))
 		if requestID == "" {
 			requestID = newRequestID()
 		}

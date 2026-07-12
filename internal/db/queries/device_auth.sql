@@ -4,7 +4,7 @@ INSERT INTO device_grants
 VALUES (sqlc.arg(id), sqlc.arg(client_id), sqlc.arg(client_label), sqlc.arg(device_type), sqlc.arg(os), string_to_array(sqlc.arg(scopes),' '), sqlc.arg(device_code_hash), sqlc.arg(user_code_hash), 'pending', sqlc.arg(issued_at), sqlc.arg(expires_at), sqlc.arg(poll_interval_seconds), sqlc.arg(issued_at), sqlc.arg(created_network_hash));
 
 -- name: GetDeviceGrantForPoll :one
-SELECT id,client_id,state,coalesce(user_id,'') AS user_id,client_label,device_type,os,array_to_string(scopes,' ') AS scopes,expires_at,next_poll_at,poll_interval_seconds,device_code_hash
+SELECT id,client_id,state,coalesce(user_id,'') AS user_id,client_label,device_type,os,array_to_string(scopes,' ') AS scopes,issued_at,expires_at,next_poll_at,poll_interval_seconds,device_code_hash
 FROM device_grants WHERE device_code_hash = ANY(string_to_array($1,' ')) FOR UPDATE;
 
 -- name: ExpireDeviceGrant :exec

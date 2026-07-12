@@ -52,6 +52,36 @@ func TestHealthDoesNotRequireReadiness(t *testing.T) {
 	}
 }
 
+func TestRequestIDRejectsUnsafeClientValue(t *testing.T) {
+	router := NewRouter(Options{Config: config.Default(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.Header.Set("Request-Id", "user supplied/path")
+	router.ServeHTTP(rec, req)
+	got := rec.Header().Get("Request-Id")
+	if got == "" || got == "user supplied/path" {
+		t.Fatalf("request id = %q", got)
+	}
+}
+
+func TestMetricsAreLocalOnly(t *testing.T) {
+	router := NewRouter(Options{Config: config.Default(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	local := httptest.NewRecorder()
+	localReq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	localReq.RemoteAddr = "127.0.0.1:1234"
+	router.ServeHTTP(local, localReq)
+	if local.Code != http.StatusOK || !strings.Contains(local.Body.String(), "device_requested_total") {
+		t.Fatalf("local status = %d, body = %s", local.Code, local.Body.String())
+	}
+	remote := httptest.NewRecorder()
+	remoteReq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	remoteReq.RemoteAddr = "203.0.113.10:1234"
+	router.ServeHTTP(remote, remoteReq)
+	if remote.Code != http.StatusForbidden {
+		t.Fatalf("remote status = %d, body = %s", remote.Code, remote.Body.String())
+	}
+}
+
 func TestReadyReflectsDependencyState(t *testing.T) {
 	router := NewRouter(Options{
 		Config: config.Default(),
