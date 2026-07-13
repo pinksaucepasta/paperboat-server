@@ -69,10 +69,6 @@
       "route_subdomain_prefix": "pb",
       "connect_ready_timeout": 2000000000,
       "connect_poll_interval": 100000000,
-      "ssh_local_host": "127.0.0.1",
-      "ssh_local_port": 22,
-      "ssh_remote_port_start": 25000,
-      "ssh_remote_port_end": 25999,
       "access_policy_id": ""
     }
   },

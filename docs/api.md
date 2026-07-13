@@ -5,8 +5,8 @@ authorization, bearer sessions, JWKS, and the final descriptor are documented be
 implementation phases. The machine-readable schema is [`docs/openapi.json`](openapi.json).
 
 This API is the control-plane contract for dashboard and CLI clients. It authorizes,
-meters, and orchestrates resources; it does not proxy SSH, terminal, preview, or
-WebSocket data.
+meters, and orchestrates resources; it does not proxy terminal, preview, or WebSocket
+data.
 
 ## Response Envelope
 

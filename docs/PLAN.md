@@ -47,7 +47,7 @@ Status values:
   entitlement state, credit metering, storage accounting, project lifecycle,
   Fly machine and volume orchestration, GitHub config-repo provisioning, and
   pre-connect authorization.
-- Live agent, terminal, preview, SSH, and WebSocket traffic never flows through
+- Live agent, terminal, preview, and WebSocket traffic never flows through
   `paperboat-server`; it flows through `agentunnel` and the per-VM papercode server.
 - Clients are untrusted. Dashboard, CLI, papercode, and VM daemons may request actions,
   but server-side authorization, quota checks, metering, and lifecycle state decide.
@@ -141,7 +141,7 @@ Target package boundaries:
 - Polar.sh: subscriptions, top-ups, extra storage, webhooks, customer portal.
 - GitHub: OAuth, repository clone authorization, private config repo provisioning.
 - Fly.io: one machine and one volume per project.
-- agentunnel: SSH, preview URLs, and tunneled WebSocket data path.
+- agentunnel: preview URLs and tunneled HTTP/WebSocket data path.
 - papercode server on VM: environment-local T3 WebSocket server.
 
 ## Canonical Domain Model
@@ -704,7 +704,7 @@ Tasks:
 
 - [x] Implement approved agentunnel admin/API client.
 - [x] Provision or look up agentunnel client identity for each project machine.
-- [x] Provision or look up persistent TCP/SSH tunnel records needed for the project.
+- [x] Provision or look up the persistent HTTP/WebSocket route needed for the project.
 - [x] Provision preview URL support and metadata records.
 - [x] Implement pre-connect checks: authenticated user, active entitlement, project
   ownership, project not deleted/suspended, credits sufficient, machine start/resume
@@ -728,7 +728,7 @@ Tasks:
 
 Acceptance criteria:
 
-- [x] `paperboat-server` never proxies SSH/WebSocket payload bytes.
+- [x] `paperboat-server` never proxies WebSocket payload bytes.
 - [x] Connect without active entitlement fails before provider side effects.
 - [x] Connect to another user's project fails and writes denial event.
 - [x] Descriptor contains no long-lived secrets.
@@ -737,9 +737,8 @@ Acceptance criteria:
 
 Evidence:
 
-- agentunnel adapter tests: `go test ./internal/agentunnel` covers `connect-info`
-  envelope translation, bearer API-key use, offline/not-ready status mapping, HTTP route
-  resource provisioning translation, persistent TCP/SSH provisioning translation, machine
+- agentunnel adapter tests: `go test ./internal/agentunnel` covers bearer API-key use,
+  offline/not-ready status mapping, HTTP/WebSocket route provisioning translation, machine
   cleanup, provider-error envelope mapping, and bounded readiness polling.
 - HTTP/DB access tests:
   `PAPERBOAT_TEST_DATABASE_DSN="$PAPERBOAT_DATABASE_DSN" PAPERBOAT_ALLOW_DESTRUCTIVE_TEST_DB_RESET=true go test -p 1 ./internal/httpapi ./internal/agentunnel`

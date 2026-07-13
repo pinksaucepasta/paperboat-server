@@ -121,10 +121,6 @@ type ProviderConfig struct {
 	RouteSubdomainPrefix string        `json:"route_subdomain_prefix,omitempty"`
 	ConnectReadyTimeout  time.Duration `json:"connect_ready_timeout,omitempty"`
 	ConnectPollInterval  time.Duration `json:"connect_poll_interval,omitempty"`
-	SSHLocalHost         string        `json:"ssh_local_host,omitempty"`
-	SSHLocalPort         int           `json:"ssh_local_port,omitempty"`
-	SSHRemotePortStart   int           `json:"ssh_remote_port_start,omitempty"`
-	SSHRemotePortEnd     int           `json:"ssh_remote_port_end,omitempty"`
 	AccessPolicyID       string        `json:"access_policy_id,omitempty"`
 	UploadMaxBytes       int64         `json:"upload_max_bytes,omitempty"`
 	UploadAllowedMIMEs   []string      `json:"upload_allowed_mime_types,omitempty"`
@@ -235,10 +231,6 @@ func Default() Config {
 				RouteSubdomainPrefix: "pb",
 				ConnectReadyTimeout:  2 * time.Second,
 				ConnectPollInterval:  100 * time.Millisecond,
-				SSHLocalHost:         "127.0.0.1",
-				SSHLocalPort:         22,
-				SSHRemotePortStart:   25000,
-				SSHRemotePortEnd:     25999,
 				UploadMaxBytes:       10 << 20,
 				UploadAllowedMIMEs:   []string{"image/png", "image/jpeg", "image/webp"},
 				UploadRetention:      7 * 24 * time.Hour,
@@ -352,12 +344,6 @@ func (c Config) Validate() error {
 	if c.Providers.Agentunnel.ConnectPollInterval <= 0 || c.Providers.Agentunnel.ConnectPollInterval > c.Providers.Agentunnel.ConnectReadyTimeout {
 		errs = append(errs, fmt.Errorf("agentunnel.connect_poll_interval must be positive and no greater than connect_ready_timeout"))
 	}
-	if strings.TrimSpace(c.Providers.Agentunnel.SSHLocalHost) == "" || c.Providers.Agentunnel.SSHLocalPort <= 0 || c.Providers.Agentunnel.SSHLocalPort > 65535 {
-		errs = append(errs, fmt.Errorf("agentunnel ssh local host and port must be valid"))
-	}
-	if c.Providers.Agentunnel.SSHRemotePortStart <= 0 || c.Providers.Agentunnel.SSHRemotePortEnd < c.Providers.Agentunnel.SSHRemotePortStart || c.Providers.Agentunnel.SSHRemotePortEnd > 65535 {
-		errs = append(errs, fmt.Errorf("agentunnel ssh remote port range must be valid"))
-	}
 	if c.Providers.Agentunnel.UploadMaxBytes <= 0 || len(c.Providers.Agentunnel.UploadAllowedMIMEs) == 0 || c.Providers.Agentunnel.UploadRetention <= 0 {
 		errs = append(errs, fmt.Errorf("agentunnel upload_max_bytes, upload_allowed_mime_types, and upload_retention are required"))
 	}
@@ -469,7 +455,6 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_AGENTUNNEL_MACHINE_MODE", &c.Providers.Agentunnel.MachineMode)
 	setString("PAPERBOAT_AGENTUNNEL_PAPERCODE_LOCAL_URL", &c.Providers.Agentunnel.PapercodeLocalURL)
 	setString("PAPERBOAT_AGENTUNNEL_ROUTE_SUBDOMAIN_PREFIX", &c.Providers.Agentunnel.RouteSubdomainPrefix)
-	setString("PAPERBOAT_AGENTUNNEL_SSH_LOCAL_HOST", &c.Providers.Agentunnel.SSHLocalHost)
 	setString("PAPERBOAT_AGENTUNNEL_ACCESS_POLICY_ID", &c.Providers.Agentunnel.AccessPolicyID)
 	if v, ok := lookup("PAPERBOAT_AGENTUNNEL_UPLOAD_ALLOWED_MIME_TYPES"); ok {
 		c.Providers.Agentunnel.UploadAllowedMIMEs = splitCSV(v)
@@ -553,27 +538,6 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 			return fmt.Errorf("parse PAPERBOAT_AGENTUNNEL_CONNECT_POLL_INTERVAL: %w", err)
 		}
 		c.Providers.Agentunnel.ConnectPollInterval = parsed
-	}
-	if v, ok := lookup("PAPERBOAT_AGENTUNNEL_SSH_LOCAL_PORT"); ok {
-		parsed, err := strconv.Atoi(v)
-		if err != nil {
-			return fmt.Errorf("parse PAPERBOAT_AGENTUNNEL_SSH_LOCAL_PORT: %w", err)
-		}
-		c.Providers.Agentunnel.SSHLocalPort = parsed
-	}
-	if v, ok := lookup("PAPERBOAT_AGENTUNNEL_SSH_REMOTE_PORT_START"); ok {
-		parsed, err := strconv.Atoi(v)
-		if err != nil {
-			return fmt.Errorf("parse PAPERBOAT_AGENTUNNEL_SSH_REMOTE_PORT_START: %w", err)
-		}
-		c.Providers.Agentunnel.SSHRemotePortStart = parsed
-	}
-	if v, ok := lookup("PAPERBOAT_AGENTUNNEL_SSH_REMOTE_PORT_END"); ok {
-		parsed, err := strconv.Atoi(v)
-		if err != nil {
-			return fmt.Errorf("parse PAPERBOAT_AGENTUNNEL_SSH_REMOTE_PORT_END: %w", err)
-		}
-		c.Providers.Agentunnel.SSHRemotePortEnd = parsed
 	}
 	if v, ok := lookup("PAPERBOAT_FAKE_PROVIDERS"); ok {
 		parsed, err := strconv.ParseBool(v)

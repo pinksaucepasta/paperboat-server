@@ -14,7 +14,7 @@ untrusted.
 - Mutations that create provider resources require idempotency keys.
 - Billing-impacting and irreversible mutations write audit events.
 - Provider credentials, tokens, SSH keys, API keys, and secrets are never returned.
-- `paperboat-server` does not proxy live terminal, SSH, preview, or WebSocket traffic.
+- `paperboat-server` does not proxy live terminal, preview, or WebSocket traffic.
 
 ## Response Shape
 

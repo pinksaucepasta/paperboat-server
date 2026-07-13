@@ -24,7 +24,7 @@ Status: implemented contract baseline, pending final cross-project sign-off.
 
 Status: approved baseline.
 
-`paperboat-server` is a control plane only. Live terminal, SSH, preview, HTTP, and
+`paperboat-server` is a control plane only. Live terminal, preview, HTTP, and
 WebSocket traffic stays out of `paperboat-server` and flows through `agentunnel` and
 the per-VM papercode server.
 
@@ -157,8 +157,8 @@ Decision:
 
 - `paperboat-server` authorizes user/project/entitlement state.
 - `paperboat-server` provisions or looks up agentunnel resources.
-- Returned descriptors reference agentunnel-managed HTTP/WebSocket/preview routes. SSH/TCP
-  remains operator/debug access and is not returned to the production CLI.
+- Returned descriptors reference agentunnel-managed HTTP/WebSocket/preview routes. Project
+  SSH/TCP routes are not provisioned.
 - No agentunnel client tokens, API keys, SSH private keys, or raw credentials are
   returned to dashboard, papercode, or CLI clients.
 

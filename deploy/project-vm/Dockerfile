@@ -49,7 +49,9 @@ LABEL org.opencontainers.image.source="https://github.com/pinksaucepasta/paperbo
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl git openssh-client tini bzip2 xz-utils \
-  && rm -rf /var/lib/apt/lists/*
+  && rm -rf /var/lib/apt/lists/* \
+  && node --version \
+  && npm --version
 
 ENV PAPERBOAT_WORKSPACE=/workspace \
   PAPERBOAT_RUNTIME_DIR=/var/lib/paperboat \

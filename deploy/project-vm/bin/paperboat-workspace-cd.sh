@@ -2,8 +2,8 @@
 # Open interactive Paperboat shells inside the cloned project repository.
 #
 # Sourced from /etc/profile.d (login shells) and /etc/bash.bashrc
-# (interactive non-login shells), so SSH sessions and agent terminals land in
-# the project directory regardless of how the shell was started. The resolved
+# (interactive non-login shells), so agent terminals land in the project
+# directory regardless of how the shell was started. The resolved
 # path is written by paperboat-prepare-workspace at clone time.
 case "$-" in
   *i*) ;;

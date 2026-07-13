@@ -136,7 +136,7 @@ func TestProvisionAdoptsExistingProviderResourcesBeforeCreate(t *testing.T) {
 	}
 }
 
-func TestProvisionStillCreatesFlyResourcesWhenAgentunnelUnavailable(t *testing.T) {
+func TestProvisionDoesNotCreateMachineWhenAgentunnelUnavailable(t *testing.T) {
 	store := newOrchestratorTestDB(t)
 	ctx := context.Background()
 	seedOrchestratorCatalogs(t, store)
@@ -165,18 +165,22 @@ func TestProvisionStillCreatesFlyResourcesWhenAgentunnelUnavailable(t *testing.T
 	if !errors.Is(err, agentunnel.ErrTunnelUnavailable) {
 		t.Fatalf("RunOnce error = %v, want ErrTunnelUnavailable", err)
 	}
-	if len(fakeFly.Volumes) != 1 || len(fakeFly.Machines) != 1 {
-		t.Fatalf("fake Fly resources = %d volumes, %d machines; want one each", len(fakeFly.Volumes), len(fakeFly.Machines))
+	if len(fakeFly.Volumes) != 1 || len(fakeFly.Machines) != 0 {
+		t.Fatalf("fake Fly resources = %d volumes, %d machines; want one volume and no incomplete machine", len(fakeFly.Volumes), len(fakeFly.Machines))
 	}
-	var volumeID, machineID string
+	var volumeID string
 	if err := store.SQL().QueryRowContext(ctx, `SELECT fly_volume_id FROM paperboat.fly_volumes WHERE project_id = $1`, project.ID).Scan(&volumeID); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SQL().QueryRowContext(ctx, `SELECT fly_machine_id FROM paperboat.fly_machines WHERE project_id = $1`, project.ID).Scan(&machineID); err != nil {
+	if volumeID == "" {
+		t.Fatal("recorded volume id is empty")
+	}
+	var machineCount int
+	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.fly_machines WHERE project_id = $1`, project.ID).Scan(&machineCount); err != nil {
 		t.Fatal(err)
 	}
-	if volumeID == "" || machineID == "" {
-		t.Fatalf("recorded ids = volume %q machine %q, want both set", volumeID, machineID)
+	if machineCount != 0 {
+		t.Fatalf("recorded machine count = %d, want 0", machineCount)
 	}
 	for _, volume := range fakeFly.Volumes {
 		if !validFlyVolumeName(volume.Name) {

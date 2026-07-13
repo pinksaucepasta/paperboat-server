@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"maps"
 	"net/http"
 	"net/url"
@@ -28,8 +27,6 @@ import (
 )
 
 const defaultAccessTTL = 5 * time.Minute
-const providerCodeRemotePortInUse = "REMOTE_PORT_IN_USE"
-const providerCodeTCPTunnelsDisabled = "TCP_TUNNELS_DISABLED"
 const providerCodeSubdomainInUse = "SUBDOMAIN_IN_USE"
 
 var (
@@ -81,8 +78,6 @@ type ResourceDescriptor struct {
 	ResourceID       string         `json:"resource_id,omitempty"`
 	HTTPBaseURL      string         `json:"http_base_url,omitempty"`
 	WebSocketBaseURL string         `json:"websocket_base_url,omitempty"`
-	SSHHost          string         `json:"ssh_host,omitempty"`
-	SSHPort          int            `json:"ssh_port,omitempty"`
 	MachineToken     string         `json:"-"`
 	Metadata         map[string]any `json:"metadata,omitempty"`
 }
@@ -91,8 +86,6 @@ type TunnelStatus struct {
 	Ready               bool   `json:"ready"`
 	Status              string `json:"status"`
 	Reason              string `json:"reason,omitempty"`
-	SSHHost             string `json:"ssh_host,omitempty"`
-	SSHPort             int    `json:"ssh_port,omitempty"`
 	HTTPBaseURL         string `json:"http_base_url,omitempty"`
 	WebSocketBaseURL    string `json:"websocket_base_url,omitempty"`
 	MaxRequestBodyBytes int64  `json:"max_request_body_bytes,omitempty"`
@@ -190,25 +183,18 @@ func (f FakeClient) EnsureProjectResources(_ context.Context, project ProjectRef
 	if base == "" {
 		base = "https://agentunnel.local"
 	}
-	host := "ssh.agentunnel.local"
-	if u, err := url.Parse(base); err == nil && u.Hostname() != "" {
-		host = u.Hostname()
-	}
 	return ResourceDescriptor{
 		TunnelID:         "tun_" + project.ID,
 		ClientID:         "cli_" + project.ID,
 		ResourceID:       "res_" + project.ID,
 		HTTPBaseURL:      base + "/projects/" + project.ID,
 		WebSocketBaseURL: strings.Replace(base, "https://", "wss://", 1) + "/projects/" + project.ID,
-		SSHHost:          host,
-		SSHPort:          22,
 		MachineToken:     "fake-agentunnel-token-" + project.ID,
 		Metadata: map[string]any{
 			"provider":       "fake",
 			"resource_kind":  "http_tunnel",
 			"preview_url":    base + "/projects/" + project.ID,
 			"local_url":      "http://127.0.0.1:4099",
-			"tcp_tunnel_id":  "res_" + project.ID,
 			"machine_secret": "external",
 		},
 	}, nil
@@ -258,10 +244,6 @@ type HTTPClient struct {
 	PapercodeLocalURL    string
 	RouteExpiresIn       time.Duration
 	RouteSubdomainPrefix string
-	SSHLocalHost         string
-	SSHLocalPort         int
-	SSHRemotePortStart   int
-	SSHRemotePortEnd     int
 	AccessPolicyID       string
 	UploadMaxBytes       int64
 	HTTPClient           *http.Client
@@ -320,10 +302,6 @@ func (c HTTPClient) EnsureProjectResources(ctx context.Context, project ProjectR
 	if httpPayload.TunnelID == "" || httpURL == "" || wsURL == "" {
 		return fail(ErrTunnelUnavailable)
 	}
-	sshResource, err := c.ensureSSHTunnel(ctx, project, clientID)
-	if err != nil && !isTCPTunnelsDisabled(err) {
-		return fail(err)
-	}
 	resource := ResourceDescriptor{
 		TunnelID:         httpPayload.TunnelID,
 		ClientID:         clientID,
@@ -342,17 +320,6 @@ func (c HTTPClient) EnsureProjectResources(ctx context.Context, project ProjectR
 			"machine_secret": "external",
 		},
 	}
-	if err != nil {
-		resource.Metadata["tcp_status"] = "disabled"
-		resource.Metadata["tcp_error_code"] = providerCodeTCPTunnelsDisabled
-		return resource, nil
-	}
-	resource.SSHHost = sshResource.SSHHost
-	resource.SSHPort = sshResource.SSHPort
-	resource.Metadata["tcp_tunnel_id"] = sshResource.TunnelID
-	resource.Metadata["tcp_status"] = sshResource.Metadata["tcp_status"]
-	resource.Metadata["tcp_lifecycle"] = sshResource.Metadata["tcp_lifecycle"]
-	resource.Metadata["tcp_forwarding_status"] = sshResource.Metadata["tcp_forwarding_status"]
 	return resource, nil
 }
 
@@ -401,28 +368,7 @@ func (c HTTPClient) Status(ctx context.Context, resource ResourceDescriptor) (Tu
 	if strings.TrimSpace(resource.TunnelID) == "" {
 		return TunnelStatus{}, ErrTunnelUnavailable
 	}
-	if resourceKind(resource) == "http_tunnel" {
-		httpStatus, err := c.httpTunnelStatus(ctx, resource)
-		if err != nil {
-			return TunnelStatus{}, err
-		}
-		tcpTunnelID, _ := resource.Metadata["tcp_tunnel_id"].(string)
-		if strings.TrimSpace(tcpTunnelID) == "" {
-			return httpStatus, nil
-		}
-		tcpResource := resource
-		tcpResource.TunnelID = tcpTunnelID
-		tcpStatus, err := c.tcpTunnelStatus(ctx, tcpResource)
-		if err != nil {
-			// SSH is an optional operator path and must not gate papercode.
-			return httpStatus, nil
-		}
-		combined := httpStatus
-		combined.SSHHost = tcpStatus.SSHHost
-		combined.SSHPort = tcpStatus.SSHPort
-		return combined, nil
-	}
-	return c.tcpTunnelStatus(ctx, resource)
+	return c.httpTunnelStatus(ctx, resource)
 }
 
 func (c HTTPClient) httpTunnelStatus(ctx context.Context, resource ResourceDescriptor) (TunnelStatus, error) {
@@ -476,43 +422,6 @@ func (c HTTPClient) httpTunnelStatus(ctx context.Context, resource ResourceDescr
 		HTTPBaseURL:         httpURL,
 		WebSocketBaseURL:    wsURL,
 		MaxRequestBodyBytes: payload.MaxRequestBodyBytes,
-	}, nil
-}
-
-func (c HTTPClient) tcpTunnelStatus(ctx context.Context, resource ResourceDescriptor) (TunnelStatus, error) {
-	var payload struct {
-		Type             string `json:"type"`
-		Protocol         string `json:"protocol"`
-		Host             string `json:"host"`
-		Port             int    `json:"port"`
-		TunnelID         string `json:"tunnel_id"`
-		Status           string `json:"status"`
-		Lifecycle        string `json:"lifecycle"`
-		ForwardingStatus string `json:"forwarding_status"`
-		CanConnect       bool   `json:"can_connect"`
-		ReasonCode       string `json:"reason_code"`
-		Message          string `json:"message"`
-		Hint             string `json:"hint"`
-	}
-	if err := c.get(ctx, "/api/tcp-tunnels/"+url.PathEscape(resource.TunnelID)+"/connect-info", &payload); err != nil {
-		return TunnelStatus{}, err
-	}
-	reason := payload.ReasonCode
-	if reason == "" {
-		reason = payload.Message
-	}
-	status := payload.ForwardingStatus
-	if status == "" {
-		status = payload.Status
-	}
-	return TunnelStatus{
-		Ready:            payload.CanConnect,
-		Status:           status,
-		Reason:           reason,
-		SSHHost:          firstNonEmpty(payload.Host, resource.SSHHost),
-		SSHPort:          firstNonZero(payload.Port, resource.SSHPort),
-		HTTPBaseURL:      resource.HTTPBaseURL,
-		WebSocketBaseURL: resource.WebSocketBaseURL,
 	}, nil
 }
 
@@ -622,91 +531,9 @@ func (c HTTPClient) ensureClient(ctx context.Context, project ProjectRef) (strin
 	return clientID, payload.Token, nil
 }
 
-func (c HTTPClient) ensureSSHTunnel(ctx context.Context, project ProjectRef, clientID string) (ResourceDescriptor, error) {
-	localHost := firstNonEmpty(c.SSHLocalHost, "127.0.0.1")
-	localPort := firstNonZero(c.SSHLocalPort, 22)
-	remotePorts := c.remotePortsForProject(project.ID)
-	if len(remotePorts) == 0 {
-		return ResourceDescriptor{}, ErrTunnelUnavailable
-	}
-	var lastErr error
-	for _, remotePort := range remotePorts {
-		var payload struct {
-			TunnelID         string `json:"tunnel_id"`
-			RemotePort       int    `json:"remote_port"`
-			LocalPort        int    `json:"local_port"`
-			Status           string `json:"status"`
-			Lifecycle        string `json:"lifecycle"`
-			ForwardingStatus string `json:"forwarding_status"`
-		}
-		body := map[string]any{
-			"client_id":   clientID,
-			"local_host":  localHost,
-			"local_port":  localPort,
-			"remote_port": remotePort,
-			"expires_in":  "never",
-		}
-		if strings.TrimSpace(c.AccessPolicyID) != "" {
-			body["access_policy_id"] = c.AccessPolicyID
-		}
-		if err := c.post(ctx, "/api/tcp-tunnels", body, &payload); err != nil {
-			lastErr = err
-			if isRemotePortInUse(err) {
-				continue
-			}
-			return ResourceDescriptor{}, err
-		}
-		if payload.TunnelID == "" {
-			lastErr = ErrTunnelUnavailable
-			return ResourceDescriptor{}, lastErr
-		}
-		return ResourceDescriptor{
-			TunnelID: payload.TunnelID,
-			ClientID: clientID,
-			SSHPort:  firstNonZero(payload.RemotePort, remotePort),
-			Metadata: map[string]any{
-				"tcp_status":            payload.Status,
-				"tcp_lifecycle":         payload.Lifecycle,
-				"tcp_forwarding_status": payload.ForwardingStatus,
-			},
-		}, nil
-	}
-	if lastErr != nil {
-		return ResourceDescriptor{}, lastErr
-	}
-	return ResourceDescriptor{}, ErrTunnelUnavailable
-}
-
-func isRemotePortInUse(err error) bool {
-	var providerErr providerError
-	return errors.As(err, &providerErr) && providerErr.code == providerCodeRemotePortInUse
-}
-
-func isTCPTunnelsDisabled(err error) bool {
-	var providerErr providerError
-	return errors.As(err, &providerErr) && providerErr.code == providerCodeTCPTunnelsDisabled
-}
-
 func isSubdomainInUse(err error) bool {
 	var providerErr providerError
 	return errors.As(err, &providerErr) && providerErr.code == providerCodeSubdomainInUse
-}
-
-func (c HTTPClient) remotePortsForProject(projectID string) []int {
-	start := c.SSHRemotePortStart
-	end := c.SSHRemotePortEnd
-	if start <= 0 || end < start || end > 65535 {
-		return nil
-	}
-	size := end - start + 1
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(projectID))
-	offset := int(h.Sum32() % uint32(size))
-	ports := make([]int, 0, size)
-	for i := 0; i < size; i++ {
-		ports = append(ports, start+((offset+i)%size))
-	}
-	return ports
 }
 
 type Service struct {
@@ -1430,8 +1257,6 @@ func (s *Service) retryAfterSeconds() int {
 }
 
 func applyStatusResource(resource ResourceDescriptor, status TunnelStatus) ResourceDescriptor {
-	resource.SSHHost = firstNonEmpty(status.SSHHost, resource.SSHHost)
-	resource.SSHPort = firstNonZero(status.SSHPort, resource.SSHPort)
 	resource.HTTPBaseURL = firstNonEmpty(status.HTTPBaseURL, resource.HTTPBaseURL)
 	resource.WebSocketBaseURL = firstNonEmpty(status.WebSocketBaseURL, resource.WebSocketBaseURL)
 	return resource
@@ -1647,8 +1472,13 @@ func (r *Repository) UpsertResource(ctx context.Context, projectID string, resou
 	}
 	resource.Metadata["http_base_url"] = resource.HTTPBaseURL
 	resource.Metadata["websocket_base_url"] = resource.WebSocketBaseURL
-	resource.Metadata["ssh_host"] = resource.SSHHost
-	resource.Metadata["ssh_port"] = resource.SSHPort
+	delete(resource.Metadata, "ssh_host")
+	delete(resource.Metadata, "ssh_port")
+	delete(resource.Metadata, "tcp_tunnel_id")
+	delete(resource.Metadata, "tcp_status")
+	delete(resource.Metadata, "tcp_lifecycle")
+	delete(resource.Metadata, "tcp_forwarding_status")
+	delete(resource.Metadata, "tcp_error_code")
 	metadata, err := json.Marshal(resource.Metadata)
 	if err != nil {
 		return ResourceDescriptor{}, err
@@ -1684,10 +1514,6 @@ func (r *Repository) Resource(ctx context.Context, projectID string) (ResourceDe
 	}
 	resource.HTTPBaseURL, _ = resource.Metadata["http_base_url"].(string)
 	resource.WebSocketBaseURL, _ = resource.Metadata["websocket_base_url"].(string)
-	resource.SSHHost, _ = resource.Metadata["ssh_host"].(string)
-	if port, ok := resource.Metadata["ssh_port"].(float64); ok {
-		resource.SSHPort = int(port)
-	}
 	return resource, true, nil
 }
 

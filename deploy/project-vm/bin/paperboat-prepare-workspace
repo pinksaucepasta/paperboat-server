@@ -66,6 +66,6 @@ if [ ! -d "$target/.git" ]; then
   mv "$tmp" "$target"
 fi
 
-# Record the resolved repository path so interactive shells (SSH, agent
-# terminals) can open directly inside the project instead of the workspace root.
+# Record the resolved repository path so interactive agent terminals can open
+# directly inside the project instead of the workspace root.
 printf '%s\n' "$target" > "$state_dir/project-dir"

@@ -1217,7 +1217,7 @@ func insertAccessResource(t *testing.T, store *db.DB, projectID string) {
 	t.Helper()
 	if _, err := store.SQL().ExecContext(context.Background(), `
 INSERT INTO paperboat.agentunnel_resources (id, project_id, tunnel_id, client_id, resource_id, metadata)
-VALUES ($1, $2, $3, $4, $5, '{"http_base_url":"https://agentunnel.example/projects/test","websocket_base_url":"wss://agentunnel.example/projects/test","ssh_host":"ssh.agentunnel.example","ssh_port":25432}'::jsonb)
+VALUES ($1, $2, $3, $4, $5, '{"http_base_url":"https://agentunnel.example/projects/test","websocket_base_url":"wss://agentunnel.example/projects/test"}'::jsonb)
 ON CONFLICT (project_id) DO NOTHING`, "agr_"+projectID, projectID, "tun_"+projectID, "cli_"+projectID, "res_"+projectID); err != nil {
 		t.Fatal(err)
 	}

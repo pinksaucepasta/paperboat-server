@@ -130,12 +130,11 @@ func (s *Service) provisionProject(ctx context.Context, projectID string) error 
 	if err != nil {
 		return err
 	}
-	agentunnelErr := s.ensureAgentunnelResource(ctx, &intent)
-	if _, err := s.ensureMachine(ctx, intent, volume.FlyVolumeID); err != nil {
+	if err := s.ensureAgentunnelResource(ctx, &intent); err != nil {
 		return err
 	}
-	if agentunnelErr != nil {
-		return agentunnelErr
+	if _, err := s.ensureMachine(ctx, intent, volume.FlyVolumeID); err != nil {
+		return err
 	}
 	return s.repo.MarkProvisionedStopped(ctx, intent)
 }

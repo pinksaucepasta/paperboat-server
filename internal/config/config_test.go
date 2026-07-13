@@ -24,10 +24,6 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 		"PAPERBOAT_AGENTUNNEL_ROUTE_SUBDOMAIN_PREFIX":    "pc",
 		"PAPERBOAT_AGENTUNNEL_CONNECT_READY_TIMEOUT":     "7s",
 		"PAPERBOAT_AGENTUNNEL_CONNECT_POLL_INTERVAL":     "250ms",
-		"PAPERBOAT_AGENTUNNEL_SSH_LOCAL_HOST":            "127.0.0.2",
-		"PAPERBOAT_AGENTUNNEL_SSH_LOCAL_PORT":            "2222",
-		"PAPERBOAT_AGENTUNNEL_SSH_REMOTE_PORT_START":     "26000",
-		"PAPERBOAT_AGENTUNNEL_SSH_REMOTE_PORT_END":       "26999",
 		"PAPERBOAT_AGENTUNNEL_ACCESS_POLICY_ID":          "apol_test",
 		"PAPERBOAT_AGENTUNNEL_UPLOAD_MAX_BYTES":          "7340032",
 		"PAPERBOAT_AGENTUNNEL_UPLOAD_ALLOWED_MIME_TYPES": "image/png,image/webp",
@@ -69,10 +65,6 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 		cfg.Providers.Agentunnel.RouteSubdomainPrefix != "pc" ||
 		cfg.Providers.Agentunnel.ConnectReadyTimeout.String() != "7s" ||
 		cfg.Providers.Agentunnel.ConnectPollInterval.String() != "250ms" ||
-		cfg.Providers.Agentunnel.SSHLocalHost != "127.0.0.2" ||
-		cfg.Providers.Agentunnel.SSHLocalPort != 2222 ||
-		cfg.Providers.Agentunnel.SSHRemotePortStart != 26000 ||
-		cfg.Providers.Agentunnel.SSHRemotePortEnd != 26999 ||
 		cfg.Providers.Agentunnel.AccessPolicyID != "apol_test" ||
 		cfg.Providers.Agentunnel.UploadMaxBytes != 7340032 ||
 		!slices.Equal(cfg.Providers.Agentunnel.UploadAllowedMIMEs, []string{"image/png", "image/webp"}) {

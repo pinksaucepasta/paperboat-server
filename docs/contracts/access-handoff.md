@@ -4,7 +4,7 @@ Status: Phase 0 frozen implementation target.
 
 ## Boundary
 
-`paperboat-server` authorizes and brokers access. It never carries live terminal, SSH,
+`paperboat-server` authorizes and brokers access. It never carries live terminal,
 preview, HTTP, or WebSocket traffic.
 
 Live data path:
@@ -16,8 +16,8 @@ papercode / paperboat-cli / dashboard
   -> papercode server / preview service
 ```
 
-SSH, if enabled, is optional debug/operator access only. It is not the
-production CLI handoff and must not be returned from `cli-connect`.
+Project access uses the Agentunnel HTTP/WebSocket route exclusively. No project SSH/TCP
+route is provisioned or returned from `cli-connect`.
 
 Control path:
 

@@ -24,6 +24,7 @@ grep -q 'PAPERBOAT_NODE_BASE_IMAGE' "$root/build-image.sh"
 grep -q 'PAPERBOAT_GO_BASE_IMAGE' "$root/build-image.sh"
 grep -q 'NODE_BASE_IMAGE' "$root/Dockerfile"
 grep -q 'GO_BASE_IMAGE' "$root/Dockerfile"
+grep -q 'npm --version' "$root/Dockerfile"
 if grep -q 'PAPERBOAT_PAPERCODE_MODE\|papercode-disabled\|PAPERCODE=disabled' "$root/Dockerfile" "$root/build-image.sh" "$root/bin/paperboat-entrypoint"; then
   printf 'papercode must not be optional in the production project image\n' >&2
   exit 1
