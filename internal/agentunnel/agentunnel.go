@@ -568,7 +568,7 @@ func NewServiceWithCredentials(store *db.DB, projectService *projects.Service, c
 		issuer = DisabledCredentialIssuer{}
 	}
 	return &Service{
-		issuer:                   strings.TrimRight(strings.TrimSpace(cfg.HTTP.PublicBaseURL), "/"),
+		issuer:                   config.NormalizeIssuer(cfg.HTTP.PublicBaseURL),
 		repo:                     NewRepository(store, cfg.Secrets.EncryptionKey),
 		projects:                 projectService,
 		client:                   client,
@@ -734,7 +734,7 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 		if project.State == "failed" {
 			return ConnectResponse{}, ErrMachineFailed
 		}
-		response := ConnectResponse{ProjectID: project.ID, ProjectState: project.State, Connectable: false, ExpiresAt: expires, Status: status.Status, Reason: status.Reason, RetryAfterSeconds: s.retryAfterSeconds()}
+		response := ConnectResponse{Issuer: s.issuer, ProjectID: project.ID, ProjectState: project.State, Connectable: false, ExpiresAt: expires, Status: status.Status, Reason: status.Reason, RetryAfterSeconds: s.retryAfterSeconds()}
 		if resumeQueued && project.State == "starting" {
 			response.Status = "machine_starting"
 			response.Reason = "machine_start_queued"
@@ -765,7 +765,7 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 	}
 	if healthErr != nil {
 		response := ConnectResponse{
-			ProjectID: project.ID, ProjectState: project.State, Connectable: false, ExpiresAt: expires,
+			Issuer: s.issuer, ProjectID: project.ID, ProjectState: project.State, Connectable: false, ExpiresAt: expires,
 			Status: "papercode_starting", Reason: "papercode_unhealthy", RetryAfterSeconds: s.retryAfterSeconds(),
 		}
 		s.recordConnectDenied(ctx, input.UserID, input.ProjectID, "papercode_unhealthy", map[string]any{
@@ -940,7 +940,7 @@ func (s *Service) Status(ctx context.Context, userID, projectID string) (Connect
 	if err != nil {
 		return ConnectResponse{}, err
 	}
-	response := ConnectResponse{ProjectID: project.ID, ProjectState: project.State, Connectable: false, ExpiresAt: time.Now().UTC().Add(s.ttl), RetryAfterSeconds: s.retryAfterSeconds()}
+	response := ConnectResponse{Issuer: s.issuer, ProjectID: project.ID, ProjectState: project.State, Connectable: false, ExpiresAt: time.Now().UTC().Add(s.ttl), RetryAfterSeconds: s.retryAfterSeconds()}
 	if !ok {
 		response.Status = "missing"
 		response.Reason = "agentunnel resources have not been provisioned"
