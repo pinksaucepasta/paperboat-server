@@ -1,0 +1,112 @@
+{
+  "environment": "production",
+  "http": {
+    "address": "0.0.0.0:8080",
+    "public_base_url": "https://pb.hexwagon.com",
+    "allowed_origins": ["https://pb.hexwagon.com"],
+    "read_header_timeout": 5000000000,
+    "request_timeout": 15000000000,
+    "shutdown_timeout": 10000000000,
+    "max_body_bytes": 1048576,
+    "trusted_proxy_cidrs": []
+  },
+  "database": {
+    "driver": "postgres",
+    "dsn": "postgres://paperboat:paperboat@postgres:5432/paperboat?sslmode=disable"
+  },
+  "catalogs": {
+    "seed_file": "/app/config/catalogs.example.json"
+  },
+  "billing": {
+    "polar_webhook_tolerance": 300000000000
+  },
+  "metering": {
+    "minimum_start_credit_window": 300000000000,
+    "max_keep_alive_duration": 43200000000000
+  },
+  "cli_auth": {
+    "verification_url": "https://pb.hexwagon.com/cli/authorize",
+    "client_id": "paperboat-cli",
+    "allowed_scopes": ["account:read", "clients:revoke", "projects:read", "projects:connect", "session:refresh"],
+    "mint_active_key_id": "",
+    "mint_jwks_max_age": 300000000000,
+    "mint_proof_lifetime": 120000000000,
+    "device_grant_lifetime": 600000000000,
+    "access_token_lifetime": 900000000000,
+    "refresh_token_lifetime": 2592000000000000,
+    "poll_interval": 5000000000,
+    "max_client_label_length": 120,
+    "network_requests_per_minute": 30,
+    "grant_polls_per_minute": 30,
+    "account_actions_per_minute": 30
+  },
+  "github": {
+    "oauth_authorize_url": "https://github.com/login/oauth/authorize",
+    "oauth_token_url": "https://github.com/login/oauth/access_token",
+    "oauth_scopes": ["repo"],
+    "config_repo_name": "paperboat-config",
+    "config_repo_branch": "main"
+  },
+  "fly": {
+    "app_name": "paperboat-projects",
+    "org_slug": "personal",
+    "image_ref": "",
+    "volume_name_prefix": "pbvol",
+    "machine_name_prefix": "pbvm",
+    "hostname": "paperboat",
+    "mount_path": "/workspace",
+    "boot_command": ["/usr/local/bin/paperboat-entrypoint"],
+    "agentunnel_secret": "AGENTUNNEL_MACHINE_TOKEN",
+    "github_secret": "PAPERBOAT_GITHUB_CONFIG_TOKEN",
+    "setup_script_secret": "PAPERBOAT_SETUP_SCRIPT"
+  },
+  "providers": {
+    "fake_mode": false,
+    "workos": {
+      "base_url": "https://api.workos.com",
+      "ready": true
+    },
+    "polar": {
+      "base_url": "https://api.polar.sh",
+      "ready": true
+    },
+    "github": {
+      "base_url": "https://api.github.com",
+      "ready": true
+    },
+    "fly": {
+      "base_url": "https://api.machines.dev",
+      "ready": true
+    },
+    "agentunnel": {
+      "base_url": "https://agentunnel.hexwagon.com",
+      "ready": true,
+      "machine_mode": "required",
+      "papercode_local_url": "http://127.0.0.1:4099",
+      "route_expires_in": 2592000000000000,
+      "route_subdomain_prefix": "pb",
+      "connect_ready_timeout": 2000000000,
+      "connect_poll_interval": 100000000,
+      "access_policy_id": "",
+      "upload_max_bytes": 10485760,
+      "upload_allowed_mime_types": ["image/png", "image/jpeg", "image/webp"],
+      "upload_retention": 604800000000000
+    }
+  },
+  "secrets": {
+    "session_keys": [],
+    "encryption_key": "",
+    "workos_api_key": "",
+    "workos_client_id": "",
+    "workos_client_secret": "",
+    "polar_api_key": "",
+    "polar_webhook_secret": "",
+    "github_client_id": "",
+    "github_client_secret": "",
+    "fly_api_token": "",
+    "agentunnel_api_key": "",
+    "agentunnel_machine_token": "",
+    "machine_activity_token": "",
+    "mint_signing_keys": []
+  }
+}

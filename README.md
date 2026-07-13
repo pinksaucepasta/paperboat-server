@@ -43,6 +43,13 @@ gofmt -w .
 sqlc generate
 ```
 
+## Deployment
+
+The repo includes a Compose-based production stack under `deploy/` for `pb.hexwagon.com`.
+It runs Postgres, one-shot migration/seed jobs, the backend server, and Caddy for TLS
+termination. Start from `deploy/.env.example`, provide the required secret files, then run
+`docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --build`.
+
 The server currently implements foundation endpoints (`/healthz` and
 `/readyz`), auth/session APIs, billing/usage APIs, and the Phase 5 GitHub endpoints
 (`/api/github/status`, `/api/github/oauth/start`, `/api/github/oauth/callback`, and

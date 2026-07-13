@@ -1,0 +1,205 @@
+x-paperboat-common-environment: &paperboat-common-environment
+  PAPERBOAT_ENV: production
+  PAPERBOAT_HTTP_ADDRESS: 0.0.0.0:8080
+  PAPERBOAT_PUBLIC_BASE_URL: https://pb.hexwagon.com
+  PAPERBOAT_ALLOWED_ORIGINS: https://pb.hexwagon.com
+  PAPERBOAT_CATALOG_SEED_FILE: /app/config/catalogs.example.json
+  PAPERBOAT_FAKE_PROVIDERS: "false"
+  PAPERBOAT_WORKOS_BASE_URL: https://api.workos.com
+  PAPERBOAT_POLAR_BASE_URL: https://api.polar.sh
+  PAPERBOAT_GITHUB_BASE_URL: https://api.github.com
+  PAPERBOAT_FLY_BASE_URL: https://api.machines.dev
+  PAPERBOAT_AGENTUNNEL_BASE_URL: https://agentunnel.hexwagon.com
+  PAPERBOAT_AGENTUNNEL_MACHINE_MODE: required
+  PAPERBOAT_AGENTUNNEL_PAPERCODE_LOCAL_URL: http://127.0.0.1:4099
+  PAPERBOAT_AGENTUNNEL_ROUTE_EXPIRES_IN: 720h
+  PAPERBOAT_AGENTUNNEL_ROUTE_SUBDOMAIN_PREFIX: pb
+  PAPERBOAT_AGENTUNNEL_CONNECT_READY_TIMEOUT: 2s
+  PAPERBOAT_AGENTUNNEL_CONNECT_POLL_INTERVAL: 100ms
+  PAPERBOAT_AGENTUNNEL_UPLOAD_MAX_BYTES: "10485760"
+  PAPERBOAT_AGENTUNNEL_UPLOAD_ALLOWED_MIME_TYPES: image/png,image/jpeg,image/webp
+  PAPERBOAT_AGENTUNNEL_UPLOAD_RETENTION: 168h
+  PAPERBOAT_CLI_VERIFICATION_URL: https://pb.hexwagon.com/cli/authorize
+  PAPERBOAT_CLI_CLIENT_ID: paperboat-cli
+  PAPERBOAT_CLI_ALLOWED_SCOPES: account:read,clients:revoke,projects:read,projects:connect,session:refresh
+  PAPERBOAT_CLI_DEVICE_GRANT_LIFETIME: 10m
+  PAPERBOAT_CLI_ACCESS_TOKEN_LIFETIME: 15m
+  PAPERBOAT_CLI_REFRESH_TOKEN_LIFETIME: 720h
+  PAPERBOAT_CLI_POLL_INTERVAL: 5s
+  PAPERBOAT_MINT_JWKS_MAX_AGE: 5m
+  PAPERBOAT_MINT_PROOF_LIFETIME: 2m
+  PAPERBOAT_POLAR_WEBHOOK_TOLERANCE_SECONDS: "300"
+  PAPERBOAT_MINT_ACTIVE_KEY_ID: ${PAPERBOAT_MINT_ACTIVE_KEY_ID:?set PAPERBOAT_MINT_ACTIVE_KEY_ID}
+  PAPERBOAT_FLY_APP_NAME: paperboat-projects
+  PAPERBOAT_FLY_ORG_SLUG: ${PAPERBOAT_FLY_ORG_SLUG:?set PAPERBOAT_FLY_ORG_SLUG}
+  PAPERBOAT_FLY_IMAGE_REF: ${PAPERBOAT_FLY_IMAGE_REF:?set PAPERBOAT_FLY_IMAGE_REF}
+  PAPERBOAT_FLY_VOLUME_NAME_PREFIX: pbvol
+  PAPERBOAT_FLY_MACHINE_NAME_PREFIX: pbvm
+  PAPERBOAT_FLY_HOSTNAME: paperboat
+  PAPERBOAT_FLY_MOUNT_PATH: /workspace
+  PAPERBOAT_FLY_BOOT_COMMAND: /usr/local/bin/paperboat-entrypoint
+  PAPERBOAT_FLY_AGENTUNNEL_SECRET: AGENTUNNEL_MACHINE_TOKEN
+  PAPERBOAT_FLY_GITHUB_SECRET: PAPERBOAT_GITHUB_CONFIG_TOKEN
+  PAPERBOAT_FLY_SETUP_SCRIPT_SECRET: PAPERBOAT_SETUP_SCRIPT
+
+x-paperboat-common-secret-env: &paperboat-common-secret-env
+  PAPERBOAT_SESSION_KEYS_FILE: /run/secrets/paperboat_session_keys
+  PAPERBOAT_MINT_SIGNING_KEYS_FILE: /run/secrets/paperboat_mint_signing_keys
+  PAPERBOAT_ENCRYPTION_KEY_FILE: /run/secrets/paperboat_encryption_key
+  PAPERBOAT_WORKOS_API_KEY_FILE: /run/secrets/paperboat_workos_api_key
+  PAPERBOAT_WORKOS_CLIENT_ID_FILE: /run/secrets/paperboat_workos_client_id
+  PAPERBOAT_WORKOS_CLIENT_SECRET_FILE: /run/secrets/paperboat_workos_client_secret
+  PAPERBOAT_POLAR_API_KEY_FILE: /run/secrets/paperboat_polar_api_key
+  PAPERBOAT_POLAR_WEBHOOK_SECRET_FILE: /run/secrets/paperboat_polar_webhook_secret
+  PAPERBOAT_GITHUB_CLIENT_ID_FILE: /run/secrets/paperboat_github_client_id
+  PAPERBOAT_GITHUB_CLIENT_SECRET_FILE: /run/secrets/paperboat_github_client_secret
+  PAPERBOAT_FLY_API_TOKEN_FILE: /run/secrets/paperboat_fly_api_token
+  PAPERBOAT_AGENTUNNEL_API_KEY_FILE: /run/secrets/paperboat_agentunnel_api_key
+  PAPERBOAT_AGENTUNNEL_MACHINE_TOKEN_FILE: /run/secrets/paperboat_agentunnel_machine_token
+
+x-paperboat-common-secrets: &paperboat-common-secrets
+  - paperboat_session_keys
+  - paperboat_mint_signing_keys
+  - paperboat_encryption_key
+  - paperboat_workos_api_key
+  - paperboat_workos_client_id
+  - paperboat_workos_client_secret
+  - paperboat_polar_api_key
+  - paperboat_polar_webhook_secret
+  - paperboat_github_client_id
+  - paperboat_github_client_secret
+  - paperboat_fly_api_token
+  - paperboat_agentunnel_api_key
+  - paperboat_agentunnel_machine_token
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: paperboat
+      POSTGRES_USER: paperboat
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - paperboat-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paperboat -d paperboat"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: [*paperboat-common-environment, *paperboat-common-secret-env]
+      PAPERBOAT_DATABASE_DSN: postgres://paperboat:${POSTGRES_PASSWORD}@postgres:5432/paperboat?sslmode=disable
+    volumes:
+      - ../config/catalogs.example.json:/app/config/catalogs.example.json:ro
+      - ../deploy/config.production.json:/app/config.production.json:ro
+    secrets: *paperboat-common-secrets
+    command: ["/usr/local/bin/paperboat-server", "migrate", "-config", "/app/config.production.json"]
+
+  seed-catalogs:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: "no"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      <<: [*paperboat-common-environment, *paperboat-common-secret-env]
+      PAPERBOAT_DATABASE_DSN: postgres://paperboat:${POSTGRES_PASSWORD}@postgres:5432/paperboat?sslmode=disable
+    volumes:
+      - ../config/catalogs.example.json:/app/config/catalogs.example.json:ro
+      - ../deploy/config.production.json:/app/config.production.json:ro
+    secrets: *paperboat-common-secrets
+    command: ["/usr/local/bin/paperboat-server", "seed-catalogs", "-config", "/app/config.production.json"]
+
+  server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      seed-catalogs:
+        condition: service_completed_successfully
+    environment:
+      <<: [*paperboat-common-environment, *paperboat-common-secret-env]
+      PAPERBOAT_DATABASE_DSN: postgres://paperboat:${POSTGRES_PASSWORD}@postgres:5432/paperboat?sslmode=disable
+    volumes:
+      - ../config/catalogs.example.json:/app/config/catalogs.example.json:ro
+      - ../deploy/config.production.json:/app/config.production.json:ro
+    secrets: *paperboat-common-secrets
+    command: ["/usr/local/bin/paperboat-server", "serve", "-config", "/app/config.production.json"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      server:
+        condition: service_healthy
+    environment:
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    healthcheck:
+      test: ["CMD", "caddy", "version"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  paperboat-postgres:
+  caddy-data:
+  caddy-config:
+
+secrets:
+  paperboat_session_keys:
+    file: ${PAPERBOAT_SESSION_KEYS_FILE:?set PAPERBOAT_SESSION_KEYS_FILE}
+  paperboat_mint_signing_keys:
+    file: ${PAPERBOAT_MINT_SIGNING_KEYS_FILE:?set PAPERBOAT_MINT_SIGNING_KEYS_FILE}
+  paperboat_encryption_key:
+    file: ${PAPERBOAT_ENCRYPTION_KEY_FILE:?set PAPERBOAT_ENCRYPTION_KEY_FILE}
+  paperboat_workos_api_key:
+    file: ${PAPERBOAT_WORKOS_API_KEY_FILE:?set PAPERBOAT_WORKOS_API_KEY_FILE}
+  paperboat_workos_client_id:
+    file: ${PAPERBOAT_WORKOS_CLIENT_ID_FILE:?set PAPERBOAT_WORKOS_CLIENT_ID_FILE}
+  paperboat_workos_client_secret:
+    file: ${PAPERBOAT_WORKOS_CLIENT_SECRET_FILE:?set PAPERBOAT_WORKOS_CLIENT_SECRET_FILE}
+  paperboat_polar_api_key:
+    file: ${PAPERBOAT_POLAR_API_KEY_FILE:?set PAPERBOAT_POLAR_API_KEY_FILE}
+  paperboat_polar_webhook_secret:
+    file: ${PAPERBOAT_POLAR_WEBHOOK_SECRET_FILE:?set PAPERBOAT_POLAR_WEBHOOK_SECRET_FILE}
+  paperboat_github_client_id:
+    file: ${PAPERBOAT_GITHUB_CLIENT_ID_FILE:?set PAPERBOAT_GITHUB_CLIENT_ID_FILE}
+  paperboat_github_client_secret:
+    file: ${PAPERBOAT_GITHUB_CLIENT_SECRET_FILE:?set PAPERBOAT_GITHUB_CLIENT_SECRET_FILE}
+  paperboat_fly_api_token:
+    file: ${PAPERBOAT_FLY_API_TOKEN_FILE:?set PAPERBOAT_FLY_API_TOKEN_FILE}
+  paperboat_agentunnel_api_key:
+    file: ${PAPERBOAT_AGENTUNNEL_API_KEY_FILE:?set PAPERBOAT_AGENTUNNEL_API_KEY_FILE}
+  paperboat_agentunnel_machine_token:
+    file: ${PAPERBOAT_AGENTUNNEL_MACHINE_TOKEN_FILE:?set PAPERBOAT_AGENTUNNEL_MACHINE_TOKEN_FILE}
