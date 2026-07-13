@@ -18,6 +18,7 @@ grep -q 'paperboat-entrypoint' "$root/Dockerfile"
 grep -q 'paperboat-healthcheck' "$root/Dockerfile"
 grep -q 'agentunnel-status.json' "$root/bin/paperboat-healthcheck"
 grep -q 'paperboat-server/deploy/project-vm/bin/' "$root/Dockerfile"
+test "$(grep -c 'COPY papercode/patches ./patches' "$root/Dockerfile")" -eq 1
 grep -q 'io.paperboat.source.papercode.revision' "$root/Dockerfile"
 grep -q 'PAPERCODE_REVISION' "$root/build-image.sh"
 grep -q 'PAPERBOAT_NODE_BASE_IMAGE' "$root/build-image.sh"
