@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp="$(mktemp -d)"
-trap 'kill "$entrypoint_pid" 2>/dev/null || true; rm -rf "$tmp"' EXIT
+trap 'kill "$entrypoint_pid" 2>/dev/null || true; wait "$entrypoint_pid" 2>/dev/null || true; rm -rf "$tmp"' EXIT
 
 log="$tmp/events.log"
 bin="$tmp/bin"
@@ -19,6 +19,10 @@ cat > "$bin/config-sync" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 printf 'config-sync:%s\n' "${1:-}" >> "$PAPERBOAT_TEST_EVENT_LOG"
+if [ "${1:-}" = daemon ]; then
+  trap 'printf "config-sync:flushed\n" >> "$PAPERBOAT_TEST_EVENT_LOG"; exit 0' TERM
+  while :; do sleep 1; done
+fi
 EOF
 
 cat > "$bin/presets" <<'EOF'
@@ -32,6 +36,7 @@ cat > "$bin/papercode" <<'EOF'
 set -Eeuo pipefail
 printf 'papercode:start\n' >> "$PAPERBOAT_TEST_EVENT_LOG"
 printf ready > "$PAPERBOAT_TEST_PAPERCODE_STARTED_FILE"
+trap 'printf "papercode:stopped\n" >> "$PAPERBOAT_TEST_EVENT_LOG"; exit 0' TERM
 while :; do sleep 1; done
 EOF
 
@@ -51,6 +56,7 @@ set -Eeuo pipefail
 printf 'agentunnel:start\n' >> "$PAPERBOAT_TEST_EVENT_LOG"
 printf ready > "$PAPERBOAT_TEST_AGENTUNNEL_STARTED_FILE"
 printf '{"status":"connected"}\n' > "$PAPERBOAT_AGENTUNNEL_STATUS_FILE"
+trap 'printf "agentunnel:stopped\n" >> "$PAPERBOAT_TEST_EVENT_LOG"; exit 0' TERM
 while :; do sleep 1; done
 EOF
 
@@ -69,6 +75,7 @@ cat > "$bin/activity" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 printf 'activity:start\n' >> "$PAPERBOAT_TEST_EVENT_LOG"
+trap 'printf "activity:final-heartbeat\nactivity:stopped\n" >> "$PAPERBOAT_TEST_EVENT_LOG"; exit 0' TERM
 while :; do sleep 1; done
 EOF
 
@@ -110,7 +117,7 @@ done
 grep -q '"state":"ready"' "$PAPERBOAT_READINESS_FILE"
 
 for _ in $(seq 1 50); do
-  if [ -f "$log" ] && [ "$(wc -l < "$log")" -ge 8 ]; then
+  if [ -f "$log" ] && [ "$(wc -l < "$log")" -ge 9 ]; then
     break
   fi
   sleep 0.1
@@ -118,6 +125,7 @@ done
 
 expected='prepare
 config-sync:restore
+config-sync:daemon
 presets
 papercode:start
 wait-http:http://127.0.0.1:4099
@@ -125,8 +133,22 @@ agentunnel:start
 wait-agentunnel:60
 activity:start'
 
-actual="$(sed -n '1,8p' "$log")"
+actual="$(sed -n '1,9p' "$log")"
 if [ "$actual" != "$expected" ]; then
   printf 'unexpected boot order\nexpected:\n%s\nactual:\n%s\n' "$expected" "$actual" >&2
+  exit 1
+fi
+
+kill -TERM "$entrypoint_pid"
+wait "$entrypoint_pid"
+entrypoint_pid=""
+
+workload_stop_line="$(grep -n -m1 -E 'papercode:stopped|agentunnel:stopped' "$log" | cut -d: -f1)"
+flush_line="$(grep -n -m1 'config-sync:flushed' "$log" | cut -d: -f1)"
+final_heartbeat_line="$(grep -n -m1 'activity:final-heartbeat' "$log" | cut -d: -f1)"
+activity_stop_line="$(grep -n -m1 'activity:stopped' "$log" | cut -d: -f1)"
+if [ "$workload_stop_line" -ge "$flush_line" ] || [ "$flush_line" -ge "$final_heartbeat_line" ] || [ "$final_heartbeat_line" -ge "$activity_stop_line" ]; then
+  printf 'unexpected normal shutdown ordering:\n' >&2
+  cat "$log" >&2
   exit 1
 fi

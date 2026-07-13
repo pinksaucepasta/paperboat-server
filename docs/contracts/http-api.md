@@ -98,6 +98,20 @@ CLI project reads and connects use scoped Paperboat bearer access tokens.
 - `POST /api/billing/customer-portal`
 - `POST /api/webhooks/polar`
 
+### Configuration Sync
+
+- `GET /api/config-sync/status` requires an authenticated account with an active entitlement and
+  returns safe repository metadata,
+  effective policy revision and byte limits, aggregate state, and bounded per-project machine
+  status. Stale active-machine heartbeats are reported as `offline`; stopped machines are
+  reported as `idle` with their last result retained.
+- `POST /api/machine/activity-heartbeat` accepts the existing authenticated activity payload
+  plus an optional validated `config_sync` object. Its required `updated_at` timestamp tracks the
+  freshness of the sync daemon independently from the activity reporter. A status timestamp newer
+  than its enclosing sample is persisted as a sanitized `status_clock_invalid` error at sample time,
+  allowing later clock-corrected status to replace it. Paths and errors are sanitized and bounded;
+  file contents, credentials, and raw command output are never accepted or persisted.
+
 ### Catalogs
 
 - `GET /api/catalog/plans`

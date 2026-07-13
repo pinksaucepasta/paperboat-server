@@ -92,6 +92,9 @@ grep -q '"reason":"agentunnel_readiness"' "$PAPERBOAT_READINESS_FILE"
 cat > "$bin/wait-agentunnel" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
+cat > "${PAPERBOAT_AGENTUNNEL_STATUS_FILE:-$PAPERBOAT_RUNTIME_DIR/agentunnel-status.json}" <<'JSON'
+{"status":"connected"}
+JSON
 exit 0
 EOF
 cat > "$bin/activity" <<'EOF'

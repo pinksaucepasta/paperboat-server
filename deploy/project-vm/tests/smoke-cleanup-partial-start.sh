@@ -38,6 +38,11 @@ EOF
 cat > "$bin/wait-http" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
+for _ in $(seq 1 50); do
+  [ -s "$PAPERBOAT_TEST_CHILD_PID_FILE" ] && break
+  sleep 0.1
+done
+[ -s "$PAPERBOAT_TEST_CHILD_PID_FILE" ]
 exit 41
 EOF
 

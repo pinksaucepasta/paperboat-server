@@ -19,6 +19,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/auth"
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
+	pbsync "github.com/pinksaucepasta/paperboat-server/internal/configsync"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
@@ -190,7 +191,7 @@ func TestMachineActivityHeartbeatRequiresProjectMachineCredential(t *testing.T) 
 	const machineToken = "project-scoped-machine-token"
 	seedHeartbeatMachineCredential(t, store, projectID, machineID, machineToken)
 
-	body := `{"project_id":"` + projectID + `","machine_id":"` + machineID + `","last_activity_at":"2026-07-06T12:00:00Z","sampled_at":"2026-07-06T12:00:05Z","reporter_version":"test","signals":{"input":"2026-07-06T12:00:00Z"}}`
+	body := `{"project_id":"` + projectID + `","machine_id":"` + machineID + `","last_activity_at":"2026-07-06T12:00:00Z","sampled_at":"2026-07-06T12:00:05Z","reporter_version":"test","signals":{"input":"2026-07-06T12:00:00Z"},"config_sync":{"state":"warning","last_attempt_at":"2026-07-06T12:00:04Z","last_successful_sync_at":"2026-07-06T11:59:00Z","remote_commit":"abc123","pending_path_count":3,"skipped":[{"path":".config/a","bytes":6,"reason":"max_file_bytes"},{"path":".config/b","bytes":7,"reason":"max_file_bytes"},{"path":".config/c","bytes":8,"reason":"max_file_bytes"}],"conflicts":[],"error_code":"","error_message":"","max_file_bytes":10,"max_batch_bytes":20,"policy_revision":"test-policy","updated_at":"2026-07-06T12:00:04Z"}}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/machine/activity-heartbeat", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer wrong-token")
@@ -234,6 +235,155 @@ func TestMachineActivityHeartbeatRequiresProjectMachineCredential(t *testing.T) 
 	}
 	if recordedMachine != machineID {
 		t.Fatalf("recorded machine = %q, want %q", recordedMachine, machineID)
+	}
+	var syncState, policyRevision string
+	var pending, skippedCount int
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT state,pending_path_count,jsonb_array_length(skipped),policy_revision FROM paperboat.config_sync_statuses WHERE project_id=$1 AND machine_id=$2`, projectID, machineID).Scan(&syncState, &pending, &skippedCount, &policyRevision); err != nil {
+		t.Fatal(err)
+	}
+	if syncState != "warning" || pending != 3 || skippedCount != 2 || policyRevision != "test-policy" {
+		t.Fatalf("persisted sync status = state:%s pending:%d skipped:%d policy:%s", syncState, pending, skippedCount, policyRevision)
+	}
+	if _, err := store.SQL().ExecContext(context.Background(), `UPDATE paperboat.config_sync_statuses SET received_at='epoch'::timestamptz WHERE project_id=$1 AND machine_id=$2`, projectID, machineID); err != nil {
+		t.Fatal(err)
+	}
+
+	older := strings.Replace(body, `"sampled_at":"2026-07-06T12:00:05Z"`, `"sampled_at":"2026-07-06T11:00:05Z"`, 1)
+	older = strings.Replace(older, `"updated_at":"2026-07-06T12:00:04Z"`, `"updated_at":"2026-07-06T11:00:04Z"`, 1)
+	older = strings.Replace(older, `"state":"warning"`, `"state":"healthy"`, 1)
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/machine/activity-heartbeat", strings.NewReader(older))
+	req.Header.Set("Authorization", "Bearer "+machineToken)
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("older heartbeat status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var receiptRefreshed bool
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT state,received_at > now()-interval '1 minute' FROM paperboat.config_sync_statuses WHERE project_id=$1 AND machine_id=$2`, projectID, machineID).Scan(&syncState, &receiptRefreshed); err != nil {
+		t.Fatal(err)
+	}
+	if syncState != "warning" {
+		t.Fatalf("older heartbeat replaced newer sync state with %q", syncState)
+	}
+	if !receiptRefreshed {
+		t.Fatal("older status heartbeat did not refresh its server receipt time")
+	}
+	if _, err := store.SQL().ExecContext(context.Background(), `UPDATE paperboat.config_sync_statuses SET state='error',status_updated_at=now()+interval '1 hour' WHERE project_id=$1 AND machine_id=$2`, projectID, machineID); err != nil {
+		t.Fatal(err)
+	}
+	corrected := strings.Replace(body, `"sampled_at":"2026-07-06T12:00:05Z"`, `"sampled_at":"2026-07-06T12:01:05Z"`, 1)
+	corrected = strings.Replace(corrected, `"updated_at":"2026-07-06T12:00:04Z"`, `"updated_at":"2026-07-06T12:01:04Z"`, 1)
+	corrected = strings.Replace(corrected, `"state":"warning"`, `"state":"healthy"`, 1)
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/machine/activity-heartbeat", strings.NewReader(corrected))
+	req.Header.Set("Authorization", "Bearer "+machineToken)
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("clock-corrected heartbeat status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT state FROM paperboat.config_sync_statuses WHERE project_id=$1 AND machine_id=$2`, projectID, machineID).Scan(&syncState); err != nil {
+		t.Fatal(err)
+	}
+	if syncState != "healthy" {
+		t.Fatalf("future timestamp froze corrected sync state at %q", syncState)
+	}
+}
+
+func TestConfigSyncStatusEndpointAuthorizationAndStaleMachineSemantics(t *testing.T) {
+	store, router, projectID := newAccessIntegrationRouter(t, "config-status@example.com")
+	const machineID = "fly_machine_config_status"
+	const machineToken = "config-status-machine-token"
+	seedHeartbeatMachineCredential(t, store, projectID, machineID, machineToken)
+	body := `{"project_id":"` + projectID + `","machine_id":"` + machineID + `","last_activity_at":"2026-07-06T12:00:00Z","sampled_at":"2026-07-06T12:00:05Z","reporter_version":"test","signals":{},"config_sync":{"state":"conflict","last_successful_sync_at":"2026-07-06T11:59:00Z","remote_commit":"def456","pending_path_count":1,"skipped":[],"conflicts":[{"path":".config/tool.json","reason":"concurrent_update"}],"max_file_bytes":10,"max_batch_bytes":20,"policy_revision":"test-policy","updated_at":"2026-07-06T12:00:04Z"}}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/machine/activity-heartbeat", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+machineToken)
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("heartbeat status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/config-sync/status", nil))
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status = %d", recorder.Code)
+	}
+
+	cookies := loginCookies(t, router, "workos_seed_config-status@example.com:config-status@example.com:Config Status")
+	userID := userIDByEmail(t, store, "config-status@example.com")
+	if _, err := store.SQL().ExecContext(context.Background(), `DELETE FROM paperboat.subscriptions WHERE user_id=$1`, userID); err != nil {
+		t.Fatal(err)
+	}
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/api/config-sync/status", nil)
+	addCookies(request, cookies)
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusPaymentRequired {
+		t.Fatalf("unentitled status = %d %s", recorder.Code, recorder.Body.String())
+	}
+	grantActiveSubscription(t, store, userID)
+	if _, err := store.SQL().ExecContext(context.Background(), `UPDATE paperboat.projects SET state='running' WHERE id=$1`, projectID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(context.Background(), `UPDATE paperboat.config_sync_statuses SET heartbeat_at=now()+interval '1 day',received_at=now(),status_observed_at=now(),skipped='null'::jsonb,conflicts='null'::jsonb WHERE project_id=$1 AND machine_id=$2`, projectID, machineID); err != nil {
+		t.Fatal(err)
+	}
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/api/config-sync/status", nil)
+	addCookies(request, cookies)
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"state":"conflict"`) || !strings.Contains(recorder.Body.String(), `"skipped":[]`) || !strings.Contains(recorder.Body.String(), `"conflicts":[]`) {
+		t.Fatalf("fresh skewed response = %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	if _, err := store.SQL().ExecContext(context.Background(), `UPDATE paperboat.config_sync_statuses SET status_observed_at=now()-interval '10 minutes' WHERE project_id=$1 AND machine_id=$2`, projectID, machineID); err != nil {
+		t.Fatal(err)
+	}
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/api/config-sync/status", nil)
+	addCookies(request, cookies)
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"state":"offline"`) || !strings.Contains(recorder.Body.String(), `"last_result_state":"conflict"`) || !strings.Contains(recorder.Body.String(), `"web_url":"https://github.com/paperboat-test-user/paperboat-config"`) {
+		t.Fatalf("stale running response = %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	if _, err := store.SQL().ExecContext(context.Background(), `UPDATE paperboat.config_sync_statuses SET status_observed_at=now(),received_at=now()-interval '10 minutes' WHERE project_id=$1 AND machine_id=$2`, projectID, machineID); err != nil {
+		t.Fatal(err)
+	}
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/api/config-sync/status", nil)
+	addCookies(request, cookies)
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"state":"offline"`) || !strings.Contains(recorder.Body.String(), `"last_result_state":"conflict"`) {
+		t.Fatalf("stale receipt response = %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	if _, err := store.SQL().ExecContext(context.Background(), `UPDATE paperboat.projects SET state='stopped' WHERE id=$1`, projectID); err != nil {
+		t.Fatal(err)
+	}
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/api/config-sync/status", nil)
+	addCookies(request, cookies)
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"state":"idle"`) || !strings.Contains(recorder.Body.String(), `"last_result_state":"conflict"`) {
+		t.Fatalf("stopped response = %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	const replacementMachineID = "fly_machine_config_status_replacement"
+	if _, err := store.SQL().ExecContext(context.Background(), `UPDATE paperboat.fly_machines SET fly_machine_id=$2 WHERE project_id=$1`, projectID, replacementMachineID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(context.Background(), `UPDATE paperboat.projects SET state='running' WHERE id=$1`, projectID); err != nil {
+		t.Fatal(err)
+	}
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/api/config-sync/status", nil)
+	addCookies(request, cookies)
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"machine_id":"`+replacementMachineID+`"`) || strings.Contains(recorder.Body.String(), `"machine_id":"`+machineID+`"`) || strings.Contains(recorder.Body.String(), `"last_result_state":"conflict"`) {
+		t.Fatalf("replacement machine response = %d %s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -1093,6 +1243,7 @@ func newAccessIntegrationRouterWithService(t *testing.T, email string, client ag
 
 	cfg := config.Default()
 	cfg.Secrets.EncryptionKey = "test-access-encryption-key-for-phase-nine"
+	cfg.ConfigSync.SummaryLimit = 2
 	cfg.Providers.Agentunnel.BaseURL = "https://agentunnel.example"
 	auditWriter := audit.NewWriter(store)
 	authService := auth.NewService(store, auditWriter, auth.FakeWorkOSVerifier{}, []string{"test-session-key"}, false)
@@ -1116,6 +1267,7 @@ func newAccessIntegrationRouterWithService(t *testing.T, email string, client ag
 		Projects:         projectService,
 		Agentunnel:       accessService,
 		MeteringRepo:     metering.NewRuntimeRepository(store, cfg.Secrets.EncryptionKey),
+		ConfigSync:       pbsync.NewRepository(store, cfg.ConfigSync),
 	})
 	cookies := loginCookies(t, router, "workos_seed_"+email+":"+email+":Access Owner")
 	userID := userIDByEmail(t, store, email)

@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/agentunnel"
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
@@ -73,6 +74,14 @@ func TestProvisionProjectIsIdempotentAndLeavesMachineStopped(t *testing.T) {
 	}
 	if spec.Env["PAPERBOAT_AGENTUNNEL_CLIENT_ID"] != "cli_"+project.ID || spec.Env["PAPERBOAT_AGENTUNNEL_TUNNEL_ID"] != "tun_"+project.ID {
 		t.Fatalf("initial provision did not inject agentunnel route env: %#v", spec.Env)
+	}
+	cfg := orchestratorTestConfig()
+	wantStopTimeout := cfg.ConfigSync.ShutdownFlushTimeout + cfg.ConfigSync.ShutdownGracePeriod + cfg.ConfigSync.ShutdownReportTimeout
+	if spec.StopTimeout != wantStopTimeout {
+		t.Fatalf("machine stop timeout = %s, want %s", spec.StopTimeout, wantStopTimeout)
+	}
+	if spec.Env["PAPERBOAT_CONFIG_SHUTDOWN_GRACE_SECONDS"] != "2" || spec.Env["PAPERBOAT_ACTIVITY_SHUTDOWN_REPORT_SECONDS"] != "10" {
+		t.Fatalf("shutdown lifecycle env = %#v", spec.Env)
 	}
 	var resources int
 	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.agentunnel_resources WHERE project_id = $1 AND client_id = $2 AND tunnel_id = $3 AND metadata ? 'machine_token_ciphertext'`, project.ID, "cli_"+project.ID, "tun_"+project.ID).Scan(&resources); err != nil {
@@ -744,6 +753,26 @@ func TestMachineSpecHashChangesWhenSecretValueRotates(t *testing.T) {
 	rotated.Secrets[0].Value = "rotated-agentunnel-machine-token"
 	if machineSpecHash(base) == machineSpecHash(rotated) {
 		t.Fatal("machine spec hash did not detect rotated secret value")
+	}
+}
+
+func TestMachineSpecHashIncludesStopTimeout(t *testing.T) {
+	base := fly.MachineSpec{Name: "paperboat-project", StopTimeout: 30 * time.Second}
+	changed := base
+	changed.StopTimeout = 45 * time.Second
+	if machineSpecHash(base) == machineSpecHash(changed) {
+		t.Fatal("machine spec hash did not detect stop timeout change")
+	}
+}
+
+func TestDurationSecondsCeilDoesNotShortenShutdownWindows(t *testing.T) {
+	for _, test := range []struct {
+		value time.Duration
+		want  int64
+	}{{time.Second, 1}, {time.Second + time.Nanosecond, 2}, {500 * time.Millisecond, 1}} {
+		if got := durationSecondsCeil(test.value); got != test.want {
+			t.Fatalf("durationSecondsCeil(%s) = %d, want %d", test.value, got, test.want)
+		}
 	}
 }
 

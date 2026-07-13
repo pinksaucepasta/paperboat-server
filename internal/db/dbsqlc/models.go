@@ -118,6 +118,29 @@ type ClientSession struct {
 	Version          int64
 }
 
+type ConfigSyncStatus struct {
+	ProjectID            string
+	MachineID            string
+	State                string
+	LastAttemptAt        sql.NullTime
+	LastSuccessfulSyncAt sql.NullTime
+	RemoteCommit         string
+	PendingPathCount     int32
+	Skipped              json.RawMessage
+	Conflicts            json.RawMessage
+	ErrorCode            string
+	ErrorMessage         string
+	MaxFileBytes         int64
+	MaxBatchBytes        int64
+	PolicyRevision       string
+	HeartbeatAt          time.Time
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+	StatusUpdatedAt      time.Time
+	ReceivedAt           time.Time
+	StatusObservedAt     time.Time
+}
+
 type ConnectionEvent struct {
 	ID              string
 	UserID          sql.NullString

@@ -373,23 +373,42 @@ func (s *Service) findProviderMachine(ctx context.Context, name string, intent P
 
 func (s *Service) machineSpec(intent ProjectIntent, volumeID string) fly.MachineSpec {
 	machineName := providerName(s.cfg.Fly.MachineNamePrefix, intent.ID)
+	flushSeconds := durationSecondsCeil(s.cfg.ConfigSync.ShutdownFlushTimeout)
+	graceSeconds := durationSecondsCeil(s.cfg.ConfigSync.ShutdownGracePeriod)
+	reportSeconds := durationSecondsCeil(s.cfg.ConfigSync.ShutdownReportTimeout)
 	env := map[string]string{
-		"PAPERBOAT_PROJECT_ID":               intent.ID,
-		"PAPERBOAT_MACHINE_ID":               machineName,
-		"PAPERBOAT_REPOSITORY_URL":           intent.RepositoryURL,
-		"PAPERBOAT_DEFAULT_BRANCH":           intent.DefaultBranch,
-		"PAPERBOAT_PRESET_CODES":             strings.Join(intent.PresetCodes, ","),
-		"PAPERBOAT_IDLE_TIMEOUT_CODE":        intent.IdleTimeoutCode,
-		"PAPERBOAT_AGENTUNNEL_TOKEN_ENV":     s.cfg.Fly.AgentunnelSecret,
-		"PAPERBOAT_GITHUB_TOKEN_ENV":         s.cfg.Fly.GitHubSecret,
-		"PAPERBOAT_SETUP_SCRIPT_REF":         intent.SetupScriptRef,
-		"PAPERBOAT_SETUP_SCRIPT_ENV":         s.cfg.Fly.SetupScriptSecret,
-		"PAPERBOAT_DESIRED_CONFIG_SHA":       intent.DesiredConfigHash,
-		"PAPERBOAT_ACTIVITY_ENDPOINT":        strings.TrimRight(s.cfg.HTTP.PublicBaseURL, "/") + "/api/machine/activity-heartbeat",
-		"PAPERBOAT_ACTIVITY_TOKEN_ENV":       "PAPERBOAT_MACHINE_ACTIVITY_TOKEN",
-		"PAPERBOAT_PAPERCODE_ENVIRONMENT_ID": intent.ID,
-		"PAPERBOAT_PAPERCODE_OWNER_ID":       intent.UserID,
-		"PAPERBOAT_PAPERCODE_ISSUER":         strings.TrimRight(s.cfg.HTTP.PublicBaseURL, "/"),
+		"PAPERBOAT_PROJECT_ID":                       intent.ID,
+		"PAPERBOAT_MACHINE_ID":                       machineName,
+		"PAPERBOAT_REPOSITORY_URL":                   intent.RepositoryURL,
+		"PAPERBOAT_DEFAULT_BRANCH":                   intent.DefaultBranch,
+		"PAPERBOAT_PRESET_CODES":                     strings.Join(intent.PresetCodes, ","),
+		"PAPERBOAT_IDLE_TIMEOUT_CODE":                intent.IdleTimeoutCode,
+		"PAPERBOAT_AGENTUNNEL_TOKEN_ENV":             s.cfg.Fly.AgentunnelSecret,
+		"PAPERBOAT_GITHUB_TOKEN_ENV":                 s.cfg.Fly.GitHubSecret,
+		"PAPERBOAT_SETUP_SCRIPT_REF":                 intent.SetupScriptRef,
+		"PAPERBOAT_SETUP_SCRIPT_ENV":                 s.cfg.Fly.SetupScriptSecret,
+		"PAPERBOAT_DESIRED_CONFIG_SHA":               intent.DesiredConfigHash,
+		"PAPERBOAT_ACTIVITY_ENDPOINT":                strings.TrimRight(s.cfg.HTTP.PublicBaseURL, "/") + "/api/machine/activity-heartbeat",
+		"PAPERBOAT_ACTIVITY_TOKEN_ENV":               "PAPERBOAT_MACHINE_ACTIVITY_TOKEN",
+		"PAPERBOAT_PAPERCODE_ENVIRONMENT_ID":         intent.ID,
+		"PAPERBOAT_PAPERCODE_OWNER_ID":               intent.UserID,
+		"PAPERBOAT_PAPERCODE_ISSUER":                 strings.TrimRight(s.cfg.HTTP.PublicBaseURL, "/"),
+		"PAPERBOAT_CONFIG_HOME":                      s.cfg.ConfigSync.HomeOverride,
+		"PAPERBOAT_CONFIG_INCLUDES":                  strings.Join(s.cfg.ConfigSync.Includes, ","),
+		"PAPERBOAT_CONFIG_EXCLUDES":                  strings.Join(s.cfg.ConfigSync.Excludes, ","),
+		"PAPERBOAT_CONFIG_MANDATORY_EXCLUDES":        strings.Join(s.cfg.ConfigSync.MandatoryExcludes, ","),
+		"PAPERBOAT_CONFIG_MAX_FILE_BYTES":            fmt.Sprint(s.cfg.ConfigSync.MaxFileBytes),
+		"PAPERBOAT_CONFIG_MAX_BATCH_BYTES":           fmt.Sprint(s.cfg.ConfigSync.MaxBatchBytes),
+		"PAPERBOAT_CONFIG_DEBOUNCE_SECONDS":          fmt.Sprint(int64(s.cfg.ConfigSync.Debounce / time.Second)),
+		"PAPERBOAT_CONFIG_MIN_PUSH_INTERVAL_SECONDS": fmt.Sprint(int64(s.cfg.ConfigSync.MinPushInterval / time.Second)),
+		"PAPERBOAT_CONFIG_MAX_DIRTY_DELAY_SECONDS":   fmt.Sprint(int64(s.cfg.ConfigSync.MaxDirtyDelay / time.Second)),
+		"PAPERBOAT_CONFIG_REMOTE_POLL_SECONDS":       fmt.Sprint(int64(s.cfg.ConfigSync.RemotePollInterval / time.Second)),
+		"PAPERBOAT_CONFIG_RETRY_LIMIT":               fmt.Sprint(s.cfg.ConfigSync.RetryLimit),
+		"PAPERBOAT_CONFIG_SHUTDOWN_DEADLINE_SECONDS": fmt.Sprint(flushSeconds),
+		"PAPERBOAT_CONFIG_SHUTDOWN_GRACE_SECONDS":    fmt.Sprint(graceSeconds),
+		"PAPERBOAT_ACTIVITY_SHUTDOWN_REPORT_SECONDS": fmt.Sprint(reportSeconds),
+		"PAPERBOAT_CONFIG_SUMMARY_LIMIT":             fmt.Sprint(s.cfg.ConfigSync.SummaryLimit),
+		"PAPERBOAT_CONFIG_POLICY_REVISION":           s.cfg.ConfigSync.PolicyRevision,
 	}
 	if strings.TrimSpace(intent.GitHubConfigRepoURL) != "" {
 		env["PAPERBOAT_CONFIG_REPO_URL"] = intent.GitHubConfigRepoURL
@@ -413,21 +432,26 @@ func (s *Service) machineSpec(intent ProjectIntent, volumeID string) fly.Machine
 		env["PAPERBOAT_AGENTUNNEL_TUNNEL_ID"] = intent.AgentunnelTunnelID
 	}
 	spec := fly.MachineSpec{
-		Name:       machineName,
-		Hostname:   s.cfg.Fly.Hostname,
-		ImageRef:   s.cfg.Fly.ImageRef,
-		Region:     intent.RegionCode,
-		Size:       fly.MachineSize{VCPU: intent.VCPU, MemoryMB: intent.MemoryMB},
-		VolumeID:   volumeID,
-		MountPath:  s.cfg.Fly.MountPath,
-		Env:        env,
-		Secrets:    s.projectSecrets(intent),
-		Command:    s.cfg.Fly.BootCommand,
-		ConfigHash: intent.DesiredConfigHash,
-		Tags:       resourceTags(intent.ID),
+		Name:        machineName,
+		Hostname:    s.cfg.Fly.Hostname,
+		ImageRef:    s.cfg.Fly.ImageRef,
+		Region:      intent.RegionCode,
+		Size:        fly.MachineSize{VCPU: intent.VCPU, MemoryMB: intent.MemoryMB},
+		VolumeID:    volumeID,
+		MountPath:   s.cfg.Fly.MountPath,
+		Env:         env,
+		Secrets:     s.projectSecrets(intent),
+		Command:     s.cfg.Fly.BootCommand,
+		StopTimeout: time.Duration(flushSeconds+graceSeconds+reportSeconds) * time.Second,
+		ConfigHash:  intent.DesiredConfigHash,
+		Tags:        resourceTags(intent.ID),
 	}
 	spec.Tags[specHashTag] = machineSpecHash(spec)
 	return spec
+}
+
+func durationSecondsCeil(value time.Duration) int64 {
+	return int64((value + time.Second - 1) / time.Second)
 }
 
 // specHashTag is machine metadata carrying a digest of the full rendered
@@ -444,17 +468,18 @@ func machineSpecHash(spec fly.MachineSpec) string {
 	}
 	sort.Strings(secretRefs)
 	payload, _ := json.Marshal(map[string]any{
-		"name":        spec.Name,
-		"hostname":    spec.Hostname,
-		"image_ref":   spec.ImageRef,
-		"region":      spec.Region,
-		"vcpu":        spec.Size.VCPU,
-		"memory_mb":   spec.Size.MemoryMB,
-		"volume_id":   spec.VolumeID,
-		"mount_path":  spec.MountPath,
-		"env":         spec.Env,
-		"command":     spec.Command,
-		"secret_refs": secretRefs,
+		"name":         spec.Name,
+		"hostname":     spec.Hostname,
+		"image_ref":    spec.ImageRef,
+		"region":       spec.Region,
+		"vcpu":         spec.Size.VCPU,
+		"memory_mb":    spec.Size.MemoryMB,
+		"volume_id":    spec.VolumeID,
+		"mount_path":   spec.MountPath,
+		"env":          spec.Env,
+		"command":      spec.Command,
+		"stop_timeout": spec.StopTimeout.String(),
+		"secret_refs":  secretRefs,
 	})
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])

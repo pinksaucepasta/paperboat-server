@@ -8,9 +8,13 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/bmatcuk/doublestar/v4"
+	"github.com/pinksaucepasta/paperboat-server/internal/configsyncpolicy"
 )
 
 type Environment string
@@ -28,6 +32,7 @@ type Config struct {
 	Catalogs    Catalogs    `json:"catalogs"`
 	Billing     Billing     `json:"billing"`
 	Metering    Metering    `json:"metering"`
+	ConfigSync  ConfigSync  `json:"config_sync"`
 	CLIAuth     CLIAuth     `json:"cli_auth"`
 	GitHub      GitHub      `json:"github"`
 	Fly         Fly         `json:"fly"`
@@ -91,6 +96,26 @@ type Billing struct {
 type Metering struct {
 	MinimumStartCreditWindow time.Duration `json:"minimum_start_credit_window"`
 	MaxKeepAliveDuration     time.Duration `json:"max_keep_alive_duration"`
+}
+
+type ConfigSync struct {
+	HomeOverride          string        `json:"home_override"`
+	Includes              []string      `json:"includes"`
+	Excludes              []string      `json:"excludes"`
+	MandatoryExcludes     []string      `json:"mandatory_excludes"`
+	MaxFileBytes          int64         `json:"max_file_bytes"`
+	MaxBatchBytes         int64         `json:"max_batch_bytes"`
+	Debounce              time.Duration `json:"debounce"`
+	MinPushInterval       time.Duration `json:"min_push_interval"`
+	MaxDirtyDelay         time.Duration `json:"max_dirty_delay"`
+	RemotePollInterval    time.Duration `json:"remote_poll_interval"`
+	RetryLimit            int           `json:"retry_limit"`
+	ShutdownFlushTimeout  time.Duration `json:"shutdown_flush_timeout"`
+	ShutdownGracePeriod   time.Duration `json:"shutdown_grace_period"`
+	ShutdownReportTimeout time.Duration `json:"shutdown_report_timeout"`
+	StaleHeartbeatAfter   time.Duration `json:"stale_heartbeat_after"`
+	SummaryLimit          int           `json:"summary_limit"`
+	PolicyRevision        string        `json:"policy_revision"`
 }
 
 type CLIAuth struct {
@@ -204,6 +229,7 @@ func Load(ctx context.Context, opts LoadOptions) (Config, error) {
 	if err := overlayEnv(&cfg, opts.LookupEnv, opts.ReadFile); err != nil {
 		return Config{}, err
 	}
+	cfg.ConfigSync.MandatoryExcludes = appendUnique(configsyncpolicy.MandatoryExcludes(), cfg.ConfigSync.MandatoryExcludes...)
 	return cfg, nil
 }
 
@@ -232,6 +258,14 @@ func Default() Config {
 		Metering: Metering{
 			MinimumStartCreditWindow: 5 * time.Minute,
 			MaxKeepAliveDuration:     12 * time.Hour,
+		},
+		ConfigSync: ConfigSync{
+			MandatoryExcludes: configsyncpolicy.MandatoryExcludes(),
+			MaxFileBytes:      5 << 20, MaxBatchBytes: 25 << 20,
+			Debounce: 10 * time.Second, MinPushInterval: time.Minute, MaxDirtyDelay: 5 * time.Minute,
+			RemotePollInterval: time.Minute, RetryLimit: 5, ShutdownFlushTimeout: 30 * time.Second,
+			ShutdownGracePeriod: 2 * time.Second, ShutdownReportTimeout: 10 * time.Second,
+			StaleHeartbeatAfter: 2 * time.Minute, SummaryLimit: 50, PolicyRevision: "2",
 		},
 		CLIAuth: CLIAuth{
 			VerificationURL:          "http://localhost:3000/cli/authorize",
@@ -332,6 +366,20 @@ func (c Config) Validate() error {
 	}
 	if c.Metering.MaxKeepAliveDuration <= 0 {
 		errs = append(errs, fmt.Errorf("metering.max_keep_alive_duration must be positive"))
+	}
+	if c.ConfigSync.MaxFileBytes <= 0 || c.ConfigSync.MaxBatchBytes < c.ConfigSync.MaxFileBytes || !containsAll(c.ConfigSync.MandatoryExcludes, configsyncpolicy.MandatoryExcludes()) {
+		errs = append(errs, fmt.Errorf("config_sync exclusions and size limits are invalid"))
+	}
+	if strings.TrimSpace(c.ConfigSync.HomeOverride) != "" && !filepath.IsAbs(c.ConfigSync.HomeOverride) {
+		errs = append(errs, fmt.Errorf("config_sync.home_override must be an absolute path"))
+	}
+	for _, pattern := range append(append(append([]string{}, c.ConfigSync.Includes...), c.ConfigSync.Excludes...), c.ConfigSync.MandatoryExcludes...) {
+		if err := validateConfigSyncPattern(pattern); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if c.ConfigSync.Debounce <= 0 || c.ConfigSync.MinPushInterval <= 0 || c.ConfigSync.MaxDirtyDelay <= 0 || c.ConfigSync.RemotePollInterval <= 0 || c.ConfigSync.RetryLimit <= 0 || c.ConfigSync.ShutdownFlushTimeout <= 0 || c.ConfigSync.ShutdownGracePeriod <= 0 || c.ConfigSync.ShutdownReportTimeout <= 0 || c.ConfigSync.StaleHeartbeatAfter <= 0 || c.ConfigSync.SummaryLimit <= 0 || strings.TrimSpace(c.ConfigSync.PolicyRevision) == "" {
+		errs = append(errs, fmt.Errorf("config_sync timing, retention, and policy revision are required"))
 	}
 	if strings.TrimSpace(c.CLIAuth.VerificationURL) == "" || strings.TrimSpace(c.CLIAuth.ClientID) == "" || len(c.CLIAuth.AllowedScopes) == 0 {
 		errs = append(errs, fmt.Errorf("cli_auth verification_url, client_id, and allowed_scopes are required"))
@@ -459,6 +507,8 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_DATABASE_DRIVER", &c.Database.Driver)
 	setString("PAPERBOAT_DATABASE_DSN", &c.Database.DSN)
 	setString("PAPERBOAT_CATALOG_SEED_FILE", &c.Catalogs.SeedFile)
+	setString("PAPERBOAT_CONFIG_SYNC_HOME", &c.ConfigSync.HomeOverride)
+	setString("PAPERBOAT_CONFIG_SYNC_POLICY_REVISION", &c.ConfigSync.PolicyRevision)
 	setString("PAPERBOAT_CLI_VERIFICATION_URL", &c.CLIAuth.VerificationURL)
 	setString("PAPERBOAT_CLI_CLIENT_ID", &c.CLIAuth.ClientID)
 	setString("PAPERBOAT_MINT_ACTIVE_KEY_ID", &c.CLIAuth.MintActiveKeyID)
@@ -510,6 +560,57 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	}
 	if v, ok := lookup("PAPERBOAT_CLI_ALLOWED_SCOPES"); ok {
 		c.CLIAuth.AllowedScopes = splitCSV(v)
+	}
+	if v, ok := lookup("PAPERBOAT_CONFIG_SYNC_INCLUDES"); ok {
+		c.ConfigSync.Includes = splitCSV(v)
+	}
+	if v, ok := lookup("PAPERBOAT_CONFIG_SYNC_EXCLUDES"); ok {
+		c.ConfigSync.Excludes = splitCSV(v)
+	}
+	if v, ok := lookup("PAPERBOAT_CONFIG_SYNC_MANDATORY_EXCLUDES"); ok {
+		c.ConfigSync.MandatoryExcludes = appendUnique(c.ConfigSync.MandatoryExcludes, splitCSV(v)...)
+	}
+	for name, target := range map[string]*int64{
+		"PAPERBOAT_CONFIG_SYNC_MAX_FILE_BYTES":  &c.ConfigSync.MaxFileBytes,
+		"PAPERBOAT_CONFIG_SYNC_MAX_BATCH_BYTES": &c.ConfigSync.MaxBatchBytes,
+	} {
+		if v, ok := lookup(name); ok {
+			parsed, err := strconv.ParseInt(v, 10, 64)
+			if err != nil {
+				return fmt.Errorf("parse %s: %w", name, err)
+			}
+			*target = parsed
+		}
+	}
+	for name, target := range map[string]*time.Duration{
+		"PAPERBOAT_CONFIG_SYNC_DEBOUNCE":                &c.ConfigSync.Debounce,
+		"PAPERBOAT_CONFIG_SYNC_MIN_PUSH_INTERVAL":       &c.ConfigSync.MinPushInterval,
+		"PAPERBOAT_CONFIG_SYNC_MAX_DIRTY_DELAY":         &c.ConfigSync.MaxDirtyDelay,
+		"PAPERBOAT_CONFIG_SYNC_REMOTE_POLL_INTERVAL":    &c.ConfigSync.RemotePollInterval,
+		"PAPERBOAT_CONFIG_SYNC_SHUTDOWN_FLUSH_TIMEOUT":  &c.ConfigSync.ShutdownFlushTimeout,
+		"PAPERBOAT_CONFIG_SYNC_SHUTDOWN_GRACE_PERIOD":   &c.ConfigSync.ShutdownGracePeriod,
+		"PAPERBOAT_CONFIG_SYNC_SHUTDOWN_REPORT_TIMEOUT": &c.ConfigSync.ShutdownReportTimeout,
+		"PAPERBOAT_CONFIG_SYNC_STALE_HEARTBEAT_AFTER":   &c.ConfigSync.StaleHeartbeatAfter,
+	} {
+		if v, ok := lookup(name); ok {
+			parsed, err := time.ParseDuration(v)
+			if err != nil {
+				return fmt.Errorf("parse %s: %w", name, err)
+			}
+			*target = parsed
+		}
+	}
+	for name, target := range map[string]*int{
+		"PAPERBOAT_CONFIG_SYNC_RETRY_LIMIT":   &c.ConfigSync.RetryLimit,
+		"PAPERBOAT_CONFIG_SYNC_SUMMARY_LIMIT": &c.ConfigSync.SummaryLimit,
+	} {
+		if v, ok := lookup(name); ok {
+			parsed, err := strconv.Atoi(v)
+			if err != nil {
+				return fmt.Errorf("parse %s: %w", name, err)
+			}
+			*target = parsed
+		}
 	}
 	for name, target := range map[string]*time.Duration{
 		"PAPERBOAT_CLI_DEVICE_GRANT_LIFETIME":  &c.CLIAuth.DeviceGrantLifetime,
@@ -672,4 +773,50 @@ func splitCSV(v string) []string {
 		}
 	}
 	return out
+}
+
+func appendUnique(existing []string, values ...string) []string {
+	seen := make(map[string]struct{}, len(existing)+len(values))
+	out := make([]string, 0, len(existing)+len(values))
+	for _, value := range append(append([]string{}, existing...), values...) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func containsAll(values, required []string) bool {
+	set := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		set[filepath.ToSlash(strings.TrimSpace(value))] = struct{}{}
+	}
+	for _, value := range required {
+		if _, ok := set[filepath.ToSlash(strings.TrimSpace(value))]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func validateConfigSyncPattern(pattern string) error {
+	pattern = filepath.ToSlash(strings.TrimSpace(pattern))
+	if pattern == "" || filepath.IsAbs(pattern) || strings.HasPrefix(pattern, "/") {
+		return fmt.Errorf("config_sync path pattern %q is unsafe", pattern)
+	}
+	for _, part := range strings.Split(pattern, "/") {
+		if part == ".." {
+			return fmt.Errorf("config_sync path pattern %q contains traversal", pattern)
+		}
+	}
+	if _, err := doublestar.Match(pattern, "probe"); err != nil {
+		return fmt.Errorf("config_sync path pattern %q is invalid", pattern)
+	}
+	return nil
 }

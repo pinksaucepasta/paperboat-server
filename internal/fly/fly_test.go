@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"testing"
+	"time"
 
 	flygo "github.com/superfly/fly-go"
 	"github.com/superfly/fly-go/flaps"
@@ -15,11 +16,12 @@ func TestSDKMachineConfigUsesFlySDKShape(t *testing.T) {
 		Name: "pbvm-prj", ImageRef: "registry.example/app:test", Region: "iad",
 		Size:     MachineSize{VCPU: 4, MemoryMB: 8192},
 		VolumeID: "vol_1", MountPath: "/workspace",
-		Env:        map[string]string{"PAPERBOAT_PROJECT_ID": "prj_1"},
-		Secrets:    []MachineSecret{{EnvVar: "SECRET", Name: "secret-name", Value: "value"}},
-		Command:    []string{"/entrypoint"},
-		ConfigHash: "hash",
-		Tags:       map[string]string{"paperboat_project_id": "prj_1", "managed_by": "paperboat-server"},
+		Env:         map[string]string{"PAPERBOAT_PROJECT_ID": "prj_1"},
+		Secrets:     []MachineSecret{{EnvVar: "SECRET", Name: "secret-name", Value: "value"}},
+		Command:     []string{"/entrypoint"},
+		StopTimeout: 42 * time.Second,
+		ConfigHash:  "hash",
+		Tags:        map[string]string{"paperboat_project_id": "prj_1", "managed_by": "paperboat-server"},
 	})
 	if cfg.Image != "registry.example/app:test" {
 		t.Fatalf("image = %q", cfg.Image)
@@ -32,6 +34,9 @@ func TestSDKMachineConfigUsesFlySDKShape(t *testing.T) {
 	}
 	if cfg.Init.Cmd[0] != "/entrypoint" {
 		t.Fatalf("init = %#v", cfg.Init)
+	}
+	if cfg.StopConfig == nil || cfg.StopConfig.Timeout == nil || cfg.StopConfig.Timeout.Duration != 42*time.Second || cfg.StopConfig.Signal == nil || *cfg.StopConfig.Signal != "SIGTERM" {
+		t.Fatalf("stop config = %#v", cfg.StopConfig)
 	}
 	if cfg.Metadata["paperboat_config_hash"] != "hash" || cfg.Metadata["paperboat_project_id"] != "prj_1" {
 		t.Fatalf("metadata = %#v", cfg.Metadata)

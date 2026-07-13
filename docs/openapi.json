@@ -398,6 +398,60 @@
           "created_at": { "type": "string", "format": "date-time" }
         }
       },
+      "ConfigSyncPathSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "reason"],
+        "properties": {
+          "path": { "type": "string" },
+          "bytes": { "type": "integer", "format": "int64", "minimum": 0 },
+          "reason": { "type": "string" }
+        }
+      },
+      "ConfigSyncHeartbeat": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["state", "pending_path_count", "max_file_bytes", "max_batch_bytes", "policy_revision", "updated_at"],
+        "properties": {
+          "state": { "type": "string", "enum": ["restoring", "watching", "pending", "syncing", "healthy", "warning", "conflict", "error", "offline"] },
+          "last_attempt_at": { "type": "string", "format": "date-time" },
+          "last_successful_sync_at": { "type": "string", "format": "date-time" },
+          "remote_commit": { "type": "string", "maxLength": 128 },
+          "pending_path_count": { "type": "integer", "minimum": 0 },
+          "skipped": { "type": "array", "items": { "$ref": "#/components/schemas/ConfigSyncPathSummary" } },
+          "conflicts": { "type": "array", "items": { "$ref": "#/components/schemas/ConfigSyncPathSummary" } },
+          "error_code": { "type": "string" },
+          "error_message": { "type": "string", "maxLength": 240 },
+          "max_file_bytes": { "type": "integer", "format": "int64", "minimum": 1 },
+          "max_batch_bytes": { "type": "integer", "format": "int64", "minimum": 1 },
+          "policy_revision": { "type": "string", "maxLength": 64 },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "MachineActivityHeartbeat": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["project_id", "machine_id", "last_activity_at", "sampled_at"],
+        "properties": {
+          "project_id": { "type": "string" },
+          "machine_id": { "type": "string" },
+          "last_activity_at": { "type": "string", "format": "date-time" },
+          "signals": { "type": "object", "additionalProperties": { "type": "string" } },
+          "reporter_version": { "type": "string" },
+          "sampled_at": { "type": "string", "format": "date-time" },
+          "config_sync": { "$ref": "#/components/schemas/ConfigSyncHeartbeat" }
+        }
+      },
+      "ConfigSyncStatus": {
+        "type": "object",
+        "required": ["repository", "policy", "state", "projects"],
+        "properties": {
+          "repository": { "type": "object", "required": ["owner", "name", "branch", "web_url"], "properties": { "owner": { "type": "string" }, "name": { "type": "string" }, "branch": { "type": "string" }, "web_url": { "type": "string" } } },
+          "policy": { "type": "object", "required": ["revision", "max_file_bytes", "max_batch_bytes"], "properties": { "revision": { "type": "string" }, "max_file_bytes": { "type": "integer", "format": "int64" }, "max_batch_bytes": { "type": "integer", "format": "int64" } } },
+          "state": { "type": "string", "enum": ["restoring", "watching", "pending", "syncing", "healthy", "warning", "conflict", "error", "offline", "idle"] },
+          "projects": { "type": "array", "items": { "type": "object", "required": ["project_id", "project_name", "project_state", "machine_id", "state", "pending_path_count", "skipped", "conflicts", "max_file_bytes", "max_batch_bytes", "policy_revision"], "properties": { "project_id": { "type": "string" }, "project_name": { "type": "string" }, "project_state": { "type": "string" }, "machine_id": { "type": "string" }, "state": { "type": "string" }, "last_result_state": { "type": "string" }, "last_attempt_at": { "type": "string", "format": "date-time" }, "last_successful_sync_at": { "type": "string", "format": "date-time" }, "remote_commit": { "type": "string" }, "pending_path_count": { "type": "integer" }, "skipped": { "type": "array", "items": { "$ref": "#/components/schemas/ConfigSyncPathSummary" } }, "conflicts": { "type": "array", "items": { "$ref": "#/components/schemas/ConfigSyncPathSummary" } }, "error_code": { "type": "string" }, "error_message": { "type": "string" }, "heartbeat_at": { "type": "string", "format": "date-time" }, "status_updated_at": { "type": "string", "format": "date-time" }, "max_file_bytes": { "type": "integer", "format": "int64" }, "max_batch_bytes": { "type": "integer", "format": "int64" }, "policy_revision": { "type": "string" } } } }
+        }
+      },
       "CatalogPlan": {
         "type": "object",
         "required": ["code", "name", "active", "included_credits", "included_storage_gb", "version"],
@@ -535,6 +589,17 @@
         "responses": {
           "200": { "description": "Current authenticated user.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
           "401": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/config-sync/status": {
+      "get": {
+        "summary": "Account configuration sync status",
+        "security": [{ "cookieSession": [] }],
+        "responses": {
+          "200": { "description": "Repository, policy, and per-machine sync status.", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessResponse" }], "properties": { "data": { "$ref": "#/components/schemas/ConfigSyncStatus" } } } } } },
+          "401": { "$ref": "#/components/responses/Error" },
+          "402": { "$ref": "#/components/responses/Error" }
         }
       }
     },
@@ -836,7 +901,7 @@
     "/api/projects/{project_id}/cli-connect": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "post": { "summary": "Create CLI access descriptor", "description": "Bearer authentication requires projects:connect.", "security": [{ "bearerAccess": [] }], "x-required-bearer-scopes": ["projects:connect"], "responses": { "200": { "description": "Fresh CLI descriptor.", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessResponse" }], "properties": { "data": { "$ref": "#/components/schemas/CLIConnectDescriptor" } } } } } }, "202": { "description": "Project is starting; no credentials are returned.", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessResponse" }], "properties": { "data": { "$ref": "#/components/schemas/ConnectionStatus" } } } } } }, "401": { "$ref": "#/components/responses/Error" }, "403": { "$ref": "#/components/responses/Error" }, "404": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" } } } },
     "/api/projects/{project_id}/papercode-connect": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "post": { "summary": "Create papercode access descriptor", "responses": { "200": { "description": "Papercode descriptor.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "409": { "$ref": "#/components/responses/Error" } } } },
     "/api/projects/{project_id}/connection-status": { "parameters": [{ "$ref": "#/components/parameters/ProjectID" }], "get": { "summary": "Read project connection status without credentials", "description": "Bearer authentication requires projects:connect.", "security": [{ "bearerAccess": [] }], "x-required-bearer-scopes": ["projects:connect"], "responses": { "200": { "description": "Connection status.", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessResponse" }], "properties": { "data": { "$ref": "#/components/schemas/ConnectionStatus" } } } } } }, "401": { "$ref": "#/components/responses/Error" }, "403": { "$ref": "#/components/responses/Error" }, "404": { "$ref": "#/components/responses/Error" } } } },
-    "/api/machine/activity-heartbeat": { "post": { "summary": "VM heartbeat callback", "security": [], "responses": { "202": { "description": "Heartbeat accepted.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "400": { "$ref": "#/components/responses/Error" } } } },
+    "/api/machine/activity-heartbeat": { "post": { "summary": "VM heartbeat callback", "description": "Authenticated with the project-machine bearer credential. Config sync summaries are sanitized and retained up to the configured server limit.", "security": [], "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MachineActivityHeartbeat" } } } }, "responses": { "202": { "description": "Heartbeat accepted.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" } } } },
     "/api/admin/users/{user_id}/adjust-credits": { "post": { "summary": "Admin credit adjustment", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "parameters": [{ "name": "user_id", "in": "path", "required": true, "schema": { "type": "string" } }, { "$ref": "#/components/parameters/IdempotencyKey" }], "responses": { "200": { "description": "Credit adjustment applied.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "403": { "$ref": "#/components/responses/Error" } } } },
     "/api/admin/users/{user_id}/adjust-storage": { "post": { "summary": "Admin storage adjustment", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "parameters": [{ "name": "user_id", "in": "path", "required": true, "schema": { "type": "string" } }, { "$ref": "#/components/parameters/IdempotencyKey" }], "responses": { "200": { "description": "Storage adjustment applied.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "403": { "$ref": "#/components/responses/Error" } } } }
   }
