@@ -24,7 +24,12 @@ export PAPERBOAT_PAPERCODE_ENVIRONMENT_ID="env_stable"
 
 test "$(tr -d '\r\n' < "$workspace/.paperboat/identity/project-id")" = "prj_stable"
 test "$(tr -d '\r\n' < "$workspace/.paperboat/identity/environment-id")" = "env_stable"
-test "$(stat -f '%Lp' "$workspace/.paperboat/identity/project-id" 2>/dev/null || stat -c '%a' "$workspace/.paperboat/identity/project-id")" = "600"
+if stat --version >/dev/null 2>&1; then
+  project_id_mode="$(stat -c '%a' "$workspace/.paperboat/identity/project-id")"
+else
+  project_id_mode="$(stat -f '%Lp' "$workspace/.paperboat/identity/project-id")"
+fi
+test "$project_id_mode" = "600"
 
 set +e
 PAPERBOAT_PROJECT_ID="prj_wrong" "$root/bin/paperboat-prepare-workspace" >"$tmp/mismatch.out" 2>"$tmp/mismatch.err"

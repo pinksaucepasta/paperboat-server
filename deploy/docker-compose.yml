@@ -2,7 +2,7 @@ x-paperboat-common-environment: &paperboat-common-environment
   PAPERBOAT_ENV: production
   PAPERBOAT_HTTP_ADDRESS: 0.0.0.0:8080
   PAPERBOAT_PUBLIC_BASE_URL: https://pb.hexwagon.com
-  PAPERBOAT_ALLOWED_ORIGINS: https://pb.hexwagon.com
+  PAPERBOAT_ALLOWED_ORIGINS: https://paperboat-dashboard-omega.vercel.app
   PAPERBOAT_CATALOG_SEED_FILE: /app/config/catalogs.example.json
   PAPERBOAT_FAKE_PROVIDERS: "false"
   PAPERBOAT_WORKOS_BASE_URL: https://api.workos.com
@@ -19,7 +19,7 @@ x-paperboat-common-environment: &paperboat-common-environment
   PAPERBOAT_AGENTUNNEL_UPLOAD_MAX_BYTES: "10485760"
   PAPERBOAT_AGENTUNNEL_UPLOAD_ALLOWED_MIME_TYPES: image/png,image/jpeg,image/webp
   PAPERBOAT_AGENTUNNEL_UPLOAD_RETENTION: 168h
-  PAPERBOAT_CLI_VERIFICATION_URL: https://pb.hexwagon.com/cli/authorize
+  PAPERBOAT_CLI_VERIFICATION_URL: https://paperboat-dashboard-omega.vercel.app/cli/authorize
   PAPERBOAT_CLI_CLIENT_ID: paperboat-cli
   PAPERBOAT_CLI_ALLOWED_SCOPES: account:read,clients:revoke,projects:read,projects:connect,session:refresh
   PAPERBOAT_CLI_DEVICE_GRANT_LIFETIME: 10m

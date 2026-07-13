@@ -52,7 +52,7 @@ install_value() {
   local value="$2"
   local temporary="$path.tmp.$$"
   umask 077
-  printf '%s\n' "$value" > "$temporary"
+  printf '%s' "$value" > "$temporary"
   chmod 600 "$temporary"
   mv -f "$temporary" "$path"
 }

@@ -241,15 +241,111 @@
   ],
   "regions": [
     {
-      "code": "iad",
-      "name": "Ashburn, Virginia",
+      "code": "ams",
+      "name": "Amsterdam, Netherlands",
+      "enabled": true,
+      "placement_policy": {}
+    },
+    {
+      "code": "arn",
+      "name": "Stockholm, Sweden",
       "enabled": true,
       "placement_policy": {}
     },
     {
       "code": "bom",
       "name": "Mumbai, India",
-      "enabled": false,
+      "enabled": true,
+      "placement_policy": {}
+    },
+    {
+      "code": "cdg",
+      "name": "Paris, France",
+      "enabled": true,
+      "placement_policy": {}
+    },
+    {
+      "code": "dfw",
+      "name": "Dallas, Texas (US)",
+      "enabled": true,
+      "placement_policy": {}
+    },
+    {
+      "code": "ewr",
+      "name": "Secaucus, NJ (US)",
+      "enabled": true,
+      "placement_policy": {}
+    },
+    {
+      "code": "fra",
+      "name": "Frankfurt, Germany",
+      "enabled": true,
+      "placement_policy": {}
+    },
+    {
+      "code": "gru",
+      "name": "Sao Paulo, Brazil",
+      "enabled": true,
+      "placement_policy": {}
+    },
+    {
+      "code": "iad",
+      "name": "Ashburn, Virginia (US)",
+      "enabled": true,
+      "placement_policy": {}
+    },
+    {
+      "code": "jnb",
+      "name": "Johannesburg, South Africa",
+      "enabled": true,
+      "placement_policy": {}
+    },
+    {
+      "code": "lax",
+      "name": "Los Angeles, California (US)",
+      "enabled": true,
+      "placement_policy": {}
+    },
+    {
+      "code": "lhr",
+      "name": "London, United Kingdom",
+      "enabled": true,
+      "placement_policy": {}
+    },
+    {
+      "code": "nrt",
+      "name": "Tokyo, Japan",
+      "enabled": true,
+      "placement_policy": {}
+    },
+    {
+      "code": "ord",
+      "name": "Chicago, Illinois (US)",
+      "enabled": true,
+      "placement_policy": {}
+    },
+    {
+      "code": "sin",
+      "name": "Singapore, Singapore",
+      "enabled": true,
+      "placement_policy": {}
+    },
+    {
+      "code": "sjc",
+      "name": "San Jose, California (US)",
+      "enabled": true,
+      "placement_policy": {}
+    },
+    {
+      "code": "syd",
+      "name": "Sydney, Australia",
+      "enabled": true,
+      "placement_policy": {}
+    },
+    {
+      "code": "yyz",
+      "name": "Toronto, Canada",
+      "enabled": true,
       "placement_policy": {}
     }
   ],
@@ -257,8 +353,8 @@
     {
       "code": "sailor-monthly-usd",
       "provider": "polar",
-      "provider_product_id": "a3c0674d-286f-412f-8da3-446d89cc03ad",
-      "provider_price_id": "beed48c4-6fd1-4334-83a5-ab43dceed5b1",
+      "provider_product_id": "58fc3b4f-8e35-4214-bd4d-9397de7b1c34",
+      "provider_price_id": "8eb42c73-0c24-4061-aaf3-a5c5e7bfc08a",
       "catalog_type": "plan",
       "catalog_ref": "sailor",
       "active": true
@@ -266,8 +362,8 @@
     {
       "code": "navigator-monthly-usd",
       "provider": "polar",
-      "provider_product_id": "60d7ffde-7970-40c6-8cd9-cb21aeceab3f",
-      "provider_price_id": "10115c00-7b5c-481f-89af-ddb9d9b49c6e",
+      "provider_product_id": "94bac310-fb00-473d-b8e4-b498532583d3",
+      "provider_price_id": "e316b5ea-9617-4886-b8b9-df21e60db586",
       "catalog_type": "plan",
       "catalog_ref": "navigator",
       "active": true
@@ -275,8 +371,8 @@
     {
       "code": "captain-monthly-usd",
       "provider": "polar",
-      "provider_product_id": "68fc0405-e286-4f6c-86b7-c6ad667c420a",
-      "provider_price_id": "bd7bad98-afd0-4883-9006-9df968caf139",
+      "provider_product_id": "284b47d8-51de-4abd-ab9b-1959ae99b34f",
+      "provider_price_id": "2e1f7c47-adc0-475e-930a-0121ffc919a8",
       "catalog_type": "plan",
       "catalog_ref": "captain",
       "active": true
