@@ -12,6 +12,7 @@ COPY papercode/apps ./apps
 COPY papercode/packages ./packages
 COPY papercode/scripts ./scripts
 COPY papercode/oxlint-plugin-t3code ./oxlint-plugin-t3code
+COPY papercode/patches ./patches
 RUN pnpm install --frozen-lockfile
 COPY papercode/assets ./assets
 RUN pnpm run build
