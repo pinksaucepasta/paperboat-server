@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
+	"github.com/pinksaucepasta/paperboat-server/internal/configsync"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
@@ -258,12 +259,14 @@ type Checkpoint struct {
 }
 
 type ActivityHeartbeat struct {
-	ProjectID       string
-	MachineID       string
-	LastActivityAt  time.Time
-	LastHeartbeatAt time.Time
-	ReporterVersion string
-	Signals         map[string]string
+	ProjectID            string
+	MachineID            string
+	LastActivityAt       time.Time
+	LastHeartbeatAt      time.Time
+	ReporterVersion      string
+	Signals              map[string]string
+	ConfigSync           *configsync.Status
+	ConfigSyncObservedAt time.Time
 }
 
 func runtimeIntervalFromOpenRow(row dbsqlc.GetOpenRuntimeIntervalRow) RuntimeInterval {
@@ -623,8 +626,47 @@ func (r *RuntimeRepository) RecordHeartbeat(ctx context.Context, heartbeat Activ
 		return err
 	}
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		return tx.Queries().UpsertActivityHeartbeat(ctx, dbsqlc.UpsertActivityHeartbeatParams{ProjectID: heartbeat.ProjectID, MachineID: heartbeat.MachineID, LastActivityAt: heartbeat.LastActivityAt, LastHeartbeatAt: sql.NullTime{Time: heartbeat.LastHeartbeatAt, Valid: true}, ReporterVersion: heartbeat.ReporterVersion, Signals: b})
+		if err := tx.Queries().UpsertActivityHeartbeat(ctx, dbsqlc.UpsertActivityHeartbeatParams{ProjectID: heartbeat.ProjectID, MachineID: heartbeat.MachineID, LastActivityAt: heartbeat.LastActivityAt, LastHeartbeatAt: sql.NullTime{Time: heartbeat.LastHeartbeatAt, Valid: true}, ReporterVersion: heartbeat.ReporterVersion, Signals: b}); err != nil {
+			return err
+		}
+		if heartbeat.ConfigSync == nil {
+			return nil
+		}
+		if heartbeat.ConfigSyncObservedAt.IsZero() {
+			heartbeat.ConfigSyncObservedAt = heartbeat.ConfigSync.UpdatedAt.UTC()
+		}
+		skipped, err := json.Marshal(heartbeat.ConfigSync.Skipped)
+		if err != nil {
+			return err
+		}
+		conflicts, err := json.Marshal(heartbeat.ConfigSync.Conflicts)
+		if err != nil {
+			return err
+		}
+		if err := tx.Queries().UpsertConfigSyncStatus(ctx, dbsqlc.UpsertConfigSyncStatusParams{
+			ProjectID: heartbeat.ProjectID, MachineID: heartbeat.MachineID, State: heartbeat.ConfigSync.State,
+			LastAttemptAt: nullableTime(heartbeat.ConfigSync.LastAttemptAt), LastSuccessfulSyncAt: nullableTime(heartbeat.ConfigSync.LastSuccessfulAt),
+			RemoteCommit: heartbeat.ConfigSync.RemoteCommit, PendingPathCount: int32(heartbeat.ConfigSync.PendingPathCount),
+			Skipped: skipped, Conflicts: conflicts, ErrorCode: heartbeat.ConfigSync.ErrorCode, ErrorMessage: heartbeat.ConfigSync.ErrorMessage,
+			MaxFileBytes: heartbeat.ConfigSync.MaxFileBytes, MaxBatchBytes: heartbeat.ConfigSync.MaxBatchBytes,
+			PolicyRevision: heartbeat.ConfigSync.PolicyRevision, StatusUpdatedAt: heartbeat.ConfigSync.UpdatedAt.UTC(),
+			StatusObservedAt: heartbeat.ConfigSyncObservedAt.UTC(), HeartbeatAt: heartbeat.LastHeartbeatAt,
+		}); err != nil {
+			return err
+		}
+		return tx.Queries().TouchConfigSyncStatusReceipt(ctx, dbsqlc.TouchConfigSyncStatusReceiptParams{
+			HeartbeatAt: heartbeat.LastHeartbeatAt,
+			ProjectID:   heartbeat.ProjectID,
+			MachineID:   heartbeat.MachineID,
+		})
 	})
+}
+
+func nullableTime(value *time.Time) sql.NullTime {
+	if value == nil {
+		return sql.NullTime{}
+	}
+	return sql.NullTime{Time: value.UTC(), Valid: true}
 }
 
 func (r *RuntimeRepository) VerifyHeartbeatCredential(ctx context.Context, projectID, machineID, token string) error {

@@ -78,6 +78,67 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 	}
 }
 
+func TestMandatoryConfigSyncExclusionsCanOnlyBeExtended(t *testing.T) {
+	cfg, err := Load(context.Background(), LoadOptions{
+		LookupEnv: func(key string) (string, bool) {
+			if key == "PAPERBOAT_CONFIG_SYNC_MANDATORY_EXCLUDES" {
+				return ".custom-secret", true
+			}
+			return "", false
+		},
+		ReadFile: func(string) ([]byte, error) { return nil, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{".custom-secret", ".config/git/credentials", ".config/hub", ".claude/shell-snapshots", ".codex/log"} {
+		if !slices.Contains(cfg.ConfigSync.MandatoryExcludes, required) {
+			t.Fatalf("mandatory exclusion %q was removed: %v", required, cfg.ConfigSync.MandatoryExcludes)
+		}
+	}
+}
+
+func TestConfigFileCannotReplaceMandatoryConfigSyncExcludes(t *testing.T) {
+	cfg, err := Load(context.Background(), LoadOptions{
+		FilePath: "config.json",
+		ReadFile: func(string) ([]byte, error) {
+			return []byte(`{"config_sync":{"mandatory_excludes":[".custom-secret"]}}`), nil
+		},
+		LookupEnv: func(string) (string, bool) { return "", false },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{".custom-secret", ".ssh", ".config/git/credentials", "**/auth.json"} {
+		if !slices.Contains(cfg.ConfigSync.MandatoryExcludes, required) {
+			t.Fatalf("mandatory exclusion %q was replaced by config file", required)
+		}
+	}
+	unsafe := cfg
+	unsafe.ConfigSync.MandatoryExcludes = []string{".custom-secret"}
+	if err := unsafe.Validate(); err == nil {
+		t.Fatal("configuration without the built-in mandatory exclusion floor was accepted")
+	}
+}
+
+func TestValidationRejectsUnsafeConfigSyncPatterns(t *testing.T) {
+	for _, pattern := range []string{"/absolute", "../traversal", "safe/../traversal", "[invalid"} {
+		cfg := Default()
+		cfg.ConfigSync.Includes = []string{pattern}
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "config_sync path pattern") {
+			t.Fatalf("pattern %q validation error = %v", pattern, err)
+		}
+	}
+}
+
+func TestValidationRejectsRelativeConfigHomeOverride(t *testing.T) {
+	cfg := Default()
+	cfg.ConfigSync.HomeOverride = "relative/home"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "config_sync.home_override") {
+		t.Fatalf("relative home validation error = %v", err)
+	}
+}
+
 func TestProductionValidationRejectsFakeProvidersAndWeakSecrets(t *testing.T) {
 	cfg := Default()
 	cfg.Environment = EnvironmentProduction

@@ -13,33 +13,39 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/pinksaucepasta/paperboat-server/internal/configsync"
 )
 
 type Config struct {
-	ProjectID            string
-	MachineID            string
-	RuntimeDir           string
-	Workspace            string
-	Endpoint             string
-	Token                string
-	ReporterVersion      string
-	SampleInterval       time.Duration
-	HeartbeatInterval    time.Duration
-	OutputMinBytesPerMin int64
-	FSMaxDepth           int
-	ExcludePaths         []string
-	HTTPClient           *http.Client
-	Now                  func() time.Time
-	Log                  func(Heartbeat)
+	ProjectID             string
+	MachineID             string
+	RuntimeDir            string
+	Workspace             string
+	Endpoint              string
+	Token                 string
+	ReporterVersion       string
+	SampleInterval        time.Duration
+	HeartbeatInterval     time.Duration
+	ShutdownReportTimeout time.Duration
+	OutputMinBytesPerMin  int64
+	FSMaxDepth            int
+	ExcludePaths          []string
+	HTTPClient            *http.Client
+	Now                   func() time.Time
+	Log                   func(Heartbeat)
+	ConfigSyncStatusPath  string
+	SummaryLimit          int
 }
 
 type Heartbeat struct {
-	ProjectID       string            `json:"project_id"`
-	MachineID       string            `json:"machine_id"`
-	LastActivityAt  time.Time         `json:"last_activity_at"`
-	Signals         map[string]string `json:"signals"`
-	ReporterVersion string            `json:"reporter_version"`
-	SampledAt       time.Time         `json:"sampled_at"`
+	ProjectID       string             `json:"project_id"`
+	MachineID       string             `json:"machine_id"`
+	LastActivityAt  time.Time          `json:"last_activity_at"`
+	Signals         map[string]string  `json:"signals"`
+	ReporterVersion string             `json:"reporter_version"`
+	SampledAt       time.Time          `json:"sampled_at"`
+	ConfigSync      *configsync.Status `json:"config_sync,omitempty"`
 }
 
 type Reporter struct {
@@ -54,18 +60,21 @@ type Reporter struct {
 func FromEnv() Config {
 	runtimeDir := env("PAPERBOAT_RUNTIME_DIR", "/var/lib/paperboat")
 	return Config{
-		ProjectID:            os.Getenv("PAPERBOAT_PROJECT_ID"),
-		MachineID:            env("FLY_MACHINE_ID", os.Getenv("PAPERBOAT_MACHINE_ID")),
-		RuntimeDir:           runtimeDir,
-		Workspace:            env("PAPERBOAT_WORKSPACE", "/workspace"),
-		Endpoint:             os.Getenv("PAPERBOAT_ACTIVITY_ENDPOINT"),
-		Token:                os.Getenv("PAPERBOAT_MACHINE_ACTIVITY_TOKEN"),
-		ReporterVersion:      env("PAPERBOAT_ACTIVITY_REPORTER_VERSION", "dev"),
-		SampleInterval:       envDurationSeconds("PAPERBOAT_ACTIVITY_SAMPLE_SECONDS", 5*time.Second),
-		HeartbeatInterval:    envDurationSeconds("PAPERBOAT_ACTIVITY_INTERVAL_SECONDS", 30*time.Second),
-		OutputMinBytesPerMin: envInt64("PAPERBOAT_ACTIVITY_OUTPUT_MIN_BYTES_PER_MIN", 2048),
-		FSMaxDepth:           int(envInt64("PAPERBOAT_ACTIVITY_FS_MAX_DEPTH", 6)),
-		ExcludePaths:         envList("PAPERBOAT_ACTIVITY_FS_EXCLUDES", ".git/objects,node_modules"),
+		ProjectID:             os.Getenv("PAPERBOAT_PROJECT_ID"),
+		MachineID:             env("FLY_MACHINE_ID", os.Getenv("PAPERBOAT_MACHINE_ID")),
+		RuntimeDir:            runtimeDir,
+		Workspace:             env("PAPERBOAT_WORKSPACE", "/workspace"),
+		Endpoint:              os.Getenv("PAPERBOAT_ACTIVITY_ENDPOINT"),
+		Token:                 os.Getenv("PAPERBOAT_MACHINE_ACTIVITY_TOKEN"),
+		ReporterVersion:       env("PAPERBOAT_ACTIVITY_REPORTER_VERSION", "dev"),
+		SampleInterval:        envDurationSeconds("PAPERBOAT_ACTIVITY_SAMPLE_SECONDS", 5*time.Second),
+		HeartbeatInterval:     envDurationSeconds("PAPERBOAT_ACTIVITY_INTERVAL_SECONDS", 30*time.Second),
+		ShutdownReportTimeout: envDurationSeconds("PAPERBOAT_ACTIVITY_SHUTDOWN_REPORT_SECONDS", 10*time.Second),
+		OutputMinBytesPerMin:  envInt64("PAPERBOAT_ACTIVITY_OUTPUT_MIN_BYTES_PER_MIN", 2048),
+		FSMaxDepth:            int(envInt64("PAPERBOAT_ACTIVITY_FS_MAX_DEPTH", 6)),
+		ExcludePaths:          envList("PAPERBOAT_ACTIVITY_FS_EXCLUDES", ".git/objects,node_modules"),
+		ConfigSyncStatusPath:  env("PAPERBOAT_CONFIG_SYNC_STATUS_FILE", filepath.Join(runtimeDir, "config-sync-status.json")),
+		SummaryLimit:          int(envInt64("PAPERBOAT_CONFIG_SUMMARY_LIMIT", 50)),
 	}
 }
 
@@ -87,6 +96,9 @@ func NewReporter(cfg Config) (*Reporter, error) {
 	}
 	if cfg.HeartbeatInterval <= 0 {
 		cfg.HeartbeatInterval = 30 * time.Second
+	}
+	if cfg.ShutdownReportTimeout <= 0 {
+		cfg.ShutdownReportTimeout = 10 * time.Second
 	}
 	if cfg.FSMaxDepth < 0 {
 		cfg.FSMaxDepth = 0
@@ -137,6 +149,11 @@ func (r *Reporter) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), r.cfg.ShutdownReportTimeout)
+			defer cancel()
+			if err := r.Heartbeat(shutdownCtx); err != nil {
+				return fmt.Errorf("send final heartbeat: %w", err)
+			}
 			return ctx.Err()
 		case <-sample.C:
 			if err := r.Sample(); err != nil {
@@ -211,6 +228,7 @@ func (r *Reporter) Payload() Heartbeat {
 	for k, v := range r.signals {
 		signals[k] = v.UTC().Format(time.RFC3339Nano)
 	}
+	configStatus, _ := configsync.ReadStatus(r.cfg.ConfigSyncStatusPath, r.cfg.SummaryLimit)
 	return Heartbeat{
 		ProjectID:       r.cfg.ProjectID,
 		MachineID:       r.cfg.MachineID,
@@ -218,6 +236,7 @@ func (r *Reporter) Payload() Heartbeat {
 		Signals:         signals,
 		ReporterVersion: r.cfg.ReporterVersion,
 		SampledAt:       r.cfg.Now().UTC(),
+		ConfigSync:      configStatus,
 	}
 }
 

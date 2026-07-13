@@ -27,19 +27,66 @@ mandatory image component; there is no production-disabled build or boot mode.
   `fly.agentunnel_secret`
 
 Optional inputs are env-driven: workspace path, papercode local URL, config repo URL,
-config branch, preset directory, setup script, and activity interval.
+config branch, preset directory, setup script, activity interval, and the complete config-sync
+policy (home override, include/exclude patterns, byte ceilings, timing, retry, and retention).
 
 ## Boot Order
 
 1. Validate required env and create runtime/log/workspace directories.
 2. Clone the project repository into the mounted workspace if it is not already a git repo.
-3. Restore the GitHub-backed Paperboat config repo when configured.
-4. Apply selected preset scripts from `/etc/paperboat/presets.d`.
-5. Start papercode `apps/server` in headless mode against the project workspace.
-6. Wait for the local papercode HTTP endpoint.
-7. Start the agentunnel machine client for the project route.
-8. Wait for the agentunnel route readiness probe.
-9. Start the activity reporter and write readiness JSON.
+3. Restore managed home configuration from the GitHub-backed Paperboat config repo.
+4. Start the supervised config-sync daemon.
+5. Apply selected preset scripts from `/etc/paperboat/presets.d`.
+6. Start papercode `apps/server` in headless mode against the project workspace.
+7. Wait for the local papercode HTTP endpoint.
+8. Start the agentunnel machine client for the project route.
+9. Wait for the agentunnel route readiness probe.
+10. Start the activity reporter and write readiness JSON.
+
+The sync checkout lives under `/var/lib/paperboat/config-sync`, outside both `$HOME` and the
+project workspace. The daemon recursively watches managed home paths, reconciles remote changes,
+coalesces local writes, enforces file and batch ceilings, and writes atomic health state to
+`/var/lib/paperboat/config-sync-status.json`. Initial restore failures block readiness. Later
+network or Git failures leave the VM usable and retry; shutdown always recomputes the full managed
+snapshot and waits for a bounded final flush, even when the watcher observed no event.
+Shutdown keeps the activity reporter alive until the daemon flush or fallback save has written its
+terminal status. The reporter then sends one final heartbeat, bounded by
+`PAPERBOAT_ACTIVITY_SHUTDOWN_REPORT_SECONDS`, before it exits so the control plane observes the
+shutdown sync result.
+Fly's machine stop timeout is derived from the configured flush deadline, daemon grace period,
+and final-report timeout, so the platform grace period covers the complete shutdown sequence.
+The control plane persists the status file's own `updated_at` separately from activity-heartbeat
+time, so an active reporter cannot keep a failed or stopped sync daemon falsely online.
+On the first restore, the remote snapshot is canonical: managed files present only in the image's
+home directory are removed before the baseline is recorded, while unmanaged and mandatory-excluded
+paths remain untouched. When no config repository is configured, restore, sync, and flush are
+successful no-ops and shutdown does not wait for the flush deadline.
+Batch accounting counts unique config blobs newly introduced to Git. A conflict artifact may
+reference the losing blob already present in the remote history without charging those bytes a
+second time; its bounded Paperboat metadata is excluded from the user-data ceiling. The final
+staged-object guard still applies the per-file ceiling to preserved conflict content and rejects
+new config blob data above the batch ceiling.
+
+The runtime creates or upgrades `.paperboat/config-sync.json` in the private config repository.
+This manifest records the complete effective server policy and retains user include/exclude
+patterns and stricter repository byte limits. Upgrades never remove unrelated tracked content.
+Symlink targets are normalized to portable relative paths and restored only when they remain
+inside the destination home. Copy and deletion operations also resolve destination parent
+directories before modifying them, so an existing symlink cannot redirect a restore outside
+`$HOME`. Any snapshot read or traversal failure aborts that reconciliation instead of being
+interpreted as a remote deletion.
+
+Mandatory exclusions are additive and cannot be replaced by server, repository, or user policy.
+They cover credential stores, SSH/GPG and cloud credentials, Git/package-manager credentials,
+agent authentication and session state, browser/runtime state, caches, logs, histories,
+environment files, and temporary editor files. The runtime unions its built-in security policy
+with server additions as a final defense before snapshotting.
+
+Concurrent same-path changes create an atomic, collision-resistant artifact under
+`.paperboat/conflicts` containing metadata and the losing file content or symlink target. The
+canonical path is changed only after artifact creation succeeds. Conflict summaries remain in
+health status across routine polls and restarts while their metadata remains in the private
+repository; deleting the reviewed artifact resolves the dashboard warning.
 
 Before cloning, the runtime stores the stable Paperboat project and papercode environment
 identities below `.paperboat/identity` on the mounted volume. A later boot with mismatched

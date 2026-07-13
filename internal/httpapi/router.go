@@ -19,6 +19,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
 	"github.com/pinksaucepasta/paperboat-server/internal/catalog"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
+	"github.com/pinksaucepasta/paperboat-server/internal/configsync"
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
@@ -45,6 +46,7 @@ type Options struct {
 	Projects         *projects.Service
 	Agentunnel       *agentunnel.Service
 	MeteringRepo     *metering.RuntimeRepository
+	ConfigSync       *configsync.Repository
 	MintKeys         *mint.Provider
 	OverrideHandler  http.Handler
 }
@@ -71,7 +73,7 @@ func NewRouter(opts Options) http.Handler {
 			mux.HandleFunc("POST /api/webhooks/polar", polarWebhook(opts.Billing, opts.Config.Secrets.PolarWebhookSecret, opts.Config.Billing.PolarWebhookTolerance))
 		}
 		if opts.MeteringRepo != nil {
-			mux.HandleFunc("POST /api/machine/activity-heartbeat", activityHeartbeat(opts.MeteringRepo))
+			mux.HandleFunc("POST /api/machine/activity-heartbeat", activityHeartbeat(opts.MeteringRepo, opts.Config.ConfigSync.SummaryLimit))
 		}
 		mux.HandleFunc("/", notImplemented)
 		handler = mux
@@ -131,6 +133,9 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 		meHandler = requireAnyAuth(opts.Auth, opts.DeviceAuth, me(opts.Auth))
 	}
 	mux.Handle("GET /api/me", meHandler)
+	if opts.ConfigSync != nil {
+		mux.Handle("GET /api/config-sync/status", requireAuth(opts.Auth, requireEntitlement(opts.Auth, configSyncStatus(opts.ConfigSync))))
+	}
 	if opts.DeviceAuth != nil {
 		requestNetwork := newRequestNetwork(opts.Config.HTTP.TrustedProxyCIDRs)
 		mux.HandleFunc("POST /api/auth/device/authorize", deviceAuthorize(opts.DeviceAuth, requestNetwork))

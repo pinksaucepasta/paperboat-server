@@ -48,6 +48,7 @@ version or a `version` field in the JSON body. Stale writes fail with `version_c
 - `GET /api/billing/usage`
 - `GET /api/billing/plan-products`
 - `GET /api/dashboard/usage-summary`
+- `GET /api/config-sync/status`
 - `GET /api/catalog/plans`
 - `GET /api/catalog/machine-types`
 - `GET /api/catalog/presets`

@@ -28,6 +28,7 @@ func TestOpenAPIDocumentCoversPublicAndFrozenTargetPaths(t *testing.T) {
 		"/metrics":                              {"get"},
 		"/readyz":                               {"get"},
 		"/api/me":                               {"get"},
+		"/api/config-sync/status":               {"get"},
 		"/api/auth/workos/state":                {"get"},
 		"/api/auth/workos/callback":             {"post"},
 		"/api/auth/logout":                      {"post"},
@@ -83,6 +84,45 @@ func TestOpenAPIDocumentCoversPublicAndFrozenTargetPaths(t *testing.T) {
 				t.Fatalf("openapi missing %s %s", method, path)
 			}
 		}
+	}
+}
+
+func TestOpenAPIFreezesConfigSyncHeartbeatAndStatusSchemas(t *testing.T) {
+	raw, err := os.ReadFile("../../docs/openapi.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Paths      map[string]map[string]any `json:"paths"`
+		Components struct {
+			Schemas map[string]map[string]any `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, schema := range []string{"ConfigSyncPathSummary", "ConfigSyncHeartbeat", "MachineActivityHeartbeat", "ConfigSyncStatus"} {
+		if doc.Components.Schemas[schema] == nil {
+			t.Fatalf("OpenAPI missing %s", schema)
+		}
+	}
+	heartbeat := objectValue(t, doc.Components.Schemas["MachineActivityHeartbeat"]["properties"], "MachineActivityHeartbeat.properties")
+	configStatus := objectValue(t, heartbeat["config_sync"], "MachineActivityHeartbeat.config_sync")
+	if configStatus["$ref"] != "#/components/schemas/ConfigSyncHeartbeat" {
+		t.Fatalf("config_sync ref = %v", configStatus["$ref"])
+	}
+	configHeartbeat := doc.Components.Schemas["ConfigSyncHeartbeat"]
+	configProperties := objectValue(t, configHeartbeat["properties"], "ConfigSyncHeartbeat.properties")
+	if configProperties["updated_at"] == nil || !stringSet(t, configHeartbeat["required"], "ConfigSyncHeartbeat.required")["updated_at"] {
+		t.Fatal("ConfigSyncHeartbeat.updated_at is not declared and required")
+	}
+	operation := objectValue(t, doc.Paths["/api/config-sync/status"]["get"], "GET /api/config-sync/status")
+	if operation["security"] == nil {
+		t.Fatal("config sync status endpoint is not authenticated in OpenAPI")
+	}
+	responses := objectValue(t, operation["responses"], "GET /api/config-sync/status.responses")
+	if responses["402"] == nil {
+		t.Fatal("config sync status endpoint does not declare its entitlement requirement")
 	}
 }
 

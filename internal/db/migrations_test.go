@@ -25,11 +25,11 @@ func TestMigrateRequiresPostgresIntegrationDSN(t *testing.T) {
 		t.Fatal(err)
 	}
 	var applied bool
-	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (SELECT 1 FROM paperboat.goose_db_version WHERE version_id = 10 AND is_applied)`).Scan(&applied); err != nil {
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (SELECT 1 FROM paperboat.goose_db_version WHERE version_id = 16 AND is_applied)`).Scan(&applied); err != nil {
 		t.Fatal(err)
 	}
 	if !applied {
-		t.Fatal("Goose migration version 10 was not recorded")
+		t.Fatal("Goose migration version 16 was not recorded")
 	}
 	var hasRole bool
 	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (
@@ -50,6 +50,43 @@ func TestMigrateRequiresPostgresIntegrationDSN(t *testing.T) {
 	}
 	if !hasClientRevocationTrigger {
 		t.Fatal("account lifecycle client-revocation trigger was not applied")
+	}
+	var hasConfigSyncStatus bool
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT to_regclass('paperboat.config_sync_statuses') IS NOT NULL`).Scan(&hasConfigSyncStatus); err != nil {
+		t.Fatal(err)
+	}
+	if !hasConfigSyncStatus {
+		t.Fatal("config_sync_statuses migration was not applied")
+	}
+	var hasStatusUpdatedAt bool
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema = 'paperboat' AND table_name = 'config_sync_statuses' AND column_name = 'status_updated_at' AND is_nullable = 'NO'
+	)`).Scan(&hasStatusUpdatedAt); err != nil {
+		t.Fatal(err)
+	}
+	if !hasStatusUpdatedAt {
+		t.Fatal("config_sync_statuses.status_updated_at migration was not applied")
+	}
+	var hasReceivedAt bool
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema = 'paperboat' AND table_name = 'config_sync_statuses' AND column_name = 'received_at' AND is_nullable = 'NO'
+	)`).Scan(&hasReceivedAt); err != nil {
+		t.Fatal(err)
+	}
+	if !hasReceivedAt {
+		t.Fatal("config_sync_statuses.received_at migration was not applied")
+	}
+	var hasStatusObservedAt bool
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema = 'paperboat' AND table_name = 'config_sync_statuses' AND column_name = 'status_observed_at' AND is_nullable = 'NO'
+	)`).Scan(&hasStatusObservedAt); err != nil {
+		t.Fatal(err)
+	}
+	if !hasStatusObservedAt {
+		t.Fatal("config_sync_statuses.status_observed_at migration was not applied")
 	}
 }
 

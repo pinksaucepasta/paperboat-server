@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 )
 
 type Volume struct {
@@ -32,18 +33,19 @@ type Region struct {
 }
 
 type MachineSpec struct {
-	Name       string
-	Hostname   string
-	ImageRef   string
-	Region     string
-	Size       MachineSize
-	VolumeID   string
-	MountPath  string
-	Env        map[string]string
-	Secrets    []MachineSecret
-	Command    []string
-	ConfigHash string
-	Tags       map[string]string
+	Name        string
+	Hostname    string
+	ImageRef    string
+	Region      string
+	Size        MachineSize
+	VolumeID    string
+	MountPath   string
+	Env         map[string]string
+	Secrets     []MachineSecret
+	Command     []string
+	StopTimeout time.Duration
+	ConfigHash  string
+	Tags        map[string]string
 }
 
 type MachineSecret struct {

@@ -326,6 +326,11 @@ func sdkMachineConfig(spec MachineSpec) *flygo.MachineConfig {
 		Guest:    &flygo.MachineGuest{CPUKind: "shared", CPUs: spec.Size.VCPU, MemoryMB: spec.Size.MemoryMB},
 		Metadata: metadata,
 	}
+	if spec.StopTimeout > 0 {
+		timeout := &flygo.Duration{Duration: spec.StopTimeout}
+		signal := "SIGTERM"
+		cfg.StopConfig = &flygo.StopConfig{Timeout: timeout, Signal: &signal}
+	}
 	if len(spec.Command) > 0 {
 		cfg.Init = flygo.MachineInit{Cmd: append([]string(nil), spec.Command...)}
 	}

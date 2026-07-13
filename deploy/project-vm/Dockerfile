@@ -1,9 +1,12 @@
-ARG NODE_BASE_IMAGE
-ARG GO_BASE_IMAGE
+ARG NODE_BASE_IMAGE=node:24-bookworm-slim@sha256:cb4e8f7c443347358b7875e717c29e27bf9befc8f5a26cf18af3c3dec80e58c5
+ARG GO_BASE_IMAGE=golang:1.25-bookworm@sha256:a9c020ee3d1508c7be5435c262434e3d3fc1d0e76a11afeb9ddae7d60bc86aa4
 
 FROM ${NODE_BASE_IMAGE} AS papercode
 
 WORKDIR /opt/papercode
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 make g++ \
+  && rm -rf /var/lib/apt/lists/*
 RUN corepack enable
 COPY papercode/package.json papercode/pnpm-lock.yaml papercode/pnpm-workspace.yaml ./
 COPY papercode/tsconfig.base.json papercode/vite.config.ts ./
@@ -14,6 +17,9 @@ COPY papercode/scripts ./scripts
 COPY papercode/oxlint-plugin-t3code ./oxlint-plugin-t3code
 RUN pnpm install --frozen-lockfile
 COPY papercode/assets ./assets
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
 RUN pnpm run build
 RUN pnpm --filter t3 deploy --prod --legacy /opt/papercode-server
 
@@ -31,7 +37,8 @@ WORKDIR /src/paperboat-server
 COPY paperboat-server/go.mod paperboat-server/go.sum ./
 RUN go mod download
 COPY paperboat-server ./
-RUN go build -o /out/paperboat-activity-reporter-go ./cmd/paperboat-activity-reporter
+RUN go build -o /out/paperboat-activity-reporter-go ./cmd/paperboat-activity-reporter \
+  && go build -o /out/paperboat-config-sync ./cmd/paperboat-config-sync
 
 FROM ${NODE_BASE_IMAGE}
 
@@ -68,6 +75,7 @@ COPY --from=papercode /opt/papercode-server /opt/papercode-server
 COPY --from=agentunnel /out/agentunnel /usr/local/bin/agentunnel
 COPY --from=paperboat-server-tools /out/paperboat-activity-reporter-go /usr/local/bin/paperboat-activity-reporter-go
 COPY paperboat-server/deploy/project-vm/bin/ /usr/local/bin/
+COPY --from=paperboat-server-tools /out/paperboat-config-sync /usr/local/bin/paperboat-config-sync
 COPY paperboat-server/deploy/project-vm/presets.d/ /etc/paperboat/presets.d/
 
 RUN chmod +x /usr/local/bin/paperboat-* /etc/paperboat/presets.d/*.sh \

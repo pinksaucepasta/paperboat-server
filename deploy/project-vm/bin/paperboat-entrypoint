@@ -9,6 +9,10 @@ bin_dir="${PAPERBOAT_BIN_DIR:-/usr/local/bin}"
 child_pids=()
 activity_pid=""
 activity_restart_count=0
+config_sync_pid=""
+config_sync_available=false
+config_sync_restart_count=0
+shutting_down=false
 current_stage="initializing"
 
 mkdir -p "$runtime_dir" "$log_dir" "$workspace"
@@ -71,6 +75,53 @@ start_stage config_restore
 log info "syncing config repo"
 "${PAPERBOAT_CONFIG_SYNC_COMMAND:-$bin_dir/paperboat-config-sync}" restore
 
+start_config_sync() {
+  "${PAPERBOAT_CONFIG_SYNC_COMMAND:-$bin_dir/paperboat-config-sync}" daemon &
+  config_sync_pid=$!
+  config_sync_available=true
+  log info "config sync daemon started"
+}
+
+cleanup() {
+  if [ "$shutting_down" = "true" ]; then
+    return
+  fi
+  shutting_down=true
+  trap - TERM INT
+  log info "shutting down"
+  if [ "${#child_pids[@]}" -gt 0 ]; then
+    kill "${child_pids[@]}" 2>/dev/null || true
+    wait "${child_pids[@]}" 2>/dev/null || true
+  fi
+  if [ -n "$config_sync_pid" ] && kill -0 "$config_sync_pid" 2>/dev/null; then
+    kill -TERM "$config_sync_pid" 2>/dev/null || true
+    config_deadline=$((SECONDS + ${PAPERBOAT_CONFIG_SHUTDOWN_DEADLINE_SECONDS:-30} + ${PAPERBOAT_CONFIG_SHUTDOWN_GRACE_SECONDS:-2}))
+    while kill -0 "$config_sync_pid" 2>/dev/null && [ "$SECONDS" -lt "$config_deadline" ]; do
+      sleep 1
+    done
+    if kill -0 "$config_sync_pid" 2>/dev/null; then
+      kill -KILL "$config_sync_pid" 2>/dev/null || true
+      config_sync_available=false
+    fi
+    if ! wait "$config_sync_pid" 2>/dev/null; then
+      config_sync_available=false
+    fi
+  else
+    config_sync_available=false
+  fi
+  if [ "$config_sync_available" != "true" ]; then
+    "${PAPERBOAT_CONFIG_SYNC_COMMAND:-$bin_dir/paperboat-config-sync}" save || true
+  fi
+  if [ -n "$activity_pid" ] && kill -0 "$activity_pid" 2>/dev/null; then
+    kill -TERM "$activity_pid" 2>/dev/null || true
+    wait "$activity_pid" 2>/dev/null || true
+  fi
+}
+trap 'cleanup; exit 0' TERM INT
+trap cleanup EXIT
+
+start_config_sync
+
 start_stage presets
 log info "applying presets"
 "${PAPERBOAT_PRESET_APPLY_COMMAND:-$bin_dir/paperboat-apply-presets}"
@@ -80,16 +131,6 @@ log info "starting papercode"
 "${PAPERBOAT_PAPERCODE_COMMAND:-$bin_dir/paperboat-start-papercode}" &
 papercode_pid=$!
 child_pids+=("$papercode_pid")
-
-cleanup() {
-  log info "shutting down"
-  if [ "${#child_pids[@]}" -gt 0 ]; then
-    kill "${child_pids[@]}" 2>/dev/null || true
-    wait "${child_pids[@]}" 2>/dev/null || true
-  fi
-  "${PAPERBOAT_CONFIG_SYNC_COMMAND:-$bin_dir/paperboat-config-sync}" save || true
-}
-trap cleanup TERM INT EXIT
 
 current_stage="papercode_readiness"
 "${PAPERBOAT_WAIT_HTTP_COMMAND:-$bin_dir/paperboat-wait-http}" "${PAPERBOAT_PAPERCODE_LOCAL_URL:-http://127.0.0.1:4099}" 60
@@ -118,7 +159,6 @@ log info "starting activity reporter"
 start_activity() {
   "${PAPERBOAT_ACTIVITY_COMMAND:-$bin_dir/paperboat-activity-reporter}" &
   activity_pid=$!
-  child_pids+=("$activity_pid")
   log info "activity reporter started"
 }
 start_activity
@@ -180,6 +220,21 @@ while :; do
       "$(date -Iseconds)" "$activity_status" "$activity_restart_count" "$backoff" >&2
     sleep "$backoff"
     start_activity
+  fi
+  if [ -n "$config_sync_pid" ] && ! kill -0 "$config_sync_pid" 2>/dev/null; then
+    config_sync_status=0
+    wait "$config_sync_pid" 2>/dev/null || config_sync_status=$?
+    config_sync_status="${config_sync_status:-1}"
+    config_sync_available=false
+    config_sync_restart_count=$((config_sync_restart_count + 1))
+    config_sync_backoff="$config_sync_restart_count"
+    if [ "$config_sync_backoff" -gt "${PAPERBOAT_CONFIG_RESTART_MAX_BACKOFF_SECONDS:-30}" ]; then
+      config_sync_backoff="${PAPERBOAT_CONFIG_RESTART_MAX_BACKOFF_SECONDS:-30}"
+    fi
+    printf '{"ts":"%s","component":"entrypoint","level":"error","message":"config sync daemon exited","status":%s,"restart_count":%s,"backoff_seconds":%s}\n' \
+      "$(date -Iseconds)" "$config_sync_status" "$config_sync_restart_count" "$config_sync_backoff" >&2
+    sleep "$config_sync_backoff"
+    start_config_sync
   fi
   sleep 1
 done

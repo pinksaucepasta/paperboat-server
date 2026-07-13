@@ -14,6 +14,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
 	"github.com/pinksaucepasta/paperboat-server/internal/catalog"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
+	"github.com/pinksaucepasta/paperboat-server/internal/configsync"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
@@ -89,6 +90,7 @@ func New(opts Options) (*App, error) {
 		Projects:         projectService,
 		Agentunnel:       agentunnelService,
 		MeteringRepo:     metering.NewRuntimeRepository(store, opts.Config.Secrets.EncryptionKey),
+		ConfigSync:       configsync.NewRepository(store, opts.Config.ConfigSync),
 		MintKeys:         mintKeys,
 	})
 	return &App{
