@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strings"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/agentunnel"
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
@@ -109,7 +108,7 @@ func New(opts Options) (*App, error) {
 }
 
 func normalizePapercodeIssuer(raw string) string {
-	return strings.TrimRight(strings.TrimSpace(raw), "/")
+	return config.NormalizeIssuer(raw)
 }
 
 func mintKeyProvider(cfg config.Config) (*mint.Provider, error) {

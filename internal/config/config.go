@@ -46,6 +46,35 @@ type HTTPConfig struct {
 	TrustedProxyCIDRs []string      `json:"trusted_proxy_cidrs"`
 }
 
+// NormalizeIssuer returns the canonical server identity used in CLI
+// connection descriptors and papercode credentials. It intentionally mirrors
+// the CLI's issuer normalization so equivalent URLs cannot fail validation.
+func NormalizeIssuer(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return strings.TrimRight(strings.TrimSpace(raw), "/")
+	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	hostname := strings.ToLower(u.Hostname())
+	port := u.Port()
+	if (u.Scheme == "https" && port == "443") || (u.Scheme == "http" && port == "80") {
+		port = ""
+	}
+	if port == "" {
+		if strings.Contains(hostname, ":") {
+			u.Host = "[" + hostname + "]"
+		} else {
+			u.Host = hostname
+		}
+	} else {
+		u.Host = net.JoinHostPort(hostname, port)
+	}
+	u.Path = strings.TrimRight(u.Path, "/")
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
+}
+
 type Database struct {
 	Driver string `json:"driver"`
 	DSN    string `json:"dsn"`
