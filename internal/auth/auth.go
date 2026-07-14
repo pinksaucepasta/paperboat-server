@@ -20,10 +20,11 @@ import (
 )
 
 const (
-	SessionCookieName    = "paperboat_session"
-	CSRFCookieName       = "paperboat_csrf"
-	OAuthStateCookieName = "paperboat_oauth_state"
-	CSRFHeaderName       = "X-CSRF-Token"
+	SessionCookieName     = "paperboat_session"
+	CSRFCookieName        = "paperboat_csrf"
+	OAuthStateCookieName  = "paperboat_oauth_state"
+	ReauthProofCookieName = "paperboat_reauth_proof"
+	CSRFHeaderName        = "X-CSRF-Token"
 )
 
 type Role string
@@ -134,7 +135,7 @@ func (s *Service) VerifyCallback(ctx context.Context, input CallbackInput) (User
 }
 
 func (s *Service) NewOAuthState() (string, error) {
-	payload := newToken() + "." + strconv.FormatInt(s.now().Add(10*time.Minute).Unix(), 10)
+	payload := "login:" + newToken() + "." + strconv.FormatInt(s.now().Add(10*time.Minute).Unix(), 10)
 	signed, err := s.signValue(payload)
 	if err != nil {
 		return "", err
@@ -157,11 +158,55 @@ func (s *Service) ValidateOAuthState(r *http.Request, state string) error {
 	if !s.validSignedValue(state) {
 		return ErrOAuthState
 	}
-	_, expiresAt, ok := parseExpiringSignedValue(state)
-	if !ok || !s.now().Before(expiresAt) {
+	nonce, expiresAt, ok := parseExpiringSignedValue(state)
+	if !ok || !strings.HasPrefix(nonce, "login:") || !s.now().Before(expiresAt) {
 		return ErrOAuthState
 	}
 	return nil
+}
+
+func (s *Service) NewReauthState(userID, purpose string) (string, error) {
+	if !validReauthPurpose(purpose) || strings.TrimSpace(userID) == "" {
+		return "", ErrOAuthState
+	}
+	payload := "reauth:" + userID + ":" + purpose + ":" + newToken() + "." + strconv.FormatInt(s.now().Add(10*time.Minute).Unix(), 10)
+	return s.signValue(payload)
+}
+
+func (s *Service) VerifyReauthentication(ctx context.Context, r *http.Request, input CallbackInput, user User, purpose string) (string, error) {
+	if !validReauthPurpose(purpose) || strings.TrimSpace(user.ID) == "" {
+		return "", ErrOAuthState
+	}
+	cookie, err := r.Cookie(OAuthStateCookieName)
+	if err != nil || !hmac.Equal([]byte(cookie.Value), []byte(input.State)) || !s.validSignedValue(input.State) {
+		return "", ErrOAuthState
+	}
+	nonce, expires, ok := parseExpiringSignedValue(input.State)
+	prefix := "reauth:" + user.ID + ":" + purpose + ":"
+	if !ok || !strings.HasPrefix(nonce, prefix) || !s.now().Before(expires) {
+		return "", ErrOAuthState
+	}
+	profile, err := s.verifier.VerifyCallback(ctx, input)
+	if err != nil || profile.Subject != user.WorkOSSubject {
+		return "", ErrUnauthenticated
+	}
+	return s.signValue("reauth-proof:" + user.ID + ":" + purpose + ":" + newToken() + "." + strconv.FormatInt(s.now().Add(5*time.Minute).Unix(), 10))
+}
+
+func (s *Service) ValidateReauthProof(r *http.Request, userID, purpose string) error {
+	cookie, err := r.Cookie(ReauthProofCookieName)
+	if err != nil || !s.validSignedValue(cookie.Value) {
+		return ErrUnauthenticated
+	}
+	nonce, expires, ok := parseExpiringSignedValue(cookie.Value)
+	if !ok || !strings.HasPrefix(nonce, "reauth-proof:"+userID+":"+purpose+":") || !s.now().Before(expires) {
+		return ErrUnauthenticated
+	}
+	return nil
+}
+
+func validReauthPurpose(value string) bool {
+	return value == "config_recovery_export" || value == "config_key_rotation"
 }
 
 func (s *Service) AuthenticateRequest(ctx context.Context, r *http.Request) (User, Session, error) {
@@ -259,6 +304,13 @@ func (s *Service) SetOAuthStateCookie(w http.ResponseWriter, state string) {
 	http.SetCookie(w, &http.Cookie{Name: OAuthStateCookieName, Value: state, Path: "/", HttpOnly: true, Secure: s.cookieSecure, SameSite: http.SameSiteLaxMode, Expires: s.now().Add(10 * time.Minute), MaxAge: 600})
 }
 
+func (s *Service) SetReauthProofCookie(w http.ResponseWriter, proof string) {
+	http.SetCookie(w, &http.Cookie{Name: ReauthProofCookieName, Value: proof, Path: "/", HttpOnly: true, Secure: s.cookieSecure, SameSite: http.SameSiteStrictMode, Expires: s.now().Add(5 * time.Minute), MaxAge: 300})
+}
+func (s *Service) ClearReauthProofCookie(w http.ResponseWriter) {
+	clearCookiePath(w, ReauthProofCookieName, "/", true, s.cookieSecure)
+}
+
 func (s *Service) ClearSessionCookies(w http.ResponseWriter) {
 	clearCookie(w, SessionCookieName, true, s.cookieSecure)
 	clearCookie(w, CSRFCookieName, false, s.cookieSecure)
@@ -270,8 +322,11 @@ func (s *Service) ClearOAuthStateCookie(w http.ResponseWriter) {
 }
 
 func clearCookie(w http.ResponseWriter, name string, httpOnly bool, secure bool) {
+	clearCookiePath(w, name, "/", httpOnly, secure)
+}
+func clearCookiePath(w http.ResponseWriter, name, path string, httpOnly, secure bool) {
 	expired := time.Unix(0, 0)
-	http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: "/", HttpOnly: httpOnly, Secure: secure, SameSite: http.SameSiteLaxMode, Expires: expired, MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: path, HttpOnly: httpOnly, Secure: secure, SameSite: http.SameSiteLaxMode, Expires: expired, MaxAge: -1})
 }
 
 func (s *Service) CSRFToken(r *http.Request) (string, bool) {
@@ -306,12 +361,7 @@ func (s *Service) ValidateCSRF(ctx context.Context, r *http.Request) error {
 }
 
 func (s *Service) HasActiveEntitlement(ctx context.Context, userID string) (bool, error) {
-	hasPaid, err := s.db.Queries().UserHasActiveSubscription(ctx, userID)
-	if err != nil || hasPaid {
-		return hasPaid, err
-	}
-	applied, err := s.ensureFreeEntitlementResources(ctx, userID)
-	return applied, err
+	return s.db.Queries().UserHasActiveSubscription(ctx, userID)
 }
 
 func (s *Service) ensureFreeEntitlementResources(ctx context.Context, userID string) (bool, error) {

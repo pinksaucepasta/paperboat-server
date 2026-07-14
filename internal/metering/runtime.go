@@ -653,14 +653,20 @@ func (r *RuntimeRepository) RecordHeartbeat(ctx context.Context, heartbeat Activ
 		if err != nil {
 			return err
 		}
+		classifierPending, err := json.Marshal(heartbeat.ConfigSync.ClassifierPending)
+		if err != nil {
+			return err
+		}
 		if err := tx.Queries().UpsertConfigSyncStatus(ctx, dbsqlc.UpsertConfigSyncStatusParams{
 			ProjectID: heartbeat.ProjectID, MachineID: heartbeat.MachineID, State: heartbeat.ConfigSync.State,
 			LastAttemptAt: nullableTime(heartbeat.ConfigSync.LastAttemptAt), LastSuccessfulSyncAt: nullableTime(heartbeat.ConfigSync.LastSuccessfulAt),
 			RemoteCommit: heartbeat.ConfigSync.RemoteCommit, PendingPathCount: int32(heartbeat.ConfigSync.PendingPathCount),
-			Skipped: skipped, Conflicts: conflicts, ErrorCode: heartbeat.ConfigSync.ErrorCode, ErrorMessage: heartbeat.ConfigSync.ErrorMessage,
+			Skipped: skipped, Conflicts: conflicts, ClassifierPending: classifierPending, ErrorCode: heartbeat.ConfigSync.ErrorCode, ErrorMessage: heartbeat.ConfigSync.ErrorMessage,
 			MaxFileBytes: heartbeat.ConfigSync.MaxFileBytes, MaxBatchBytes: heartbeat.ConfigSync.MaxBatchBytes,
-			PolicyRevision: heartbeat.ConfigSync.PolicyRevision, StatusUpdatedAt: heartbeat.ConfigSync.UpdatedAt.UTC(),
-			StatusObservedAt: heartbeat.ConfigSyncObservedAt.UTC(), HeartbeatAt: heartbeat.LastHeartbeatAt,
+			PolicyRevision: heartbeat.ConfigSync.PolicyRevision, ClassifierPolicyRevision: heartbeat.ConfigSync.ClassifierPolicyRevision,
+			ClassifierModelRevision: heartbeat.ConfigSync.ClassifierModelRevision, ClassifierHealth: heartbeat.ConfigSync.ClassifierHealth, StatusUpdatedAt: heartbeat.ConfigSync.UpdatedAt.UTC(),
+			EncryptionKeyVersion: int32(heartbeat.ConfigSync.EncryptionKeyVersion),
+			StatusObservedAt:     heartbeat.ConfigSyncObservedAt.UTC(), HeartbeatAt: heartbeat.LastHeartbeatAt,
 		}); err != nil {
 			return err
 		}

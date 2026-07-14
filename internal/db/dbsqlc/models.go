@@ -29,6 +29,18 @@ type AccessSession struct {
 	PapercodeRevokedAt         sql.NullTime
 }
 
+type AccountConfigKey struct {
+	UserID                    string
+	KeyVersion                int32
+	Recipient                 string
+	EncryptedIdentity         []byte
+	PreviousKeyVersion        sql.NullInt32
+	PreviousRecipient         sql.NullString
+	PreviousEncryptedIdentity []byte
+	CreatedAt                 time.Time
+	RotatedAt                 sql.NullTime
+}
+
 type AgentunnelCleanupOutbox struct {
 	ID           string
 	ProjectID    string
@@ -67,6 +79,19 @@ type AuthRateLimit struct {
 	BucketKey    string
 	WindowStart  time.Time
 	RequestCount int32
+}
+
+type BillingCheckoutReservation struct {
+	ID                 string
+	UserID             string
+	ProductCode        string
+	IdempotencyKey     string
+	ProviderCheckoutID sql.NullString
+	CheckoutUrl        sql.NullString
+	State              string
+	ExpiresAt          time.Time
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 type BillingProduct struct {
@@ -118,27 +143,56 @@ type ClientSession struct {
 	Version          int64
 }
 
+type ConfigClassificationCache struct {
+	UserID             string
+	NormalizedPath     string
+	MetadataHash       string
+	Decision           string
+	Source             string
+	Confidence         float64
+	ReasonCode         string
+	PolicyRevision     string
+	ModelRevision      string
+	ClassifierRevision string
+	ExpiresAt          time.Time
+	CreatedAt          time.Time
+}
+
+type ConfigClassificationOverride struct {
+	UserID         string
+	NormalizedPath string
+	Decision       string
+	CreatedBy      string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
 type ConfigSyncStatus struct {
-	ProjectID            string
-	MachineID            string
-	State                string
-	LastAttemptAt        sql.NullTime
-	LastSuccessfulSyncAt sql.NullTime
-	RemoteCommit         string
-	PendingPathCount     int32
-	Skipped              json.RawMessage
-	Conflicts            json.RawMessage
-	ErrorCode            string
-	ErrorMessage         string
-	MaxFileBytes         int64
-	MaxBatchBytes        int64
-	PolicyRevision       string
-	HeartbeatAt          time.Time
-	CreatedAt            time.Time
-	UpdatedAt            time.Time
-	StatusUpdatedAt      time.Time
-	ReceivedAt           time.Time
-	StatusObservedAt     time.Time
+	ProjectID                string
+	MachineID                string
+	State                    string
+	LastAttemptAt            sql.NullTime
+	LastSuccessfulSyncAt     sql.NullTime
+	RemoteCommit             string
+	PendingPathCount         int32
+	Skipped                  json.RawMessage
+	Conflicts                json.RawMessage
+	ErrorCode                string
+	ErrorMessage             string
+	MaxFileBytes             int64
+	MaxBatchBytes            int64
+	PolicyRevision           string
+	HeartbeatAt              time.Time
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
+	StatusUpdatedAt          time.Time
+	ReceivedAt               time.Time
+	StatusObservedAt         time.Time
+	ClassifierPending        json.RawMessage
+	ClassifierPolicyRevision string
+	ClassifierModelRevision  string
+	ClassifierHealth         string
+	EncryptionKeyVersion     int32
 }
 
 type ConnectionEvent struct {
@@ -159,6 +213,27 @@ type CreditAccount struct {
 	Version   int64
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+type CreditAutoTopupAttempt struct {
+	ID              string
+	UserID          string
+	IdempotencyKey  string
+	ProviderOrderID sql.NullString
+	State           string
+	LastError       string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+type CreditAutoTopupPolicy struct {
+	ID                string
+	UserID            string
+	Enabled           bool
+	Threshold         string
+	BundleCredits     string
+	ProviderProductID string
+	UpdatedAt         time.Time
 }
 
 type CreditLedgerEntry struct {
@@ -597,6 +672,9 @@ type Subscription struct {
 	Version                int64
 	CreatedAt              time.Time
 	UpdatedAt              time.Time
+	StorageUnits           int32
+	PendingStorageUnits    sql.NullInt32
+	PendingPlanVersionID   sql.NullString
 }
 
 type User struct {

@@ -158,49 +158,16 @@ VALUES ($1, $2, 'polar', $3, 'active', $4)`,
 	}
 }
 
-func TestFreeEntitlementProvisionsCreditsAndStorage(t *testing.T) {
-	store, router := newAuthIntegrationRouter(t)
-	seedFreePlan(t, store, "10", 10)
+func TestUnsubscribedUserRequiresSubscription(t *testing.T) {
+	_, router := newAuthIntegrationRouter(t)
 	cookies := loginCookies(t, router, "workos_free:free@example.com:Free User")
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/projects", nil)
 	addCookies(req, cookies)
 	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("free entitlement status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-
-	userID := userIDByEmail(t, store, "free@example.com")
-	var balance string
-	var includedGB int
-	if err := store.SQL().QueryRowContext(context.Background(), `
-SELECT ca.balance::text, sa.included_gb
-FROM paperboat.credit_accounts ca
-JOIN paperboat.storage_accounts sa ON sa.user_id = ca.user_id
-WHERE ca.user_id = $1`, userID).Scan(&balance, &includedGB); err != nil {
-		t.Fatal(err)
-	}
-	if balance != "10.000000" || includedGB != 10 {
-		t.Fatalf("free resources = balance %s storage %d", balance, includedGB)
-	}
-
-	again := httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/api/projects", nil)
-	addCookies(req, cookies)
-	router.ServeHTTP(again, req)
-	if again.Code != http.StatusNotImplemented {
-		t.Fatalf("second free entitlement status = %d, body = %s", again.Code, again.Body.String())
-	}
-	var creditEntries, storageEntries int
-	if err := store.SQL().QueryRowContext(context.Background(), `SELECT count(*) FROM paperboat.credit_ledger_entries WHERE account_id = (SELECT id FROM paperboat.credit_accounts WHERE user_id = $1)`, userID).Scan(&creditEntries); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SQL().QueryRowContext(context.Background(), `SELECT count(*) FROM paperboat.storage_ledger_entries WHERE account_id = (SELECT id FROM paperboat.storage_accounts WHERE user_id = $1)`, userID).Scan(&storageEntries); err != nil {
-		t.Fatal(err)
-	}
-	if creditEntries != 1 || storageEntries != 1 {
-		t.Fatalf("free ledger entries = credits %d storage %d, want 1/1", creditEntries, storageEntries)
+	if rec.Code != http.StatusPaymentRequired {
+		t.Fatalf("unsubscribed status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
 

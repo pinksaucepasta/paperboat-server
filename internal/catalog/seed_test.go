@@ -22,7 +22,7 @@ func TestLoadFileParsesCatalogSeed(t *testing.T) {
 	for _, plan := range seed.Plans {
 		plans[plan.Code] = true
 	}
-	for _, code := range []string{"free", "sailor", "navigator", "captain"} {
+	for _, code := range []string{"free-trial", "sailor", "navigator", "captain"} {
 		if !plans[code] {
 			t.Fatalf("expected plan %q in seed", code)
 		}

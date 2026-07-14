@@ -2,6 +2,7 @@ package billing_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -69,6 +70,92 @@ func TestPolarWebhookAppliesPlanResourcesIdempotently(t *testing.T) {
 	}
 	if state != "active" {
 		t.Fatalf("subscription state = %q", state)
+	}
+}
+
+func TestPolarTrialConvertsSameSubscriptionToSailor(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID := "usr_trial_" + suffix
+	insertUser(t, store, userID, "trial-"+suffix+"@example.com")
+	trialCode, sailorCode := "trial-"+suffix, "sailor-"+suffix
+	productID, priceID := "prod_trial_"+suffix, "price_trial_"+suffix
+	insertPlanProduct(t, store, trialCode, productID, priceID, "10", 5)
+	insertPlanProduct(t, store, sailorCode, "prod_sailor_"+suffix, "price_sailor_"+suffix, "100", 30)
+	cleanupPlanProducts(t, store, trialCode, sailorCode)
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.plan_versions SET metadata=jsonb_build_object('billing', jsonb_build_object('converts_to_plan', $2)) WHERE id=(SELECT current_version_id FROM paperboat.plans WHERE code=$1)`, trialCode, sailorCode); err != nil {
+		t.Fatal(err)
+	}
+	service := billing.NewService(billing.NewRepository(store), billing.FakePolarClient{}, audit.NewWriter(store))
+	subscriptionID := "sub_trial_" + suffix
+	trial := []byte(fmt.Sprintf(`{"type":"subscription.created","data":{"id":%q,"customer":{"external_id":%q},"product_id":%q,"price_id":%q,"status":"trialing","current_period_start":"2026-07-01T00:00:00Z","current_period_end":"2026-07-08T00:00:00Z"}}`, subscriptionID, userID, productID, priceID))
+	if _, err := service.HandleWebhookWithID(ctx, "evt_trial_"+suffix, trial); err != nil {
+		t.Fatal(err)
+	}
+	active := []byte(fmt.Sprintf(`{"type":"subscription.active","data":{"id":%q,"customer":{"external_id":%q},"product_id":%q,"price_id":%q,"status":"active","current_period_start":"2026-07-08T00:00:00Z","current_period_end":"2026-08-08T00:00:00Z"}}`, subscriptionID, userID, productID, priceID))
+	if _, err := service.HandleWebhookWithID(ctx, "evt_trial_active_"+suffix, active); err != nil {
+		t.Fatal(err)
+	}
+	var subscriptions int
+	var planCode string
+	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*), max(p.code) FROM paperboat.subscriptions s JOIN paperboat.plan_versions pv ON pv.id=s.active_plan_version_id JOIN paperboat.plans p ON p.id=pv.plan_id WHERE s.user_id=$1`, userID).Scan(&subscriptions, &planCode); err != nil {
+		t.Fatal(err)
+	}
+	if subscriptions != 1 || planCode != sailorCode {
+		t.Fatalf("subscriptions/plan = %d/%q", subscriptions, planCode)
+	}
+	if _, err := service.CreateCheckout(ctx, userID, "trial@example.com", "product-"+trialCode, "trial-again-"+suffix, "https://example.test/success"); !errors.Is(err, billing.ErrTrialUnavailable) {
+		t.Fatalf("repeat trial error = %v", err)
+	}
+}
+
+func TestCheckoutReservationPreventsConcurrentSubscriptions(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID := "usr_checkout_guard_" + suffix
+	insertUser(t, store, userID, "guard-"+suffix+"@example.com")
+	planCode := "guard-plan-" + suffix
+	insertPlanProduct(t, store, planCode, "prod_guard_"+suffix, "price_guard_"+suffix, "10", 5)
+	cleanupPlanProducts(t, store, planCode)
+	service := billing.NewService(billing.NewRepository(store), billing.FakePolarClient{}, audit.NewWriter(store))
+	first, err := service.CreateCheckout(ctx, userID, "guard@example.com", "product-"+planCode, "guard-key-"+suffix, "https://example.test/success")
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry, err := service.CreateCheckout(ctx, userID, "guard@example.com", "product-"+planCode, "guard-key-"+suffix, "https://example.test/success")
+	if err != nil || retry.URL != first.URL {
+		t.Fatalf("same-key retry = %+v, %v", retry, err)
+	}
+	if _, err := service.CreateCheckout(ctx, userID, "guard@example.com", "product-"+planCode, "different-key-"+suffix, "https://example.test/success"); !errors.Is(err, billing.ErrCheckoutPending) {
+		t.Fatalf("concurrent checkout error = %v", err)
+	}
+}
+
+func TestSubscriptionSeatsReconcilePurchasedStorage(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID := "usr_storage_seats_" + suffix
+	insertUser(t, store, userID, "seats-"+suffix+"@example.com")
+	planCode, productID, priceID := "seat-plan-"+suffix, "prod_seat_"+suffix, "price_seat_"+suffix
+	insertPlanProduct(t, store, planCode, productID, priceID, "10", 5)
+	cleanupPlanProducts(t, store, planCode)
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.plan_versions SET metadata='{"billing":{"storage_unit_gb":10,"storage_seat_offset":1}}'::jsonb WHERE id=(SELECT current_version_id FROM paperboat.plans WHERE code=$1)`, planCode); err != nil {
+		t.Fatal(err)
+	}
+	service := billing.NewService(billing.NewRepository(store), billing.FakePolarClient{}, audit.NewWriter(store))
+	body := []byte(fmt.Sprintf(`{"type":"subscription.active","data":{"id":"sub_seats_%[1]s","customer":{"external_id":%q},"product_id":%q,"price_id":%q,"status":"active","seats":3,"current_period_start":"2026-07-01T00:00:00Z","current_period_end":"2026-08-01T00:00:00Z"}}`, suffix, userID, productID, priceID))
+	if _, err := service.HandleWebhookWithID(ctx, "evt_seats_"+suffix, body); err != nil {
+		t.Fatal(err)
+	}
+	usage, err := billing.NewRepository(store).Usage(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.PurchasedStorageGB != 20 {
+		t.Fatalf("purchased storage = %d", usage.PurchasedStorageGB)
 	}
 }
 
@@ -271,7 +358,7 @@ func TestNegativeAdminAdjustmentRetryIgnoresLaterBalance(t *testing.T) {
 	}
 }
 
-func TestPolarWebhookRequiresExactPriceMapping(t *testing.T) {
+func TestPolarWebhookUsesStableProductMappingWithoutLegacyPriceField(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
@@ -284,9 +371,8 @@ VALUES ($1, $2, 'polar', $3, $4, 'credit_topup', '5', true)`, "bp_price_"+suffix
 		t.Fatal(err)
 	}
 	service := billing.NewService(billing.NewRepository(store), billing.FakePolarClient{}, audit.NewWriter(store))
-	_, err := service.HandleWebhook(ctx, []byte(fmt.Sprintf(`{"id":"evt_missing_price_%[1]s","type":"order.paid","data":{"external_user_id":"%[2]s","product_id":"%[3]s"}}`, suffix, userID, productID)))
-	if err == nil {
-		t.Fatal("webhook without exact price mapping succeeded")
+	if _, err := service.HandleWebhook(ctx, []byte(fmt.Sprintf(`{"id":"evt_missing_price_%[1]s","type":"order.paid","data":{"external_user_id":"%[2]s","product_id":"%[3]s"}}`, suffix, userID, productID))); err != nil {
+		t.Fatalf("product-mapped webhook failed: %v", err)
 	}
 }
 

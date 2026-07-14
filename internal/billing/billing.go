@@ -15,6 +15,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -31,13 +32,57 @@ var (
 	ErrInvalidSignature    = errors.New("invalid polar webhook signature")
 	ErrUnknownProduct      = errors.New("billing product is not active or mapped")
 	ErrSamePlan            = errors.New("billing subscription is already on this plan")
+	ErrTrialUnavailable    = errors.New("free trial is only available once per account")
+	ErrCheckoutPending     = errors.New("another billing checkout is already pending")
 	ErrRetryableWebhook    = errors.New("webhook could not be processed yet")
 )
+
+type PolarAPIError struct{ StatusCode int }
+
+func (e PolarAPIError) Error() string {
+	return fmt.Sprintf("polar api returned status %d", e.StatusCode)
+}
+
+func polarFailureCode(err error) string {
+	var apiErr PolarAPIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.StatusCode {
+		case http.StatusPaymentRequired:
+			return "payment_failed"
+		case http.StatusForbidden:
+			return "off_session_disabled"
+		}
+	}
+	return "provider_error"
+}
 
 type PolarClient interface {
 	CreateCheckout(ctx context.Context, input CheckoutInput) (CheckoutSession, error)
 	UpdateSubscription(ctx context.Context, input SubscriptionUpdateInput) error
+	CreateOffSessionOrder(ctx context.Context, input OffSessionOrderInput) (string, error)
+	GetSubscriptionPricing(ctx context.Context, providerSubscriptionID string) (SubscriptionPricing, error)
 	CreateCustomerPortal(ctx context.Context, input CustomerPortalInput) (CustomerPortalSession, error)
+}
+
+type SeatPriceTier struct {
+	MinSeats     int   `json:"min_seats"`
+	MaxSeats     *int  `json:"max_seats"`
+	PricePerSeat int64 `json:"price_per_seat"`
+}
+type SubscriptionPricing struct {
+	Currency               string
+	PeriodStart, PeriodEnd time.Time
+	TierType               string
+	Tiers                  []SeatPriceTier
+}
+
+type StorageChangePreview struct {
+	CurrentGB             int    `json:"current_gb"`
+	RequestedGB           int    `json:"requested_gb"`
+	Effective             string `json:"effective"`
+	EstimatedChargeMinor  int64  `json:"estimated_charge_minor"`
+	NextRenewalTotalMinor int64  `json:"next_renewal_total_minor"`
+	Currency              string `json:"currency"`
 }
 
 type CheckoutInput struct {
@@ -61,6 +106,15 @@ type SubscriptionUpdateInput struct {
 	ProviderProductID      string
 	ProrationBehavior      string
 	IdempotencyKey         string
+	Seats                  *int
+}
+
+type OffSessionOrderInput struct {
+	UserID            string
+	ProviderProductID string
+	IdempotencyKey    string
+	Description       string
+	Seats             int
 }
 
 type CustomerPortalInput struct {
@@ -89,6 +143,7 @@ type Entitlement struct {
 	CurrentPeriodStart *time.Time `json:"current_period_start,omitempty"`
 	CurrentPeriodEnd   *time.Time `json:"current_period_end,omitempty"`
 	Active             bool       `json:"active"`
+	TrialEligible      bool       `json:"trial_eligible"`
 }
 
 type Usage struct {
@@ -97,6 +152,22 @@ type Usage struct {
 	PurchasedStorageGB int    `json:"purchased_storage_gb"`
 	AllocatedStorageGB int    `json:"allocated_storage_gb"`
 	AvailableStorageGB int    `json:"available_storage_gb"`
+}
+
+type AutoTopupPolicy struct {
+	Enabled           bool       `json:"enabled"`
+	Threshold         string     `json:"threshold"`
+	BundleCredits     string     `json:"bundle_credits"`
+	ProviderProductID string     `json:"-"`
+	LastAttemptState  string     `json:"last_attempt_state,omitempty"`
+	LastAttemptAt     *time.Time `json:"last_attempt_at,omitempty"`
+	LastError         string     `json:"last_error,omitempty"`
+}
+
+type StorageSubscription struct {
+	CurrentGB int  `json:"current_gb"`
+	PendingGB *int `json:"pending_gb,omitempty"`
+	UnitGB    int  `json:"unit_gb"`
 }
 
 type PlanProduct struct {
@@ -114,11 +185,20 @@ type Product struct {
 	CatalogRef        string
 	ProviderProductID string
 	ProviderPriceID   string
+	PlanRank          int
+	IsTrial           bool
+	PlanVersionID     string
+	IncludedStorageGB int
 }
 
 type ActivePolarSubscription struct {
 	ProviderSubscriptionID string
 	PlanCode               string
+	PlanRank               int
+	StorageUnitGB          int
+	StorageSeatOffset      int
+	StorageUnits           int
+	PendingStorageUnits    *int
 }
 
 func (r *Repository) ActivePolarSubscription(ctx context.Context, userID string) (ActivePolarSubscription, error) {
@@ -126,13 +206,25 @@ func (r *Repository) ActivePolarSubscription(ctx context.Context, userID string)
 	if err != nil {
 		return ActivePolarSubscription{}, err
 	}
-	return ActivePolarSubscription{ProviderSubscriptionID: row.ProviderSubscriptionID, PlanCode: row.PlanCode}, nil
+	return ActivePolarSubscription{ProviderSubscriptionID: row.ProviderSubscriptionID, PlanCode: row.PlanCode, PlanRank: int(row.PlanRank), StorageUnitGB: int(row.StorageUnitGb), StorageSeatOffset: int(row.StorageSeatOffset), StorageUnits: int(row.StorageUnits), PendingStorageUnits: nullableInt(row.PendingStorageUnits)}, nil
+}
+
+func nullableInt(v sql.NullInt32) *int {
+	if !v.Valid {
+		return nil
+	}
+	i := int(v.Int32)
+	return &i
 }
 
 func (r *Repository) Entitlement(ctx context.Context, userID string) (Entitlement, error) {
 	row, err := r.db.Queries().GetBillingEntitlement(ctx, userID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return r.freeEntitlement(ctx, userID)
+		history, historyErr := r.db.Queries().UserHasPolarSubscriptionHistory(ctx, userID)
+		if historyErr != nil {
+			return Entitlement{}, historyErr
+		}
+		return Entitlement{State: "none", Active: false, TrialEligible: !history}, nil
 	}
 	if err != nil {
 		return Entitlement{}, fmt.Errorf("query entitlement: %w", err)
@@ -145,16 +237,11 @@ func (r *Repository) Entitlement(ctx context.Context, userID string) (Entitlemen
 		e.CurrentPeriodEnd = &row.CurrentPeriodEnd.Time
 	}
 	e.Active = entitlementActive(e.State, e.CurrentPeriodEnd, time.Now().UTC())
-	if !e.Active {
-		return r.freeEntitlement(ctx, userID)
-	}
+	e.TrialEligible = false
 	return e, nil
 }
 
 func (r *Repository) Usage(ctx context.Context, userID string) (Usage, error) {
-	if err := r.ensureFreePlanResources(ctx, userID); err != nil {
-		return Usage{}, err
-	}
 	row, err := r.db.Queries().GetBillingUsage(ctx, userID)
 	if err != nil {
 		return Usage{}, fmt.Errorf("query billing usage: %w", err)
@@ -268,7 +355,7 @@ func (r *Repository) ProductByCode(ctx context.Context, code string) (Product, e
 	if err != nil {
 		return Product{}, fmt.Errorf("query billing product: %w", err)
 	}
-	return Product{Code: row.Code, CatalogType: row.CatalogType, CatalogRef: row.CatalogRef, ProviderProductID: row.ProviderProductID, ProviderPriceID: row.ProviderPriceID}, nil
+	return Product{Code: row.Code, CatalogType: row.CatalogType, CatalogRef: row.CatalogRef, ProviderProductID: row.ProviderProductID, ProviderPriceID: row.ProviderPriceID, PlanRank: int(row.PlanRank), IsTrial: row.IsTrial, PlanVersionID: row.PlanVersionID.String, IncludedStorageGB: int(row.IncludedStorageGb)}, nil
 }
 
 func (r *Repository) ListPlanProducts(ctx context.Context) ([]PlanProduct, error) {
@@ -283,11 +370,11 @@ func (r *Repository) ListPlanProducts(ctx context.Context) ([]PlanProduct, error
 	return products, nil
 }
 
-func (r *Repository) ProductByProviderIDs(ctx context.Context, tx *db.Tx, providerProductID, providerPriceID string) (Product, error) {
-	if strings.TrimSpace(providerPriceID) == "" {
+func (r *Repository) ProductByProviderIDs(ctx context.Context, tx *db.Tx, providerProductID, _ string) (Product, error) {
+	if strings.TrimSpace(providerProductID) == "" {
 		return Product{}, ErrUnknownProduct
 	}
-	row, err := tx.Queries().GetBillingProductByProviderIDs(ctx, dbsqlc.GetBillingProductByProviderIDsParams{ProviderProductID: providerProductID, ProviderPriceID: providerPriceID})
+	row, err := tx.Queries().GetBillingProductByProviderIDs(ctx, providerProductID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Product{}, ErrUnknownProduct
 	}
@@ -411,13 +498,27 @@ func (r *Repository) RecordPolarEvent(ctx context.Context, providerEventID, even
 }
 
 type Service struct {
-	repo   *Repository
-	client PolarClient
-	audit  *audit.Writer
+	repo                   *Repository
+	client                 PolarClient
+	audit                  *audit.Writer
+	autoTopupRetryCooldown time.Duration
+	checkoutReservationTTL time.Duration
 }
 
 func NewService(repo *Repository, client PolarClient, auditWriter *audit.Writer) *Service {
-	return &Service{repo: repo, client: client, audit: auditWriter}
+	return &Service{repo: repo, client: client, audit: auditWriter, autoTopupRetryCooldown: time.Hour, checkoutReservationTTL: 30 * time.Minute}
+}
+
+func (s *Service) SetAutoTopupRetryCooldown(value time.Duration) {
+	if value > 0 {
+		s.autoTopupRetryCooldown = value
+	}
+}
+
+func (s *Service) SetCheckoutReservationTTL(value time.Duration) {
+	if value > 0 {
+		s.checkoutReservationTTL = value
+	}
 }
 
 func (s *Service) Entitlement(ctx context.Context, userID string) (Entitlement, error) {
@@ -432,35 +533,317 @@ func (s *Service) ListPlanProducts(ctx context.Context) ([]PlanProduct, error) {
 	return s.repo.ListPlanProducts(ctx)
 }
 
+func (s *Service) StorageSubscription(ctx context.Context, userID string) (StorageSubscription, error) {
+	active, err := s.repo.ActivePolarSubscription(ctx, userID)
+	if err != nil {
+		return StorageSubscription{}, err
+	}
+	unit := active.StorageUnitGB
+	if unit <= 0 {
+		return StorageSubscription{}, fmt.Errorf("invalid storage add-on unit")
+	}
+	purchasedUnits := max(0, active.StorageUnits-active.StorageSeatOffset)
+	result := StorageSubscription{CurrentGB: purchasedUnits * unit, UnitGB: unit}
+	if active.PendingStorageUnits != nil {
+		pending := max(0, *active.PendingStorageUnits-active.StorageSeatOffset) * unit
+		result.PendingGB = &pending
+	}
+	return result, nil
+}
+
+func (s *Service) UpdateStorageSubscription(ctx context.Context, userID string, requestedGB int, idempotencyKey string) (StorageSubscription, error) {
+	if requestedGB < 0 {
+		return StorageSubscription{}, fmt.Errorf("storage amount must be nonnegative")
+	}
+	active, err := s.repo.ActivePolarSubscription(ctx, userID)
+	if err != nil {
+		return StorageSubscription{}, err
+	}
+	unit := active.StorageUnitGB
+	if unit <= 0 || requestedGB%unit != 0 {
+		return StorageSubscription{}, fmt.Errorf("storage amount must be a multiple of %d GB", unit)
+	}
+	usage, err := s.repo.Usage(ctx, userID)
+	if err != nil {
+		return StorageSubscription{}, err
+	}
+	if usage.IncludedStorageGB+requestedGB < usage.AllocatedStorageGB {
+		return StorageSubscription{}, ErrInsufficientStorage
+	}
+	seats := requestedGB/unit + active.StorageSeatOffset
+	behavior := "invoice"
+	if seats < active.StorageUnits {
+		behavior = "next_period"
+		if err := s.repo.db.Queries().SetPendingSubscriptionStorage(ctx, dbsqlc.SetPendingSubscriptionStorageParams{PendingStorageUnits: sql.NullInt32{Int32: int32(seats), Valid: true}, ProviderSubscriptionID: active.ProviderSubscriptionID, UserID: userID}); err != nil {
+			return StorageSubscription{}, err
+		}
+	}
+	if err := s.client.UpdateSubscription(ctx, SubscriptionUpdateInput{ProviderSubscriptionID: active.ProviderSubscriptionID, ProviderProductID: "", ProrationBehavior: behavior, IdempotencyKey: idempotencyKey, Seats: &seats}); err != nil {
+		if behavior == "next_period" {
+			_ = s.repo.db.Queries().SetPendingSubscriptionStorage(ctx, dbsqlc.SetPendingSubscriptionStorageParams{PendingStorageUnits: sql.NullInt32{}, ProviderSubscriptionID: active.ProviderSubscriptionID, UserID: userID})
+		}
+		return StorageSubscription{}, err
+	}
+	result := StorageSubscription{CurrentGB: max(0, active.StorageUnits-active.StorageSeatOffset) * unit, UnitGB: unit}
+	if behavior == "next_period" {
+		result.PendingGB = &requestedGB
+	} else {
+		result.CurrentGB = requestedGB
+	}
+	return result, nil
+}
+
+func (s *Service) PreviewStorageSubscription(ctx context.Context, userID string, requestedGB int) (StorageChangePreview, error) {
+	storage, err := s.StorageSubscription(ctx, userID)
+	if err != nil {
+		return StorageChangePreview{}, err
+	}
+	if requestedGB < 0 || requestedGB%storage.UnitGB != 0 {
+		return StorageChangePreview{}, fmt.Errorf("storage amount must be a multiple of %d GB", storage.UnitGB)
+	}
+	active, err := s.repo.ActivePolarSubscription(ctx, userID)
+	if err != nil {
+		return StorageChangePreview{}, err
+	}
+	usage, err := s.repo.Usage(ctx, userID)
+	if err != nil {
+		return StorageChangePreview{}, err
+	}
+	if usage.IncludedStorageGB+requestedGB < usage.AllocatedStorageGB {
+		return StorageChangePreview{}, ErrInsufficientStorage
+	}
+	pricing, err := s.client.GetSubscriptionPricing(ctx, active.ProviderSubscriptionID)
+	if err != nil {
+		return StorageChangePreview{}, err
+	}
+	requestedSeats := requestedGB/storage.UnitGB + active.StorageSeatOffset
+	currentTotal := seatPriceTotal(active.StorageUnits, pricing)
+	nextTotal := seatPriceTotal(requestedSeats, pricing)
+	preview := StorageChangePreview{CurrentGB: storage.CurrentGB, RequestedGB: requestedGB, Effective: "immediate", NextRenewalTotalMinor: nextTotal, Currency: pricing.Currency}
+	if requestedSeats < active.StorageUnits {
+		preview.Effective = "next_period"
+		return preview, nil
+	}
+	if pricing.PeriodEnd.After(pricing.PeriodStart) {
+		now := time.Now().UTC()
+		if now.Before(pricing.PeriodStart) {
+			now = pricing.PeriodStart
+		}
+		if now.After(pricing.PeriodEnd) {
+			now = pricing.PeriodEnd
+		}
+		remaining := pricing.PeriodEnd.Sub(now)
+		total := pricing.PeriodEnd.Sub(pricing.PeriodStart)
+		prorated := new(big.Rat).Mul(new(big.Rat).SetInt64(nextTotal-currentTotal), new(big.Rat).SetFrac64(remaining.Nanoseconds(), total.Nanoseconds()))
+		preview.EstimatedChargeMinor = prorated.Num().Int64() / prorated.Denom().Int64()
+	}
+	return preview, nil
+}
+
+func seatPriceTotal(seats int, pricing SubscriptionPricing) int64 {
+	if seats <= 0 {
+		return 0
+	}
+	if pricing.TierType == "graduated" {
+		var total int64
+		for _, tier := range pricing.Tiers {
+			upper := seats
+			if tier.MaxSeats != nil && upper > *tier.MaxSeats {
+				upper = *tier.MaxSeats
+			}
+			count := upper - tier.MinSeats + 1
+			if count > 0 {
+				total += int64(count) * tier.PricePerSeat
+			}
+		}
+		return total
+	}
+	for _, tier := range pricing.Tiers {
+		if seats >= tier.MinSeats && (tier.MaxSeats == nil || seats <= *tier.MaxSeats) {
+			return int64(seats) * tier.PricePerSeat
+		}
+	}
+	return 0
+}
+
+func (s *Service) AutoTopupPolicy(ctx context.Context, userID string) (AutoTopupPolicy, error) {
+	row, err := s.repo.db.Queries().GetCreditAutoTopupPolicy(ctx, userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		unit, unitErr := s.repo.db.Queries().GetCreditTopupUnit(ctx)
+		if unitErr != nil {
+			return AutoTopupPolicy{}, unitErr
+		}
+		return AutoTopupPolicy{Threshold: unit.CatalogRef, BundleCredits: unit.CatalogRef}, nil
+	}
+	if err != nil {
+		return AutoTopupPolicy{}, err
+	}
+	policy := AutoTopupPolicy{Enabled: row.Enabled, Threshold: row.PThreshold, BundleCredits: row.PBundleCredits, ProviderProductID: row.ProviderProductID, LastAttemptState: row.LastAttemptState, LastError: row.LastError}
+	if !row.LastAttemptAt.Equal(time.Unix(0, 0).UTC()) {
+		policy.LastAttemptAt = &row.LastAttemptAt
+	}
+	return policy, nil
+}
+
+func (s *Service) SetAutoTopupPolicy(ctx context.Context, userID string, policy AutoTopupPolicy) (AutoTopupPolicy, error) {
+	unit, err := s.repo.db.Queries().GetCreditTopupUnit(ctx)
+	if err != nil {
+		return AutoTopupPolicy{}, err
+	}
+	unitCredits, unitOK := new(big.Rat).SetString(unit.CatalogRef)
+	bundle, bundleOK := new(big.Rat).SetString(strings.TrimSpace(policy.BundleCredits))
+	threshold, thresholdOK := new(big.Rat).SetString(strings.TrimSpace(policy.Threshold))
+	multiple := new(big.Rat)
+	if unitOK && bundleOK && unitCredits.Sign() > 0 {
+		multiple.Quo(bundle, unitCredits)
+	}
+	if !unitOK || !bundleOK || !thresholdOK || unitCredits.Sign() <= 0 || bundle.Cmp(unitCredits) < 0 || !multiple.IsInt() || threshold.Sign() <= 0 {
+		return AutoTopupPolicy{}, fmt.Errorf("auto top-up must use positive multiples of %s credits", unit.CatalogRef)
+	}
+	if err := s.repo.db.Queries().UpsertCreditAutoTopupPolicy(ctx, dbsqlc.UpsertCreditAutoTopupPolicyParams{ID: newID("atp"), UserID: userID, Enabled: policy.Enabled, Threshold: strings.TrimSpace(policy.Threshold), BundleCredits: strings.TrimSpace(policy.BundleCredits), ProviderProductID: unit.ProviderProductID}); err != nil {
+		return AutoTopupPolicy{}, err
+	}
+	policy.ProviderProductID = unit.ProviderProductID
+	return policy, nil
+}
+
+func (s *Service) RunAutoTopups(ctx context.Context) error {
+	rows, err := s.repo.db.Queries().ListEligibleCreditAutoTopups(ctx)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		key := "credit-auto:" + row.UserID + ":" + strconv.FormatInt(row.CreditVersion, 10)
+		reserved, err := s.repo.db.Queries().ReserveCreditAutoTopup(ctx, dbsqlc.ReserveCreditAutoTopupParams{ID: newID("ata"), UserID: row.UserID, IdempotencyKey: key, RetryCooldownSeconds: int32(s.autoTopupRetryCooldown / time.Second)})
+		if err != nil || reserved == 0 {
+			continue
+		}
+		bundle, bundleOK := new(big.Rat).SetString(row.PBundleCredits)
+		unit, unitErr := s.repo.db.Queries().GetCreditTopupUnit(ctx)
+		unitValue, unitOK := new(big.Rat).SetString(unit.CatalogRef)
+		failureCode := "provider_error"
+		if bundleOK && unitErr == nil && unitOK && unitValue.Sign() > 0 {
+			seatsRat := new(big.Rat).Quo(bundle, unitValue)
+			seats, _ := strconv.Atoi(seatsRat.Num().String())
+			orderID, orderErr := s.client.CreateOffSessionOrder(ctx, OffSessionOrderInput{UserID: row.UserID, ProviderProductID: row.ProviderProductID, IdempotencyKey: key, Description: row.PBundleCredits + " credits", Seats: seats})
+			if orderErr == nil {
+				_ = s.repo.db.Queries().CompleteCreditAutoTopup(ctx, dbsqlc.CompleteCreditAutoTopupParams{ProviderOrderID: sql.NullString{String: orderID, Valid: true}, State: "created", LastError: "", IdempotencyKey: key})
+				continue
+			}
+			failureCode = polarFailureCode(orderErr)
+		}
+		_ = s.repo.db.Queries().CompleteCreditAutoTopup(ctx, dbsqlc.CompleteCreditAutoTopupParams{ProviderOrderID: sql.NullString{}, State: "failed", LastError: failureCode, IdempotencyKey: key})
+		if failureCode == "payment_failed" || failureCode == "off_session_disabled" {
+			_ = s.repo.db.Queries().DisableCreditAutoTopupPolicy(ctx, row.UserID)
+		}
+	}
+	return nil
+}
+
+func (s *Service) AutoTopupWorker(interval time.Duration) func(context.Context) error {
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	return func(ctx context.Context) error {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			if err := s.RunAutoTopups(ctx); err != nil && ctx.Err() != nil {
+				return ctx.Err()
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-ticker.C:
+			}
+		}
+	}
+}
+
 func (s *Service) CreateCheckout(ctx context.Context, userID, email, productCode, idempotencyKey, successURL string) (CheckoutSession, error) {
 	product, err := s.repo.ProductByCode(ctx, productCode)
 	if err != nil {
 		return CheckoutSession{}, err
 	}
 	if product.CatalogType == "plan" {
+		if product.IsTrial {
+			hasHistory, historyErr := s.repo.db.Queries().UserHasPolarSubscriptionHistory(ctx, userID)
+			if historyErr != nil {
+				return CheckoutSession{}, historyErr
+			}
+			if hasHistory {
+				return CheckoutSession{}, ErrTrialUnavailable
+			}
+		}
 		active, lookupErr := s.repo.ActivePolarSubscription(ctx, userID)
 		if lookupErr != nil && !errors.Is(lookupErr, sql.ErrNoRows) {
 			return CheckoutSession{}, fmt.Errorf("query active subscription: %w", lookupErr)
 		}
 		if lookupErr == nil {
+			if product.IsTrial {
+				return CheckoutSession{}, ErrTrialUnavailable
+			}
 			if active.PlanCode == product.CatalogRef {
 				return CheckoutSession{}, ErrSamePlan
+			}
+			prorationBehavior := "invoice"
+			if product.PlanRank < active.PlanRank {
+				prorationBehavior = "next_period"
+				usage, usageErr := s.repo.Usage(ctx, userID)
+				if usageErr != nil {
+					return CheckoutSession{}, usageErr
+				}
+				if product.IncludedStorageGB+usage.PurchasedStorageGB < usage.AllocatedStorageGB {
+					return CheckoutSession{}, ErrInsufficientStorage
+				}
+				if err := s.repo.db.Queries().SetPendingSubscriptionPlan(ctx, dbsqlc.SetPendingSubscriptionPlanParams{PendingPlanVersionID: sql.NullString{String: product.PlanVersionID, Valid: true}, ProviderSubscriptionID: active.ProviderSubscriptionID, UserID: userID}); err != nil {
+					return CheckoutSession{}, err
+				}
 			}
 			if err := s.client.UpdateSubscription(ctx, SubscriptionUpdateInput{
 				ProviderSubscriptionID: active.ProviderSubscriptionID,
 				ProviderProductID:      product.ProviderProductID,
-				ProrationBehavior:      "invoice",
+				ProrationBehavior:      prorationBehavior,
 				IdempotencyKey:         idempotencyKey,
 			}); err != nil {
+				if prorationBehavior == "next_period" {
+					_ = s.repo.db.Queries().SetPendingSubscriptionPlan(ctx, dbsqlc.SetPendingSubscriptionPlanParams{PendingPlanVersionID: sql.NullString{}, ProviderSubscriptionID: active.ProviderSubscriptionID, UserID: userID})
+				}
 				return CheckoutSession{}, err
 			}
-			_ = s.audit.Write(ctx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "billing.subscription_update_requested", ResourceType: "subscription", ResourceID: active.ProviderSubscriptionID, IdempotencyKey: "billing.subscription_update:" + idempotencyKey, Metadata: map[string]any{"from_plan": active.PlanCode, "to_plan": product.CatalogRef, "proration_behavior": "invoice"}})
+			_ = s.audit.Write(ctx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "billing.subscription_update_requested", ResourceType: "subscription", ResourceID: active.ProviderSubscriptionID, IdempotencyKey: "billing.subscription_update:" + idempotencyKey, Metadata: map[string]any{"from_plan": active.PlanCode, "to_plan": product.CatalogRef, "proration_behavior": prorationBehavior}})
 			return CheckoutSession{URL: successURL, ProviderSessionID: active.ProviderSubscriptionID}, nil
+		}
+	}
+	var reservation dbsqlc.ReserveBillingCheckoutRow
+	if product.CatalogType == "plan" {
+		var reserveErr error
+		reservation, reserveErr = s.repo.db.Queries().ReserveBillingCheckout(ctx, dbsqlc.ReserveBillingCheckoutParams{ID: newID("bcr"), UserID: userID, ProductCode: product.Code, IdempotencyKey: idempotencyKey, ExpiresAt: time.Now().UTC().Add(s.checkoutReservationTTL)})
+		if errors.Is(reserveErr, sql.ErrNoRows) {
+			existing, existingErr := s.repo.db.Queries().GetBillingCheckoutReservation(ctx, userID)
+			if existingErr != nil {
+				return CheckoutSession{}, existingErr
+			}
+			if existing.IdempotencyKey == idempotencyKey && existing.CheckoutUrl.Valid {
+				return CheckoutSession{URL: existing.CheckoutUrl.String, ProviderSessionID: existing.ProviderCheckoutID.String}, nil
+			}
+			return CheckoutSession{}, ErrCheckoutPending
+		}
+		if reserveErr != nil {
+			return CheckoutSession{}, reserveErr
 		}
 	}
 	session, err := s.client.CreateCheckout(ctx, CheckoutInput{UserID: userID, UserEmail: email, ProductCode: productCode, ProviderProductID: product.ProviderProductID, ProviderPriceID: product.ProviderPriceID, IdempotencyKey: idempotencyKey, SuccessURL: successURL})
 	if err != nil {
+		if product.CatalogType == "plan" {
+			_ = s.repo.db.Queries().FailBillingCheckoutReservation(ctx, userID)
+		}
 		return CheckoutSession{}, err
+	}
+	if product.CatalogType == "plan" {
+		if err := s.repo.db.Queries().CompleteBillingCheckoutReservation(ctx, dbsqlc.CompleteBillingCheckoutReservationParams{ProviderCheckoutID: sql.NullString{String: session.ProviderSessionID, Valid: session.ProviderSessionID != ""}, CheckoutUrl: sql.NullString{String: session.URL, Valid: session.URL != ""}, UserID: userID, IdempotencyKey: reservation.IdempotencyKey}); err != nil {
+			return CheckoutSession{}, err
+		}
 	}
 	_ = s.audit.Write(ctx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "billing.checkout_created", ResourceType: "billing_product", ResourceID: product.Code, IdempotencyKey: "billing.checkout:" + idempotencyKey, Metadata: map[string]any{"catalog_type": product.CatalogType}})
 	return session, nil
@@ -530,7 +913,7 @@ func (s *Service) processWebhookEvent(ctx context.Context, tx *db.Tx, event Webh
 	payload := webhookPayload(event)
 	userID := payload.firstString("external_user_id", "external_customer_id", "customer.external_id", "customer.external_user_id", "metadata.paperboat_user_id", "metadata.user_id")
 	productID := payload.firstString("product_id", "product.id", "product", "price.product_id", "items.0.product_id")
-	priceID := payload.firstString("price_id", "product_price_id", "price.id", "product_price.id", "price", "items.0.price_id", "items.0.product_price_id")
+	priceID := payload.firstString("price_id", "product_price_id", "price.id", "product_price.id", "price", "prices.0.id", "items.0.price_id", "items.0.product_price_id")
 	product, err := s.repo.ProductByProviderIDs(ctx, tx, productID, priceID)
 	if errors.Is(err, ErrUnknownProduct) {
 		return fmt.Errorf("%w: polar product_id=%q price_id=%q", ErrRetryableWebhook, productID, priceID)
@@ -548,7 +931,8 @@ func (s *Service) processWebhookEvent(ctx context.Context, tx *db.Tx, event Webh
 	case "plan":
 		return s.applyPlanWebhook(ctx, tx, event, payload, userID, product)
 	case "credit_topup":
-		return grantCreditsTx(ctx, tx, userID, newID("cled"), event.ID+":credits:"+product.Code, "polar_event", event.ID, product.CatalogRef, map[string]any{"event_type": event.Type, "product_code": product.Code})
+		amount := creditTopupAmount(payload, product.CatalogRef)
+		return grantCreditsTx(ctx, tx, userID, newID("cled"), event.ID+":credits:"+product.Code, "polar_event", event.ID, amount, map[string]any{"event_type": event.Type, "product_code": product.Code})
 	case "extra_storage":
 		gb, err := strconv.Atoi(product.CatalogRef)
 		if err != nil || gb < 0 {
@@ -573,7 +957,7 @@ func (s *Service) applyRefundWebhook(ctx context.Context, tx *db.Tx, event Webho
 		}
 		return tx.Queries().UpdateRefundedSubscription(ctx, dbsqlc.UpdateRefundedSubscriptionParams{ProviderSubscriptionID: subscriptionID, UserID: userID, State: subscriptionState("", event.Type)})
 	case "credit_topup":
-		return debitCreditsTx(ctx, tx, userID, newID("cled"), "refund", event.ID+":refund-credits:"+product.Code, "polar_event", event.ID, product.CatalogRef, map[string]any{"event_type": event.Type, "product_code": product.Code})
+		return debitCreditsTx(ctx, tx, userID, newID("cled"), "refund", event.ID+":refund-credits:"+product.Code, "polar_event", event.ID, creditTopupAmount(payload, product.CatalogRef), map[string]any{"event_type": event.Type, "product_code": product.Code})
 	case "extra_storage":
 		accountID, err := ensureStorageAccount(ctx, tx, userID)
 		if err != nil {
@@ -585,14 +969,38 @@ func (s *Service) applyRefundWebhook(ctx context.Context, tx *db.Tx, event Webho
 	}
 }
 
+func creditTopupAmount(payload webhookMap, unit string) string {
+	seats, err := strconv.Atoi(payload.firstString("seats", "order.seats", "subscription.seats"))
+	value, ok := new(big.Rat).SetString(unit)
+	if err != nil || seats <= 1 || !ok {
+		return unit
+	}
+	return new(big.Rat).Mul(value, new(big.Rat).SetInt64(int64(seats))).FloatString(6)
+}
+
 func (s *Service) applyPlanWebhook(ctx context.Context, tx *db.Tx, event WebhookEvent, payload webhookMap, userID string, product Product) error {
 	q := tx.Queries()
+	state := subscriptionState(payload.firstString("subscription.status", "status", "state"), event.Type)
+	planCode := product.CatalogRef
 	plan, err := q.GetActivePlanVersionForWebhook(ctx, product.CatalogRef)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
 		return err
+	}
+	if state == "active" {
+		converted, convertedErr := q.GetConvertedTrialPlanVersionForWebhook(ctx, product.CatalogRef)
+		if convertedErr == nil {
+			planCode = converted.Code
+			plan.ID = converted.ID
+			plan.IncludedCredits = converted.IncludedCredits
+			plan.IncludedStorageGb = converted.IncludedStorageGb
+			plan.StorageUnitGb = converted.StorageUnitGb
+			plan.StorageSeatOffset = converted.StorageSeatOffset
+		} else if !errors.Is(convertedErr, sql.ErrNoRows) {
+			return convertedErr
+		}
 	}
 	subscriptionID := payload.firstString("subscription_id", "subscription.id", "id")
 	if subscriptionID == "" {
@@ -603,12 +1011,19 @@ func (s *Service) applyPlanWebhook(ctx context.Context, tx *db.Tx, event Webhook
 		return previousErr
 	}
 	previousFound := previousErr == nil
-	state := subscriptionState(payload.firstString("subscription.status", "status", "state"), event.Type)
 	start := payload.firstTime("subscription.current_period_start", "current_period_start", "period_start")
 	end := payload.firstTime("subscription.current_period_end", "current_period_end", "period_end", "ends_at")
-	if err := q.UpsertPolarSubscription(ctx, dbsqlc.UpsertPolarSubscriptionParams{ID: newID("sub"), UserID: userID, ProviderSubscriptionID: subscriptionID, State: state, ActivePlanVersionID: sql.NullString{String: plan.ID, Valid: true}, CurrentPeriodStart: nullableTime(start), CurrentPeriodEnd: nullableTime(end)}); err != nil {
+	storageValue := payload.firstString("subscription.seats", "seats")
+	storageUnits, storageErr := strconv.Atoi(storageValue)
+	if storageErr != nil && previousFound {
+		storageUnits = int(previous.StorageUnits)
+	}
+	pendingStorage := nullableInt32String(payload.firstString("subscription.pending_update.seats", "pending_update.seats"))
+	if err := q.UpsertPolarSubscription(ctx, dbsqlc.UpsertPolarSubscriptionParams{ID: newID("sub"), UserID: userID, ProviderSubscriptionID: subscriptionID, State: state, ActivePlanVersionID: sql.NullString{String: plan.ID, Valid: true}, CurrentPeriodStart: nullableTime(start), CurrentPeriodEnd: nullableTime(end), StorageUnits: storageUnits, PendingStorageUnits: pendingStorage}); err != nil {
 		return err
 	}
+	_ = q.ClearBillingCheckoutReservation(ctx, userID)
+	_ = q.ClearAppliedPendingSubscriptionPlan(ctx, subscriptionID)
 	if state == "active" || state == "trialing" {
 		periodKey := event.ID
 		ledgerSourceID := event.ID
@@ -645,7 +1060,7 @@ func (s *Service) applyPlanWebhook(ctx context.Context, tx *db.Tx, event Webhook
 				return err
 			}
 		} else if !periodCreditsApplied {
-			if err := grantCreditsTx(ctx, tx, userID, newID("cled"), periodKey+":plan-credits:"+product.Code, "polar_subscription", ledgerSourceID, plan.IncludedCredits, map[string]any{"event_type": event.Type, "plan_code": product.CatalogRef}); err != nil {
+			if err := grantCreditsTx(ctx, tx, userID, newID("cled"), periodKey+":plan-credits:"+product.Code, "polar_subscription", ledgerSourceID, plan.IncludedCredits, map[string]any{"event_type": event.Type, "plan_code": planCode}); err != nil {
 				return err
 			}
 		}
@@ -654,9 +1069,21 @@ func (s *Service) applyPlanWebhook(ctx context.Context, tx *db.Tx, event Webhook
 			return err
 		}
 		storageKey := periodKey + ":included-storage:" + product.Code
-		return setIncludedStorageTx(ctx, tx, accountID, newID("sled"), "included_set", int(plan.IncludedStorageGb), "polar_subscription", ledgerSourceID, storageKey, map[string]any{"event_type": event.Type, "plan_code": product.CatalogRef})
+		if err := setIncludedStorageTx(ctx, tx, accountID, newID("sled"), "included_set", int(plan.IncludedStorageGb), "polar_subscription", ledgerSourceID, storageKey, map[string]any{"event_type": event.Type, "plan_code": planCode}); err != nil {
+			return err
+		}
+		purchasedGB := max(0, storageUnits-int(plan.StorageSeatOffset)) * int(plan.StorageUnitGb)
+		return setPurchasedStorageTx(ctx, tx, accountID, newID("sled"), "purchased_set", purchasedGB, "polar_subscription", ledgerSourceID, event.ID+":purchased-storage", map[string]any{"event_type": event.Type, "plan_code": planCode, "storage_units": storageUnits})
 	}
 	return nil
+}
+
+func nullableInt32String(value string) sql.NullInt32 {
+	i, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || i < 0 {
+		return sql.NullInt32{}
+	}
+	return sql.NullInt32{Int32: int32(i), Valid: true}
 }
 
 func sameBillingPeriod(previousStart, previousEnd sql.NullTime, start, end time.Time) bool {
@@ -747,11 +1174,69 @@ func (c HTTPPolarClient) UpdateSubscription(ctx context.Context, input Subscript
 	if c.Client == nil {
 		c.Client = http.DefaultClient
 	}
-	payload := map[string]any{
-		"product_id":         input.ProviderProductID,
-		"proration_behavior": input.ProrationBehavior,
+	payload := map[string]any{"proration_behavior": input.ProrationBehavior}
+	if input.ProviderProductID != "" {
+		payload["product_id"] = input.ProviderProductID
+	}
+	if input.Seats != nil {
+		payload["seats"] = *input.Seats
 	}
 	return c.patch(ctx, "/v1/subscriptions/"+input.ProviderSubscriptionID, input.IdempotencyKey, payload)
+}
+
+func (c HTTPPolarClient) CreateOffSessionOrder(ctx context.Context, input OffSessionOrderInput) (string, error) {
+	if c.Client == nil {
+		c.Client = http.DefaultClient
+	}
+	var customer struct {
+		ID string `json:"id"`
+	}
+	if err := c.get(ctx, "/v1/customers/external/"+url.PathEscape(input.UserID), &customer); err != nil {
+		return "", err
+	}
+	payload := map[string]any{"customer_id": customer.ID, "product_id": input.ProviderProductID, "description": input.Description}
+	if input.Seats > 0 {
+		payload["seats"] = input.Seats
+	}
+	var order struct {
+		ID string `json:"id"`
+	}
+	if err := c.post(ctx, "/v1/orders/", input.IdempotencyKey, payload, &order); err != nil {
+		return "", err
+	}
+	if err := c.post(ctx, "/v1/orders/"+order.ID+"/finalize", input.IdempotencyKey+":finalize", map[string]any{}, &struct{}{}); err != nil {
+		return "", err
+	}
+	return order.ID, nil
+}
+
+func (c HTTPPolarClient) GetSubscriptionPricing(ctx context.Context, providerSubscriptionID string) (SubscriptionPricing, error) {
+	if c.Client == nil {
+		c.Client = http.DefaultClient
+	}
+	var response struct {
+		CurrentPeriodStart time.Time `json:"current_period_start"`
+		CurrentPeriodEnd   time.Time `json:"current_period_end"`
+		Product            struct {
+			Prices []struct {
+				AmountType    string `json:"amount_type"`
+				PriceCurrency string `json:"price_currency"`
+				SeatTiers     struct {
+					SeatTierType string          `json:"seat_tier_type"`
+					Tiers        []SeatPriceTier `json:"tiers"`
+				} `json:"seat_tiers"`
+			} `json:"prices"`
+		} `json:"product"`
+	}
+	if err := c.get(ctx, "/v1/subscriptions/"+url.PathEscape(providerSubscriptionID), &response); err != nil {
+		return SubscriptionPricing{}, err
+	}
+	for _, price := range response.Product.Prices {
+		if price.AmountType == "seat_based" && len(price.SeatTiers.Tiers) > 0 {
+			return SubscriptionPricing{Currency: price.PriceCurrency, PeriodStart: response.CurrentPeriodStart, PeriodEnd: response.CurrentPeriodEnd, TierType: price.SeatTiers.SeatTierType, Tiers: price.SeatTiers.Tiers}, nil
+		}
+	}
+	return SubscriptionPricing{}, fmt.Errorf("polar subscription has no active seat-based storage price")
 }
 
 func (c HTTPPolarClient) CreateCheckout(ctx context.Context, input CheckoutInput) (CheckoutSession, error) {
@@ -810,7 +1295,7 @@ func (c HTTPPolarClient) patch(ctx context.Context, path, idempotencyKey string,
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("polar api returned status %d", resp.StatusCode)
+		return PolarAPIError{StatusCode: resp.StatusCode}
 	}
 	return nil
 }
@@ -835,7 +1320,26 @@ func (c HTTPPolarClient) post(ctx context.Context, path, idempotencyKey string, 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("polar api returned status %d", resp.StatusCode)
+		return PolarAPIError{StatusCode: resp.StatusCode}
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func (c HTTPPolarClient) get(ctx context.Context, path string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(c.BaseURL, "/")+path, nil)
+	if err != nil {
+		return err
+	}
+	if c.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
+	resp, err := c.Client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return PolarAPIError{StatusCode: resp.StatusCode}
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }
@@ -848,6 +1352,15 @@ func (FakePolarClient) CreateCheckout(_ context.Context, input CheckoutInput) (C
 
 func (FakePolarClient) UpdateSubscription(_ context.Context, _ SubscriptionUpdateInput) error {
 	return nil
+}
+
+func (FakePolarClient) CreateOffSessionOrder(_ context.Context, input OffSessionOrderInput) (string, error) {
+	return "fake_order_" + input.IdempotencyKey, nil
+}
+
+func (FakePolarClient) GetSubscriptionPricing(_ context.Context, _ string) (SubscriptionPricing, error) {
+	now := time.Now().UTC()
+	return SubscriptionPricing{Currency: "usd", PeriodStart: now.Add(-15 * 24 * time.Hour), PeriodEnd: now.Add(15 * 24 * time.Hour), TierType: "volume", Tiers: []SeatPriceTier{{MinSeats: 1, PricePerSeat: 100}}}, nil
 }
 
 func (FakePolarClient) CreateCustomerPortal(_ context.Context, input CustomerPortalInput) (CustomerPortalSession, error) {
@@ -1192,7 +1705,7 @@ func valueAtPath(root map[string]any, path string) any {
 func subscriptionState(status, eventType string) string {
 	normalized := strings.ToLower(strings.TrimSpace(status))
 	switch normalized {
-	case "active", "trialing", "past_due", "canceled", "incomplete", "expired":
+	case "active", "trialing", "past_due", "canceled", "incomplete", "expired", "paused", "unpaid", "revoked":
 		return normalized
 	case "cancelled":
 		return "canceled"
@@ -1205,6 +1718,12 @@ func subscriptionState(status, eventType string) string {
 		return "canceled"
 	case strings.Contains(eventType, "past_due"):
 		return "past_due"
+	case strings.Contains(eventType, "pause"):
+		return "paused"
+	case strings.Contains(eventType, "revok"):
+		return "revoked"
+	case strings.Contains(eventType, "unpaid"):
+		return "unpaid"
 	case strings.Contains(eventType, "incomplete"):
 		return "incomplete"
 	case strings.Contains(eventType, "expire"):

@@ -109,7 +109,7 @@ func TestConfigFileCannotReplaceMandatoryConfigSyncExcludes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{".custom-secret", ".ssh", ".config/git/credentials", "**/auth.json"} {
+	for _, required := range []string{".custom-secret", ".ssh", ".config/git/credentials", "**/credentials.*"} {
 		if !slices.Contains(cfg.ConfigSync.MandatoryExcludes, required) {
 			t.Fatalf("mandatory exclusion %q was replaced by config file", required)
 		}
@@ -169,6 +169,7 @@ func TestProductionValidationDoesNotRequireMachineActivityToken(t *testing.T) {
 	cfg.Secrets.GitHubClientSecret = "github-client-secret"
 	cfg.Secrets.FlyAPIToken = "fly-api-token"
 	cfg.Secrets.AgentunnelAPIKey = "agentunnel-api-key"
+	cfg.Secrets.ClassifierAPIKey = "classifier-api-key"
 	cfg.Secrets.MachineActivityToken = ""
 	cfg.CLIAuth.MintActiveKeyID = "current"
 	cfg.Secrets.MintSigningKeys = []string{"current:" + base64.RawURLEncoding.EncodeToString(make([]byte, 32))}

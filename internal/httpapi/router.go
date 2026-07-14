@@ -18,6 +18,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/auth"
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
 	"github.com/pinksaucepasta/paperboat-server/internal/catalog"
+	"github.com/pinksaucepasta/paperboat-server/internal/classifier"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/configsync"
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
@@ -47,6 +48,7 @@ type Options struct {
 	Agentunnel       *agentunnel.Service
 	MeteringRepo     *metering.RuntimeRepository
 	ConfigSync       *configsync.Repository
+	Classifier       *classifier.Controller
 	MintKeys         *mint.Provider
 	OverrideHandler  http.Handler
 }
@@ -74,6 +76,9 @@ func NewRouter(opts Options) http.Handler {
 		}
 		if opts.MeteringRepo != nil {
 			mux.HandleFunc("POST /api/machine/activity-heartbeat", activityHeartbeat(opts.MeteringRepo, opts.Config.ConfigSync.SummaryLimit))
+			if opts.Classifier != nil {
+				mux.HandleFunc("POST /api/machine/config-sync/classify", machineConfigClassify(opts.MeteringRepo, opts.Classifier))
+			}
 		}
 		mux.HandleFunc("/", notImplemented)
 		handler = mux
@@ -126,6 +131,8 @@ func notImplemented(w http.ResponseWriter, r *http.Request) {
 func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 	mux.HandleFunc("GET /api/auth/workos/state", workOSState(opts.Auth))
 	mux.HandleFunc("POST /api/auth/workos/callback", workOSCallback(opts.Auth))
+	mux.Handle("GET /api/auth/workos/reauth/state", requireAuth(opts.Auth, workOSReauthState(opts.Auth)))
+	mux.Handle("POST /api/auth/workos/reauth/callback", requireAuth(opts.Auth, workOSReauthCallback(opts.Auth)))
 	mux.Handle("POST /api/auth/logout", requireAuth(opts.Auth, logout(opts.Auth, opts.Agentunnel)))
 	mux.Handle("GET /api/auth/csrf", requireAuth(opts.Auth, csrf(opts.Auth)))
 	meHandler := requireAuth(opts.Auth, me(opts.Auth))
@@ -135,6 +142,11 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 	mux.Handle("GET /api/me", meHandler)
 	if opts.ConfigSync != nil {
 		mux.Handle("GET /api/config-sync/status", requireAuth(opts.Auth, requireEntitlement(opts.Auth, configSyncStatus(opts.ConfigSync))))
+		mux.Handle("GET /api/config-sync/overrides", requireAuth(opts.Auth, requireEntitlement(opts.Auth, configSyncOverrides(opts.ConfigSync))))
+		mux.Handle("PUT /api/config-sync/overrides", requireAuth(opts.Auth, requireEntitlement(opts.Auth, configSyncOverridePut(opts.ConfigSync))))
+		mux.Handle("DELETE /api/config-sync/overrides", requireAuth(opts.Auth, requireEntitlement(opts.Auth, configSyncOverrideDelete(opts.ConfigSync))))
+		mux.Handle("POST /api/config-sync/recovery-key/export", requireAuth(opts.Auth, requireEntitlement(opts.Auth, configSyncRecoveryExport(opts.Auth, opts.ConfigSync))))
+		mux.Handle("POST /api/config-sync/recovery-key/rotate", requireAuth(opts.Auth, requireEntitlement(opts.Auth, configSyncKeyRotate(opts.Auth, opts.ConfigSync))))
 	}
 	if opts.DeviceAuth != nil {
 		requestNetwork := newRequestNetwork(opts.Config.HTTP.TrustedProxyCIDRs)
@@ -152,6 +164,11 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 		mux.Handle("GET /api/billing/entitlement", requireAuth(opts.Auth, billingEntitlement(opts.Billing)))
 		mux.Handle("GET /api/billing/usage", requireAuth(opts.Auth, billingUsage(opts.Billing)))
 		mux.Handle("GET /api/billing/plan-products", requireAuth(opts.Auth, billingPlanProducts(opts.Billing)))
+		mux.Handle("GET /api/billing/storage", requireAuth(opts.Auth, billingStorage(opts.Billing)))
+		mux.Handle("GET /api/billing/storage-preview", requireAuth(opts.Auth, billingStoragePreview(opts.Billing)))
+		mux.Handle("PUT /api/billing/storage", requireAuth(opts.Auth, requireCSRF(opts.Auth, billingStorageUpdate(opts.Billing))))
+		mux.Handle("GET /api/billing/auto-topup", requireAuth(opts.Auth, billingAutoTopup(opts.Billing)))
+		mux.Handle("PUT /api/billing/auto-topup", requireAuth(opts.Auth, requireCSRF(opts.Auth, billingAutoTopupUpdate(opts.Billing))))
 		mux.Handle("POST /api/billing/checkout", requireAuth(opts.Auth, requireCSRF(opts.Auth, billingCheckout(opts.Billing))))
 		mux.Handle("POST /api/billing/customer-portal", requireAuth(opts.Auth, requireCSRF(opts.Auth, billingCustomerPortal(opts.Billing))))
 		if opts.Projects != nil {
@@ -161,6 +178,11 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 		mux.Handle("GET /api/billing/entitlement", requireAuth(opts.Auth, http.HandlerFunc(paymentRequired)))
 		mux.Handle("GET /api/billing/usage", requireAuth(opts.Auth, http.HandlerFunc(paymentRequired)))
 		mux.Handle("GET /api/billing/plan-products", requireAuth(opts.Auth, http.HandlerFunc(paymentRequired)))
+		mux.Handle("GET /api/billing/storage", requireAuth(opts.Auth, http.HandlerFunc(paymentRequired)))
+		mux.Handle("GET /api/billing/storage-preview", requireAuth(opts.Auth, http.HandlerFunc(paymentRequired)))
+		mux.Handle("PUT /api/billing/storage", requireAuth(opts.Auth, requireCSRF(opts.Auth, http.HandlerFunc(notImplemented))))
+		mux.Handle("GET /api/billing/auto-topup", requireAuth(opts.Auth, http.HandlerFunc(paymentRequired)))
+		mux.Handle("PUT /api/billing/auto-topup", requireAuth(opts.Auth, requireCSRF(opts.Auth, http.HandlerFunc(notImplemented))))
 		mux.Handle("POST /api/billing/checkout", requireAuth(opts.Auth, requireCSRF(opts.Auth, http.HandlerFunc(notImplemented))))
 		mux.Handle("POST /api/billing/customer-portal", requireAuth(opts.Auth, requireCSRF(opts.Auth, http.HandlerFunc(notImplemented))))
 	}

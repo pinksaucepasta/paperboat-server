@@ -93,6 +93,12 @@ CLI project reads and connects use scoped Paperboat bearer access tokens.
 
 - `GET /api/billing/entitlement`
 - `GET /api/billing/usage`
+- `GET /api/billing/plan-products`
+- `GET /api/billing/storage`
+- `GET /api/billing/storage-preview?storage_gb={integer}`
+- `PUT /api/billing/storage`
+- `GET /api/billing/auto-topup`
+- `PUT /api/billing/auto-topup`
 - `GET /api/dashboard/usage-summary`
 - `POST /api/billing/checkout`
 - `POST /api/billing/customer-portal`
@@ -105,6 +111,13 @@ CLI project reads and connects use scoped Paperboat bearer access tokens.
   effective policy revision and byte limits, aggregate state, and bounded per-project machine
   status. Stale active-machine heartbeats are reported as `offline`; stopped machines are
   reported as `idle` with their last result retained.
+- `GET|PUT|DELETE /api/config-sync/overrides` lists and changes exact account-path overrides.
+  Mandatory exclusions return `mandatory_exclusion` and cannot be weakened.
+- `POST /api/config-sync/recovery-key/export` and `/rotate` require CSRF plus a short-lived,
+  purpose-bound WorkOS reauthentication proof. Export responses are non-cacheable and audited.
+- `POST /api/machine/config-sync/classify` uses the existing owning project-machine credential and
+  accepts only bounded relative-path metadata. Provider API keys, contents, absolute paths, and
+  workspace names are never accepted from or returned to a VM.
 - `POST /api/machine/activity-heartbeat` accepts the existing authenticated activity payload
   plus an optional validated `config_sync` object. Its required `updated_at` timestamp tracks the
   freshness of the sync daemon independently from the activity reporter. A status timestamp newer

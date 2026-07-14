@@ -48,6 +48,14 @@ grep -q 'agentunnel-status.json' "$root/bin/paperboat-wait-agentunnel"
 grep -q 'child_pids' "$root/bin/paperboat-entrypoint"
 grep -q '/out/paperboat-config-sync' "$root/Dockerfile"
 grep -q './cmd/paperboat-config-sync' "$root/Dockerfile"
+grep -q 'CHEZMOI_VERSION=2.71.0' "$root/Dockerfile"
+grep -q '2a051bb2\|6ea2040e' "$root/Dockerfile"
+grep -q 'd8fb35f9' "$root/Dockerfile"
+grep -q 'config-age-identity.txt' "$root/bin/paperboat-entrypoint"
+if grep -q 'PAPERBOAT_CLASSIFIER_API_KEY' "$root/Dockerfile" "$root/bin/"paperboat-*; then
+  printf 'classifier provider credentials must not be present in the VM image\n' >&2
+  exit 1
+fi
 grep -q 'PAPERBOAT_SETUP_SCRIPT' "$root/bin/paperboat-apply-presets"
 grep -q 'PAPERBOAT_SETUP_SCRIPT_ENV' "$root/bin/paperboat-apply-presets"
 

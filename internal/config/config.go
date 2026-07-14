@@ -33,6 +33,7 @@ type Config struct {
 	Billing     Billing     `json:"billing"`
 	Metering    Metering    `json:"metering"`
 	ConfigSync  ConfigSync  `json:"config_sync"`
+	Classifier  Classifier  `json:"classifier"`
 	CLIAuth     CLIAuth     `json:"cli_auth"`
 	GitHub      GitHub      `json:"github"`
 	Fly         Fly         `json:"fly"`
@@ -90,7 +91,9 @@ type Catalogs struct {
 }
 
 type Billing struct {
-	PolarWebhookTolerance time.Duration `json:"polar_webhook_tolerance"`
+	PolarWebhookTolerance  time.Duration `json:"polar_webhook_tolerance"`
+	AutoTopupRetryCooldown time.Duration `json:"auto_topup_retry_cooldown"`
+	CheckoutReservationTTL time.Duration `json:"checkout_reservation_ttl"`
 }
 
 type Metering struct {
@@ -116,6 +119,23 @@ type ConfigSync struct {
 	StaleHeartbeatAfter   time.Duration `json:"stale_heartbeat_after"`
 	SummaryLimit          int           `json:"summary_limit"`
 	PolicyRevision        string        `json:"policy_revision"`
+}
+
+type Classifier struct {
+	BaseURL             string        `json:"base_url"`
+	Model               string        `json:"model"`
+	ModelRevision       string        `json:"model_revision"`
+	Revision            string        `json:"revision"`
+	Timeout             time.Duration `json:"timeout"`
+	RetryLimit          int           `json:"retry_limit"`
+	RetryBackoff        time.Duration `json:"retry_backoff"`
+	MaxCandidates       int           `json:"max_candidates"`
+	CacheTTL            time.Duration `json:"cache_ttl"`
+	SchemaMode          string        `json:"schema_mode"`
+	RequestsPerMinute   int           `json:"requests_per_minute"`
+	PortablePatterns    []string      `json:"portable_patterns"`
+	ProjectOnlyPatterns []string      `json:"project_only_patterns"`
+	ExcludePatterns     []string      `json:"exclude_patterns"`
 }
 
 type CLIAuth struct {
@@ -196,6 +216,7 @@ type Secrets struct {
 	AgentunnelMachineToken string   `json:"agentunnel_machine_token"`
 	MachineActivityToken   string   `json:"machine_activity_token"`
 	MintSigningKeys        []string `json:"mint_signing_keys"`
+	ClassifierAPIKey       string   `json:"classifier_api_key"`
 }
 
 type LoadOptions struct {
@@ -253,7 +274,9 @@ func Default() Config {
 			SeedFile: "config/catalogs.example.json",
 		},
 		Billing: Billing{
-			PolarWebhookTolerance: 5 * time.Minute,
+			PolarWebhookTolerance:  5 * time.Minute,
+			AutoTopupRetryCooldown: time.Hour,
+			CheckoutReservationTTL: 30 * time.Minute,
 		},
 		Metering: Metering{
 			MinimumStartCreditWindow: 5 * time.Minute,
@@ -262,11 +285,15 @@ func Default() Config {
 		ConfigSync: ConfigSync{
 			MandatoryExcludes: configsyncpolicy.MandatoryExcludes(),
 			MaxFileBytes:      5 << 20, MaxBatchBytes: 25 << 20,
-			Debounce: 10 * time.Second, MinPushInterval: time.Minute, MaxDirtyDelay: 5 * time.Minute,
+			Debounce: 10 * time.Second, MinPushInterval: 5 * time.Minute, MaxDirtyDelay: 5 * time.Minute,
 			RemotePollInterval: time.Minute, RetryLimit: 5, ShutdownFlushTimeout: 30 * time.Second,
 			ShutdownGracePeriod: 2 * time.Second, ShutdownReportTimeout: 10 * time.Second,
 			StaleHeartbeatAfter: 2 * time.Minute, SummaryLimit: 50, PolicyRevision: "2",
 		},
+		Classifier: Classifier{BaseURL: "https://api.openai.com/v1", Model: "gpt-5-mini", ModelRevision: "gpt-5-mini", Revision: "1", Timeout: 15 * time.Second, RetryLimit: 2, RetryBackoff: 500 * time.Millisecond, MaxCandidates: 20, CacheTTL: 7 * 24 * time.Hour, SchemaMode: "json_schema", RequestsPerMinute: 60,
+			PortablePatterns:    []string{".claude/.credentials.json", ".claude.json", ".codex/auth.json", ".config/opencode/auth.json", ".local/share/opencode/auth.json", ".npmrc", ".config/npm/npmrc"},
+			ProjectOnlyPatterns: []string{"**/.vscode/**", "**/.idea/**"},
+			ExcludePatterns:     []string{"**/*.db", "**/*.db-wal", "**/*.db-shm", "**/*.sqlite", "**/*.sqlite3"}},
 		CLIAuth: CLIAuth{
 			VerificationURL:          "http://localhost:3000/cli/authorize",
 			ClientID:                 "paperboat-cli",
@@ -361,6 +388,12 @@ func (c Config) Validate() error {
 	if c.Billing.PolarWebhookTolerance <= 0 {
 		errs = append(errs, fmt.Errorf("billing.polar_webhook_tolerance must be positive"))
 	}
+	if c.Billing.AutoTopupRetryCooldown <= 0 {
+		errs = append(errs, fmt.Errorf("billing.auto_topup_retry_cooldown must be positive"))
+	}
+	if c.Billing.CheckoutReservationTTL <= 0 {
+		errs = append(errs, fmt.Errorf("billing.checkout_reservation_ttl must be positive"))
+	}
 	if c.Metering.MinimumStartCreditWindow <= 0 {
 		errs = append(errs, fmt.Errorf("metering.minimum_start_credit_window must be positive"))
 	}
@@ -380,6 +413,23 @@ func (c Config) Validate() error {
 	}
 	if c.ConfigSync.Debounce <= 0 || c.ConfigSync.MinPushInterval <= 0 || c.ConfigSync.MaxDirtyDelay <= 0 || c.ConfigSync.RemotePollInterval <= 0 || c.ConfigSync.RetryLimit <= 0 || c.ConfigSync.ShutdownFlushTimeout <= 0 || c.ConfigSync.ShutdownGracePeriod <= 0 || c.ConfigSync.ShutdownReportTimeout <= 0 || c.ConfigSync.StaleHeartbeatAfter <= 0 || c.ConfigSync.SummaryLimit <= 0 || strings.TrimSpace(c.ConfigSync.PolicyRevision) == "" {
 		errs = append(errs, fmt.Errorf("config_sync timing, retention, and policy revision are required"))
+	}
+	if c.ConfigSync.MinPushInterval < 5*time.Minute {
+		errs = append(errs, fmt.Errorf("config_sync.min_push_interval must be at least five minutes"))
+	}
+	if u, err := url.Parse(c.Classifier.BaseURL); err != nil || u.Scheme == "" || u.Host == "" || strings.TrimSpace(c.Classifier.Model) == "" || strings.TrimSpace(c.Classifier.ModelRevision) == "" || strings.TrimSpace(c.Classifier.Revision) == "" {
+		errs = append(errs, fmt.Errorf("classifier provider and revisions are required"))
+	}
+	if c.Classifier.Timeout <= 0 || c.Classifier.RetryLimit < 0 || c.Classifier.RetryBackoff <= 0 || c.Classifier.MaxCandidates <= 0 || c.Classifier.MaxCandidates > 100 || c.Classifier.CacheTTL <= 0 || c.Classifier.RequestsPerMinute <= 0 {
+		errs = append(errs, fmt.Errorf("classifier limits are invalid"))
+	}
+	if c.Classifier.SchemaMode != "json_schema" && c.Classifier.SchemaMode != "json_object" {
+		errs = append(errs, fmt.Errorf("classifier.schema_mode must be json_schema or json_object"))
+	}
+	for _, pattern := range append(append(append([]string{}, c.Classifier.PortablePatterns...), c.Classifier.ProjectOnlyPatterns...), c.Classifier.ExcludePatterns...) {
+		if err := validateConfigSyncPattern(pattern); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if strings.TrimSpace(c.CLIAuth.VerificationURL) == "" || strings.TrimSpace(c.CLIAuth.ClientID) == "" || len(c.CLIAuth.AllowedScopes) == 0 {
 		errs = append(errs, fmt.Errorf("cli_auth verification_url, client_id, and allowed_scopes are required"))
@@ -465,7 +515,7 @@ func (c Config) Validate() error {
 		if len(c.HTTP.AllowedOrigins) == 0 {
 			errs = append(errs, fmt.Errorf("http.allowed_origins is required in production"))
 		}
-		if c.Secrets.WorkOSAPIKey == "" || c.Secrets.WorkOSClientID == "" || c.Secrets.WorkOSClientSecret == "" || c.Secrets.PolarAPIKey == "" || c.Secrets.PolarWebhookSecret == "" || c.Secrets.GitHubClientID == "" || c.Secrets.GitHubClientSecret == "" || c.Secrets.FlyAPIToken == "" || c.Secrets.AgentunnelAPIKey == "" {
+		if c.Secrets.WorkOSAPIKey == "" || c.Secrets.WorkOSClientID == "" || c.Secrets.WorkOSClientSecret == "" || c.Secrets.PolarAPIKey == "" || c.Secrets.PolarWebhookSecret == "" || c.Secrets.GitHubClientID == "" || c.Secrets.GitHubClientSecret == "" || c.Secrets.FlyAPIToken == "" || c.Secrets.AgentunnelAPIKey == "" || c.Secrets.ClassifierAPIKey == "" {
 			errs = append(errs, fmt.Errorf("production provider secrets are required"))
 		}
 		if strings.TrimSpace(c.CLIAuth.MintActiveKeyID) == "" || len(c.Secrets.MintSigningKeys) == 0 {
@@ -509,6 +559,11 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_CATALOG_SEED_FILE", &c.Catalogs.SeedFile)
 	setString("PAPERBOAT_CONFIG_SYNC_HOME", &c.ConfigSync.HomeOverride)
 	setString("PAPERBOAT_CONFIG_SYNC_POLICY_REVISION", &c.ConfigSync.PolicyRevision)
+	setString("PAPERBOAT_CLASSIFIER_BASE_URL", &c.Classifier.BaseURL)
+	setString("PAPERBOAT_CLASSIFIER_MODEL", &c.Classifier.Model)
+	setString("PAPERBOAT_CLASSIFIER_MODEL_REVISION", &c.Classifier.ModelRevision)
+	setString("PAPERBOAT_CLASSIFIER_REVISION", &c.Classifier.Revision)
+	setString("PAPERBOAT_CLASSIFIER_SCHEMA_MODE", &c.Classifier.SchemaMode)
 	setString("PAPERBOAT_CLI_VERIFICATION_URL", &c.CLIAuth.VerificationURL)
 	setString("PAPERBOAT_CLI_CLIENT_ID", &c.CLIAuth.ClientID)
 	setString("PAPERBOAT_MINT_ACTIVE_KEY_ID", &c.CLIAuth.MintActiveKeyID)
@@ -570,6 +625,15 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	if v, ok := lookup("PAPERBOAT_CONFIG_SYNC_MANDATORY_EXCLUDES"); ok {
 		c.ConfigSync.MandatoryExcludes = appendUnique(c.ConfigSync.MandatoryExcludes, splitCSV(v)...)
 	}
+	if v, ok := lookup("PAPERBOAT_CLASSIFIER_PORTABLE_PATTERNS"); ok {
+		c.Classifier.PortablePatterns = splitCSV(v)
+	}
+	if v, ok := lookup("PAPERBOAT_CLASSIFIER_PROJECT_ONLY_PATTERNS"); ok {
+		c.Classifier.ProjectOnlyPatterns = splitCSV(v)
+	}
+	if v, ok := lookup("PAPERBOAT_CLASSIFIER_EXCLUDE_PATTERNS"); ok {
+		c.Classifier.ExcludePatterns = splitCSV(v)
+	}
 	for name, target := range map[string]*int64{
 		"PAPERBOAT_CONFIG_SYNC_MAX_FILE_BYTES":  &c.ConfigSync.MaxFileBytes,
 		"PAPERBOAT_CONFIG_SYNC_MAX_BATCH_BYTES": &c.ConfigSync.MaxBatchBytes,
@@ -583,6 +647,9 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 		}
 	}
 	for name, target := range map[string]*time.Duration{
+		"PAPERBOAT_CLASSIFIER_TIMEOUT":                  &c.Classifier.Timeout,
+		"PAPERBOAT_CLASSIFIER_RETRY_BACKOFF":            &c.Classifier.RetryBackoff,
+		"PAPERBOAT_CLASSIFIER_CACHE_TTL":                &c.Classifier.CacheTTL,
 		"PAPERBOAT_CONFIG_SYNC_DEBOUNCE":                &c.ConfigSync.Debounce,
 		"PAPERBOAT_CONFIG_SYNC_MIN_PUSH_INTERVAL":       &c.ConfigSync.MinPushInterval,
 		"PAPERBOAT_CONFIG_SYNC_MAX_DIRTY_DELAY":         &c.ConfigSync.MaxDirtyDelay,
@@ -601,8 +668,11 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 		}
 	}
 	for name, target := range map[string]*int{
-		"PAPERBOAT_CONFIG_SYNC_RETRY_LIMIT":   &c.ConfigSync.RetryLimit,
-		"PAPERBOAT_CONFIG_SYNC_SUMMARY_LIMIT": &c.ConfigSync.SummaryLimit,
+		"PAPERBOAT_CLASSIFIER_RETRY_LIMIT":         &c.Classifier.RetryLimit,
+		"PAPERBOAT_CLASSIFIER_MAX_CANDIDATES":      &c.Classifier.MaxCandidates,
+		"PAPERBOAT_CLASSIFIER_REQUESTS_PER_MINUTE": &c.Classifier.RequestsPerMinute,
+		"PAPERBOAT_CONFIG_SYNC_RETRY_LIMIT":        &c.ConfigSync.RetryLimit,
+		"PAPERBOAT_CONFIG_SYNC_SUMMARY_LIMIT":      &c.ConfigSync.SummaryLimit,
 	} {
 		if v, ok := lookup(name); ok {
 			parsed, err := strconv.Atoi(v)
@@ -704,6 +774,20 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 		}
 		c.Billing.PolarWebhookTolerance = time.Duration(parsed) * time.Second
 	}
+	if v, ok := lookup("PAPERBOAT_AUTO_TOPUP_RETRY_COOLDOWN_SECONDS"); ok {
+		parsed, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return fmt.Errorf("PAPERBOAT_AUTO_TOPUP_RETRY_COOLDOWN_SECONDS: %w", err)
+		}
+		c.Billing.AutoTopupRetryCooldown = time.Duration(parsed) * time.Second
+	}
+	if v, ok := lookup("PAPERBOAT_CHECKOUT_RESERVATION_TTL_SECONDS"); ok {
+		parsed, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return fmt.Errorf("PAPERBOAT_CHECKOUT_RESERVATION_TTL_SECONDS: %w", err)
+		}
+		c.Billing.CheckoutReservationTTL = time.Duration(parsed) * time.Second
+	}
 	if err := setSecret("PAPERBOAT_ENCRYPTION_KEY", &c.Secrets.EncryptionKey); err != nil {
 		return err
 	}
@@ -738,6 +822,9 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 		return err
 	}
 	if err := setSecret("PAPERBOAT_MACHINE_ACTIVITY_TOKEN", &c.Secrets.MachineActivityToken); err != nil {
+		return err
+	}
+	if err := setSecret("PAPERBOAT_CLASSIFIER_API_KEY", &c.Secrets.ClassifierAPIKey); err != nil {
 		return err
 	}
 	if v, ok := lookup("PAPERBOAT_SESSION_KEYS"); ok {

@@ -17,17 +17,25 @@ import (
 )
 
 type Config struct {
-	Home       string
-	Workspace  string
-	RuntimeDir string
-	RepoURL    string
-	Branch     string
-	ProjectID  string
-	MachineID  string
-	AuthorName string
-	AuthorMail string
-	Policy     Policy
-	Now        func() time.Time
+	Home               string
+	Workspace          string
+	RuntimeDir         string
+	RepoURL            string
+	Branch             string
+	ProjectID          string
+	MachineID          string
+	AuthorName         string
+	AuthorMail         string
+	Policy             Policy
+	Now                func() time.Time
+	ChezmoiBinary      string
+	AgeIdentityPath    string
+	AgeRecipient       string
+	AgeKeyVersion      int
+	RequireEncryption  bool
+	ClassifierEndpoint string
+	MachineCredential  string
+	PendingJournalPath string
 }
 
 type Engine struct {
@@ -35,6 +43,8 @@ type Engine struct {
 	repo         string
 	baselinePath string
 	status       *statusWriter
+	chezmoi      *chezmoiSource
+	classifier   *classificationClient
 	mu           sync.Mutex
 	lastPush     time.Time
 }
@@ -48,18 +58,27 @@ func ConfigFromEnv() (Config, error) {
 			return Config{}, err
 		}
 	}
+	activityTokenEnv := env("PAPERBOAT_ACTIVITY_TOKEN_ENV", "PAPERBOAT_MACHINE_ACTIVITY_TOKEN")
 	return Config{
-		Home:       home,
-		Workspace:  env("PAPERBOAT_WORKSPACE", "/workspace"),
-		RuntimeDir: env("PAPERBOAT_RUNTIME_DIR", "/var/lib/paperboat"),
-		RepoURL:    strings.TrimSpace(os.Getenv("PAPERBOAT_CONFIG_REPO_URL")),
-		Branch:     env("PAPERBOAT_CONFIG_REPO_BRANCH", "main"),
-		ProjectID:  env("PAPERBOAT_PROJECT_ID", "project"),
-		MachineID:  env("FLY_MACHINE_ID", os.Getenv("PAPERBOAT_MACHINE_ID")),
-		AuthorName: env("PAPERBOAT_CONFIG_GIT_AUTHOR_NAME", "Paperboat Config Sync"),
-		AuthorMail: env("PAPERBOAT_CONFIG_GIT_AUTHOR_EMAIL", "config-sync@paperboat.invalid"),
-		Policy:     PolicyFromEnv(),
-		Now:        func() time.Time { return time.Now().UTC() },
+		Home:               home,
+		Workspace:          env("PAPERBOAT_WORKSPACE", "/workspace"),
+		RuntimeDir:         env("PAPERBOAT_RUNTIME_DIR", "/var/lib/paperboat"),
+		RepoURL:            strings.TrimSpace(os.Getenv("PAPERBOAT_CONFIG_REPO_URL")),
+		Branch:             env("PAPERBOAT_CONFIG_REPO_BRANCH", "main"),
+		ProjectID:          env("PAPERBOAT_PROJECT_ID", "project"),
+		MachineID:          env("FLY_MACHINE_ID", os.Getenv("PAPERBOAT_MACHINE_ID")),
+		AuthorName:         env("PAPERBOAT_CONFIG_GIT_AUTHOR_NAME", "Paperboat Config Sync"),
+		AuthorMail:         env("PAPERBOAT_CONFIG_GIT_AUTHOR_EMAIL", "config-sync@paperboat.invalid"),
+		ChezmoiBinary:      env("PAPERBOAT_CHEZMOI_BINARY", "/usr/local/bin/chezmoi"),
+		AgeIdentityPath:    env("PAPERBOAT_CONFIG_AGE_IDENTITY_FILE", filepath.Join(env("PAPERBOAT_RUNTIME_DIR", "/var/lib/paperboat"), "config-age-identity.txt")),
+		AgeRecipient:       strings.TrimSpace(os.Getenv("PAPERBOAT_CONFIG_AGE_RECIPIENT")),
+		AgeKeyVersion:      int(envInt("PAPERBOAT_CONFIG_AGE_KEY_VERSION", 1)),
+		RequireEncryption:  envBool("PAPERBOAT_CONFIG_REQUIRE_ENCRYPTION", false),
+		ClassifierEndpoint: strings.TrimSpace(os.Getenv("PAPERBOAT_CONFIG_CLASSIFY_ENDPOINT")),
+		MachineCredential:  strings.TrimSpace(os.Getenv(activityTokenEnv)),
+		PendingJournalPath: env("PAPERBOAT_CONFIG_PENDING_JOURNAL", filepath.Join(env("PAPERBOAT_WORKSPACE", "/workspace"), ".paperboat", "system", "config-sync-pending.json")),
+		Policy:             PolicyFromEnv(),
+		Now:                func() time.Time { return time.Now().UTC() },
 	}, nil
 }
 
@@ -78,11 +97,33 @@ func New(cfg Config) (*Engine, error) {
 	if err := os.MkdirAll(filepath.Join(cfg.RuntimeDir, "config-sync"), 0o700); err != nil {
 		return nil, err
 	}
+	var chezmoi *chezmoiSource
+	if cfg.AgeRecipient != "" {
+		var err error
+		chezmoi, err = newChezmoiSource(cfg.ChezmoiBinary, cfg.RuntimeDir, repo, cfg.Home, cfg.AgeIdentityPath, cfg.AgeRecipient)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if cfg.RequireEncryption {
+		if chezmoi == nil || strings.TrimSpace(cfg.ChezmoiBinary) == "" || strings.TrimSpace(cfg.AgeIdentityPath) == "" || cfg.AgeKeyVersion <= 0 {
+			return nil, errors.New("encrypted config sync is required but its configuration is incomplete")
+		}
+		info, err := os.Stat(cfg.AgeIdentityPath)
+		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+			return nil, errors.New("encrypted config sync requires a private age identity file")
+		}
+		if info, err := os.Stat(cfg.ChezmoiBinary); err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
+			return nil, errors.New("encrypted config sync requires an executable chezmoi binary")
+		}
+	}
 	return &Engine{
 		cfg:          cfg,
 		repo:         repo,
 		baselinePath: filepath.Join(cfg.RuntimeDir, "config-sync", "baseline.json"),
 		status:       newStatusWriter(filepath.Join(cfg.RuntimeDir, "config-sync-status.json"), cfg.Policy),
+		chezmoi:      chezmoi,
+		classifier:   newClassificationClient(cfg.PendingJournalPath, cfg.ClassifierEndpoint, cfg.ProjectID, cfg.MachineID, cfg.MachineCredential),
 	}, nil
 }
 
@@ -100,6 +141,9 @@ func (e *Engine) Restore(ctx context.Context) error {
 		}
 		if e.cfg.RepoURL == "" {
 			return e.recordNoRepository()
+		}
+		if e.chezmoi != nil {
+			return e.restoreEncrypted(ctx)
 		}
 		if _, err := os.Stat(e.baselinePath); err == nil {
 			return e.syncLocked(ctx, "restore")
@@ -185,6 +229,9 @@ func (e *Engine) Flush(ctx context.Context, operation string) error {
 }
 
 func (e *Engine) syncLocked(ctx context.Context, operation string) error {
+	if e.chezmoi != nil {
+		return e.syncEncryptedLocked(ctx, operation)
+	}
 	now := e.cfg.Now()
 	if err := e.status.write(func(status *Status) {
 		status.State = "syncing"
@@ -358,6 +405,301 @@ func (e *Engine) syncLocked(ctx context.Context, operation string) error {
 		})
 	}
 	return errors.New("config sync retry limit reached")
+}
+
+func (e *Engine) restoreEncrypted(ctx context.Context) error {
+	if err := e.ensureRepository(ctx); err != nil {
+		e.recordError("restore_failed", err)
+		return err
+	}
+	if err := validateEncryptedRepository(e.repo); err != nil {
+		e.recordError("legacy_repository_format", err)
+		return err
+	}
+	if err := e.ensurePolicyManifest(ctx); err != nil {
+		e.recordError("manifest_update_failed", err)
+		return err
+	}
+	policy, err := e.cfg.Policy.WithManifest(e.repo)
+	if err != nil {
+		e.recordError("manifest_invalid", err)
+		return err
+	}
+	e.cfg.Policy = policy
+	e.status.last.MaxFileBytes, e.status.last.MaxBatchBytes = policy.MaxFileBytes, policy.MaxBatchBytes
+	format, err := readEncryptedRepositoryFormat(e.repo)
+	if err != nil {
+		return err
+	}
+	if format.KeyVersion > e.cfg.AgeKeyVersion {
+		return errors.New("repository encryption key version is newer than the VM identity")
+	}
+	if err := e.chezmoi.applyRestricted(ctx); err != nil {
+		e.recordError("restore_failed", err)
+		return err
+	}
+	local, err := takeSnapshot(e.cfg.Home, e.cfg.Policy)
+	if err != nil {
+		e.recordError("snapshot_failed", err)
+		return err
+	}
+	baseline := local.Files
+	if format.KeyVersion < e.cfg.AgeKeyVersion {
+		baseline = map[string]fileState{}
+	}
+	if err := e.writeBaseline(baseline); err != nil {
+		return err
+	}
+	now := e.cfg.Now()
+	commit, _ := e.gitOutput(ctx, "rev-parse", "HEAD")
+	return e.status.write(func(status *Status) {
+		status.State = "healthy"
+		status.LastSuccessfulAt = &now
+		status.RemoteCommit = strings.TrimSpace(commit)
+		status.PendingPathCount = 0
+		status.Skipped = local.Skipped
+		status.Conflicts = nil
+		status.EncryptionKeyVersion = format.KeyVersion
+	})
+}
+
+var errEncryptedPushRetry = errors.New("encrypted config push requires reconciliation")
+
+func (e *Engine) syncEncryptedLocked(ctx context.Context, operation string) error {
+	for attempt := 0; attempt < e.cfg.Policy.RetryLimit; attempt++ {
+		err := e.syncEncryptedOnce(ctx, operation)
+		if !errors.Is(err, errEncryptedPushRetry) {
+			return err
+		}
+	}
+	err := errors.New("encrypted config push retry limit reached")
+	e.recordSyncError("push_failed", err)
+	return err
+}
+
+func (e *Engine) syncEncryptedOnce(ctx context.Context, operation string) error {
+	now := e.cfg.Now()
+	if err := e.status.write(func(status *Status) {
+		status.State = "syncing"
+		status.LastAttemptAt = &now
+		status.ErrorCode = ""
+		status.ErrorMessage = ""
+	}); err != nil {
+		return err
+	}
+	if e.cfg.RepoURL == "" {
+		return e.recordNoRepository()
+	}
+	if err := e.ensureRepository(ctx); err != nil {
+		e.recordSyncError("network_error", err)
+		return err
+	}
+	if err := validateEncryptedRepository(e.repo); err != nil {
+		e.recordError("legacy_repository_format", err)
+		return err
+	}
+	if err := e.ensurePolicyManifest(ctx); err != nil {
+		e.recordSyncError("manifest_update_failed", err)
+		return err
+	}
+	policy, err := e.cfg.Policy.WithManifest(e.repo)
+	if err != nil {
+		e.recordError("manifest_invalid", err)
+		return err
+	}
+	e.cfg.Policy = policy
+	e.status.last.MaxFileBytes, e.status.last.MaxBatchBytes = policy.MaxFileBytes, policy.MaxBatchBytes
+	local, err := takeSnapshot(e.cfg.Home, e.cfg.Policy)
+	if err != nil {
+		e.recordError("snapshot_failed", err)
+		return err
+	}
+	baseline, err := e.readBaseline()
+	if err != nil {
+		return err
+	}
+	changed := changedPaths(baseline, local.Files, local.Skipped)
+	classification, err := e.classifier.classify(ctx, local, changed)
+	if err != nil {
+		e.recordSyncError("classification_failed", err)
+		return err
+	}
+	for _, result := range classification.Results {
+		switch result.Decision {
+		case "portable":
+		case "exclude", "project_only":
+			delete(local.Files, result.Path)
+		default:
+			if previous, ok := baseline[result.Path]; ok {
+				local.Files[result.Path] = previous
+			} else {
+				delete(local.Files, result.Path)
+			}
+		}
+	}
+	changed = changedPaths(baseline, local.Files, local.Skipped)
+	e.status.last.ClassifierPending = classification.Pending
+	e.status.last.ClassifierPolicyRevision = classification.PolicyRevision
+	e.status.last.ClassifierModelRevision = classification.ModelRevision
+	e.status.last.ClassifierHealth = classification.Health
+	format, err := readEncryptedRepositoryFormat(e.repo)
+	if err != nil {
+		return err
+	}
+	if format.KeyVersion > e.cfg.AgeKeyVersion {
+		return errors.New("repository encryption key version is newer than the VM identity")
+	}
+	remoteHome, err := os.MkdirTemp(filepath.Join(e.cfg.RuntimeDir, "config-sync"), "remote-home-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(remoteHome)
+	remoteSource, err := newChezmoiSource(e.cfg.ChezmoiBinary, filepath.Join(remoteHome, "runtime"), e.repo, remoteHome, e.cfg.AgeIdentityPath, e.cfg.AgeRecipient)
+	if err != nil {
+		return err
+	}
+	if err := remoteSource.applyRestricted(ctx); err != nil {
+		return err
+	}
+	remote, err := takeSnapshot(remoteHome, e.cfg.Policy)
+	if err != nil {
+		return err
+	}
+	remoteChanged := toSet(changedPaths(baseline, remote.Files, remote.Skipped))
+	conflicts := make([]PathSummary, 0)
+	for _, rel := range append([]string{}, changed...) {
+		if _, ok := remoteChanged[rel]; !ok || equalState(remote.Files[rel], local.Files[rel]) {
+			continue
+		}
+		summary := PathSummary{Path: rel, Reason: "concurrent_update"}
+		if state, exists := remote.Files[rel]; exists {
+			conflictRel, conflictState, preserveErr := e.preserveEncryptedConflict(remoteHome, rel, state)
+			if preserveErr != nil {
+				return preserveErr
+			}
+			local.Files[conflictRel] = conflictState
+			changed = append(changed, conflictRel)
+			summary.Bytes = state.Bytes
+		}
+		conflicts = append(conflicts, summary)
+	}
+	e.status.last.Conflicts = uniqueSummaries(append(e.status.last.Conflicts, conflicts...))
+	selected, deferred := selectBatch(changed, local.Files, nil, e.cfg.Policy.MaxBatchBytes)
+	for _, rel := range deferred {
+		if previous, ok := baseline[rel]; ok {
+			local.Files[rel] = previous
+		} else {
+			delete(local.Files, rel)
+		}
+	}
+	changed = selected
+	e.status.last.PendingPathCount = len(classification.Pending) + len(deferred)
+	markerChanged := false
+	if format.KeyVersion < e.cfg.AgeKeyVersion {
+		format.KeyVersion = e.cfg.AgeKeyVersion
+		format.Recipient = e.cfg.AgeRecipient
+		if err := writeEncryptedRepositoryFormat(e.repo, format); err != nil {
+			return err
+		}
+		markerChanged = true
+	}
+	if len(changed) == 0 && !markerChanged {
+		if err := e.chezmoi.applyRestricted(ctx); err != nil {
+			e.recordSyncError("restore_failed", err)
+			return err
+		}
+		return e.recordEncryptedSuccess(ctx, local, baseline, operation)
+	}
+	updates := make([]string, 0, len(changed))
+	deletions := make([]string, 0)
+	for _, rel := range changed {
+		if _, ok := local.Files[rel]; ok {
+			updates = append(updates, rel)
+		} else {
+			deletions = append(deletions, rel)
+		}
+	}
+	if err := e.chezmoi.addEncrypted(ctx, updates); err != nil {
+		e.recordSyncError("encrypt_failed", err)
+		return err
+	}
+	for _, rel := range deletions {
+		if err := e.chezmoi.forget(ctx, rel); err != nil {
+			e.recordSyncError("delete_failed", err)
+			return err
+		}
+		_ = removeState(e.cfg.Home, rel)
+	}
+	if err := e.chezmoi.applyRestricted(ctx); err != nil {
+		e.recordSyncError("restore_failed", err)
+		return err
+	}
+	if err := e.git(ctx, "add", "-A"); err != nil {
+		return err
+	}
+	if err := e.verifyStagedBlobs(ctx, e.cfg.Policy.MaxFileBytes, e.cfg.Policy.MaxBatchBytes); err != nil {
+		e.recordSyncError("size_limit", err)
+		return err
+	}
+	staged, err := e.stagedPaths(ctx)
+	if err != nil {
+		return err
+	}
+	if len(staged) == 0 {
+		return e.recordEncryptedSuccess(ctx, local, baseline, operation)
+	}
+	if err := e.git(ctx, "config", "user.name", e.cfg.AuthorName); err != nil {
+		return err
+	}
+	if err := e.git(ctx, "config", "user.email", e.cfg.AuthorMail); err != nil {
+		return err
+	}
+	if err := e.git(ctx, "commit", "-m", commitMessage(e.cfg.ProjectID, operation, staged, local.Skipped, conflicts)); err != nil {
+		return err
+	}
+	if err := e.git(ctx, "push", "origin", "HEAD:"+e.cfg.Branch); err != nil {
+		return errEncryptedPushRetry
+	}
+	e.lastPush = e.cfg.Now()
+	return e.recordEncryptedSuccess(ctx, local, local.Files, operation)
+}
+
+func (e *Engine) recordEncryptedSuccess(ctx context.Context, local snapshot, baseline map[string]fileState, operation string) error {
+	_ = operation
+	if err := e.writeBaseline(local.Files); err != nil {
+		return err
+	}
+	commit, _ := e.gitOutput(ctx, "rev-parse", "HEAD")
+	success := e.cfg.Now()
+	return e.status.write(func(status *Status) {
+		status.State = stateForResult(local.Skipped, status.Conflicts, status.PendingPathCount, "healthy")
+		status.LastSuccessfulAt = &success
+		status.RemoteCommit = strings.TrimSpace(commit)
+		status.EncryptionKeyVersion = e.cfg.AgeKeyVersion
+		status.Skipped = local.Skipped
+	})
+}
+
+func (e *Engine) preserveEncryptedConflict(remoteHome, rel string, state fileState) (string, fileState, error) {
+	safeProject := strings.NewReplacer("/", "_", "\\", "_", "..", "_").Replace(e.cfg.ProjectID)
+	conflictRel := filepath.ToSlash(filepath.Join(".paperboat-conflicts", safeProject, fmt.Sprintf("%s.remote-%d", filepath.FromSlash(rel), e.cfg.Now().UnixNano())))
+	destination := filepath.Join(e.cfg.Home, filepath.FromSlash(conflictRel))
+	source := filepath.Join(remoteHome, filepath.FromSlash(rel))
+	if err := copyStatePath(source, destination, e.cfg.Home, conflictRel, state); err != nil {
+		return "", fileState{}, err
+	}
+	info, err := os.Lstat(destination)
+	if err != nil {
+		return "", fileState{}, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return conflictRel, fileState{Mode: os.ModeSymlink, Target: state.Target, Bytes: state.Bytes, Hash: state.Hash}, nil
+	}
+	copied, stable, err := readStable(destination, info)
+	if err != nil || !stable {
+		return "", fileState{}, errors.Join(err, errSourceChanged)
+	}
+	return conflictRel, copied, nil
 }
 
 func (e *Engine) exclusive(fn func() error) error {

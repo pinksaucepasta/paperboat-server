@@ -23,19 +23,24 @@ type PathSummary struct {
 }
 
 type Status struct {
-	State            string        `json:"state"`
-	LastAttemptAt    *time.Time    `json:"last_attempt_at,omitempty"`
-	LastSuccessfulAt *time.Time    `json:"last_successful_sync_at,omitempty"`
-	RemoteCommit     string        `json:"remote_commit,omitempty"`
-	PendingPathCount int           `json:"pending_path_count"`
-	Skipped          []PathSummary `json:"skipped,omitempty"`
-	Conflicts        []PathSummary `json:"conflicts,omitempty"`
-	ErrorCode        string        `json:"error_code,omitempty"`
-	ErrorMessage     string        `json:"error_message,omitempty"`
-	MaxFileBytes     int64         `json:"max_file_bytes"`
-	MaxBatchBytes    int64         `json:"max_batch_bytes"`
-	PolicyRevision   string        `json:"policy_revision"`
-	UpdatedAt        time.Time     `json:"updated_at"`
+	State                    string        `json:"state"`
+	LastAttemptAt            *time.Time    `json:"last_attempt_at,omitempty"`
+	LastSuccessfulAt         *time.Time    `json:"last_successful_sync_at,omitempty"`
+	RemoteCommit             string        `json:"remote_commit,omitempty"`
+	PendingPathCount         int           `json:"pending_path_count"`
+	ClassifierPending        []PathSummary `json:"classifier_pending,omitempty"`
+	Skipped                  []PathSummary `json:"skipped,omitempty"`
+	Conflicts                []PathSummary `json:"conflicts,omitempty"`
+	ErrorCode                string        `json:"error_code,omitempty"`
+	ErrorMessage             string        `json:"error_message,omitempty"`
+	MaxFileBytes             int64         `json:"max_file_bytes"`
+	MaxBatchBytes            int64         `json:"max_batch_bytes"`
+	PolicyRevision           string        `json:"policy_revision"`
+	ClassifierPolicyRevision string        `json:"classifier_policy_revision,omitempty"`
+	ClassifierModelRevision  string        `json:"classifier_model_revision,omitempty"`
+	ClassifierHealth         string        `json:"classifier_health,omitempty"`
+	EncryptionKeyVersion     int           `json:"encryption_key_version,omitempty"`
+	UpdatedAt                time.Time     `json:"updated_at"`
 }
 
 func NormalizeStatus(status Status, limit int) (Status, error) {
@@ -46,9 +51,15 @@ func NormalizeStatus(status Status, limit int) (Status, error) {
 		return Status{}, fmt.Errorf("invalid config sync limits")
 	}
 	status.Skipped = boundSummaries(status.Skipped, limit)
+	status.ClassifierPending = boundSummaries(status.ClassifierPending, limit)
 	status.Conflicts = boundSummaries(status.Conflicts, limit)
 	for index := range status.Skipped {
 		if err := normalizeSummary(&status.Skipped[index]); err != nil {
+			return Status{}, err
+		}
+	}
+	for index := range status.ClassifierPending {
+		if err := normalizeSummary(&status.ClassifierPending[index]); err != nil {
 			return Status{}, err
 		}
 	}
@@ -105,6 +116,7 @@ func (w *statusWriter) write(update func(*Status)) error {
 	update(&status)
 	status.UpdatedAt = time.Now().UTC()
 	status.Skipped = boundSummaries(status.Skipped, w.limit)
+	status.ClassifierPending = boundSummaries(status.ClassifierPending, w.limit)
 	status.Conflicts = boundSummaries(status.Conflicts, w.limit)
 	status.ErrorCode = sanitizeCode(status.ErrorCode)
 	status.ErrorMessage = sanitizeMessage(status.ErrorMessage)
@@ -139,6 +151,7 @@ func ReadStatus(path string, limit int) (*Status, error) {
 		return nil, err
 	}
 	status.Skipped = boundSummaries(status.Skipped, limit)
+	status.ClassifierPending = boundSummaries(status.ClassifierPending, limit)
 	status.Conflicts = boundSummaries(status.Conflicts, limit)
 	status.ErrorCode = sanitizeCode(status.ErrorCode)
 	status.ErrorMessage = sanitizeMessage(status.ErrorMessage)

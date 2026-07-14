@@ -1267,7 +1267,7 @@ func newAccessIntegrationRouterWithService(t *testing.T, email string, client ag
 		Projects:         projectService,
 		Agentunnel:       accessService,
 		MeteringRepo:     metering.NewRuntimeRepository(store, cfg.Secrets.EncryptionKey),
-		ConfigSync:       pbsync.NewRepository(store, cfg.ConfigSync),
+		ConfigSync:       pbsync.NewRepository(store, cfg.ConfigSync, cfg.Secrets.EncryptionKey, audit.NewWriter(store)),
 	})
 	cookies := loginCookies(t, router, "workos_seed_"+email+":"+email+":Access Owner")
 	userID := userIDByEmail(t, store, email)

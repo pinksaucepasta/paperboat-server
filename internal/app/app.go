@@ -7,12 +7,14 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/agentunnel"
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/auth"
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
 	"github.com/pinksaucepasta/paperboat-server/internal/catalog"
+	"github.com/pinksaucepasta/paperboat-server/internal/classifier"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/configsync"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
@@ -54,6 +56,8 @@ func New(opts Options) (*App, error) {
 	authService := auth.NewService(store, auditWriter, workOSVerifier(opts.Config), opts.Config.Secrets.SessionKeys, publicURLSecure(opts.Config.HTTP.PublicBaseURL))
 	deviceAuthService := auth.NewDeviceService(store, auditWriter, opts.Config.CLIAuth, opts.Config.Secrets.SessionKeys)
 	billingService := billing.NewService(billingRepo, polarClient(opts.Config), auditWriter)
+	billingService.SetAutoTopupRetryCooldown(opts.Config.Billing.AutoTopupRetryCooldown)
+	billingService.SetCheckoutReservationTTL(opts.Config.Billing.CheckoutReservationTTL)
 	githubService := pbgithub.NewService(store, auditWriter, githubClient(opts.Config), opts.Config)
 	projectService := projects.NewService(store, auditWriter, opts.Config)
 	agentunnelProvider := agentunnelClient(opts.Config)
@@ -76,6 +80,17 @@ func New(opts Options) (*App, error) {
 	meteringService := metering.NewRuntimeService(store, flyProvider, billingRepo)
 	meteringService.SetDownstreamRevoker(agentunnelService)
 	checker := readinessChecker{cfg: opts.Config, db: store}
+	var classificationProvider classifier.Provider
+	if opts.Config.Secrets.ClassifierAPIKey != "" {
+		provider, providerErr := classifier.New(classifier.Config{BaseURL: opts.Config.Classifier.BaseURL, APIKey: opts.Config.Secrets.ClassifierAPIKey, Model: opts.Config.Classifier.Model, Revision: opts.Config.Classifier.Revision, Timeout: opts.Config.Classifier.Timeout, MaxCandidates: opts.Config.Classifier.MaxCandidates, SchemaMode: opts.Config.Classifier.SchemaMode})
+		if providerErr != nil {
+			_ = store.Close()
+			return nil, providerErr
+		}
+		classificationProvider = provider
+	}
+	classificationController := classifier.NewController(store, classificationProvider, opts.Config.Classifier, opts.Config.ConfigSync.PolicyRevision, auditWriter)
+	configSyncRepo := configsync.NewRepository(store, opts.Config.ConfigSync, opts.Config.Secrets.EncryptionKey, auditWriter)
 	router := httpapi.NewRouter(httpapi.Options{
 		Config:           opts.Config,
 		Logger:           opts.Logger,
@@ -90,7 +105,8 @@ func New(opts Options) (*App, error) {
 		Projects:         projectService,
 		Agentunnel:       agentunnelService,
 		MeteringRepo:     metering.NewRuntimeRepository(store, opts.Config.Secrets.EncryptionKey),
-		ConfigSync:       configsync.NewRepository(store, opts.Config.ConfigSync),
+		ConfigSync:       configSyncRepo,
+		Classifier:       classificationController,
 		MintKeys:         mintKeys,
 	})
 	return &App{
@@ -105,6 +121,8 @@ func New(opts Options) (*App, error) {
 		worker: workers.NewSupervisor(
 			orchestratorService.Worker(2*opts.Config.HTTP.RequestTimeout/15),
 			meteringService.Worker(opts.Config.HTTP.RequestTimeout),
+			billingService.AutoTopupWorker(opts.Config.HTTP.RequestTimeout),
+			configSyncRepo.RotationWorker(time.Minute),
 		),
 	}, nil
 }

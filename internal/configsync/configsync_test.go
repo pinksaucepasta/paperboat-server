@@ -18,12 +18,19 @@ func TestSnapshotCoversDotfilesAndRejectsSensitiveUnsafeAndOversizedFiles(t *tes
 	home := t.TempDir()
 	writeTestFile(t, home, ".claude/settings.json", "claude")
 	writeTestFile(t, home, ".codex/config.toml", "codex")
+	writeTestFile(t, home, ".codex/auth.json", "codex-token")
+	writeTestFile(t, home, ".claude/.credentials.json", "claude-token")
+	writeTestFile(t, home, ".config/opencode/auth.json", "opencode-token")
+	writeTestFile(t, home, ".npmrc", "npm-token")
 	writeTestFile(t, home, ".cursor/preferences.json", "cursor")
 	writeTestFile(t, home, ".config/tool/config", "tool")
 	writeTestFile(t, home, ".zshrc", "shell")
 	writeTestFile(t, home, "notes.txt", "normal")
 	writeTestFile(t, home, ".ssh/id_ed25519", "secret")
-	writeTestFile(t, home, ".codex/auth.json", "secret")
+	writeTestFile(t, home, ".codex/sessions/session.jsonl", "session")
+	writeTestFile(t, home, ".claude/backups/settings.json", "backup")
+	writeTestFile(t, home, ".local/share/opencode/opencode.db-wal", "database")
+	writeTestFile(t, home, ".npm/_cacache/index", "cache")
 	writeTestFile(t, home, ".cache/cache.bin", "cache")
 	writeTestFile(t, home, ".claude/large.bin", strings.Repeat("x", 33))
 	outside := filepath.Join(t.TempDir(), "outside")
@@ -41,18 +48,44 @@ func TestSnapshotCoversDotfilesAndRejectsSensitiveUnsafeAndOversizedFiles(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{".claude/settings.json", ".codex/config.toml", ".cursor/preferences.json", ".config/tool/config", ".zshrc"} {
+	for _, path := range []string{".claude/settings.json", ".claude/.credentials.json", ".codex/config.toml", ".codex/auth.json", ".config/opencode/auth.json", ".npmrc", ".cursor/preferences.json", ".config/tool/config", ".zshrc"} {
 		if _, ok := snapshot.Files[path]; !ok {
 			t.Errorf("managed file %s missing", path)
 		}
 	}
-	for _, path := range []string{"notes.txt", ".ssh/id_ed25519", ".codex/auth.json", ".cache/cache.bin", ".claude/large.bin", ".escape", ".config/pipe"} {
+	for _, path := range []string{"notes.txt", ".ssh/id_ed25519", ".codex/sessions/session.jsonl", ".claude/backups/settings.json", ".local/share/opencode/opencode.db-wal", ".npm/_cacache/index", ".cache/cache.bin", ".claude/large.bin", ".escape", ".config/pipe"} {
 		if _, ok := snapshot.Files[path]; ok {
 			t.Errorf("unsafe/unmanaged file %s included", path)
 		}
 	}
 	if !hasReason(snapshot.Skipped, ".claude/large.bin", "max_file_bytes") || !hasReason(snapshot.Skipped, ".escape", "unsafe_symlink") || !hasReason(snapshot.Skipped, ".config/pipe", "special_file") {
 		t.Fatalf("skipped = %#v", snapshot.Skipped)
+	}
+}
+
+func TestRequiredEncryptionRejectsIncompleteRuntimeConfiguration(t *testing.T) {
+	home := t.TempDir()
+	runtime := t.TempDir()
+	_, err := New(Config{
+		Home:              home,
+		Workspace:         filepath.Join(t.TempDir(), "workspace"),
+		RuntimeDir:        runtime,
+		Policy:            testPolicy(),
+		RequireEncryption: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "configuration is incomplete") {
+		t.Fatalf("New error = %v", err)
+	}
+}
+
+func TestConfigFromEnvReadsEncryptionRequirement(t *testing.T) {
+	t.Setenv("PAPERBOAT_CONFIG_REQUIRE_ENCRYPTION", "1")
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.RequireEncryption {
+		t.Fatal("encryption requirement was not loaded from the environment")
 	}
 }
 
@@ -377,14 +410,14 @@ func TestManifestBatchLimitAlsoTightensEffectiveFileLimit(t *testing.T) {
 func TestMandatoryExclusionsCannotBeOverridden(t *testing.T) {
 	t.Setenv("PAPERBOAT_CONFIG_MANDATORY_EXCLUDES", ".custom-secret")
 	fromEnv := PolicyFromEnv()
-	for _, required := range []string{".custom-secret", ".config/git/credentials", ".config/hub", ".claude/shell-snapshots", ".codex/log", "**/credentials.*", "**/auth.json", "**/history.*", "**/cache", "**/logs"} {
+	for _, required := range []string{".custom-secret", ".config/git/credentials", ".config/hub", ".claude/shell-snapshots", ".codex/log", "**/credentials.*", "**/history.*", "**/cache", "**/logs"} {
 		if !contains(fromEnv.MandatoryExcludes, required) {
 			t.Fatalf("mandatory exclusion %q was replaced by environment policy", required)
 		}
 	}
 	policy := testPolicy()
 	policy.Includes = []string{".ssh/**", ".codex/auth.json"}
-	if policy.Managed(".ssh/id_rsa") || policy.Managed(".codex/auth.json") {
+	if policy.Managed(".ssh/id_rsa") || !policy.Managed(".codex/auth.json") {
 		t.Fatal("mandatory exclusion was overridden")
 	}
 	for _, pattern := range []string{"/absolute", "../escape", "safe/../escape"} {
@@ -1189,10 +1222,10 @@ func assertCompleteManifest(t *testing.T, checkout string, policy Policy, includ
 	t.Helper()
 	var value manifest
 	readJSONFile(t, filepath.Join(checkout, manifestPath), &value)
-	if value.SchemaVersion != 1 || value.Revision != policy.Revision || value.MaxFileBytes <= 0 || value.MaxBatchBytes <= 0 || value.DebounceSeconds <= 0 || value.MinPushSeconds <= 0 || value.MaxDirtyDelaySeconds <= 0 || value.RemotePollSeconds <= 0 || value.RetryLimit <= 0 || value.ShutdownSeconds <= 0 || value.SummaryLimit <= 0 {
+	if value.SchemaVersion != 2 || value.Revision != policy.Revision || value.MaxFileBytes <= 0 || value.MaxBatchBytes <= 0 || value.DebounceSeconds <= 0 || value.MinPushSeconds <= 0 || value.MaxDirtyDelaySeconds <= 0 || value.RemotePollSeconds <= 0 || value.RetryLimit <= 0 || value.ShutdownSeconds <= 0 || value.SummaryLimit <= 0 {
 		t.Fatalf("manifest is incomplete: %#v", value)
 	}
-	if !contains(value.Includes, include) || !contains(value.MandatoryExcludes, ".ssh") {
+	if (include != "" && !contains(value.Includes, include)) || !contains(value.MandatoryExcludes, ".ssh") {
 		t.Fatalf("manifest policy missing include/exclusions: %#v", value)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -53,6 +54,117 @@ func billingPlanProducts(service *billing.Service) http.Handler {
 	})
 }
 
+func billingStorage(service *billing.Service) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		storage, err := service.StorageSubscription(r.Context(), p.User.ID)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "billing_unavailable", "Storage subscription is unavailable.")
+			return
+		}
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: storage})
+	})
+}
+
+func billingStorageUpdate(service *billing.Service) http.Handler {
+	type request struct {
+		StorageGB int `json:"storage_gb"`
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		var body request
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, r, http.StatusBadRequest, "validation_failed", "Request body must be valid JSON.")
+			return
+		}
+		key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+		if key == "" {
+			writeError(w, r, http.StatusBadRequest, "validation_failed", "Idempotency-Key is required.")
+			return
+		}
+		storage, err := service.UpdateStorageSubscription(r.Context(), p.User.ID, body.StorageGB, key)
+		if errors.Is(err, billing.ErrInsufficientStorage) {
+			writeError(w, r, http.StatusConflict, "quota_exceeded", "Storage cannot be reduced below current allocation.")
+			return
+		}
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "validation_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: storage})
+	})
+}
+
+func billingStoragePreview(service *billing.Service) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		storageGB, err := strconv.Atoi(r.URL.Query().Get("storage_gb"))
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "validation_failed", "storage_gb must be an integer.")
+			return
+		}
+		preview, err := service.PreviewStorageSubscription(r.Context(), p.User.ID, storageGB)
+		if errors.Is(err, billing.ErrInsufficientStorage) {
+			writeError(w, r, http.StatusConflict, "quota_exceeded", "Storage cannot be reduced below current allocation.")
+			return
+		}
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "validation_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: preview})
+	})
+}
+
+func billingAutoTopup(service *billing.Service) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		policy, err := service.AutoTopupPolicy(r.Context(), p.User.ID)
+		if err != nil {
+			writeError(w, r, http.StatusInternalServerError, "internal_error", "Auto top-up policy is unavailable.")
+			return
+		}
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: policy})
+	})
+}
+
+func billingAutoTopupUpdate(service *billing.Service) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		var policy billing.AutoTopupPolicy
+		if err := json.NewDecoder(r.Body).Decode(&policy); err != nil {
+			writeError(w, r, http.StatusBadRequest, "validation_failed", "Request body must be valid JSON.")
+			return
+		}
+		updated, err := service.SetAutoTopupPolicy(r.Context(), p.User.ID, policy)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "validation_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: updated})
+	})
+}
+
 func billingCheckout(service *billing.Service) http.Handler {
 	type request struct {
 		ProductCode string `json:"product_code"`
@@ -81,6 +193,18 @@ func billingCheckout(service *billing.Service) http.Handler {
 		}
 		if errors.Is(err, billing.ErrSamePlan) {
 			writeError(w, r, http.StatusBadRequest, "validation_failed", "You are already subscribed to this plan.")
+			return
+		}
+		if errors.Is(err, billing.ErrTrialUnavailable) {
+			writeError(w, r, http.StatusConflict, "trial_unavailable", "The free trial is only available once per account.")
+			return
+		}
+		if errors.Is(err, billing.ErrCheckoutPending) {
+			writeError(w, r, http.StatusConflict, "checkout_pending", "Another billing checkout is already pending.")
+			return
+		}
+		if errors.Is(err, billing.ErrInsufficientStorage) {
+			writeError(w, r, http.StatusConflict, "quota_exceeded", "Reduce allocated storage before changing to this plan.")
 			return
 		}
 		if err != nil {

@@ -17,6 +17,11 @@
   "catalogs": {
     "seed_file": "config/catalogs.example.json"
   },
+  "billing": {
+    "polar_webhook_tolerance": 300000000000,
+    "auto_topup_retry_cooldown": 3600000000000,
+    "checkout_reservation_ttl": 1800000000000
+  },
   "metering": {
     "minimum_start_credit_window": 300000000000,
     "max_keep_alive_duration": 43200000000000

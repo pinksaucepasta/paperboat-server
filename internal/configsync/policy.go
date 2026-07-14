@@ -62,7 +62,7 @@ func PolicyFromEnv() Policy {
 		MaxFileBytes:         envInt("PAPERBOAT_CONFIG_MAX_FILE_BYTES", 5<<20),
 		MaxBatchBytes:        envInt("PAPERBOAT_CONFIG_MAX_BATCH_BYTES", 25<<20),
 		Debounce:             envDuration("PAPERBOAT_CONFIG_DEBOUNCE_SECONDS", 10*time.Second),
-		MinPushInterval:      envDuration("PAPERBOAT_CONFIG_MIN_PUSH_INTERVAL_SECONDS", time.Minute),
+		MinPushInterval:      envDuration("PAPERBOAT_CONFIG_MIN_PUSH_INTERVAL_SECONDS", 5*time.Minute),
 		MaxDirtyDelay:        envDuration("PAPERBOAT_CONFIG_MAX_DIRTY_DELAY_SECONDS", 5*time.Minute),
 		RemotePollInterval:   envDuration("PAPERBOAT_CONFIG_REMOTE_POLL_SECONDS", time.Minute),
 		RetryLimit:           int(envInt("PAPERBOAT_CONFIG_RETRY_LIMIT", 5)),
@@ -166,7 +166,7 @@ func (p Policy) EnsureManifest(repo string) (bool, error) {
 		maxFile, maxBatch = effectiveLimits(maxFile, maxBatch, existing)
 	}
 	next := manifest{
-		SchemaVersion:        1,
+		SchemaVersion:        2,
 		Revision:             p.Revision,
 		Includes:             unique(append(append([]string{}, p.Includes...), existing.Includes...)),
 		Excludes:             unique(append(append([]string{}, p.Excludes...), existing.Excludes...)),
@@ -222,7 +222,7 @@ func effectiveLimits(serverFile, serverBatch int64, repository manifest) (int64,
 }
 
 func validateManifest(value manifest) error {
-	if value.SchemaVersion != 0 && value.SchemaVersion != 1 {
+	if value.SchemaVersion != 0 && value.SchemaVersion != 1 && value.SchemaVersion != 2 {
 		return fmt.Errorf("unsupported config manifest schema version %d", value.SchemaVersion)
 	}
 	for _, pattern := range append(append([]string{}, value.Includes...), value.Excludes...) {
@@ -351,6 +351,18 @@ func envInt(name string, fallback int64) int64 {
 	}
 	parsed, err := strconv.ParseInt(value, 10, 64)
 	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
+}
+
+func envBool(name string, fallback bool) bool {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
 		return fallback
 	}
 	return parsed

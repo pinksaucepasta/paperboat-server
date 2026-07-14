@@ -49,6 +49,9 @@ version or a `version` field in the JSON body. Stale writes fail with `version_c
 - `GET /api/billing/plan-products`
 - `GET /api/dashboard/usage-summary`
 - `GET /api/config-sync/status`
+- `GET|PUT|DELETE /api/config-sync/overrides`
+- `POST /api/config-sync/recovery-key/export`
+- `POST /api/config-sync/recovery-key/rotate`
 - `GET /api/catalog/plans`
 - `GET /api/catalog/machine-types`
 - `GET /api/catalog/presets`

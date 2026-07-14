@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"filippo.io/age"
 	"github.com/pinksaucepasta/paperboat-server/internal/agentunnel"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
@@ -416,6 +417,11 @@ func (s *Service) machineSpec(intent ProjectIntent, volumeID string) fly.Machine
 		"PAPERBOAT_ACTIVITY_SHUTDOWN_REPORT_SECONDS": fmt.Sprint(reportSeconds),
 		"PAPERBOAT_CONFIG_SUMMARY_LIMIT":             fmt.Sprint(s.cfg.ConfigSync.SummaryLimit),
 		"PAPERBOAT_CONFIG_POLICY_REVISION":           s.cfg.ConfigSync.PolicyRevision,
+		"PAPERBOAT_CONFIG_AGE_RECIPIENT":             intent.ConfigAgeRecipient,
+		"PAPERBOAT_CONFIG_AGE_KEY_VERSION":           fmt.Sprint(intent.ConfigAgeVersion),
+		"PAPERBOAT_CONFIG_REQUIRE_ENCRYPTION":        "1",
+		"PAPERBOAT_CONFIG_AGE_IDENTITY_FILE":         "/var/lib/paperboat/config-age-identity.txt",
+		"PAPERBOAT_CONFIG_CLASSIFY_ENDPOINT":         strings.TrimRight(s.cfg.HTTP.PublicBaseURL, "/") + "/api/machine/config-sync/classify",
 	}
 	if strings.TrimSpace(intent.GitHubConfigRepoURL) != "" {
 		env["PAPERBOAT_CONFIG_REPO_URL"] = intent.GitHubConfigRepoURL
@@ -574,6 +580,9 @@ func (s *Service) projectSecrets(intent ProjectIntent) []fly.MachineSecret {
 			Value:  agentunnelToken,
 		})
 	}
+	if strings.TrimSpace(intent.ConfigAgeIdentity) != "" {
+		out = append(out, fly.MachineSecret{EnvVar: "PAPERBOAT_CONFIG_AGE_IDENTITY", Name: providerSecretName("PBSECRET_CONFIG_AGE", intent.ID), Value: intent.ConfigAgeIdentity})
+	}
 	if strings.TrimSpace(intent.GitHubConfigToken) != "" {
 		out = append(out, fly.MachineSecret{
 			EnvVar: s.cfg.Fly.GitHubSecret,
@@ -692,6 +701,9 @@ type ProjectIntent struct {
 	AgentunnelToken        string
 	AgentunnelClientID     string
 	AgentunnelTunnelID     string
+	ConfigAgeIdentity      string
+	ConfigAgeRecipient     string
+	ConfigAgeVersion       int32
 }
 
 type MachineRecord struct {
@@ -771,6 +783,11 @@ func (r *Repository) ProjectIntent(ctx context.Context, projectID string) (Proje
 		return ProjectIntent{}, err
 	}
 	intent := ProjectIntent{ID: row.ID, UserID: row.UserID, RepositoryURL: row.SourceUrl, DefaultBranch: row.DefaultBranch, StorageGB: int(row.AssignedGb), MachineTypeCode: row.MachineTypeCode, VCPU: int(row.Vcpu), MemoryMB: int(row.MemoryMb), RegionCode: row.RegionCode, IdleTimeoutCode: row.IdleTimeoutCode, SetupScriptRef: row.SetupScriptRef, DesiredConfigHash: row.DesiredConfigHash, PendingRestartApply: row.PendingRestartApply}
+	key, keyErr := r.ensureAccountConfigKey(ctx, intent.UserID)
+	if keyErr != nil {
+		return ProjectIntent{}, keyErr
+	}
+	intent.ConfigAgeIdentity, intent.ConfigAgeRecipient, intent.ConfigAgeVersion = key.Identity, key.Recipient, key.Version
 	_ = json.Unmarshal(databaseBytes(row.PresetCodes), &intent.PresetCodes)
 	token, err := r.githubConfigToken(ctx, intent.UserID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -796,6 +813,44 @@ func (r *Repository) ProjectIntent(ctx context.Context, projectID string) (Proje
 	intent.AgentunnelClientID = agentunnelResource.ClientID
 	intent.AgentunnelTunnelID = agentunnelResource.TunnelID
 	return intent, nil
+}
+
+type accountConfigKey struct {
+	Identity, Recipient string
+	Version             int32
+}
+
+func (r *Repository) ensureAccountConfigKey(ctx context.Context, userID string) (accountConfigKey, error) {
+	row, err := r.db.Queries().GetAccountConfigKey(ctx, userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		identity, generateErr := age.GenerateX25519Identity()
+		if generateErr != nil {
+			return accountConfigKey{}, generateErr
+		}
+		ciphertext, encryptErr := secrets.Encrypt(r.encryptionKey, identity.String())
+		if encryptErr != nil {
+			return accountConfigKey{}, encryptErr
+		}
+		if _, err = r.db.Queries().InsertAccountConfigKey(ctx, dbsqlc.InsertAccountConfigKeyParams{UserID: userID, Recipient: identity.Recipient().String(), EncryptedIdentity: ciphertext}); err != nil {
+			return accountConfigKey{}, err
+		}
+		row, err = r.db.Queries().GetAccountConfigKey(ctx, userID)
+	}
+	if err != nil {
+		return accountConfigKey{}, err
+	}
+	identity, err := secrets.Decrypt(r.encryptionKey, row.EncryptedIdentity)
+	if err != nil {
+		return accountConfigKey{}, err
+	}
+	if len(row.PreviousEncryptedIdentity) > 0 {
+		previous, previousErr := secrets.Decrypt(r.encryptionKey, row.PreviousEncryptedIdentity)
+		if previousErr != nil {
+			return accountConfigKey{}, previousErr
+		}
+		identity += "\n" + previous
+	}
+	return accountConfigKey{Identity: identity, Recipient: row.Recipient, Version: row.KeyVersion}, nil
 }
 
 func (r *Repository) githubConfigToken(ctx context.Context, userID string) (string, error) {

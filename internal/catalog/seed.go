@@ -182,6 +182,16 @@ func (s Seed) Validate() error {
 		if product.Provider == "" || product.ProviderProductID == "" || product.ProviderPriceID == "" || product.CatalogType == "" || product.CatalogRef == "" {
 			errs = append(errs, fmt.Errorf("billing product %q provider and catalog mapping fields are required", product.Code))
 		}
+		if product.Active {
+			providerKey := product.Provider + ":" + product.ProviderProductID
+			if seen["provider product"] == nil {
+				seen["provider product"] = map[string]struct{}{}
+			}
+			if _, exists := seen["provider product"][providerKey]; exists {
+				errs = append(errs, fmt.Errorf("duplicate active billing provider product %q", providerKey))
+			}
+			seen["provider product"][providerKey] = struct{}{}
+		}
 	}
 	for _, flag := range s.FeatureFlags {
 		checkCode("feature flag", flag.Code)

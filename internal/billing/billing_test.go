@@ -197,6 +197,51 @@ func TestHTTPPolarClientUpdateSubscriptionUsesInvoiceProration(t *testing.T) {
 	}
 }
 
+func TestHTTPPolarClientUpdatesStorageSeatsWithoutChangingProduct(t *testing.T) {
+	var gotPayload map[string]any
+	client := HTTPPolarClient{BaseURL: "https://polar.example.test", Client: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(req.Body).Decode(&gotPayload); err != nil {
+			t.Fatal(err)
+		}
+		return jsonResponse(`{"id":"sub_test"}`), nil
+	}).client()}
+	seats := 3
+	if err := client.UpdateSubscription(context.Background(), SubscriptionUpdateInput{ProviderSubscriptionID: "sub_test", Seats: &seats, ProrationBehavior: "next_period", IdempotencyKey: "storage-key"}); err != nil {
+		t.Fatal(err)
+	}
+	if gotPayload["seats"] != float64(3) || gotPayload["proration_behavior"] != "next_period" {
+		t.Fatalf("payload = %#v", gotPayload)
+	}
+	if _, exists := gotPayload["product_id"]; exists {
+		t.Fatalf("storage update changed product: %#v", gotPayload)
+	}
+}
+
+func TestHTTPPolarClientReadsSeatPricing(t *testing.T) {
+	client := HTTPPolarClient{BaseURL: "https://polar.example.test", Client: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return jsonResponse(`{"current_period_start":"2026-07-01T00:00:00Z","current_period_end":"2026-08-01T00:00:00Z","product":{"prices":[{"amount_type":"fixed","price_currency":"usd"},{"amount_type":"seat_based","price_currency":"usd","seat_tiers":{"seat_tier_type":"volume","tiers":[{"min_seats":1,"max_seats":null,"price_per_seat":250}]}}]}}`), nil
+	}).client()}
+	pricing, err := client.GetSubscriptionPricing(context.Background(), "sub_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pricing.Currency != "usd" || pricing.TierType != "volume" || len(pricing.Tiers) != 1 || pricing.Tiers[0].PricePerSeat != 250 {
+		t.Fatalf("pricing = %+v", pricing)
+	}
+}
+
+func TestSeatPriceTotal(t *testing.T) {
+	maxTwo := 2
+	volume := SubscriptionPricing{TierType: "volume", Tiers: []SeatPriceTier{{MinSeats: 1, MaxSeats: &maxTwo, PricePerSeat: 100}, {MinSeats: 3, PricePerSeat: 80}}}
+	if got := seatPriceTotal(3, volume); got != 240 {
+		t.Fatalf("volume total = %d", got)
+	}
+	graduated := SubscriptionPricing{TierType: "graduated", Tiers: []SeatPriceTier{{MinSeats: 1, MaxSeats: &maxTwo, PricePerSeat: 100}, {MinSeats: 3, PricePerSeat: 80}}}
+	if got := seatPriceTotal(3, graduated); got != 280 {
+		t.Fatalf("graduated total = %d", got)
+	}
+}
+
 func TestEntitlementActiveStates(t *testing.T) {
 	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
 	future := now.Add(time.Hour)
@@ -212,6 +257,8 @@ func TestEntitlementActiveStates(t *testing.T) {
 		{name: "active past end", state: "active", periodEnd: &past, want: false},
 		{name: "past due", state: "past_due", periodEnd: &future, want: false},
 		{name: "canceled", state: "canceled", periodEnd: &future, want: false},
+		{name: "paused", state: "paused", periodEnd: &future, want: false},
+		{name: "revoked", state: "revoked", periodEnd: &future, want: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -289,6 +336,9 @@ func TestSubscriptionStateMapping(t *testing.T) {
 		"cancelled":  "canceled",
 		"incomplete": "incomplete",
 		"expired":    "expired",
+		"paused":     "paused",
+		"unpaid":     "unpaid",
+		"revoked":    "revoked",
 	}
 	for input, want := range cases {
 		if got := subscriptionState(input, ""); got != want {

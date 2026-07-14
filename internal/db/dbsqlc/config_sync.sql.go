@@ -12,6 +12,143 @@ import (
 	"time"
 )
 
+const deleteConfigClassificationOverride = `-- name: DeleteConfigClassificationOverride :execrows
+DELETE FROM config_classification_overrides WHERE user_id=$1 AND normalized_path=$2
+`
+
+type DeleteConfigClassificationOverrideParams struct {
+	UserID         string
+	NormalizedPath string
+}
+
+func (q *Queries) DeleteConfigClassificationOverride(ctx context.Context, arg DeleteConfigClassificationOverrideParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteConfigClassificationOverride, arg.UserID, arg.NormalizedPath)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const getAccountConfigKey = `-- name: GetAccountConfigKey :one
+SELECT user_id,key_version,recipient,encrypted_identity,previous_key_version,previous_recipient,previous_encrypted_identity,created_at,rotated_at
+FROM account_config_keys WHERE user_id=$1
+`
+
+func (q *Queries) GetAccountConfigKey(ctx context.Context, userID string) (AccountConfigKey, error) {
+	row := q.db.QueryRowContext(ctx, getAccountConfigKey, userID)
+	var i AccountConfigKey
+	err := row.Scan(
+		&i.UserID,
+		&i.KeyVersion,
+		&i.Recipient,
+		&i.EncryptedIdentity,
+		&i.PreviousKeyVersion,
+		&i.PreviousRecipient,
+		&i.PreviousEncryptedIdentity,
+		&i.CreatedAt,
+		&i.RotatedAt,
+	)
+	return i, err
+}
+
+const getAccountConfigKeyForProject = `-- name: GetAccountConfigKeyForProject :one
+SELECT k.user_id,k.key_version,k.recipient,k.encrypted_identity
+FROM account_config_keys k JOIN projects p ON p.user_id=k.user_id
+WHERE p.id=$1 AND p.state<>'deleted'
+`
+
+type GetAccountConfigKeyForProjectRow struct {
+	UserID            string
+	KeyVersion        int32
+	Recipient         string
+	EncryptedIdentity []byte
+}
+
+func (q *Queries) GetAccountConfigKeyForProject(ctx context.Context, projectID string) (GetAccountConfigKeyForProjectRow, error) {
+	row := q.db.QueryRowContext(ctx, getAccountConfigKeyForProject, projectID)
+	var i GetAccountConfigKeyForProjectRow
+	err := row.Scan(
+		&i.UserID,
+		&i.KeyVersion,
+		&i.Recipient,
+		&i.EncryptedIdentity,
+	)
+	return i, err
+}
+
+const getConfigClassificationCache = `-- name: GetConfigClassificationCache :one
+SELECT decision,source,confidence,reason_code,classifier_revision,expires_at FROM config_classification_cache
+WHERE user_id=$1 AND normalized_path=$2 AND metadata_hash=$3
+  AND policy_revision=$4 AND model_revision=$5 AND classifier_revision=$6
+  AND expires_at>now()
+`
+
+type GetConfigClassificationCacheParams struct {
+	UserID             string
+	NormalizedPath     string
+	MetadataHash       string
+	PolicyRevision     string
+	ModelRevision      string
+	ClassifierRevision string
+}
+
+type GetConfigClassificationCacheRow struct {
+	Decision           string
+	Source             string
+	Confidence         float64
+	ReasonCode         string
+	ClassifierRevision string
+	ExpiresAt          time.Time
+}
+
+func (q *Queries) GetConfigClassificationCache(ctx context.Context, arg GetConfigClassificationCacheParams) (GetConfigClassificationCacheRow, error) {
+	row := q.db.QueryRowContext(ctx, getConfigClassificationCache,
+		arg.UserID,
+		arg.NormalizedPath,
+		arg.MetadataHash,
+		arg.PolicyRevision,
+		arg.ModelRevision,
+		arg.ClassifierRevision,
+	)
+	var i GetConfigClassificationCacheRow
+	err := row.Scan(
+		&i.Decision,
+		&i.Source,
+		&i.Confidence,
+		&i.ReasonCode,
+		&i.ClassifierRevision,
+		&i.ExpiresAt,
+	)
+	return i, err
+}
+
+const getConfigClassificationOverride = `-- name: GetConfigClassificationOverride :one
+SELECT decision FROM config_classification_overrides WHERE user_id=$1 AND normalized_path=$2
+`
+
+type GetConfigClassificationOverrideParams struct {
+	UserID         string
+	NormalizedPath string
+}
+
+func (q *Queries) GetConfigClassificationOverride(ctx context.Context, arg GetConfigClassificationOverrideParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, getConfigClassificationOverride, arg.UserID, arg.NormalizedPath)
+	var decision string
+	err := row.Scan(&decision)
+	return decision, err
+}
+
+const getConfigSyncProjectOwner = `-- name: GetConfigSyncProjectOwner :one
+SELECT user_id FROM projects WHERE id=$1 AND state<>'deleted'
+`
+
+func (q *Queries) GetConfigSyncProjectOwner(ctx context.Context, projectID string) (string, error) {
+	row := q.db.QueryRowContext(ctx, getConfigSyncProjectOwner, projectID)
+	var user_id string
+	err := row.Scan(&user_id)
+	return user_id, err
+}
+
 const getConfigSyncRepositoryByUser = `-- name: GetConfigSyncRepositoryByUser :one
 SELECT owner,name,default_branch,html_url
 FROM github_config_repositories
@@ -37,20 +174,117 @@ func (q *Queries) GetConfigSyncRepositoryByUser(ctx context.Context, userID stri
 	return i, err
 }
 
+const insertAccountConfigKey = `-- name: InsertAccountConfigKey :execrows
+INSERT INTO account_config_keys (user_id,key_version,recipient,encrypted_identity)
+VALUES ($1,1,$2,$3)
+ON CONFLICT (user_id) DO NOTHING
+`
+
+type InsertAccountConfigKeyParams struct {
+	UserID            string
+	Recipient         string
+	EncryptedIdentity []byte
+}
+
+func (q *Queries) InsertAccountConfigKey(ctx context.Context, arg InsertAccountConfigKeyParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, insertAccountConfigKey, arg.UserID, arg.Recipient, arg.EncryptedIdentity)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const listCompletedAccountConfigKeyRotations = `-- name: ListCompletedAccountConfigKeyRotations :many
+SELECT k.user_id,k.key_version FROM account_config_keys k
+WHERE k.previous_key_version IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM projects p
+  LEFT JOIN fly_machines fm ON fm.project_id=p.id
+  LEFT JOIN config_sync_statuses css ON css.project_id=p.id AND css.machine_id=fm.fly_machine_id
+  WHERE p.user_id=k.user_id AND p.state<>'deleted' AND coalesce(css.encryption_key_version,0)<k.key_version
+)
+`
+
+type ListCompletedAccountConfigKeyRotationsRow struct {
+	UserID     string
+	KeyVersion int32
+}
+
+func (q *Queries) ListCompletedAccountConfigKeyRotations(ctx context.Context) ([]ListCompletedAccountConfigKeyRotationsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listCompletedAccountConfigKeyRotations)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListCompletedAccountConfigKeyRotationsRow
+	for rows.Next() {
+		var i ListCompletedAccountConfigKeyRotationsRow
+		if err := rows.Scan(&i.UserID, &i.KeyVersion); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listConfigClassificationOverrides = `-- name: ListConfigClassificationOverrides :many
+SELECT normalized_path,decision,created_at,updated_at FROM config_classification_overrides WHERE user_id=$1 ORDER BY normalized_path
+`
+
+type ListConfigClassificationOverridesRow struct {
+	NormalizedPath string
+	Decision       string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+func (q *Queries) ListConfigClassificationOverrides(ctx context.Context, userID string) ([]ListConfigClassificationOverridesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listConfigClassificationOverrides, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListConfigClassificationOverridesRow
+	for rows.Next() {
+		var i ListConfigClassificationOverridesRow
+		if err := rows.Scan(
+			&i.NormalizedPath,
+			&i.Decision,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listConfigSyncStatusesByUser = `-- name: ListConfigSyncStatusesByUser :many
 SELECT p.id AS project_id,p.name AS project_name,p.state AS project_state,
 	fm.fly_machine_id,coalesce(css.machine_id,fm.fly_machine_id,'') AS machine_id,
 	coalesce(css.state,''),css.last_attempt_at,css.last_successful_sync_at,coalesce(css.remote_commit,''),
-	coalesce(css.pending_path_count,0),coalesce(css.skipped,'[]'::jsonb),coalesce(css.conflicts,'[]'::jsonb),
+	coalesce(css.pending_path_count,0),coalesce(css.skipped,'[]'::jsonb),coalesce(css.conflicts,'[]'::jsonb),coalesce(css.classifier_pending,'[]'::jsonb),
 	coalesce(css.error_code,''),coalesce(css.error_message,''),coalesce(css.max_file_bytes,0),
-	coalesce(css.max_batch_bytes,0),coalesce(css.policy_revision,''),
+	coalesce(css.max_batch_bytes,0),coalesce(css.policy_revision,''),coalesce(css.classifier_policy_revision,''),coalesce(css.classifier_model_revision,''),coalesce(css.classifier_health,''),coalesce(css.encryption_key_version,0),
 	coalesce(css.status_updated_at,'epoch'::timestamptz),coalesce(css.status_observed_at,'epoch'::timestamptz),
 	coalesce(css.heartbeat_at,'epoch'::timestamptz),
 	coalesce(css.received_at,'epoch'::timestamptz)
 FROM projects p
 LEFT JOIN fly_machines fm ON fm.project_id=p.id
 LEFT JOIN LATERAL (
-	SELECT project_id, machine_id, state, last_attempt_at, last_successful_sync_at, remote_commit, pending_path_count, skipped, conflicts, error_code, error_message, max_file_bytes, max_batch_bytes, policy_revision, heartbeat_at, created_at, updated_at, status_updated_at, received_at, status_observed_at FROM config_sync_statuses s
+	SELECT project_id, machine_id, state, last_attempt_at, last_successful_sync_at, remote_commit, pending_path_count, skipped, conflicts, error_code, error_message, max_file_bytes, max_batch_bytes, policy_revision, heartbeat_at, created_at, updated_at, status_updated_at, received_at, status_observed_at, classifier_pending, classifier_policy_revision, classifier_model_revision, classifier_health, encryption_key_version FROM config_sync_statuses s
 	WHERE s.project_id=p.id AND s.machine_id=fm.fly_machine_id
 	LIMIT 1
 ) css ON true
@@ -59,27 +293,32 @@ ORDER BY p.created_at DESC
 `
 
 type ListConfigSyncStatusesByUserRow struct {
-	ProjectID            string
-	ProjectName          string
-	ProjectState         string
-	FlyMachineID         sql.NullString
-	MachineID            string
-	State                string
-	LastAttemptAt        sql.NullTime
-	LastSuccessfulSyncAt sql.NullTime
-	RemoteCommit         string
-	PendingPathCount     int32
-	Skipped              json.RawMessage
-	Conflicts            json.RawMessage
-	ErrorCode            string
-	ErrorMessage         string
-	MaxFileBytes         int64
-	MaxBatchBytes        int64
-	PolicyRevision       string
-	StatusUpdatedAt      time.Time
-	StatusObservedAt     time.Time
-	HeartbeatAt          time.Time
-	ReceivedAt           time.Time
+	ProjectID                string
+	ProjectName              string
+	ProjectState             string
+	FlyMachineID             sql.NullString
+	MachineID                string
+	State                    string
+	LastAttemptAt            sql.NullTime
+	LastSuccessfulSyncAt     sql.NullTime
+	RemoteCommit             string
+	PendingPathCount         int32
+	Skipped                  json.RawMessage
+	Conflicts                json.RawMessage
+	ClassifierPending        json.RawMessage
+	ErrorCode                string
+	ErrorMessage             string
+	MaxFileBytes             int64
+	MaxBatchBytes            int64
+	PolicyRevision           string
+	ClassifierPolicyRevision string
+	ClassifierModelRevision  string
+	ClassifierHealth         string
+	EncryptionKeyVersion     int32
+	StatusUpdatedAt          time.Time
+	StatusObservedAt         time.Time
+	HeartbeatAt              time.Time
+	ReceivedAt               time.Time
 }
 
 func (q *Queries) ListConfigSyncStatusesByUser(ctx context.Context, userID string) ([]ListConfigSyncStatusesByUserRow, error) {
@@ -104,11 +343,16 @@ func (q *Queries) ListConfigSyncStatusesByUser(ctx context.Context, userID strin
 			&i.PendingPathCount,
 			&i.Skipped,
 			&i.Conflicts,
+			&i.ClassifierPending,
 			&i.ErrorCode,
 			&i.ErrorMessage,
 			&i.MaxFileBytes,
 			&i.MaxBatchBytes,
 			&i.PolicyRevision,
+			&i.ClassifierPolicyRevision,
+			&i.ClassifierModelRevision,
+			&i.ClassifierHealth,
+			&i.EncryptionKeyVersion,
 			&i.StatusUpdatedAt,
 			&i.StatusObservedAt,
 			&i.HeartbeatAt,
@@ -125,6 +369,45 @@ func (q *Queries) ListConfigSyncStatusesByUser(ctx context.Context, userID strin
 		return nil, err
 	}
 	return items, nil
+}
+
+const retirePreviousAccountConfigKey = `-- name: RetirePreviousAccountConfigKey :exec
+UPDATE account_config_keys SET previous_key_version=NULL,previous_recipient=NULL,previous_encrypted_identity=NULL
+WHERE user_id=$1 AND key_version=$2
+`
+
+type RetirePreviousAccountConfigKeyParams struct {
+	UserID     string
+	KeyVersion int32
+}
+
+func (q *Queries) RetirePreviousAccountConfigKey(ctx context.Context, arg RetirePreviousAccountConfigKeyParams) error {
+	_, err := q.db.ExecContext(ctx, retirePreviousAccountConfigKey, arg.UserID, arg.KeyVersion)
+	return err
+}
+
+const rotateAccountConfigKey = `-- name: RotateAccountConfigKey :exec
+UPDATE account_config_keys SET
+  previous_key_version=key_version,previous_recipient=recipient,previous_encrypted_identity=encrypted_identity,
+  key_version=$1,recipient=$2,encrypted_identity=$3,rotated_at=now()
+WHERE user_id=$4
+`
+
+type RotateAccountConfigKeyParams struct {
+	KeyVersion        int32
+	Recipient         string
+	EncryptedIdentity []byte
+	UserID            string
+}
+
+func (q *Queries) RotateAccountConfigKey(ctx context.Context, arg RotateAccountConfigKeyParams) error {
+	_, err := q.db.ExecContext(ctx, rotateAccountConfigKey,
+		arg.KeyVersion,
+		arg.Recipient,
+		arg.EncryptedIdentity,
+		arg.UserID,
+	)
+	return err
 }
 
 const touchConfigSyncStatusReceipt = `-- name: TouchConfigSyncStatusReceipt :exec
@@ -144,25 +427,85 @@ func (q *Queries) TouchConfigSyncStatusReceipt(ctx context.Context, arg TouchCon
 	return err
 }
 
+const upsertConfigClassificationCache = `-- name: UpsertConfigClassificationCache :exec
+INSERT INTO config_classification_cache (user_id,normalized_path,metadata_hash,decision,source,confidence,reason_code,policy_revision,model_revision,classifier_revision,expires_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+ON CONFLICT (user_id,normalized_path,metadata_hash,policy_revision,model_revision,classifier_revision)
+DO UPDATE SET decision=EXCLUDED.decision,source=EXCLUDED.source,confidence=EXCLUDED.confidence,reason_code=EXCLUDED.reason_code,expires_at=EXCLUDED.expires_at,created_at=now()
+`
+
+type UpsertConfigClassificationCacheParams struct {
+	UserID             string
+	NormalizedPath     string
+	MetadataHash       string
+	Decision           string
+	Source             string
+	Confidence         float64
+	ReasonCode         string
+	PolicyRevision     string
+	ModelRevision      string
+	ClassifierRevision string
+	ExpiresAt          time.Time
+}
+
+func (q *Queries) UpsertConfigClassificationCache(ctx context.Context, arg UpsertConfigClassificationCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertConfigClassificationCache,
+		arg.UserID,
+		arg.NormalizedPath,
+		arg.MetadataHash,
+		arg.Decision,
+		arg.Source,
+		arg.Confidence,
+		arg.ReasonCode,
+		arg.PolicyRevision,
+		arg.ModelRevision,
+		arg.ClassifierRevision,
+		arg.ExpiresAt,
+	)
+	return err
+}
+
+const upsertConfigClassificationOverride = `-- name: UpsertConfigClassificationOverride :exec
+INSERT INTO config_classification_overrides (user_id,normalized_path,decision,created_by) VALUES ($1,$2,$3,$4)
+ON CONFLICT (user_id,normalized_path) DO UPDATE SET decision=EXCLUDED.decision,created_by=EXCLUDED.created_by,updated_at=now()
+`
+
+type UpsertConfigClassificationOverrideParams struct {
+	UserID         string
+	NormalizedPath string
+	Decision       string
+	CreatedBy      string
+}
+
+func (q *Queries) UpsertConfigClassificationOverride(ctx context.Context, arg UpsertConfigClassificationOverrideParams) error {
+	_, err := q.db.ExecContext(ctx, upsertConfigClassificationOverride,
+		arg.UserID,
+		arg.NormalizedPath,
+		arg.Decision,
+		arg.CreatedBy,
+	)
+	return err
+}
+
 const upsertConfigSyncStatus = `-- name: UpsertConfigSyncStatus :exec
 INSERT INTO config_sync_statuses (
 	project_id,machine_id,state,last_attempt_at,last_successful_sync_at,remote_commit,
-	pending_path_count,skipped,conflicts,error_code,error_message,max_file_bytes,
-	max_batch_bytes,policy_revision,status_updated_at,status_observed_at,heartbeat_at
+	pending_path_count,skipped,conflicts,classifier_pending,error_code,error_message,max_file_bytes,
+	max_batch_bytes,policy_revision,classifier_policy_revision,classifier_model_revision,classifier_health,encryption_key_version,status_updated_at,status_observed_at,heartbeat_at
 ) VALUES (
 	$1,$2,$3,$4,
 	$5,$6,$7,
-	$8::jsonb,$9::jsonb,$10,
-	$11,$12,$13,
-	$14,$15,$16,$17
+	$8::jsonb,$9::jsonb,$10::jsonb,$11,
+	$12,$13,$14,
+	$15,$16,$17,$18,$19,$20,$21,$22
 )
 ON CONFLICT (project_id,machine_id) DO UPDATE SET
 	state=EXCLUDED.state,last_attempt_at=EXCLUDED.last_attempt_at,
 	last_successful_sync_at=EXCLUDED.last_successful_sync_at,remote_commit=EXCLUDED.remote_commit,
-	pending_path_count=EXCLUDED.pending_path_count,skipped=EXCLUDED.skipped,conflicts=EXCLUDED.conflicts,
+	pending_path_count=EXCLUDED.pending_path_count,skipped=EXCLUDED.skipped,conflicts=EXCLUDED.conflicts,classifier_pending=EXCLUDED.classifier_pending,
 	error_code=EXCLUDED.error_code,error_message=EXCLUDED.error_message,
 	max_file_bytes=EXCLUDED.max_file_bytes,max_batch_bytes=EXCLUDED.max_batch_bytes,
-	policy_revision=EXCLUDED.policy_revision,status_updated_at=EXCLUDED.status_updated_at,
+	policy_revision=EXCLUDED.policy_revision,classifier_policy_revision=EXCLUDED.classifier_policy_revision,classifier_model_revision=EXCLUDED.classifier_model_revision,classifier_health=EXCLUDED.classifier_health,encryption_key_version=EXCLUDED.encryption_key_version,status_updated_at=EXCLUDED.status_updated_at,
 	status_observed_at=EXCLUDED.status_observed_at,
 	heartbeat_at=GREATEST(config_sync_statuses.heartbeat_at,EXCLUDED.heartbeat_at),updated_at=now()
 WHERE config_sync_statuses.status_updated_at <= EXCLUDED.status_updated_at
@@ -170,23 +513,28 @@ WHERE config_sync_statuses.status_updated_at <= EXCLUDED.status_updated_at
 `
 
 type UpsertConfigSyncStatusParams struct {
-	ProjectID            string
-	MachineID            string
-	State                string
-	LastAttemptAt        sql.NullTime
-	LastSuccessfulSyncAt sql.NullTime
-	RemoteCommit         string
-	PendingPathCount     int32
-	Skipped              json.RawMessage
-	Conflicts            json.RawMessage
-	ErrorCode            string
-	ErrorMessage         string
-	MaxFileBytes         int64
-	MaxBatchBytes        int64
-	PolicyRevision       string
-	StatusUpdatedAt      time.Time
-	StatusObservedAt     time.Time
-	HeartbeatAt          time.Time
+	ProjectID                string
+	MachineID                string
+	State                    string
+	LastAttemptAt            sql.NullTime
+	LastSuccessfulSyncAt     sql.NullTime
+	RemoteCommit             string
+	PendingPathCount         int32
+	Skipped                  json.RawMessage
+	Conflicts                json.RawMessage
+	ClassifierPending        json.RawMessage
+	ErrorCode                string
+	ErrorMessage             string
+	MaxFileBytes             int64
+	MaxBatchBytes            int64
+	PolicyRevision           string
+	ClassifierPolicyRevision string
+	ClassifierModelRevision  string
+	ClassifierHealth         string
+	EncryptionKeyVersion     int32
+	StatusUpdatedAt          time.Time
+	StatusObservedAt         time.Time
+	HeartbeatAt              time.Time
 }
 
 func (q *Queries) UpsertConfigSyncStatus(ctx context.Context, arg UpsertConfigSyncStatusParams) error {
@@ -200,11 +548,16 @@ func (q *Queries) UpsertConfigSyncStatus(ctx context.Context, arg UpsertConfigSy
 		arg.PendingPathCount,
 		arg.Skipped,
 		arg.Conflicts,
+		arg.ClassifierPending,
 		arg.ErrorCode,
 		arg.ErrorMessage,
 		arg.MaxFileBytes,
 		arg.MaxBatchBytes,
 		arg.PolicyRevision,
+		arg.ClassifierPolicyRevision,
+		arg.ClassifierModelRevision,
+		arg.ClassifierHealth,
+		arg.EncryptionKeyVersion,
 		arg.StatusUpdatedAt,
 		arg.StatusObservedAt,
 		arg.HeartbeatAt,

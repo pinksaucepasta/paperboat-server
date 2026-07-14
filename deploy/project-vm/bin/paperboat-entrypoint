@@ -16,6 +16,13 @@ shutting_down=false
 current_stage="initializing"
 
 mkdir -p "$runtime_dir" "$log_dir" "$workspace"
+if [ -n "${PAPERBOAT_CONFIG_AGE_IDENTITY:-}" ]; then
+  identity_file="${PAPERBOAT_CONFIG_AGE_IDENTITY_FILE:-$runtime_dir/config-age-identity.txt}"
+  umask 077
+  printf '%s\n' "$PAPERBOAT_CONFIG_AGE_IDENTITY" > "$identity_file"
+  chmod 600 "$identity_file"
+  unset PAPERBOAT_CONFIG_AGE_IDENTITY
+fi
 export GIT_ASKPASS="${PAPERBOAT_GIT_ASKPASS:-$bin_dir/paperboat-git-askpass}"
 export GIT_TERMINAL_PROMPT=0
 

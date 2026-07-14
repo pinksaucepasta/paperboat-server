@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"time"
 )
 
 const addCreditBalance = `-- name: AddCreditBalance :exec
@@ -22,6 +23,68 @@ type AddCreditBalanceParams struct {
 
 func (q *Queries) AddCreditBalance(ctx context.Context, arg AddCreditBalanceParams) error {
 	_, err := q.db.ExecContext(ctx, addCreditBalance, arg.Amount, arg.ID)
+	return err
+}
+
+const clearAppliedPendingSubscriptionPlan = `-- name: ClearAppliedPendingSubscriptionPlan :exec
+UPDATE subscriptions SET pending_plan_version_id=NULL, version=version+1, updated_at=now()
+WHERE provider='polar' AND provider_subscription_id=$1 AND pending_plan_version_id=active_plan_version_id
+`
+
+func (q *Queries) ClearAppliedPendingSubscriptionPlan(ctx context.Context, providerSubscriptionID string) error {
+	_, err := q.db.ExecContext(ctx, clearAppliedPendingSubscriptionPlan, providerSubscriptionID)
+	return err
+}
+
+const clearBillingCheckoutReservation = `-- name: ClearBillingCheckoutReservation :exec
+UPDATE billing_checkout_reservations SET state='completed', updated_at=now() WHERE user_id=$1 AND state='reserved'
+`
+
+func (q *Queries) ClearBillingCheckoutReservation(ctx context.Context, userID string) error {
+	_, err := q.db.ExecContext(ctx, clearBillingCheckoutReservation, userID)
+	return err
+}
+
+const completeBillingCheckoutReservation = `-- name: CompleteBillingCheckoutReservation :exec
+UPDATE billing_checkout_reservations SET provider_checkout_id=$1, checkout_url=$2, updated_at=now()
+WHERE user_id=$3 AND idempotency_key=$4 AND state='reserved'
+`
+
+type CompleteBillingCheckoutReservationParams struct {
+	ProviderCheckoutID sql.NullString
+	CheckoutUrl        sql.NullString
+	UserID             string
+	IdempotencyKey     string
+}
+
+func (q *Queries) CompleteBillingCheckoutReservation(ctx context.Context, arg CompleteBillingCheckoutReservationParams) error {
+	_, err := q.db.ExecContext(ctx, completeBillingCheckoutReservation,
+		arg.ProviderCheckoutID,
+		arg.CheckoutUrl,
+		arg.UserID,
+		arg.IdempotencyKey,
+	)
+	return err
+}
+
+const completeCreditAutoTopup = `-- name: CompleteCreditAutoTopup :exec
+UPDATE credit_auto_topup_attempts SET provider_order_id = $1, state = $2, last_error = $3, updated_at = now() WHERE idempotency_key = $4
+`
+
+type CompleteCreditAutoTopupParams struct {
+	ProviderOrderID sql.NullString
+	State           string
+	LastError       string
+	IdempotencyKey  string
+}
+
+func (q *Queries) CompleteCreditAutoTopup(ctx context.Context, arg CompleteCreditAutoTopupParams) error {
+	_, err := q.db.ExecContext(ctx, completeCreditAutoTopup,
+		arg.ProviderOrderID,
+		arg.State,
+		arg.LastError,
+		arg.IdempotencyKey,
+	)
 	return err
 }
 
@@ -39,8 +102,28 @@ func (q *Queries) DecreaseAllocatedStorage(ctx context.Context, arg DecreaseAllo
 	return err
 }
 
+const disableCreditAutoTopupPolicy = `-- name: DisableCreditAutoTopupPolicy :exec
+UPDATE credit_auto_topup_policies SET enabled = false, updated_at = now() WHERE user_id = $1
+`
+
+func (q *Queries) DisableCreditAutoTopupPolicy(ctx context.Context, userID string) error {
+	_, err := q.db.ExecContext(ctx, disableCreditAutoTopupPolicy, userID)
+	return err
+}
+
+const failBillingCheckoutReservation = `-- name: FailBillingCheckoutReservation :exec
+UPDATE billing_checkout_reservations SET state='failed', updated_at=now() WHERE user_id=$1 AND state='reserved'
+`
+
+func (q *Queries) FailBillingCheckoutReservation(ctx context.Context, userID string) error {
+	_, err := q.db.ExecContext(ctx, failBillingCheckoutReservation, userID)
+	return err
+}
+
 const getActivePlanVersionForWebhook = `-- name: GetActivePlanVersionForWebhook :one
 SELECT pv.id, pv.included_credits::text AS included_credits, pv.included_storage_gb
+       ,coalesce((pv.metadata->'billing'->>'storage_unit_gb')::integer, 0)::integer AS storage_unit_gb
+       ,coalesce((pv.metadata->'billing'->>'storage_seat_offset')::integer, 0)::integer AS storage_seat_offset
 FROM plans p JOIN plan_versions pv ON pv.id = p.current_version_id WHERE p.code = $1 AND p.active
 `
 
@@ -48,23 +131,36 @@ type GetActivePlanVersionForWebhookRow struct {
 	ID                string
 	IncludedCredits   string
 	IncludedStorageGb int32
+	StorageUnitGb     int32
+	StorageSeatOffset int32
 }
 
 func (q *Queries) GetActivePlanVersionForWebhook(ctx context.Context, code string) (GetActivePlanVersionForWebhookRow, error) {
 	row := q.db.QueryRowContext(ctx, getActivePlanVersionForWebhook, code)
 	var i GetActivePlanVersionForWebhookRow
-	err := row.Scan(&i.ID, &i.IncludedCredits, &i.IncludedStorageGb)
+	err := row.Scan(
+		&i.ID,
+		&i.IncludedCredits,
+		&i.IncludedStorageGb,
+		&i.StorageUnitGb,
+		&i.StorageSeatOffset,
+	)
 	return i, err
 }
 
 const getActivePolarSubscriptionForUser = `-- name: GetActivePolarSubscriptionForUser :one
-SELECT s.provider_subscription_id, p.code AS plan_code
+SELECT s.provider_subscription_id, p.code AS plan_code,
+       coalesce((pv.metadata->'billing'->>'rank')::integer, 0)::integer AS plan_rank,
+       coalesce((pv.metadata->'billing'->>'storage_unit_gb')::integer, 0)::integer AS storage_unit_gb,
+       coalesce((pv.metadata->'billing'->>'storage_seat_offset')::integer, 0)::integer AS storage_seat_offset,
+       s.storage_units, s.pending_storage_units
 FROM subscriptions s
 JOIN plan_versions pv ON pv.id = s.active_plan_version_id
 JOIN plans p ON p.id = pv.plan_id
 WHERE s.user_id = $1
   AND s.provider = 'polar'
   AND s.state IN ('active', 'trialing')
+  AND (s.current_period_end IS NULL OR s.current_period_end > now())
 ORDER BY s.updated_at DESC, s.created_at DESC
 LIMIT 1
 `
@@ -72,12 +168,25 @@ LIMIT 1
 type GetActivePolarSubscriptionForUserRow struct {
 	ProviderSubscriptionID string
 	PlanCode               string
+	PlanRank               int32
+	StorageUnitGb          int32
+	StorageSeatOffset      int32
+	StorageUnits           int32
+	PendingStorageUnits    sql.NullInt32
 }
 
 func (q *Queries) GetActivePolarSubscriptionForUser(ctx context.Context, userID string) (GetActivePolarSubscriptionForUserRow, error) {
 	row := q.db.QueryRowContext(ctx, getActivePolarSubscriptionForUser, userID)
 	var i GetActivePolarSubscriptionForUserRow
-	err := row.Scan(&i.ProviderSubscriptionID, &i.PlanCode)
+	err := row.Scan(
+		&i.ProviderSubscriptionID,
+		&i.PlanCode,
+		&i.PlanRank,
+		&i.StorageUnitGb,
+		&i.StorageSeatOffset,
+		&i.StorageUnits,
+		&i.PendingStorageUnits,
+	)
 	return i, err
 }
 
@@ -90,6 +199,69 @@ func (q *Queries) GetAllocatedStorageForUpdate(ctx context.Context, id string) (
 	var allocated_gb int32
 	err := row.Scan(&allocated_gb)
 	return allocated_gb, err
+}
+
+const getBillingAddonProduct = `-- name: GetBillingAddonProduct :one
+SELECT code, catalog_type, catalog_ref, provider_product_id, provider_price_id
+FROM billing_products
+WHERE provider = 'polar' AND active AND catalog_type = $1 AND catalog_ref = $2
+ORDER BY updated_at DESC LIMIT 1
+`
+
+type GetBillingAddonProductParams struct {
+	CatalogType string
+	CatalogRef  string
+}
+
+type GetBillingAddonProductRow struct {
+	Code              string
+	CatalogType       string
+	CatalogRef        string
+	ProviderProductID string
+	ProviderPriceID   string
+}
+
+func (q *Queries) GetBillingAddonProduct(ctx context.Context, arg GetBillingAddonProductParams) (GetBillingAddonProductRow, error) {
+	row := q.db.QueryRowContext(ctx, getBillingAddonProduct, arg.CatalogType, arg.CatalogRef)
+	var i GetBillingAddonProductRow
+	err := row.Scan(
+		&i.Code,
+		&i.CatalogType,
+		&i.CatalogRef,
+		&i.ProviderProductID,
+		&i.ProviderPriceID,
+	)
+	return i, err
+}
+
+const getBillingCheckoutReservation = `-- name: GetBillingCheckoutReservation :one
+SELECT id, product_code, idempotency_key, provider_checkout_id, checkout_url, state, expires_at
+FROM billing_checkout_reservations WHERE user_id = $1
+`
+
+type GetBillingCheckoutReservationRow struct {
+	ID                 string
+	ProductCode        string
+	IdempotencyKey     string
+	ProviderCheckoutID sql.NullString
+	CheckoutUrl        sql.NullString
+	State              string
+	ExpiresAt          time.Time
+}
+
+func (q *Queries) GetBillingCheckoutReservation(ctx context.Context, userID string) (GetBillingCheckoutReservationRow, error) {
+	row := q.db.QueryRowContext(ctx, getBillingCheckoutReservation, userID)
+	var i GetBillingCheckoutReservationRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProductCode,
+		&i.IdempotencyKey,
+		&i.ProviderCheckoutID,
+		&i.CheckoutUrl,
+		&i.State,
+		&i.ExpiresAt,
+	)
+	return i, err
 }
 
 const getBillingEntitlement = `-- name: GetBillingEntitlement :one
@@ -122,10 +294,15 @@ func (q *Queries) GetBillingEntitlement(ctx context.Context, userID string) (Get
 }
 
 const getBillingProductByCode = `-- name: GetBillingProductByCode :one
-SELECT bp.code, bp.catalog_type, bp.catalog_ref, bp.provider_product_id, bp.provider_price_id
+SELECT bp.code, bp.catalog_type, bp.catalog_ref, bp.provider_product_id, bp.provider_price_id,
+       coalesce((pv.metadata->'billing'->>'rank')::integer, 0)::integer AS plan_rank,
+       (coalesce((pv.metadata->'billing'->>'converts_to_plan') <> '', false))::boolean AS is_trial,
+       pv.id AS plan_version_id, coalesce(pv.included_storage_gb, 0)::integer AS included_storage_gb
 FROM billing_products bp
+LEFT JOIN plans p ON bp.catalog_type = 'plan' AND p.code = bp.catalog_ref
+LEFT JOIN plan_versions pv ON pv.id = p.current_version_id
 WHERE bp.code = $1 AND bp.provider = 'polar' AND bp.active
-	AND (bp.catalog_type <> 'plan' OR EXISTS (SELECT 1 FROM plans p WHERE p.code = bp.catalog_ref AND p.active))
+	AND (bp.catalog_type <> 'plan' OR p.active)
 `
 
 type GetBillingProductByCodeRow struct {
@@ -134,6 +311,10 @@ type GetBillingProductByCodeRow struct {
 	CatalogRef        string
 	ProviderProductID string
 	ProviderPriceID   string
+	PlanRank          int32
+	IsTrial           bool
+	PlanVersionID     sql.NullString
+	IncludedStorageGb int32
 }
 
 func (q *Queries) GetBillingProductByCode(ctx context.Context, code string) (GetBillingProductByCodeRow, error) {
@@ -145,6 +326,10 @@ func (q *Queries) GetBillingProductByCode(ctx context.Context, code string) (Get
 		&i.CatalogRef,
 		&i.ProviderProductID,
 		&i.ProviderPriceID,
+		&i.PlanRank,
+		&i.IsTrial,
+		&i.PlanVersionID,
+		&i.IncludedStorageGb,
 	)
 	return i, err
 }
@@ -153,15 +338,9 @@ const getBillingProductByProviderIDs = `-- name: GetBillingProductByProviderIDs 
 SELECT code, catalog_type, catalog_ref, provider_product_id, provider_price_id
 FROM billing_products
 WHERE provider = 'polar' AND active
-  AND ($1::text = '' OR provider_product_id = $1)
-  AND provider_price_id = $2
+  AND provider_product_id = $1
 ORDER BY updated_at DESC LIMIT 1
 `
-
-type GetBillingProductByProviderIDsParams struct {
-	ProviderProductID string
-	ProviderPriceID   string
-}
 
 type GetBillingProductByProviderIDsRow struct {
 	Code              string
@@ -171,8 +350,8 @@ type GetBillingProductByProviderIDsRow struct {
 	ProviderPriceID   string
 }
 
-func (q *Queries) GetBillingProductByProviderIDs(ctx context.Context, arg GetBillingProductByProviderIDsParams) (GetBillingProductByProviderIDsRow, error) {
-	row := q.db.QueryRowContext(ctx, getBillingProductByProviderIDs, arg.ProviderProductID, arg.ProviderPriceID)
+func (q *Queries) GetBillingProductByProviderIDs(ctx context.Context, providerProductID string) (GetBillingProductByProviderIDsRow, error) {
+	row := q.db.QueryRowContext(ctx, getBillingProductByProviderIDs, providerProductID)
 	var i GetBillingProductByProviderIDsRow
 	err := row.Scan(
 		&i.Code,
@@ -215,6 +394,78 @@ func (q *Queries) GetBillingUsage(ctx context.Context, id string) (GetBillingUsa
 	return i, err
 }
 
+const getConvertedTrialPlanVersionForWebhook = `-- name: GetConvertedTrialPlanVersionForWebhook :one
+SELECT target_p.code, target_pv.id, target_pv.included_credits::text AS included_credits,
+       target_pv.included_storage_gb,
+       coalesce((target_pv.metadata->'billing'->>'storage_unit_gb')::integer, 0)::integer AS storage_unit_gb,
+       coalesce((target_pv.metadata->'billing'->>'storage_seat_offset')::integer, 0)::integer AS storage_seat_offset
+FROM plans trial_p
+JOIN plan_versions trial_pv ON trial_pv.id = trial_p.current_version_id
+JOIN plans target_p ON target_p.code = trial_pv.metadata->'billing'->>'converts_to_plan'
+JOIN plan_versions target_pv ON target_pv.id = target_p.current_version_id
+WHERE trial_p.code = $1 AND trial_p.active AND target_p.active
+`
+
+type GetConvertedTrialPlanVersionForWebhookRow struct {
+	Code              string
+	ID                string
+	IncludedCredits   string
+	IncludedStorageGb int32
+	StorageUnitGb     int32
+	StorageSeatOffset int32
+}
+
+func (q *Queries) GetConvertedTrialPlanVersionForWebhook(ctx context.Context, code string) (GetConvertedTrialPlanVersionForWebhookRow, error) {
+	row := q.db.QueryRowContext(ctx, getConvertedTrialPlanVersionForWebhook, code)
+	var i GetConvertedTrialPlanVersionForWebhookRow
+	err := row.Scan(
+		&i.Code,
+		&i.ID,
+		&i.IncludedCredits,
+		&i.IncludedStorageGb,
+		&i.StorageUnitGb,
+		&i.StorageSeatOffset,
+	)
+	return i, err
+}
+
+const getCreditAutoTopupPolicy = `-- name: GetCreditAutoTopupPolicy :one
+SELECT p.id, p.user_id, p.enabled, p.threshold::text, p.bundle_credits::text, p.provider_product_id,
+       coalesce(a.state, '') AS last_attempt_state, coalesce(a.updated_at, 'epoch'::timestamptz) AS last_attempt_at, coalesce(a.last_error, '') AS last_error
+FROM credit_auto_topup_policies p
+LEFT JOIN LATERAL (SELECT state, updated_at, last_error FROM credit_auto_topup_attempts WHERE user_id = p.user_id ORDER BY updated_at DESC LIMIT 1) a ON true
+WHERE p.user_id = $1
+`
+
+type GetCreditAutoTopupPolicyRow struct {
+	ID                string
+	UserID            string
+	Enabled           bool
+	PThreshold        string
+	PBundleCredits    string
+	ProviderProductID string
+	LastAttemptState  string
+	LastAttemptAt     time.Time
+	LastError         string
+}
+
+func (q *Queries) GetCreditAutoTopupPolicy(ctx context.Context, userID string) (GetCreditAutoTopupPolicyRow, error) {
+	row := q.db.QueryRowContext(ctx, getCreditAutoTopupPolicy, userID)
+	var i GetCreditAutoTopupPolicyRow
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Enabled,
+		&i.PThreshold,
+		&i.PBundleCredits,
+		&i.ProviderProductID,
+		&i.LastAttemptState,
+		&i.LastAttemptAt,
+		&i.LastError,
+	)
+	return i, err
+}
+
 const getCreditBalanceForUpdate = `-- name: GetCreditBalanceForUpdate :one
 SELECT balance::text FROM credit_accounts WHERE id = $1 FOR UPDATE
 `
@@ -249,6 +500,25 @@ func (q *Queries) GetCreditLedgerEntry(ctx context.Context, idempotencyKey strin
 		&i.SourceType,
 		&i.SourceID,
 	)
+	return i, err
+}
+
+const getCreditTopupUnit = `-- name: GetCreditTopupUnit :one
+SELECT code, catalog_ref, provider_product_id FROM billing_products
+WHERE provider = 'polar' AND active AND catalog_type = 'credit_topup'
+ORDER BY updated_at DESC LIMIT 1
+`
+
+type GetCreditTopupUnitRow struct {
+	Code              string
+	CatalogRef        string
+	ProviderProductID string
+}
+
+func (q *Queries) GetCreditTopupUnit(ctx context.Context) (GetCreditTopupUnitRow, error) {
+	row := q.db.QueryRowContext(ctx, getCreditTopupUnit)
+	var i GetCreditTopupUnitRow
+	err := row.Scan(&i.Code, &i.CatalogRef, &i.ProviderProductID)
 	return i, err
 }
 
@@ -295,7 +565,7 @@ func (q *Queries) GetIncludedAndAllocatedStorageForUpdate(ctx context.Context, i
 
 const getPolarSubscriptionForUpdate = `-- name: GetPolarSubscriptionForUpdate :one
 SELECT s.id, s.active_plan_version_id, pv.included_credits::text AS included_credits,
-       s.current_period_start, s.current_period_end
+       s.current_period_start, s.current_period_end, s.storage_units
 FROM subscriptions s
 LEFT JOIN plan_versions pv ON pv.id = s.active_plan_version_id
 WHERE s.provider = 'polar'
@@ -315,6 +585,7 @@ type GetPolarSubscriptionForUpdateRow struct {
 	IncludedCredits     string
 	CurrentPeriodStart  sql.NullTime
 	CurrentPeriodEnd    sql.NullTime
+	StorageUnits        int32
 }
 
 func (q *Queries) GetPolarSubscriptionForUpdate(ctx context.Context, arg GetPolarSubscriptionForUpdateParams) (GetPolarSubscriptionForUpdateRow, error) {
@@ -326,6 +597,7 @@ func (q *Queries) GetPolarSubscriptionForUpdate(ctx context.Context, arg GetPola
 		&i.IncludedCredits,
 		&i.CurrentPeriodStart,
 		&i.CurrentPeriodEnd,
+		&i.StorageUnits,
 	)
 	return i, err
 }
@@ -524,6 +796,50 @@ func (q *Queries) ListBillingPlanProducts(ctx context.Context) ([]ListBillingPla
 	return items, nil
 }
 
+const listEligibleCreditAutoTopups = `-- name: ListEligibleCreditAutoTopups :many
+SELECT p.user_id, p.bundle_credits::text, p.provider_product_id, ca.version AS credit_version
+FROM credit_auto_topup_policies p
+JOIN credit_accounts ca ON ca.user_id = p.user_id
+WHERE p.enabled AND ca.balance <= p.threshold
+  AND EXISTS (SELECT 1 FROM subscriptions s WHERE s.user_id = p.user_id AND s.state IN ('active','trialing') AND (s.current_period_end IS NULL OR s.current_period_end > now()))
+  AND NOT EXISTS (SELECT 1 FROM credit_auto_topup_attempts a WHERE a.idempotency_key = 'credit-auto:' || p.user_id || ':' || ca.version::text AND a.state IN ('reserved','created','paid'))
+`
+
+type ListEligibleCreditAutoTopupsRow struct {
+	UserID            string
+	PBundleCredits    string
+	ProviderProductID string
+	CreditVersion     int64
+}
+
+func (q *Queries) ListEligibleCreditAutoTopups(ctx context.Context) ([]ListEligibleCreditAutoTopupsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listEligibleCreditAutoTopups)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListEligibleCreditAutoTopupsRow
+	for rows.Next() {
+		var i ListEligibleCreditAutoTopupsRow
+		if err := rows.Scan(
+			&i.UserID,
+			&i.PBundleCredits,
+			&i.ProviderProductID,
+			&i.CreditVersion,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markPolarEventFailed = `-- name: MarkPolarEventFailed :exec
 UPDATE polar_events SET processed_state = 'failed', processed_at = now() WHERE provider_event_id = $1
 `
@@ -572,6 +888,115 @@ func (q *Queries) NumericGreaterThanOrEqual(ctx context.Context, arg NumericGrea
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const reserveBillingCheckout = `-- name: ReserveBillingCheckout :one
+INSERT INTO billing_checkout_reservations (id, user_id, product_code, idempotency_key, expires_at)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (user_id) DO UPDATE SET id=EXCLUDED.id, product_code=EXCLUDED.product_code,
+ idempotency_key=EXCLUDED.idempotency_key, provider_checkout_id=NULL, checkout_url=NULL,
+ state='reserved', expires_at=EXCLUDED.expires_at, updated_at=now()
+WHERE billing_checkout_reservations.state IN ('failed','completed') OR billing_checkout_reservations.expires_at <= now()
+RETURNING id, product_code, idempotency_key, provider_checkout_id, checkout_url, state, expires_at
+`
+
+type ReserveBillingCheckoutParams struct {
+	ID             string
+	UserID         string
+	ProductCode    string
+	IdempotencyKey string
+	ExpiresAt      time.Time
+}
+
+type ReserveBillingCheckoutRow struct {
+	ID                 string
+	ProductCode        string
+	IdempotencyKey     string
+	ProviderCheckoutID sql.NullString
+	CheckoutUrl        sql.NullString
+	State              string
+	ExpiresAt          time.Time
+}
+
+func (q *Queries) ReserveBillingCheckout(ctx context.Context, arg ReserveBillingCheckoutParams) (ReserveBillingCheckoutRow, error) {
+	row := q.db.QueryRowContext(ctx, reserveBillingCheckout,
+		arg.ID,
+		arg.UserID,
+		arg.ProductCode,
+		arg.IdempotencyKey,
+		arg.ExpiresAt,
+	)
+	var i ReserveBillingCheckoutRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProductCode,
+		&i.IdempotencyKey,
+		&i.ProviderCheckoutID,
+		&i.CheckoutUrl,
+		&i.State,
+		&i.ExpiresAt,
+	)
+	return i, err
+}
+
+const reserveCreditAutoTopup = `-- name: ReserveCreditAutoTopup :execrows
+INSERT INTO credit_auto_topup_attempts (id, user_id, idempotency_key)
+VALUES ($1, $2, $3)
+ON CONFLICT (idempotency_key) DO UPDATE SET state = 'reserved', updated_at = now()
+WHERE credit_auto_topup_attempts.state = 'failed'
+  AND credit_auto_topup_attempts.updated_at <= now() - make_interval(secs => $4::integer)
+`
+
+type ReserveCreditAutoTopupParams struct {
+	ID                   string
+	UserID               string
+	IdempotencyKey       string
+	RetryCooldownSeconds int32
+}
+
+func (q *Queries) ReserveCreditAutoTopup(ctx context.Context, arg ReserveCreditAutoTopupParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, reserveCreditAutoTopup,
+		arg.ID,
+		arg.UserID,
+		arg.IdempotencyKey,
+		arg.RetryCooldownSeconds,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const setPendingSubscriptionPlan = `-- name: SetPendingSubscriptionPlan :exec
+UPDATE subscriptions SET pending_plan_version_id=$1, version=version+1, updated_at=now()
+WHERE provider='polar' AND provider_subscription_id=$2 AND user_id=$3
+`
+
+type SetPendingSubscriptionPlanParams struct {
+	PendingPlanVersionID   sql.NullString
+	ProviderSubscriptionID string
+	UserID                 string
+}
+
+func (q *Queries) SetPendingSubscriptionPlan(ctx context.Context, arg SetPendingSubscriptionPlanParams) error {
+	_, err := q.db.ExecContext(ctx, setPendingSubscriptionPlan, arg.PendingPlanVersionID, arg.ProviderSubscriptionID, arg.UserID)
+	return err
+}
+
+const setPendingSubscriptionStorage = `-- name: SetPendingSubscriptionStorage :exec
+UPDATE subscriptions SET pending_storage_units=$1, version=version+1, updated_at=now()
+WHERE provider='polar' AND provider_subscription_id=$2 AND user_id=$3
+`
+
+type SetPendingSubscriptionStorageParams struct {
+	PendingStorageUnits    sql.NullInt32
+	ProviderSubscriptionID string
+	UserID                 string
+}
+
+func (q *Queries) SetPendingSubscriptionStorage(ctx context.Context, arg SetPendingSubscriptionStorageParams) error {
+	_, err := q.db.ExecContext(ctx, setPendingSubscriptionStorage, arg.PendingStorageUnits, arg.ProviderSubscriptionID, arg.UserID)
+	return err
 }
 
 const setPurchasedStorage = `-- name: SetPurchasedStorage :exec
@@ -629,12 +1054,63 @@ func (q *Queries) UpdateRefundedSubscription(ctx context.Context, arg UpdateRefu
 	return err
 }
 
+const updateSubscriptionStorage = `-- name: UpdateSubscriptionStorage :exec
+UPDATE subscriptions SET storage_units = $1, pending_storage_units = $2, version = version + 1, updated_at = now()
+WHERE provider = 'polar' AND provider_subscription_id = $3 AND user_id = $4
+`
+
+type UpdateSubscriptionStorageParams struct {
+	StorageUnits           int32
+	PendingStorageUnits    sql.NullInt32
+	ProviderSubscriptionID string
+	UserID                 string
+}
+
+func (q *Queries) UpdateSubscriptionStorage(ctx context.Context, arg UpdateSubscriptionStorageParams) error {
+	_, err := q.db.ExecContext(ctx, updateSubscriptionStorage,
+		arg.StorageUnits,
+		arg.PendingStorageUnits,
+		arg.ProviderSubscriptionID,
+		arg.UserID,
+	)
+	return err
+}
+
+const upsertCreditAutoTopupPolicy = `-- name: UpsertCreditAutoTopupPolicy :exec
+INSERT INTO credit_auto_topup_policies (id, user_id, enabled, threshold, bundle_credits, provider_product_id)
+VALUES ($1, $2, $3, $4::numeric, $5::numeric, $6)
+ON CONFLICT (user_id) DO UPDATE SET enabled = EXCLUDED.enabled, threshold = EXCLUDED.threshold,
+ bundle_credits = EXCLUDED.bundle_credits, provider_product_id = EXCLUDED.provider_product_id, updated_at = now()
+`
+
+type UpsertCreditAutoTopupPolicyParams struct {
+	ID                string
+	UserID            string
+	Enabled           bool
+	Threshold         string
+	BundleCredits     string
+	ProviderProductID string
+}
+
+func (q *Queries) UpsertCreditAutoTopupPolicy(ctx context.Context, arg UpsertCreditAutoTopupPolicyParams) error {
+	_, err := q.db.ExecContext(ctx, upsertCreditAutoTopupPolicy,
+		arg.ID,
+		arg.UserID,
+		arg.Enabled,
+		arg.Threshold,
+		arg.BundleCredits,
+		arg.ProviderProductID,
+	)
+	return err
+}
+
 const upsertPolarSubscription = `-- name: UpsertPolarSubscription :exec
-INSERT INTO subscriptions (id, user_id, provider, provider_subscription_id, state, active_plan_version_id, current_period_start, current_period_end)
-VALUES ($1, $2, 'polar', $3, $4, $5, $6, $7)
+INSERT INTO subscriptions (id, user_id, provider, provider_subscription_id, state, active_plan_version_id, current_period_start, current_period_end, storage_units, pending_storage_units)
+VALUES ($1, $2, 'polar', $3, $4, $5, $6, $7, coalesce($8, 0), $9)
 ON CONFLICT (provider_subscription_id) DO UPDATE SET
 	user_id = EXCLUDED.user_id, state = EXCLUDED.state, active_plan_version_id = EXCLUDED.active_plan_version_id,
 	current_period_start = EXCLUDED.current_period_start, current_period_end = EXCLUDED.current_period_end,
+	storage_units = EXCLUDED.storage_units, pending_storage_units = EXCLUDED.pending_storage_units,
 	version = subscriptions.version + 1, updated_at = now()
 `
 
@@ -646,6 +1122,8 @@ type UpsertPolarSubscriptionParams struct {
 	ActivePlanVersionID    sql.NullString
 	CurrentPeriodStart     sql.NullTime
 	CurrentPeriodEnd       sql.NullTime
+	StorageUnits           interface{}
+	PendingStorageUnits    sql.NullInt32
 }
 
 func (q *Queries) UpsertPolarSubscription(ctx context.Context, arg UpsertPolarSubscriptionParams) error {
@@ -657,6 +1135,19 @@ func (q *Queries) UpsertPolarSubscription(ctx context.Context, arg UpsertPolarSu
 		arg.ActivePlanVersionID,
 		arg.CurrentPeriodStart,
 		arg.CurrentPeriodEnd,
+		arg.StorageUnits,
+		arg.PendingStorageUnits,
 	)
 	return err
+}
+
+const userHasPolarSubscriptionHistory = `-- name: UserHasPolarSubscriptionHistory :one
+SELECT EXISTS (SELECT 1 FROM subscriptions WHERE user_id = $1 AND provider = 'polar')
+`
+
+func (q *Queries) UserHasPolarSubscriptionHistory(ctx context.Context, userID string) (bool, error) {
+	row := q.db.QueryRowContext(ctx, userHasPolarSubscriptionHistory, userID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }

@@ -1,16 +1,23 @@
 {
   "plans": [
     {
-      "code": "free",
-      "name": "Free",
+      "code": "free-trial",
+      "name": "Free Trial",
       "included_credits": "10",
       "included_storage_gb": 5,
       "active": true,
       "metadata": {
-        "decision_status": "approved_free_project_creation",
+        "decision_status": "approved_card_backed_trial",
+        "billing": {
+          "trial_days": 7,
+          "converts_to_plan": "sailor",
+          "rank": 0,
+          "storage_unit_gb": 10,
+          "storage_seat_offset": 1
+        },
         "presentation": {
           "price_monthly_usd": 0,
-          "tagline": "Try Paperboat at no cost",
+          "tagline": "Seven days, then converts to Sailor",
           "features": [
             { "label": "1 active project", "icon": "projects" },
             { "label": "1 region", "icon": "regions" },
@@ -28,6 +35,7 @@
       "active": true,
       "metadata": {
         "decision_status": "approved",
+        "billing": { "rank": 1, "storage_unit_gb": 10, "storage_seat_offset": 1 },
         "presentation": {
           "price_monthly_usd": 20,
           "tagline": "For solo builders getting started",
@@ -48,6 +56,7 @@
       "active": true,
       "metadata": {
         "decision_status": "approved",
+        "billing": { "rank": 2, "storage_unit_gb": 10, "storage_seat_offset": 1 },
         "presentation": {
           "price_monthly_usd": 60,
           "tagline": "For daily drivers who ship constantly",
@@ -69,6 +78,7 @@
       "active": true,
       "metadata": {
         "decision_status": "approved",
+        "billing": { "rank": 3, "storage_unit_gb": 10, "storage_seat_offset": 1 },
         "presentation": {
           "price_monthly_usd": 200,
           "tagline": "For teams and heavy workloads",
@@ -351,6 +361,15 @@
   ],
   "billing_products": [
     {
+      "code": "free-trial-to-sailor-monthly-usd",
+      "provider": "polar",
+      "provider_product_id": "replace-with-polar-trial-product-id",
+      "provider_price_id": "replace-with-polar-trial-price-id",
+      "catalog_type": "plan",
+      "catalog_ref": "free-trial",
+      "active": true
+    },
+    {
       "code": "sailor-monthly-usd",
       "provider": "polar",
       "provider_product_id": "58fc3b4f-8e35-4214-bd4d-9397de7b1c34",
@@ -375,6 +394,15 @@
       "provider_price_id": "2e1f7c47-adc0-475e-930a-0121ffc919a8",
       "catalog_type": "plan",
       "catalog_ref": "captain",
+      "active": true
+    },
+    {
+      "code": "credits-one-time-50-unit-usd",
+      "provider": "polar",
+      "provider_product_id": "replace-with-polar-credit-addon-product-id",
+      "provider_price_id": "replace-with-polar-credit-addon-price-id",
+      "catalog_type": "credit_topup",
+      "catalog_ref": "50",
       "active": true
     }
   ],

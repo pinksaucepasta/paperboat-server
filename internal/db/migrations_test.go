@@ -88,6 +88,22 @@ func TestMigrateRequiresPostgresIntegrationDSN(t *testing.T) {
 	if !hasStatusObservedAt {
 		t.Fatal("config_sync_statuses.status_observed_at migration was not applied")
 	}
+	for _, table := range []string{"account_config_keys", "config_classification_overrides", "config_classification_cache"} {
+		var exists bool
+		if err := store.SQL().QueryRowContext(context.Background(), `SELECT to_regclass('paperboat.' || $1) IS NOT NULL`, table).Scan(&exists); err != nil {
+			t.Fatal(err)
+		}
+		if !exists {
+			t.Fatalf("migration did not create %s", table)
+		}
+	}
+	var hasEncryptionVersion bool
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='paperboat' AND table_name='config_sync_statuses' AND column_name='encryption_key_version')`).Scan(&hasEncryptionVersion); err != nil {
+		t.Fatal(err)
+	}
+	if !hasEncryptionVersion {
+		t.Fatal("config sync encryption version column missing")
+	}
 }
 
 func TestConcurrentMigrateCallsAreSerialized(t *testing.T) {

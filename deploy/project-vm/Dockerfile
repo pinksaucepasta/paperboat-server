@@ -44,6 +44,7 @@ FROM ${NODE_BASE_IMAGE}
 
 ARG NODE_BASE_IMAGE
 ARG GO_BASE_IMAGE
+ARG TARGETARCH
 ARG PAPERCODE_REVISION
 ARG AGENTUNNEL_REVISION
 ARG PAPERBOAT_SERVER_REVISION
@@ -59,6 +60,19 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/* \
   && node --version \
   && npm --version
+
+ARG CHEZMOI_VERSION=2.71.0
+RUN case "$TARGETARCH" in \
+      amd64) CHEZMOI_SHA256=6ea2040ecc0e82d3dac604289e100b0157afefcd94ebb818e5f6e31655156d34 ;; \
+      arm64) CHEZMOI_SHA256=d8fb35f9d43237b4f6d022cad40e1094957b990cfaee5f3b131ded65422b0983 ;; \
+      *) echo "unsupported chezmoi architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+  && curl -fsSLo /tmp/chezmoi.tar.gz "https://github.com/twpayne/chezmoi/releases/download/v${CHEZMOI_VERSION}/chezmoi_${CHEZMOI_VERSION}_linux_${TARGETARCH}.tar.gz" \
+  && echo "${CHEZMOI_SHA256}  /tmp/chezmoi.tar.gz" | sha256sum -c - \
+  && tar -xzf /tmp/chezmoi.tar.gz -C /usr/local/bin chezmoi \
+  && rm /tmp/chezmoi.tar.gz \
+  && chmod 0755 /usr/local/bin/chezmoi \
+  && chezmoi --version
 
 ENV PAPERBOAT_WORKSPACE=/workspace \
   PAPERBOAT_RUNTIME_DIR=/var/lib/paperboat \
