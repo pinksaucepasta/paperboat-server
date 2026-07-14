@@ -363,8 +363,8 @@
     {
       "code": "free-trial-to-sailor-monthly-usd",
       "provider": "polar",
-      "provider_product_id": "replace-with-polar-trial-product-id",
-      "provider_price_id": "replace-with-polar-trial-price-id",
+      "provider_product_id": "25687b7b-a4a9-45af-85ab-203206ef4715",
+      "provider_price_id": "0796d63f-1d35-40b3-b37b-89fcb474fbdb",
       "catalog_type": "plan",
       "catalog_ref": "free-trial",
       "active": true
@@ -399,8 +399,8 @@
     {
       "code": "credits-one-time-50-unit-usd",
       "provider": "polar",
-      "provider_product_id": "replace-with-polar-credit-addon-product-id",
-      "provider_price_id": "replace-with-polar-credit-addon-price-id",
+      "provider_product_id": "44b563ce-fd03-4ba8-9888-142c3e47932a",
+      "provider_price_id": "e5d4bca8-437f-4cfb-88ce-aaa0b33265ea",
       "catalog_type": "credit_topup",
       "catalog_ref": "50",
       "active": true
