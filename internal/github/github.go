@@ -205,6 +205,14 @@ func (s *Service) CompleteOAuth(ctx context.Context, userID, code, redirectURI s
 	if err != nil {
 		return Status{}, err
 	}
+	// Provision the private config repository as part of connecting GitHub so
+	// setup completes in a single step and the user never has to trigger it
+	// separately. This is best-effort: a transient GitHub failure must not fail
+	// the connection (it can be retried), so the error is intentionally not
+	// propagated — the returned Status reflects whether provisioning succeeded
+	// (config_repo_provisioned), and the dashboard keeps a manual retry path for
+	// the rare failure case.
+	_, _ = s.ProvisionConfigRepo(ctx, userID, "github.config_repo.connect:"+userID)
 	return s.Status(ctx, userID)
 }
 
@@ -317,6 +325,14 @@ func (s *Service) githubToken(ctx context.Context, userID string) (string, strin
 		return "", "", ErrMissingScopes
 	}
 	token, err := secrets.Decrypt(s.cfg.Secrets.EncryptionKey, row.TokenCiphertext)
+	if errors.Is(err, secrets.ErrDecrypt) {
+		// The stored token was encrypted under an encryption key that is no
+		// longer configured, so it can't be used. This is a broken credential,
+		// not a provider outage — surface it as "not connected" so callers
+		// prompt the user to reconnect GitHub, which re-encrypts the token under
+		// the current key.
+		return "", "", ErrNotConnected
+	}
 	return token, row.ProviderAccountLogin, err
 }
 

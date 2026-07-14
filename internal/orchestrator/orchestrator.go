@@ -286,6 +286,13 @@ func (s *Service) deleteProject(ctx context.Context, projectID string) error {
 		if err := s.deleteProviderSecrets(ctx, intent); err != nil {
 			return err
 		}
+	} else if errors.Is(intentErr, secrets.ErrDecrypt) {
+		// The project's stored secrets were encrypted under a key that is no
+		// longer configured, so we can't read them to clean up provider secrets.
+		// Deletion must still complete — otherwise a key change would strand the
+		// project (and its storage allocation) in "deleting" forever. The Fly
+		// machine and volume are torn down by ID above/below and don't need the
+		// decrypted values.
 	} else if !errors.Is(intentErr, sql.ErrNoRows) {
 		return intentErr
 	}
