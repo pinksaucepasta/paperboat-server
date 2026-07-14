@@ -626,6 +626,25 @@ func (c *sequenceStatusClient) CleanupProjectResources(context.Context, Resource
 	return nil
 }
 
+func TestPreserveMachineCredentialKeepsExistingCiphertext(t *testing.T) {
+	existing := ResourceDescriptor{
+		Metadata: map[string]any{"machine_token_ciphertext": "encrypted-current-token"},
+	}
+	reconciled := ResourceDescriptor{
+		MachineToken: "new-token-from-provider",
+		Metadata:     map[string]any{"resource_kind": "http_tunnel"},
+	}
+
+	preserveMachineCredential(existing, &reconciled)
+
+	if reconciled.MachineToken != "" {
+		t.Fatalf("machine token was not cleared")
+	}
+	if got, _ := reconciled.Metadata["machine_token_ciphertext"].(string); got != "encrypted-current-token" {
+		t.Fatalf("machine_token_ciphertext = %q", got)
+	}
+}
+
 func mustJSONForTest(value any) string {
 	b, _ := json.Marshal(value)
 	return string(b)

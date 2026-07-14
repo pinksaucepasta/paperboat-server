@@ -910,7 +910,25 @@ func (s *Service) reconcileResource(ctx context.Context, project projects.Projec
 	if err != nil {
 		return ResourceDescriptor{}, err
 	}
+	if existing {
+		preserveMachineCredential(resource, &reconciled)
+	}
 	return s.repo.UpsertResource(ctx, project.ID, reconciled)
+}
+
+func preserveMachineCredential(existing ResourceDescriptor, reconciled *ResourceDescriptor) {
+	if reconciled == nil {
+		return
+	}
+	ciphertext, _ := existing.Metadata["machine_token_ciphertext"].(string)
+	if strings.TrimSpace(ciphertext) == "" {
+		return
+	}
+	if reconciled.Metadata == nil {
+		reconciled.Metadata = map[string]any{}
+	}
+	reconciled.Metadata["machine_token_ciphertext"] = ciphertext
+	reconciled.MachineToken = ""
 }
 
 func staleHTTPStatus(resource ResourceDescriptor, status TunnelStatus) bool {
