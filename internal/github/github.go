@@ -225,6 +225,11 @@ func (s *Service) Status(ctx context.Context, userID string) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
+	if _, err := secrets.Decrypt(s.cfg.Secrets.EncryptionKey, connection.TokenCiphertext); errors.Is(err, secrets.ErrDecrypt) {
+		return status.normalized(), nil
+	} else if err != nil {
+		return Status{}, err
+	}
 	status.Connected = true
 	status.Scopes = connection.Scopes
 	status.LastValidatedAt = connection.LastValidatedAt.Time

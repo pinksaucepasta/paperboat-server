@@ -13,12 +13,11 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/secrets"
 )
 
-// TestListReposTreatsUndecryptableTokenAsDisconnected proves that when the stored
-// GitHub token was encrypted under an encryption key that is no longer
-// configured (key drift), token-dependent operations surface ErrNotConnected —
-// so the dashboard prompts the user to reconnect — instead of a generic provider
-// error that renders as an opaque 503.
-func TestListReposTreatsUndecryptableTokenAsDisconnected(t *testing.T) {
+// TestUndecryptableTokenIsDisconnected proves that when the stored GitHub token
+// was encrypted under an encryption key that is no longer configured (key
+// drift), token-dependent operations surface ErrNotConnected and status renders
+// disconnected so the dashboard prompts the user to reconnect.
+func TestUndecryptableTokenIsDisconnected(t *testing.T) {
 	dsn := os.Getenv("PAPERBOAT_TEST_DATABASE_DSN")
 	if dsn == "" {
 		t.Skip("set PAPERBOAT_TEST_DATABASE_DSN to run Postgres integration tests")
@@ -63,5 +62,12 @@ func TestListReposTreatsUndecryptableTokenAsDisconnected(t *testing.T) {
 
 	if _, err := service.ListRepos(ctx, userID); err != ErrNotConnected {
 		t.Fatalf("ListRepos error = %v, want ErrNotConnected", err)
+	}
+	status, err := service.Status(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Connected || len(status.Scopes) != 0 || len(status.MissingScopes) != 0 {
+		t.Fatalf("status = %#v, want disconnected empty status", status)
 	}
 }
