@@ -322,6 +322,18 @@ func (s *Service) ensureFreeEntitlementResources(ctx context.Context, userID str
 	if err != nil {
 		return false, err
 	}
+	// Fast path: once the free-plan resources have been provisioned, the write
+	// transaction below is a no-op. Skip it with a cheap read so that reads stay
+	// cheap and concurrent entitlement checks (e.g. the dashboard loading
+	// several gated endpoints at once) don't contend on the same rows under
+	// serializable isolation.
+	provisioned, err := s.freeResourcesProvisioned(ctx, plan, userID)
+	if err != nil {
+		return false, err
+	}
+	if provisioned {
+		return true, nil
+	}
 	return true, s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		creditAccountID, err := ensureCreditAccountTx(ctx, tx, userID)
 		if err != nil {
@@ -338,6 +350,30 @@ func (s *Service) ensureFreeEntitlementResources(ctx context.Context, userID str
 		}
 		return setIncludedStorageOnceTx(ctx, tx, storageAccountID, "free-plan:"+plan.ID+":storage:"+userID, plan.ID, int(plan.IncludedStorageGb))
 	})
+}
+
+// freeResourcesProvisioned reports whether the free-plan credit grant and
+// included-storage ledger entries already exist for the user, using cheap
+// read-only lookups (no write transaction). The idempotency keys match those
+// written in ensureFreeEntitlementResources.
+func (s *Service) freeResourcesProvisioned(ctx context.Context, plan dbsqlc.GetFreePlanEntitlementRow, userID string) (bool, error) {
+	q := s.db.Queries()
+	if positiveNumericString(plan.IncludedCredits) {
+		seen, err := q.CreditLedgerEntryExists(ctx, "free-plan:"+plan.ID+":credits:"+userID)
+		if err != nil {
+			return false, err
+		}
+		if !seen {
+			return false, nil
+		}
+	}
+	if _, err := q.GetStorageLedgerEntryByIdempotencyKey(ctx, "free-plan:"+plan.ID+":storage:"+userID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *Service) OwnsProject(ctx context.Context, userID, projectID string) (bool, error) {

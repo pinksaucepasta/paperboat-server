@@ -210,6 +210,16 @@ func (r *Repository) ensureFreePlanResources(ctx context.Context, userID string)
 }
 
 func (r *Repository) applyFreePlanResources(ctx context.Context, userID string, plan freePlan) error {
+	// Fast path: skip the write transaction once the free-plan resources exist.
+	// This keeps read endpoints (usage, entitlement) cheap and avoids
+	// serialization contention when they are loaded concurrently.
+	provisioned, err := r.freeResourcesProvisioned(ctx, userID, plan)
+	if err != nil {
+		return err
+	}
+	if provisioned {
+		return nil
+	}
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		if strings.TrimSpace(plan.includedCredits) != "" && plan.includedCredits != "0" && plan.includedCredits != "0.000000" {
 			if err := grantCreditsTx(ctx, tx, userID, newID("cled"), "free-plan:"+plan.versionID+":credits:"+userID, "plan", plan.versionID, plan.includedCredits, map[string]any{"plan_code": "free"}); err != nil {
@@ -224,6 +234,30 @@ func (r *Repository) applyFreePlanResources(ctx context.Context, userID string, 
 		}
 		return setIncludedStorageTx(ctx, tx, accountID, newID("sled"), "included_set", plan.includedStorageGB, "plan", plan.versionID, "free-plan:"+plan.versionID+":storage:"+userID, map[string]any{"plan_code": "free"})
 	})
+}
+
+// freeResourcesProvisioned reports whether the free-plan credit grant and
+// included-storage ledger entries already exist for the user, using cheap
+// read-only lookups. The idempotency keys match those written in
+// applyFreePlanResources.
+func (r *Repository) freeResourcesProvisioned(ctx context.Context, userID string, plan freePlan) (bool, error) {
+	q := r.db.Queries()
+	if includedCredits := strings.TrimSpace(plan.includedCredits); includedCredits != "" && includedCredits != "0" && includedCredits != "0.000000" {
+		seen, err := q.CreditLedgerEntryExists(ctx, "free-plan:"+plan.versionID+":credits:"+userID)
+		if err != nil {
+			return false, err
+		}
+		if !seen {
+			return false, nil
+		}
+	}
+	if _, err := q.GetStorageLedgerEntryByIdempotencyKey(ctx, "free-plan:"+plan.versionID+":storage:"+userID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 func (r *Repository) ProductByCode(ctx context.Context, code string) (Product, error) {

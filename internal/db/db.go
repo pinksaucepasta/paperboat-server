@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
@@ -74,7 +75,38 @@ func (d *DB) Queries() *dbsqlc.Queries {
 	return d.q
 }
 
+// InTx runs fn inside a SERIALIZABLE transaction. Because serializable
+// isolation can abort concurrent transactions with a serialization failure
+// (40001) or deadlock (40P01), fn may be retried from a clean transaction. All
+// InTx callers are idempotent (idempotency keys / ON CONFLICT), so replaying an
+// aborted attempt is safe.
 func (d *DB) InTx(ctx context.Context, fn func(context.Context, *Tx) error) error {
+	const maxAttempts = 5
+	for attempt := 1; ; attempt++ {
+		err := d.runInTx(ctx, fn)
+		if err == nil || attempt >= maxAttempts || !isSerializationFailure(err) {
+			return err
+		}
+		// Small increasing backoff before replaying the aborted transaction.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(attempt) * 5 * time.Millisecond):
+		}
+	}
+}
+
+// isSerializationFailure reports whether err is a Postgres serialization
+// failure (40001) or deadlock (40P01) — both are safe to retry.
+func isSerializationFailure(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "40001" || pgErr.Code == "40P01"
+	}
+	return false
+}
+
+func (d *DB) runInTx(ctx context.Context, fn func(context.Context, *Tx) error) error {
 	tx, err := d.sql.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)

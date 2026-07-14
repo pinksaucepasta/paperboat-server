@@ -89,28 +89,38 @@ func (s *RuntimeService) RunOnce(ctx context.Context) (runErr error) {
 	if err != nil {
 		return err
 	}
+	var errs []error
 	for _, machine := range machines {
-		observed, err := s.fly.GetMachine(ctx, machine.FlyMachineID)
-		if errors.Is(err, fly.ErrNotFound) {
-			if err := s.observeStopped(ctx, machine.ProjectID, now, "missing", "low"); err != nil {
-				return err
-			}
-			continue
+		if ctx.Err() != nil {
+			errs = append(errs, ctx.Err())
+			return errors.Join(errs...)
 		}
-		if err != nil {
-			return err
-		}
-		if isProviderRunning(observed.State) {
-			if err := s.observeRunning(ctx, machine, now, observed.State); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := s.observeStopped(ctx, machine.ProjectID, now, observed.State, "high"); err != nil {
-			return err
+		// A single machine's poll/observe failure (e.g. a transient Fly API
+		// error) must not abort the run: idle and reporter-loss enforcement
+		// below still has to happen for every other project, or idle machines
+		// would never be stopped. Collect the error and keep going.
+		if err := s.observeMachine(ctx, machine, now); err != nil {
+			errs = append(errs, fmt.Errorf("observe machine %s: %w", machine.FlyMachineID, err))
 		}
 	}
-	return s.repo.EnforceIdleAndReporterState(ctx, now, s.cfg)
+	if err := s.repo.EnforceIdleAndReporterState(ctx, now, s.cfg); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+func (s *RuntimeService) observeMachine(ctx context.Context, machine MeterableMachine, now time.Time) error {
+	observed, err := s.fly.GetMachine(ctx, machine.FlyMachineID)
+	if errors.Is(err, fly.ErrNotFound) {
+		return s.observeStopped(ctx, machine.ProjectID, now, "missing", "low")
+	}
+	if err != nil {
+		return err
+	}
+	if isProviderRunning(observed.State) {
+		return s.observeRunning(ctx, machine, now, observed.State)
+	}
+	return s.observeStopped(ctx, machine.ProjectID, now, observed.State, "high")
 }
 
 func (s *RuntimeService) propagatePapercodeRevocations(ctx context.Context) error {
