@@ -400,6 +400,7 @@ func (s *Service) machineSpec(intent ProjectIntent, volumeID string) fly.Machine
 		"PAPERBOAT_PAPERCODE_ENVIRONMENT_ID":         intent.ID,
 		"PAPERBOAT_PAPERCODE_OWNER_ID":               intent.UserID,
 		"PAPERBOAT_PAPERCODE_ISSUER":                 strings.TrimRight(s.cfg.HTTP.PublicBaseURL, "/"),
+		"PAPERBOAT_CONFIG_SYNC_COMMAND":              "/bin/true",
 		"PAPERBOAT_CONFIG_HOME":                      s.cfg.ConfigSync.HomeOverride,
 		"PAPERBOAT_CONFIG_INCLUDES":                  strings.Join(s.cfg.ConfigSync.Includes, ","),
 		"PAPERBOAT_CONFIG_EXCLUDES":                  strings.Join(s.cfg.ConfigSync.Excludes, ","),
