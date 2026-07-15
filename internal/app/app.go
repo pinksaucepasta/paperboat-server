@@ -25,6 +25,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/mint"
 	"github.com/pinksaucepasta/paperboat-server/internal/orchestrator"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
+	"github.com/pinksaucepasta/paperboat-server/internal/terminalsessions"
 	"github.com/pinksaucepasta/paperboat-server/internal/workers"
 )
 
@@ -60,6 +61,7 @@ func New(opts Options) (*App, error) {
 	billingService.SetCheckoutReservationTTL(opts.Config.Billing.CheckoutReservationTTL)
 	githubService := pbgithub.NewService(store, auditWriter, githubClient(opts.Config), opts.Config)
 	projectService := projects.NewService(store, auditWriter, opts.Config)
+	terminalSessionService := terminalsessions.New(store, projectService, opts.Config.TerminalSessions.MaxActivePerProject, opts.Config.TerminalSessions.RetryBackoff, opts.Config.TerminalSessions.MaxAttemptsBeforeAlert)
 	agentunnelProvider := agentunnelClient(opts.Config)
 	mintKeys, err := mintKeyProvider(opts.Config)
 	if err != nil {
@@ -75,8 +77,13 @@ func New(opts Options) (*App, error) {
 		}
 	}
 	agentunnelService := agentunnel.NewServiceWithCredentials(store, projectService, agentunnelProvider, credentialIssuer, auditWriter, opts.Config)
+	terminalSessionService.ConfigureControl(agentunnelService.PapercodeHTTPBaseURL, mintKeys, normalizePapercodeIssuer(opts.Config.HTTP.PublicBaseURL), &http.Client{Timeout: opts.Config.TerminalSessions.OperationTimeout})
+	agentunnelService.SetBeforeConnect(func(ctx context.Context, _ string, projectID string) error {
+		return terminalSessionService.ApplyPending(ctx, projectID)
+	})
 	deviceAuthService.SetDownstreamRevoker(agentunnelService)
 	orchestratorService := orchestrator.NewServiceWithAgentunnel(store, flyProvider, opts.Config, agentunnelProvider)
+	orchestratorService.SetBeforeStop(terminalSessionService.SnapshotProject)
 	meteringService := metering.NewRuntimeService(store, flyProvider, billingRepo)
 	meteringService.SetDownstreamRevoker(agentunnelService)
 	checker := readinessChecker{cfg: opts.Config, db: store}
@@ -103,6 +110,7 @@ func New(opts Options) (*App, error) {
 		Fly:              flyProvider,
 		GitHub:           githubService,
 		Projects:         projectService,
+		TerminalSessions: terminalSessionService,
 		Agentunnel:       agentunnelService,
 		MeteringRepo:     metering.NewRuntimeRepository(store, opts.Config.Secrets.EncryptionKey),
 		ConfigSync:       configSyncRepo,
@@ -123,6 +131,7 @@ func New(opts Options) (*App, error) {
 			meteringService.Worker(opts.Config.HTTP.RequestTimeout),
 			billingService.AutoTopupWorker(opts.Config.HTTP.RequestTimeout),
 			configSyncRepo.RotationWorker(time.Minute),
+			terminalSessionService.Worker(opts.Config.TerminalSessions.WorkerInterval),
 		),
 	}, nil
 }

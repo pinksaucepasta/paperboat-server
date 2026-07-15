@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -30,6 +31,13 @@ type Service struct {
 	cfg            config.Config
 	agentunnel     agentunnel.Client
 	agentunnelRepo *agentunnel.Repository
+	beforeStop     func(context.Context, string) error
+}
+
+// SetBeforeStop configures best-effort work that must happen while a project
+// runtime is still reachable. Failures are recorded but never strand a stop.
+func (s *Service) SetBeforeStop(fn func(context.Context, string) error) {
+	s.beforeStop = fn
 }
 
 func NewService(store *db.DB, flyClient fly.Client, cfg config.Config) *Service {
@@ -207,6 +215,7 @@ func (s *Service) stopProject(ctx context.Context, projectID string) error {
 	if err != nil {
 		return err
 	}
+	s.snapshotBeforeStop(ctx, projectID)
 	observed, err := s.fly.StopMachine(ctx, machine.FlyMachineID)
 	if err != nil {
 		return err
@@ -233,6 +242,7 @@ func (s *Service) restartProject(ctx context.Context, projectID string) error {
 		}
 		return ErrVolumeResizeRequiresApproval
 	}
+	s.snapshotBeforeStop(ctx, projectID)
 	if _, err := s.fly.StopMachine(ctx, machine.FlyMachineID); err != nil {
 		if !errors.Is(err, fly.ErrNotFound) {
 			return err
@@ -257,6 +267,15 @@ func (s *Service) restartProject(ctx context.Context, projectID string) error {
 		return err
 	}
 	return s.repo.RecordMachineState(ctx, projectID, observed.State, "running")
+}
+
+func (s *Service) snapshotBeforeStop(ctx context.Context, projectID string) {
+	if s.beforeStop == nil {
+		return
+	}
+	if err := s.beforeStop(ctx, projectID); err != nil {
+		slog.Warn("terminal session snapshot failed before project stop", "project_id", projectID, "error", err)
+	}
 }
 
 func (s *Service) deleteProject(ctx context.Context, projectID string) error {
@@ -1002,6 +1021,18 @@ func (r *Repository) MarkDeletedAndReleaseStorage(ctx context.Context, projectID
 				return err
 			}
 		} else if err != nil {
+			return err
+		}
+		terminalSessions, err := q.ListActiveTerminalSessions(ctx, projectID)
+		if err != nil {
+			return err
+		}
+		for _, terminalSession := range terminalSessions {
+			if err := q.QueueTerminalSessionOperation(ctx, dbsqlc.QueueTerminalSessionOperationParams{ID: newID("tso"), ProjectID: projectID, TerminalSessionID: terminalSession.ID, Operation: "delete_history"}); err != nil {
+				return err
+			}
+		}
+		if err := q.TombstoneProjectTerminalSessions(ctx, projectID); err != nil {
 			return err
 		}
 		if err := q.MarkProjectDeleted(ctx, projectID); err != nil {

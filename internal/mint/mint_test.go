@@ -109,6 +109,25 @@ func TestSignRejectsOverlongProof(t *testing.T) {
 	}
 }
 
+func TestSignTerminalControlBindsOperationAndTerminalIDs(t *testing.T) {
+	provider, _ := New([]Key{{ID: "key", PrivateKey: testKey(9)}}, "key", time.Minute)
+	now := time.Unix(1_700_000_000, 0)
+	token, err := provider.SignTerminalControl(TerminalControlInput{Issuer: "https://api.example", EnvironmentID: "env_1", UserID: "usr_1", JTI: "jti_1", Nonce: "nonce_1", IssuedAt: now, ExpiresAt: now.Add(time.Minute), Operation: "delete_history", ThreadID: "paperboat-cli", TerminalIDs: []string{"term_a", "term_b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(token, ".")
+	var header, payload map[string]any
+	decodeJSONPart(t, parts[0], &header)
+	decodeJSONPart(t, parts[1], &payload)
+	if header["typ"] != TerminalControlType || payload["scope"].([]any)[0] != TerminalControlScope || payload["operation"] != "delete_history" || payload["threadId"] != "paperboat-cli" {
+		t.Fatalf("header=%#v payload=%#v", header, payload)
+	}
+	if got := payload["terminalIds"].([]any); len(got) != 2 || got[0] != "term_a" {
+		t.Fatalf("terminal IDs=%#v", got)
+	}
+}
+
 func TestSignRevocationUsesSeparateTypeAndScope(t *testing.T) {
 	provider, _ := New([]Key{{ID: "key", PrivateKey: testKey(6)}}, "key", time.Minute)
 	now := time.Unix(1_700_000_000, 0)

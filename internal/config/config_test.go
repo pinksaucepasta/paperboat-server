@@ -13,22 +13,27 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 		"/run/secrets/encryption": []byte("secret-from-file\n"),
 	}
 	env := map[string]string{
-		"PAPERBOAT_ENV":                                  "test",
-		"PAPERBOAT_HTTP_ADDRESS":                         "127.0.0.1:9090",
-		"PAPERBOAT_CATALOG_SEED_FILE":                    "/etc/paperboat/catalogs.json",
-		"PAPERBOAT_POLAR_WEBHOOK_TOLERANCE_SECONDS":      "120",
-		"PAPERBOAT_ENCRYPTION_KEY_FILE":                  "/run/secrets/encryption",
-		"PAPERBOAT_AGENTUNNEL_API_KEY":                   "agentunnel-api-key-from-env",
-		"PAPERBOAT_AGENTUNNEL_PAPERCODE_LOCAL_URL":       "http://127.0.0.1:4999",
-		"PAPERBOAT_AGENTUNNEL_ROUTE_EXPIRES_IN":          "12h",
-		"PAPERBOAT_AGENTUNNEL_ROUTE_SUBDOMAIN_PREFIX":    "pc",
-		"PAPERBOAT_AGENTUNNEL_CONNECT_READY_TIMEOUT":     "7s",
-		"PAPERBOAT_AGENTUNNEL_CONNECT_POLL_INTERVAL":     "250ms",
-		"PAPERBOAT_AGENTUNNEL_ACCESS_POLICY_ID":          "apol_test",
-		"PAPERBOAT_AGENTUNNEL_UPLOAD_MAX_BYTES":          "7340032",
-		"PAPERBOAT_AGENTUNNEL_UPLOAD_ALLOWED_MIME_TYPES": "image/png,image/webp",
-		"PAPERBOAT_FLY_SETUP_SCRIPT_SECRET":              "PAPERBOAT_SETUP_SCRIPT_FROM_ENV",
-		"PAPERBOAT_SESSION_KEYS":                         "one,two",
+		"PAPERBOAT_ENV":                                         "test",
+		"PAPERBOAT_HTTP_ADDRESS":                                "127.0.0.1:9090",
+		"PAPERBOAT_CATALOG_SEED_FILE":                           "/etc/paperboat/catalogs.json",
+		"PAPERBOAT_POLAR_WEBHOOK_TOLERANCE_SECONDS":             "120",
+		"PAPERBOAT_ENCRYPTION_KEY_FILE":                         "/run/secrets/encryption",
+		"PAPERBOAT_AGENTUNNEL_API_KEY":                          "agentunnel-api-key-from-env",
+		"PAPERBOAT_AGENTUNNEL_PAPERCODE_LOCAL_URL":              "http://127.0.0.1:4999",
+		"PAPERBOAT_AGENTUNNEL_ROUTE_EXPIRES_IN":                 "12h",
+		"PAPERBOAT_AGENTUNNEL_ROUTE_SUBDOMAIN_PREFIX":           "pc",
+		"PAPERBOAT_AGENTUNNEL_CONNECT_READY_TIMEOUT":            "7s",
+		"PAPERBOAT_AGENTUNNEL_CONNECT_POLL_INTERVAL":            "250ms",
+		"PAPERBOAT_AGENTUNNEL_ACCESS_POLICY_ID":                 "apol_test",
+		"PAPERBOAT_AGENTUNNEL_UPLOAD_MAX_BYTES":                 "7340032",
+		"PAPERBOAT_AGENTUNNEL_UPLOAD_ALLOWED_MIME_TYPES":        "image/png,image/webp",
+		"PAPERBOAT_TERMINAL_SESSIONS_MAX_ACTIVE_PER_PROJECT":    "16",
+		"PAPERBOAT_TERMINAL_SESSIONS_OPERATION_TIMEOUT":         "20s",
+		"PAPERBOAT_TERMINAL_SESSIONS_RETRY_BACKOFF":             "3s",
+		"PAPERBOAT_TERMINAL_SESSIONS_WORKER_INTERVAL":           "2s",
+		"PAPERBOAT_TERMINAL_SESSIONS_MAX_ATTEMPTS_BEFORE_ALERT": "7",
+		"PAPERBOAT_FLY_SETUP_SCRIPT_SECRET":                     "PAPERBOAT_SETUP_SCRIPT_FROM_ENV",
+		"PAPERBOAT_SESSION_KEYS":                                "one,two",
 	}
 	cfg, err := Load(context.Background(), LoadOptions{
 		LookupEnv: func(key string) (string, bool) {
@@ -75,6 +80,17 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 	}
 	if cfg.Fly.SetupScriptSecret != "PAPERBOAT_SETUP_SCRIPT_FROM_ENV" {
 		t.Fatalf("setup script secret env name = %q", cfg.Fly.SetupScriptSecret)
+	}
+	if cfg.TerminalSessions.MaxActivePerProject != 16 || cfg.TerminalSessions.OperationTimeout.String() != "20s" || cfg.TerminalSessions.RetryBackoff.String() != "3s" || cfg.TerminalSessions.WorkerInterval.String() != "2s" || cfg.TerminalSessions.MaxAttemptsBeforeAlert != 7 {
+		t.Fatalf("terminal session config was not loaded from env: %#v", cfg.TerminalSessions)
+	}
+}
+
+func TestValidationRejectsInvalidTerminalSessionAlertThreshold(t *testing.T) {
+	cfg := Default()
+	cfg.TerminalSessions.MaxAttemptsBeforeAlert = 0
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "terminal_sessions") {
+		t.Fatalf("validation error = %v", err)
 	}
 }
 

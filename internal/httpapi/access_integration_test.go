@@ -138,6 +138,54 @@ func TestConnectionStatusDoesNotRequireConfigRepoReadiness(t *testing.T) {
 	}
 }
 
+func TestConnectionStatusRetainsSelectedTerminalSession(t *testing.T) {
+	store, router, projectID := newAccessIntegrationRouter(t, "status-selected-session@example.com")
+	insertAccessResource(t, store, projectID)
+	cookies := loginCookies(t, router, "workos_seed_status-selected-session@example.com:status-selected-session@example.com:Status Selected")
+	const sessionID = "pts_status_selected"
+	const terminalID = "term_status_selected"
+	if _, err := store.SQL().ExecContext(context.Background(), `
+INSERT INTO paperboat.project_terminal_sessions (id, project_id, terminal_id, name)
+VALUES ($1, $2, $3, 'api')`, sessionID, projectID, terminalID); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/connection-status?terminal_session_id="+sessionID, nil)
+	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"terminal_id":"`+terminalID+`"`) || strings.Contains(rec.Body.String(), `"terminal_id":"term-1"`) {
+		t.Fatalf("connection status did not retain selected terminal: %s", rec.Body.String())
+	}
+}
+
+func TestConnectionStatusWaitsForTerminalSessionReconciliation(t *testing.T) {
+	store, router, accessService, projectID := newAccessIntegrationRouterWithService(t, "status-terminal-reconcile@example.com", agentunnel.FakeClient{BaseURL: "https://agentunnel.example"}, nil)
+	insertAccessResource(t, store, projectID)
+	cookies := loginCookies(t, router, "workos_seed_status-terminal-reconcile@example.com:status-terminal-reconcile@example.com:Status Reconcile")
+	calls := 0
+	accessService.SetBeforeConnect(func(context.Context, string, string) error {
+		calls++
+		return errors.New("terminal operation pending")
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/connection-status", nil)
+	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || calls != 1 {
+		t.Fatalf("status=%d reconciliation calls=%d body=%s", rec.Code, calls, rec.Body.String())
+	}
+	for _, want := range []string{`"connectable":false`, `"status":"papercode_starting"`, `"reason":"terminal_session_operation_pending"`} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("connection status missing %s: %s", want, rec.Body.String())
+		}
+	}
+}
+
 func TestConnectionStatusDoesNotRecordActivity(t *testing.T) {
 	store, router, projectID := newAccessIntegrationRouter(t, "status-no-activity@example.com")
 	cookies := loginCookies(t, router, "workos_seed_status-no-activity@example.com:status-no-activity@example.com:Status No Activity")

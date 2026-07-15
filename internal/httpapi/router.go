@@ -27,6 +27,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/mint"
 	"github.com/pinksaucepasta/paperboat-server/internal/observability"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
+	"github.com/pinksaucepasta/paperboat-server/internal/terminalsessions"
 )
 
 type ReadinessChecker interface {
@@ -45,6 +46,7 @@ type Options struct {
 	Fly              fly.Client
 	GitHub           *pbgithub.Service
 	Projects         *projects.Service
+	TerminalSessions *terminalsessions.Service
 	Agentunnel       *agentunnel.Service
 	MeteringRepo     *metering.RuntimeRepository
 	ConfigSync       *configsync.Repository
@@ -225,6 +227,13 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 			mux.Handle("POST /api/projects/{project_id}/activity", projectAuth("projects:connect", requireEntitlement(opts.Auth, projectsActivity(opts.Projects))))
 			mux.Handle("GET /api/projects/{project_id}/events", requireAuth(opts.Auth, requireEntitlement(opts.Auth, projectsEvents(opts.Projects))))
 			if opts.Agentunnel != nil {
+				if opts.TerminalSessions != nil {
+					mux.Handle("GET /api/projects/{project_id}/terminal-sessions", projectAuth("projects:read", requireEntitlement(opts.Auth, terminalSessionsList(opts.TerminalSessions))))
+					mux.Handle("POST /api/projects/{project_id}/terminal-sessions", projectAuth("projects:connect", requireEntitlement(opts.Auth, terminalSessionsCreate(opts.TerminalSessions))))
+					mux.Handle("PATCH /api/projects/{project_id}/terminal-sessions/{session_id}", projectAuth("projects:connect", requireEntitlement(opts.Auth, terminalSessionsRename(opts.TerminalSessions))))
+					mux.Handle("POST /api/projects/{project_id}/terminal-sessions/{session_id}/close", projectAuth("projects:connect", requireEntitlement(opts.Auth, terminalSessionsClose(opts.TerminalSessions))))
+					mux.Handle("DELETE /api/projects/{project_id}/terminal-sessions/{session_id}", projectAuth("projects:connect", requireEntitlement(opts.Auth, terminalSessionsDelete(opts.TerminalSessions))))
+				}
 				mux.Handle("POST /api/projects/{project_id}/connect", requireAuth(opts.Auth, requireEntitlement(opts.Auth, projectsConnect(opts.Agentunnel, agentunnel.ConnectGeneric))))
 				mux.Handle("POST /api/projects/{project_id}/papercode-connect", requireAuth(opts.Auth, requireEntitlement(opts.Auth, projectsConnect(opts.Agentunnel, agentunnel.ConnectPapercode))))
 				mux.Handle("POST /api/projects/{project_id}/cli-connect", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", requireEntitlement(opts.Auth, projectsConnect(opts.Agentunnel, agentunnel.ConnectCLI)))))

@@ -62,6 +62,7 @@ version or a `version` field in the JSON body. Stale writes fail with `version_c
 - `GET /api/projects/{project_id}`
 - `GET /api/projects/{project_id}/events`
 - `GET /api/projects/{project_id}/connection-status`
+- `GET /api/projects/{project_id}/terminal-sessions`
 
 `GET /api/projects` returns a shaped list response:
 
@@ -136,6 +137,35 @@ credentials otherwise expire at their configured short lifetime.
 `GET /api/projects` requires `projects:read`. `POST /api/projects/{project_id}/cli-connect`
 and `GET /api/projects/{project_id}/connection-status` require `projects:connect`.
 
+## Terminal Sessions
+
+Each non-deleted project has one durable `default` terminal session. `cli-connect` accepts
+an optional `{ "terminal_session_id": "pts_..." }` body; omission preserves the default
+session used by existing CLI versions. Session names are lower-case, unique per project, and
+must match `[a-z0-9][a-z0-9._-]{0,63}`. The server creates opaque terminal IDs; client
+supplied names never become runtime terminal IDs.
+
+`GET /api/projects/{project_id}/connection-status` accepts the same optional
+`terminal_session_id` query parameter. CLI readiness polls and the final descriptor
+re-broker therefore retain the selected session rather than reverting to `default`.
+When any terminal close or history purge is awaiting Papercode reconciliation, the endpoint
+returns the retryable `papercode_starting` / `terminal_session_operation_pending` state until
+the cleanup is complete.
+
+- `GET /api/projects/{project_id}/terminal-sessions` requires `projects:read` and accepts
+  `limit` (1-200) and `offset`.
+- `POST /api/projects/{project_id}/terminal-sessions` requires `projects:connect`, an
+  `Idempotency-Key`, and an optional `{ "name": "api" }` body.
+- `PATCH /api/projects/{project_id}/terminal-sessions/{session_id}` renames a non-default
+  session.
+- `POST /api/projects/{project_id}/terminal-sessions/{session_id}/close` and `DELETE ...`
+  first apply physical papercode work when the runtime is reachable. `200` means it was
+  applied immediately; `202` means it remains pending and that session cannot be attached
+  until reconciliation completes.
+
+Session list records contain `id`, `name`, `is_default`, `state`, nullable
+`attached_count`, `last_active_at`, `created_at`, and `updated_at`.
+
 - `GET /.well-known/jwks.json`
 - `POST /api/auth/device/authorize`
 - `POST /api/auth/device/token`
@@ -172,6 +202,12 @@ Documented public codes currently emitted by the handlers include:
 - `project_deleted`
 - `invalid_project_state`
 - `machine_not_ready`
+- `terminal_session_not_found`
+- `terminal_session_name_conflict`
+- `terminal_session_limit_reached`
+- `terminal_session_reserved`
+- `terminal_session_operation_pending`
+- `terminal_runtime_unavailable`
 - `provider_unavailable`
 - `tunnel_unavailable`
 - `tunnel_not_ready`

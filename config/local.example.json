@@ -26,6 +26,13 @@
     "minimum_start_credit_window": 300000000000,
     "max_keep_alive_duration": 43200000000000
   },
+  "terminal_sessions": {
+    "max_active_per_project": 32,
+    "operation_timeout": 15000000000,
+    "retry_backoff": 1000000000,
+    "worker_interval": 1000000000,
+    "max_attempts_before_alert": 10
+  },
   "cli_auth": {
     "verification_url": "http://localhost:3000/cli/authorize",
     "client_id": "paperboat-cli",

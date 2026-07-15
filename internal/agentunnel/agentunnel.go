@@ -30,15 +30,18 @@ const defaultAccessTTL = 5 * time.Minute
 const providerCodeSubdomainInUse = "SUBDOMAIN_IN_USE"
 
 var (
-	ErrNotFound                    = projects.ErrNotFound
-	ErrDeleted                     = projects.ErrDeleted
-	ErrInvalidState                = projects.ErrInvalidState
-	ErrMachineFailed               = errors.New("project machine failed")
-	ErrInsufficientCredit          = projects.ErrInsufficientCredits
-	ErrTunnelUnavailable           = errors.New("agentunnel resource is unavailable")
-	ErrProvider                    = errors.New("agentunnel provider error")
-	ErrCredentialIssuerUnavailable = errors.New("papercode credential issuer is unavailable")
-	ErrGitHubRequired              = errors.New("github config is not ready")
+	ErrNotFound                        = projects.ErrNotFound
+	ErrDeleted                         = projects.ErrDeleted
+	ErrInvalidState                    = projects.ErrInvalidState
+	ErrMachineFailed                   = errors.New("project machine failed")
+	ErrInsufficientCredit              = projects.ErrInsufficientCredits
+	ErrTunnelUnavailable               = errors.New("agentunnel resource is unavailable")
+	ErrProvider                        = errors.New("agentunnel provider error")
+	ErrCredentialIssuerUnavailable     = errors.New("papercode credential issuer is unavailable")
+	ErrGitHubRequired                  = errors.New("github config is not ready")
+	ErrTerminalSessionNotFound         = errors.New("terminal session not found")
+	ErrTerminalSessionOperationPending = errors.New("terminal session operation pending")
+	ErrTerminalRuntimeUnavailable      = errors.New("terminal runtime is unavailable")
 )
 
 type providerError struct {
@@ -550,6 +553,26 @@ type Service struct {
 	uploadMaxBytes           int64
 	uploadAllowedMIMEs       []string
 	uploadRetentionSeconds   int64
+	beforeConnect            func(context.Context, string, string) error
+}
+
+// PapercodeHTTPBaseURL returns the canonical agentunnel route for an already
+// provisioned project. It never starts a machine or creates a resource.
+func (s *Service) PapercodeHTTPBaseURL(ctx context.Context, projectID string) (string, error) {
+	resource, ok, err := s.repo.Resource(ctx, projectID)
+	if err != nil {
+		return "", err
+	}
+	if !ok || strings.TrimSpace(resource.HTTPBaseURL) == "" {
+		return "", ErrTunnelUnavailable
+	}
+	return strings.TrimRight(resource.HTTPBaseURL, "/"), nil
+}
+
+// SetBeforeConnect configures control-plane reconciliation that must complete
+// after Papercode is healthy and before a descriptor can be issued.
+func (s *Service) SetBeforeConnect(fn func(context.Context, string, string) error) {
+	s.beforeConnect = fn
 }
 
 func NewService(store *db.DB, projectService *projects.Service, client Client, auditWriter *audit.Writer, cfg config.Config) *Service {
@@ -593,10 +616,11 @@ const (
 )
 
 type ConnectInput struct {
-	UserID          string
-	ProjectID       string
-	Kind            ConnectKind
-	ClientSessionID string
+	UserID            string
+	ProjectID         string
+	Kind              ConnectKind
+	ClientSessionID   string
+	TerminalSessionID string
 }
 
 type ConnectResponse struct {
@@ -624,6 +648,40 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 	if err != nil {
 		s.recordConnectDenied(ctx, input.UserID, input.ProjectID, "project_not_found", nil)
 		return ConnectResponse{}, err
+	}
+	var terminalSession dbsqlc.ProjectTerminalSession
+	if input.Kind == ConnectCLI {
+		err = s.repo.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+			q := tx.Queries()
+			if _, err := q.LockProjectTerminalSessions(ctx, input.ProjectID); err != nil {
+				return err
+			}
+			if input.TerminalSessionID == "" {
+				terminalSession, err = q.GetDefaultTerminalSession(ctx, input.ProjectID)
+			} else {
+				terminalSession, err = q.GetActiveTerminalSession(ctx, dbsqlc.GetActiveTerminalSessionParams{ProjectID: input.ProjectID, ID: input.TerminalSessionID})
+			}
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrTerminalSessionNotFound
+			}
+			if err != nil {
+				return err
+			}
+			pending, err := q.TerminalSessionOperationPending(ctx, dbsqlc.TerminalSessionOperationPendingParams{ProjectID: input.ProjectID, TerminalSessionID: terminalSession.ID})
+			if err != nil {
+				return err
+			}
+			if pending {
+				return ErrTerminalSessionOperationPending
+			}
+			// A completed close leaves a durable identity that can be attached again.
+			// Mark the new attach intent so a subsequent close controls the restarted
+			// PTY instead of treating the historical close as still authoritative.
+			return q.ReopenTerminalSession(ctx, dbsqlc.ReopenTerminalSessionParams{ProjectID: input.ProjectID, ID: terminalSession.ID})
+		})
+		if err != nil {
+			return ConnectResponse{}, err
+		}
 	}
 	if terminalProjectState(project.State) {
 		s.recordConnectDenied(ctx, input.UserID, input.ProjectID, "invalid_project_state", map[string]any{"project_state": project.State})
@@ -774,6 +832,11 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 		})
 		return response, nil
 	}
+	if s.beforeConnect != nil {
+		if err := s.beforeConnect(ctx, input.UserID, input.ProjectID); err != nil {
+			return ConnectResponse{}, fmt.Errorf("%w: %v", ErrTerminalRuntimeUnavailable, err)
+		}
+	}
 	_ = s.audit.Write(ctx, audit.Event{ActorUserID: input.UserID, ActorType: audit.ActorUser, EventType: "access.route_ready", ResourceType: "project", ResourceID: input.ProjectID, IdempotencyKey: "access.route_ready:" + newID("attempt"), Metadata: map[string]any{"environment_id": project.ID, "agentunnel_tunnel_id": resource.TunnelID, "agentunnel_client_id": resource.ClientID, "status": status.Status}})
 	observability.RouteReady()
 	if input.Kind == ConnectCLI {
@@ -802,7 +865,7 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 		"kind": input.Kind, "status": status.Status, "environment_id": project.ID,
 		"agentunnel_tunnel_id": resource.TunnelID, "agentunnel_client_id": resource.ClientID,
 	})
-	response := buildResponse(input.Kind, project, resource, expires, credentials, s.uploadMaxBytes, s.uploadAllowedMIMEs, s.uploadRetentionSeconds)
+	response := buildResponse(input.Kind, project, resource, expires, credentials, s.uploadMaxBytes, s.uploadAllowedMIMEs, s.uploadRetentionSeconds, terminalSession.ThreadID, terminalSession.TerminalID, terminalSession.LaunchCwd)
 	if input.Kind == ConnectCLI {
 		response.Issuer = s.issuer
 	}
@@ -949,10 +1012,29 @@ func staleHTTPStatus(resource ResourceDescriptor, status TunnelStatus) bool {
 	}
 }
 
-func (s *Service) Status(ctx context.Context, userID, projectID string) (ConnectResponse, error) {
+func (s *Service) Status(ctx context.Context, userID, projectID, terminalSessionID string) (ConnectResponse, error) {
 	project, err := s.projects.Get(ctx, userID, projectID)
 	if err != nil {
 		return ConnectResponse{}, err
+	}
+	var terminalSession dbsqlc.ProjectTerminalSession
+	if terminalSessionID == "" {
+		terminalSession, err = s.repo.db.Queries().GetDefaultTerminalSession(ctx, projectID)
+	} else {
+		terminalSession, err = s.repo.db.Queries().GetActiveTerminalSession(ctx, dbsqlc.GetActiveTerminalSessionParams{ProjectID: projectID, ID: terminalSessionID})
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return ConnectResponse{}, ErrTerminalSessionNotFound
+	}
+	if err != nil {
+		return ConnectResponse{}, err
+	}
+	pending, err := s.repo.db.Queries().TerminalSessionOperationPending(ctx, dbsqlc.TerminalSessionOperationPendingParams{ProjectID: projectID, TerminalSessionID: terminalSession.ID})
+	if err != nil {
+		return ConnectResponse{}, err
+	}
+	if pending {
+		return ConnectResponse{}, ErrTerminalSessionOperationPending
 	}
 	resource, ok, err := s.repo.Resource(ctx, projectID)
 	if err != nil {
@@ -984,7 +1066,18 @@ func (s *Service) Status(ctx context.Context, userID, projectID string) (Connect
 		response.Status = "tunnel_connecting"
 		response.Reason = "tunnel_offline"
 	}
-	response.Terminal = terminalStatusDescriptor(status)
+	if response.Connectable && s.beforeConnect != nil {
+		if err := s.beforeConnect(ctx, userID, projectID); err != nil {
+			// Reconciliation is durable and retryable. Keep this as a normal
+			// readiness state so a CLI waits rather than receiving a transient
+			// operational failure while a pending purge/close is applied.
+			response.Connectable = false
+			response.Status = "papercode_starting"
+			response.Reason = "terminal_session_operation_pending"
+			response.RetryAfterSeconds = s.retryAfterSeconds()
+		}
+	}
+	response.Terminal = terminalStatusDescriptor(status, terminalSession)
 	if terminalProjectState(project.State) {
 		response.Connectable = false
 		response.Reason = firstNonEmpty(response.Reason, "project_state_"+project.State)
@@ -1188,7 +1281,7 @@ func terminalProjectState(state string) bool {
 	}
 }
 
-func buildResponse(kind ConnectKind, project projects.Project, resource ResourceDescriptor, expires time.Time, credentials CLICredentials, uploadMaxBytes int64, uploadAllowedMIMEs []string, uploadRetentionSeconds int64) ConnectResponse {
+func buildResponse(kind ConnectKind, project projects.Project, resource ResourceDescriptor, expires time.Time, credentials CLICredentials, uploadMaxBytes int64, uploadAllowedMIMEs []string, uploadRetentionSeconds int64, threadID, terminalID, cwd string) ConnectResponse {
 	base := ConnectResponse{ProjectID: project.ID, ProjectState: project.State, Connectable: true, ExpiresAt: expires, Status: "ready", Reason: "ready"}
 	switch kind {
 	case ConnectPapercode:
@@ -1214,13 +1307,22 @@ func buildResponse(kind ConnectKind, project projects.Project, resource Resource
 			"expires_at": expires,
 		}
 	case ConnectCLI:
+		if threadID == "" {
+			threadID = "paperboat-cli"
+		}
+		if terminalID == "" {
+			terminalID = "term-1"
+		}
+		if cwd == "" {
+			cwd = "/workspace"
+		}
 		base.Terminal = map[string]any{
 			"kind":               "papercode_websocket",
 			"http_base_url":      resource.HTTPBaseURL,
 			"websocket_base_url": resource.WebSocketBaseURL,
-			"thread_id":          "paperboat-cli",
-			"terminal_id":        "term-1",
-			"cwd":                "/workspace",
+			"thread_id":          threadID,
+			"terminal_id":        terminalID,
+			"cwd":                cwd,
 		}
 		if credentials.TerminalAuth != nil {
 			base.Terminal["auth"] = credentials.TerminalAuth
@@ -1376,7 +1478,7 @@ func timeString(value *time.Time) string {
 	return value.UTC().Format(time.RFC3339)
 }
 
-func terminalStatusDescriptor(status TunnelStatus) map[string]any {
+func terminalStatusDescriptor(status TunnelStatus, terminalSession dbsqlc.ProjectTerminalSession) map[string]any {
 	if status.HTTPBaseURL == "" && status.WebSocketBaseURL == "" {
 		return nil
 	}
@@ -1384,6 +1486,9 @@ func terminalStatusDescriptor(status TunnelStatus) map[string]any {
 		"kind":               "papercode_websocket",
 		"http_base_url":      status.HTTPBaseURL,
 		"websocket_base_url": status.WebSocketBaseURL,
+		"thread_id":          terminalSession.ThreadID,
+		"terminal_id":        terminalSession.TerminalID,
+		"cwd":                terminalSession.LaunchCwd,
 	}
 }
 

@@ -26,19 +26,20 @@ const (
 )
 
 type Config struct {
-	Environment Environment `json:"environment"`
-	HTTP        HTTPConfig  `json:"http"`
-	Database    Database    `json:"database"`
-	Catalogs    Catalogs    `json:"catalogs"`
-	Billing     Billing     `json:"billing"`
-	Metering    Metering    `json:"metering"`
-	ConfigSync  ConfigSync  `json:"config_sync"`
-	Classifier  Classifier  `json:"classifier"`
-	CLIAuth     CLIAuth     `json:"cli_auth"`
-	GitHub      GitHub      `json:"github"`
-	Fly         Fly         `json:"fly"`
-	Providers   Providers   `json:"providers"`
-	Secrets     Secrets     `json:"secrets"`
+	Environment      Environment      `json:"environment"`
+	HTTP             HTTPConfig       `json:"http"`
+	Database         Database         `json:"database"`
+	Catalogs         Catalogs         `json:"catalogs"`
+	Billing          Billing          `json:"billing"`
+	Metering         Metering         `json:"metering"`
+	TerminalSessions TerminalSessions `json:"terminal_sessions"`
+	ConfigSync       ConfigSync       `json:"config_sync"`
+	Classifier       Classifier       `json:"classifier"`
+	CLIAuth          CLIAuth          `json:"cli_auth"`
+	GitHub           GitHub           `json:"github"`
+	Fly              Fly              `json:"fly"`
+	Providers        Providers        `json:"providers"`
+	Secrets          Secrets          `json:"secrets"`
 }
 
 type HTTPConfig struct {
@@ -99,6 +100,14 @@ type Billing struct {
 type Metering struct {
 	MinimumStartCreditWindow time.Duration `json:"minimum_start_credit_window"`
 	MaxKeepAliveDuration     time.Duration `json:"max_keep_alive_duration"`
+}
+
+type TerminalSessions struct {
+	MaxActivePerProject    int           `json:"max_active_per_project"`
+	OperationTimeout       time.Duration `json:"operation_timeout"`
+	RetryBackoff           time.Duration `json:"retry_backoff"`
+	WorkerInterval         time.Duration `json:"worker_interval"`
+	MaxAttemptsBeforeAlert int           `json:"max_attempts_before_alert"`
 }
 
 type ConfigSync struct {
@@ -282,6 +291,7 @@ func Default() Config {
 			MinimumStartCreditWindow: 5 * time.Minute,
 			MaxKeepAliveDuration:     12 * time.Hour,
 		},
+		TerminalSessions: TerminalSessions{MaxActivePerProject: 32, OperationTimeout: 15 * time.Second, RetryBackoff: time.Second, WorkerInterval: time.Second, MaxAttemptsBeforeAlert: 10},
 		ConfigSync: ConfigSync{
 			MandatoryExcludes: configsyncpolicy.MandatoryExcludes(),
 			MaxFileBytes:      5 << 20, MaxBatchBytes: 25 << 20,
@@ -399,6 +409,9 @@ func (c Config) Validate() error {
 	}
 	if c.Metering.MaxKeepAliveDuration <= 0 {
 		errs = append(errs, fmt.Errorf("metering.max_keep_alive_duration must be positive"))
+	}
+	if c.TerminalSessions.MaxActivePerProject <= 0 || c.TerminalSessions.OperationTimeout <= 0 || c.TerminalSessions.RetryBackoff <= 0 || c.TerminalSessions.WorkerInterval <= 0 || c.TerminalSessions.MaxAttemptsBeforeAlert <= 0 {
+		errs = append(errs, fmt.Errorf("terminal_sessions limits and timings must be positive"))
 	}
 	if c.ConfigSync.MaxFileBytes <= 0 || c.ConfigSync.MaxBatchBytes < c.ConfigSync.MaxFileBytes || !containsAll(c.ConfigSync.MandatoryExcludes, configsyncpolicy.MandatoryExcludes()) {
 		errs = append(errs, fmt.Errorf("config_sync exclusions and size limits are invalid"))
@@ -606,6 +619,41 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 			return fmt.Errorf("parse PAPERBOAT_AGENTUNNEL_UPLOAD_RETENTION: %w", err)
 		}
 		c.Providers.Agentunnel.UploadRetention = parsed
+	}
+	if v, ok := lookup("PAPERBOAT_TERMINAL_SESSIONS_MAX_ATTEMPTS_BEFORE_ALERT"); ok {
+		parsed, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("parse PAPERBOAT_TERMINAL_SESSIONS_MAX_ATTEMPTS_BEFORE_ALERT: %w", err)
+		}
+		c.TerminalSessions.MaxAttemptsBeforeAlert = parsed
+	}
+	if v, ok := lookup("PAPERBOAT_TERMINAL_SESSIONS_MAX_ACTIVE_PER_PROJECT"); ok {
+		parsed, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("parse PAPERBOAT_TERMINAL_SESSIONS_MAX_ACTIVE_PER_PROJECT: %w", err)
+		}
+		c.TerminalSessions.MaxActivePerProject = parsed
+	}
+	if v, ok := lookup("PAPERBOAT_TERMINAL_SESSIONS_OPERATION_TIMEOUT"); ok {
+		parsed, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("parse PAPERBOAT_TERMINAL_SESSIONS_OPERATION_TIMEOUT: %w", err)
+		}
+		c.TerminalSessions.OperationTimeout = parsed
+	}
+	if v, ok := lookup("PAPERBOAT_TERMINAL_SESSIONS_RETRY_BACKOFF"); ok {
+		parsed, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("parse PAPERBOAT_TERMINAL_SESSIONS_RETRY_BACKOFF: %w", err)
+		}
+		c.TerminalSessions.RetryBackoff = parsed
+	}
+	if v, ok := lookup("PAPERBOAT_TERMINAL_SESSIONS_WORKER_INTERVAL"); ok {
+		parsed, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("parse PAPERBOAT_TERMINAL_SESSIONS_WORKER_INTERVAL: %w", err)
+		}
+		c.TerminalSessions.WorkerInterval = parsed
 	}
 	if v, ok := lookup("PAPERBOAT_ALLOWED_ORIGINS"); ok {
 		c.HTTP.AllowedOrigins = splitCSV(v)

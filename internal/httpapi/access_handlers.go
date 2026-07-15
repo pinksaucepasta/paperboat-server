@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/agentunnel"
@@ -18,11 +20,21 @@ func projectsConnect(service *agentunnel.Service, kind agentunnel.ConnectKind) h
 		if p.Client != nil {
 			clientSessionID = p.Client.SessionID
 		}
+		var body struct {
+			TerminalSessionID string `json:"terminal_session_id"`
+		}
+		if kind == agentunnel.ConnectCLI && r.Body != nil {
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+				writeError(w, r, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON.")
+				return
+			}
+		}
 		response, err := service.Connect(r.Context(), agentunnel.ConnectInput{
-			UserID:          p.User.ID,
-			ProjectID:       r.PathValue("project_id"),
-			Kind:            kind,
-			ClientSessionID: clientSessionID,
+			UserID:            p.User.ID,
+			ProjectID:         r.PathValue("project_id"),
+			Kind:              kind,
+			ClientSessionID:   clientSessionID,
+			TerminalSessionID: body.TerminalSessionID,
 		})
 		if writeAccessError(w, r, err) {
 			return
@@ -42,7 +54,7 @@ func projectsConnectionStatus(service *agentunnel.Service) http.HandlerFunc {
 			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
 			return
 		}
-		response, err := service.Status(r.Context(), p.User.ID, r.PathValue("project_id"))
+		response, err := service.Status(r.Context(), p.User.ID, r.PathValue("project_id"), r.URL.Query().Get("terminal_session_id"))
 		if writeAccessError(w, r, err) {
 			return
 		}
@@ -55,6 +67,12 @@ func writeAccessError(w http.ResponseWriter, r *http.Request, err error) bool {
 		return false
 	}
 	switch {
+	case errors.Is(err, agentunnel.ErrTerminalSessionOperationPending):
+		writeError(w, r, http.StatusConflict, "terminal_session_operation_pending", "Terminal session operation is pending. Retry shortly.")
+	case errors.Is(err, agentunnel.ErrTerminalSessionNotFound):
+		writeError(w, r, http.StatusNotFound, "terminal_session_not_found", "Terminal session was not found.")
+	case errors.Is(err, agentunnel.ErrTerminalRuntimeUnavailable):
+		writeError(w, r, http.StatusServiceUnavailable, "terminal_runtime_unavailable", "Terminal runtime is unavailable. Retry shortly.")
 	case errors.Is(err, agentunnel.ErrNotFound):
 		writeError(w, r, http.StatusNotFound, "project_not_found", "Project was not found.")
 	case errors.Is(err, agentunnel.ErrDeleted):

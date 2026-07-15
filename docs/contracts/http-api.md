@@ -159,7 +159,7 @@ CLI project reads and connects use scoped Paperboat bearer access tokens.
 - `POST /api/projects/{project_id}/connect`
 - `POST /api/projects/{project_id}/cli-connect`
 - `POST /api/projects/{project_id}/papercode-connect`
-- `GET /api/projects/{project_id}/connection-status`
+- `GET /api/projects/{project_id}/connection-status?terminal_session_id=pts_...`
 
 `GET /api/projects` supports `limit`, `offset`, `state`, and `sort`. Sort fields are
 `created_at`, `updated_at`, `name`, and `state`; prefix with `-` for descending order.

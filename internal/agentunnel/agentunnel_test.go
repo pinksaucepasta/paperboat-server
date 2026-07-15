@@ -403,7 +403,7 @@ func TestBuildCLIResponseDoesNotInventUnvalidatedAuth(t *testing.T) {
 	resp := buildResponse(ConnectCLI, projects.Project{ID: "prj_1", Name: "Demo"}, ResourceDescriptor{
 		HTTPBaseURL:      "https://agentunnel.example/projects/prj_1",
 		WebSocketBaseURL: "wss://agentunnel.example/projects/prj_1",
-	}, time.Now().UTC().Add(time.Minute), CLICredentials{}, 7<<20, []string{"image/png"}, 604800)
+	}, time.Now().UTC().Add(time.Minute), CLICredentials{}, 7<<20, []string{"image/png"}, 604800, "", "", "")
 
 	if _, ok := resp.Terminal["auth"]; ok {
 		t.Fatalf("terminal descriptor should not include unvalidated auth: %#v", resp.Terminal)

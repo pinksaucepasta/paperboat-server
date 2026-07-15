@@ -302,6 +302,77 @@ func TestRestartAppliesPendingConfigExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestStopSnapshotsBeforeProviderStopAndDoesNotBlockOnSnapshotFailure(t *testing.T) {
+	store := newOrchestratorTestDB(t)
+	ctx := context.Background()
+	seedOrchestratorCatalogs(t, store)
+	insertOrchestratorUser(t, store, "usr_orch_stop_snapshot", 20)
+
+	cfg := orchestratorTestConfig()
+	projectService := projects.NewService(store, audit.NewWriter(store), cfg)
+	project, _, err := projectService.Create(ctx, projects.CreateInput{
+		UserID: "usr_orch_stop_snapshot", IdempotencyKey: "orch-stop-snapshot",
+		RepositoryURL: "https://github.com/paperboat/example.git", StorageGB: 8,
+		MachineTypeCode: "standard-1x", RegionCode: "iad", PresetCodes: []string{"codex"}, IdleTimeoutCode: "15m",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fakeFly := fly.NewFakeClient()
+	steps := make([]string, 0, 2)
+	service := NewService(store, stopRecordingFly{Client: fakeFly, steps: &steps}, cfg)
+	if err := service.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.startProject(ctx, project.ID); err != nil {
+		t.Fatal(err)
+	}
+	service.SetBeforeStop(func(context.Context, string) error {
+		steps = append(steps, "snapshot")
+		return errors.New("terminal control temporarily unavailable")
+	})
+	if err := service.stopProject(ctx, project.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(steps, ","); got != "snapshot,stop" {
+		t.Fatalf("stop ordering = %q, want snapshot,stop", got)
+	}
+}
+
+func TestRestartSnapshotsBeforeProviderStop(t *testing.T) {
+	store := newOrchestratorTestDB(t)
+	ctx := context.Background()
+	seedOrchestratorCatalogs(t, store)
+	insertOrchestratorUser(t, store, "usr_orch_restart_snapshot", 20)
+
+	cfg := orchestratorTestConfig()
+	projectService := projects.NewService(store, audit.NewWriter(store), cfg)
+	project, _, err := projectService.Create(ctx, projects.CreateInput{
+		UserID: "usr_orch_restart_snapshot", IdempotencyKey: "orch-restart-snapshot",
+		RepositoryURL: "https://github.com/paperboat/example.git", StorageGB: 8,
+		MachineTypeCode: "standard-1x", RegionCode: "iad", PresetCodes: []string{"codex"}, IdleTimeoutCode: "15m",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fakeFly := fly.NewFakeClient()
+	steps := make([]string, 0, 3)
+	service := NewService(store, stopRecordingFly{Client: fakeFly, steps: &steps}, cfg)
+	if err := service.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	service.SetBeforeStop(func(context.Context, string) error {
+		steps = append(steps, "snapshot")
+		return nil
+	})
+	if err := service.restartProject(ctx, project.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(steps, ","); got != "snapshot,stop" {
+		t.Fatalf("restart ordering = %q, want snapshot,stop", got)
+	}
+}
+
 func TestStartReconcilesServerManagedSpecDrift(t *testing.T) {
 	store := newOrchestratorTestDB(t)
 	ctx := context.Background()
@@ -866,6 +937,16 @@ func TestReconcileQueuesOrphanMachineForReview(t *testing.T) {
 	if state != "needs_review" {
 		t.Fatalf("orphan job state = %q, want needs_review", state)
 	}
+}
+
+type stopRecordingFly struct {
+	fly.Client
+	steps *[]string
+}
+
+func (f stopRecordingFly) StopMachine(ctx context.Context, machineID string) (fly.Machine, error) {
+	*f.steps = append(*f.steps, "stop")
+	return f.Client.StopMachine(ctx, machineID)
 }
 
 func countCalls(calls []string, prefix string) int {

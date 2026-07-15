@@ -593,6 +593,27 @@ type ProjectStorageAllocation struct {
 	UpdatedAt        time.Time
 }
 
+type ProjectTerminalSession struct {
+	ID                  string
+	ProjectID           string
+	TerminalID          string
+	ThreadID            string
+	Name                string
+	IdempotencyKey      sql.NullString
+	IsDefault           bool
+	AutoNameOrdinal     sql.NullInt32
+	LaunchCwd           string
+	DesiredState        string
+	RuntimeState        string
+	LastActivityAt      sql.NullTime
+	LastRuntimeSyncAt   sql.NullTime
+	LastRuntimeSequence sql.NullInt64
+	DeletedAt           sql.NullTime
+	Version             int64
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
 type ProviderEvent struct {
 	ID              string
 	Provider        string
@@ -675,6 +696,20 @@ type Subscription struct {
 	StorageUnits           int32
 	PendingStorageUnits    sql.NullInt32
 	PendingPlanVersionID   sql.NullString
+}
+
+type TerminalSessionOperation struct {
+	ID                string
+	ProjectID         string
+	TerminalSessionID string
+	Operation         string
+	State             string
+	Attempts          int32
+	NextAttemptAt     time.Time
+	LastError         sql.NullString
+	CompletedAt       sql.NullTime
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 type User struct {

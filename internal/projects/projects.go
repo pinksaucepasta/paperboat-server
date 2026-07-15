@@ -633,6 +633,9 @@ func (r *Repository) createIntentOnce(ctx context.Context, input CreateInput, re
 		if err := q.InsertProjectRuntimeConfig(ctx, dbsqlc.InsertProjectRuntimeConfigParams{ProjectID: projectID, MachineTypeVersionID: sql.NullString{String: refs.machineTypeVersionID, Valid: true}, PresetVersionIds: refs.presetVersionIDs, SetupScriptRef: setupRef, IdleTimeoutOptionID: sql.NullString{String: refs.idleTimeoutID, Valid: true}, RegionID: sql.NullString{String: refs.regionID, Valid: true}, DesiredConfigHash: hash}); err != nil {
 			return err
 		}
+		if err := q.CreateDefaultTerminalSession(ctx, dbsqlc.CreateDefaultTerminalSessionParams{ID: newID("pts"), ProjectID: projectID}); err != nil {
+			return err
+		}
 		if setupRef != "" {
 			ciphertext, err := secrets.Encrypt(r.encryptionKey, input.SetupScript)
 			if err != nil {
@@ -885,6 +888,18 @@ func markDeletedAndReleaseStorageTx(ctx context.Context, tx *db.Tx, projectID st
 			return err
 		}
 	} else if err != nil {
+		return err
+	}
+	terminalSessions, err := q.ListActiveTerminalSessions(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	for _, terminalSession := range terminalSessions {
+		if err := q.QueueTerminalSessionOperation(ctx, dbsqlc.QueueTerminalSessionOperationParams{ID: newID("tso"), ProjectID: projectID, TerminalSessionID: terminalSession.ID, Operation: "delete_history"}); err != nil {
+			return err
+		}
+	}
+	if err := q.TombstoneProjectTerminalSessions(ctx, projectID); err != nil {
 		return err
 	}
 	if err := q.MarkProjectDeleted(ctx, projectID); err != nil {

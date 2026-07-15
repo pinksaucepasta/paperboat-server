@@ -15,14 +15,16 @@ import (
 )
 
 const (
-	ProofType     = "t3-cloud-mint+jwt"
-	ProofScope    = "environment:connect"
-	RevokeType    = "t3-cloud-revoke+jwt"
-	RevokeScope   = "environment:revoke"
-	HealthType    = "t3-cloud-health+jwt"
-	HealthScope   = "environment:health"
-	MaxProofTTL   = 5 * time.Minute
-	defaultMaxAge = 5 * time.Minute
+	ProofType            = "t3-cloud-mint+jwt"
+	ProofScope           = "environment:connect"
+	RevokeType           = "t3-cloud-revoke+jwt"
+	RevokeScope          = "environment:revoke"
+	HealthType           = "t3-cloud-health+jwt"
+	HealthScope          = "environment:health"
+	TerminalControlType  = "t3-cloud-terminal-control+jwt"
+	TerminalControlScope = "environment:terminal-control"
+	MaxProofTTL          = 5 * time.Minute
+	defaultMaxAge        = 5 * time.Minute
 )
 
 type Key struct {
@@ -52,6 +54,19 @@ type RevocationInput struct {
 	ProofInput
 	SessionIDs []string
 	Reason     string
+}
+
+type TerminalControlInput struct {
+	Issuer        string
+	EnvironmentID string
+	UserID        string
+	JTI           string
+	Nonce         string
+	IssuedAt      time.Time
+	ExpiresAt     time.Time
+	Operation     string
+	ThreadID      string
+	TerminalIDs   []string
 }
 
 func New(keys []Key, activeID string, maxAge time.Duration) (*Provider, error) {
@@ -155,6 +170,25 @@ func (p *Provider) SignRevocation(input RevocationInput) (string, error) {
 		"environmentId": input.EnvironmentID, "clientSessionId": input.ClientSessionID,
 		"nonce": input.Nonce, "scope": []string{RevokeScope}, "sessionIds": input.SessionIDs,
 		"reason": input.Reason,
+	})
+}
+
+func (p *Provider) SignTerminalControl(input TerminalControlInput) (string, error) {
+	if strings.TrimSpace(input.Issuer) == "" || strings.TrimSpace(input.EnvironmentID) == "" || strings.TrimSpace(input.UserID) == "" || strings.TrimSpace(input.JTI) == "" || strings.TrimSpace(input.Nonce) == "" || strings.TrimSpace(input.ThreadID) == "" || len(input.TerminalIDs) == 0 {
+		return "", errors.New("terminal control proof claims are incomplete")
+	}
+	if input.Operation != "snapshot" && input.Operation != "close" && input.Operation != "delete_history" {
+		return "", errors.New("invalid terminal control operation")
+	}
+	issuedAt, expiresAt := input.IssuedAt.UTC(), input.ExpiresAt.UTC()
+	if !expiresAt.After(issuedAt) || expiresAt.Sub(issuedAt) > MaxProofTTL {
+		return "", errors.New("terminal control proof lifetime must be positive and at most five minutes")
+	}
+	return p.signClaims(TerminalControlType, map[string]any{
+		"iss": input.Issuer, "aud": "t3-env:" + input.EnvironmentID, "sub": input.UserID,
+		"jti": input.JTI, "iat": issuedAt.Unix(), "exp": expiresAt.Unix(), "environmentId": input.EnvironmentID,
+		"nonce": input.Nonce, "scope": []string{TerminalControlScope}, "operation": input.Operation,
+		"threadId": input.ThreadID, "terminalIds": input.TerminalIDs,
 	})
 }
 

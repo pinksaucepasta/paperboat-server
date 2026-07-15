@@ -211,9 +211,13 @@ They include `project_id`, `project_state`, `status`, `reason`, and
 `retry_after_seconds`. Every pending combination has `connectable: false` and a positive
 retry interval. The only ready combination is `connectable: true`, `status: ready`,
 `reason: ready`, and `retry_after_seconds: 0`.
-`GET /api/projects/{project_id}/connection-status` reports those
-readiness fields but never returns terminal or upload credentials. Once it reports ready,
-the client calls `cli-connect` again to mint fresh auth material.
+`GET /api/projects/{project_id}/connection-status` reports those readiness fields but never
+returns terminal or upload credentials. Its optional `terminal_session_id` query parameter
+retains the selected terminal identity during polling; once it reports ready, the client calls
+`cli-connect` again with that same ID to mint fresh auth material.
+Pending terminal close and history-purge operations are reconciled before it reports ready;
+until then it returns `papercode_starting` with
+`terminal_session_operation_pending` and a retry interval.
 
 Runtime status:
 

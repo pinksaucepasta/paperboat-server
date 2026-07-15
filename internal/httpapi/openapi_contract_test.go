@@ -23,62 +23,65 @@ func TestOpenAPIDocumentCoversPublicAndFrozenTargetPaths(t *testing.T) {
 		t.Fatal("missing openapi version")
 	}
 	required := map[string][]string{
-		"/.well-known/jwks.json":                        {"get"},
-		"/healthz":                                      {"get"},
-		"/metrics":                                      {"get"},
-		"/readyz":                                       {"get"},
-		"/api/me":                                       {"get"},
-		"/api/config-sync/status":                       {"get"},
-		"/api/config-sync/overrides":                    {"get", "put", "delete"},
-		"/api/config-sync/recovery-key/export":          {"post"},
-		"/api/config-sync/recovery-key/rotate":          {"post"},
-		"/api/machine/config-sync/classify":             {"post"},
-		"/api/auth/workos/state":                        {"get"},
-		"/api/auth/workos/callback":                     {"post"},
-		"/api/auth/workos/reauth/state":                 {"get"},
-		"/api/auth/workos/reauth/callback":              {"post"},
-		"/api/auth/logout":                              {"post"},
-		"/api/auth/csrf":                                {"get"},
-		"/api/auth/device/authorize":                    {"post"},
-		"/api/auth/device/token":                        {"post"},
-		"/api/auth/device/requests/{user_code}":         {"get"},
-		"/api/auth/device/requests/{user_code}/approve": {"post"},
-		"/api/auth/device/requests/{user_code}/deny":    {"post"},
-		"/api/auth/token/refresh":                       {"post"},
-		"/api/auth/token/revoke":                        {"post"},
-		"/api/auth/clients":                             {"get"},
-		"/api/auth/clients/{client_session_id}":         {"delete"},
-		"/api/billing/entitlement":                      {"get"},
-		"/api/billing/usage":                            {"get"},
-		"/api/billing/plan-products":                    {"get"},
-		"/api/billing/checkout":                         {"post"},
-		"/api/billing/customer-portal":                  {"post"},
-		"/api/webhooks/polar":                           {"post"},
-		"/api/catalog/plans":                            {"get"},
-		"/api/catalog/machine-types":                    {"get"},
-		"/api/catalog/presets":                          {"get"},
-		"/api/catalog/idle-timeouts":                    {"get"},
-		"/api/catalog/regions":                          {"get"},
-		"/api/github/status":                            {"get"},
-		"/api/github/oauth/start":                       {"post"},
-		"/api/github/oauth/callback":                    {"get", "post"},
-		"/api/github/config-repo/provision":             {"post"},
-		"/api/dashboard/usage-summary":                  {"get"},
-		"/api/projects":                                 {"get", "post"},
-		"/api/projects/{project_id}":                    {"get", "patch", "delete"},
-		"/api/projects/{project_id}/start":              {"post"},
-		"/api/projects/{project_id}/stop":               {"post"},
-		"/api/projects/{project_id}/restart":            {"post"},
-		"/api/projects/{project_id}/keep-alive":         {"post"},
-		"/api/projects/{project_id}/activity":           {"post"},
-		"/api/projects/{project_id}/events":             {"get"},
-		"/api/projects/{project_id}/connect":            {"post"},
-		"/api/projects/{project_id}/cli-connect":        {"post"},
-		"/api/projects/{project_id}/papercode-connect":  {"post"},
-		"/api/projects/{project_id}/connection-status":  {"get"},
-		"/api/machine/activity-heartbeat":               {"post"},
-		"/api/admin/users/{user_id}/adjust-credits":     {"post"},
-		"/api/admin/users/{user_id}/adjust-storage":     {"post"},
+		"/.well-known/jwks.json":                                          {"get"},
+		"/healthz":                                                        {"get"},
+		"/metrics":                                                        {"get"},
+		"/readyz":                                                         {"get"},
+		"/api/me":                                                         {"get"},
+		"/api/config-sync/status":                                         {"get"},
+		"/api/config-sync/overrides":                                      {"get", "put", "delete"},
+		"/api/config-sync/recovery-key/export":                            {"post"},
+		"/api/config-sync/recovery-key/rotate":                            {"post"},
+		"/api/machine/config-sync/classify":                               {"post"},
+		"/api/auth/workos/state":                                          {"get"},
+		"/api/auth/workos/callback":                                       {"post"},
+		"/api/auth/workos/reauth/state":                                   {"get"},
+		"/api/auth/workos/reauth/callback":                                {"post"},
+		"/api/auth/logout":                                                {"post"},
+		"/api/auth/csrf":                                                  {"get"},
+		"/api/auth/device/authorize":                                      {"post"},
+		"/api/auth/device/token":                                          {"post"},
+		"/api/auth/device/requests/{user_code}":                           {"get"},
+		"/api/auth/device/requests/{user_code}/approve":                   {"post"},
+		"/api/auth/device/requests/{user_code}/deny":                      {"post"},
+		"/api/auth/token/refresh":                                         {"post"},
+		"/api/auth/token/revoke":                                          {"post"},
+		"/api/auth/clients":                                               {"get"},
+		"/api/auth/clients/{client_session_id}":                           {"delete"},
+		"/api/billing/entitlement":                                        {"get"},
+		"/api/billing/usage":                                              {"get"},
+		"/api/billing/plan-products":                                      {"get"},
+		"/api/billing/checkout":                                           {"post"},
+		"/api/billing/customer-portal":                                    {"post"},
+		"/api/webhooks/polar":                                             {"post"},
+		"/api/catalog/plans":                                              {"get"},
+		"/api/catalog/machine-types":                                      {"get"},
+		"/api/catalog/presets":                                            {"get"},
+		"/api/catalog/idle-timeouts":                                      {"get"},
+		"/api/catalog/regions":                                            {"get"},
+		"/api/github/status":                                              {"get"},
+		"/api/github/oauth/start":                                         {"post"},
+		"/api/github/oauth/callback":                                      {"get", "post"},
+		"/api/github/config-repo/provision":                               {"post"},
+		"/api/dashboard/usage-summary":                                    {"get"},
+		"/api/projects":                                                   {"get", "post"},
+		"/api/projects/{project_id}":                                      {"get", "patch", "delete"},
+		"/api/projects/{project_id}/start":                                {"post"},
+		"/api/projects/{project_id}/stop":                                 {"post"},
+		"/api/projects/{project_id}/restart":                              {"post"},
+		"/api/projects/{project_id}/keep-alive":                           {"post"},
+		"/api/projects/{project_id}/activity":                             {"post"},
+		"/api/projects/{project_id}/events":                               {"get"},
+		"/api/projects/{project_id}/connect":                              {"post"},
+		"/api/projects/{project_id}/cli-connect":                          {"post"},
+		"/api/projects/{project_id}/papercode-connect":                    {"post"},
+		"/api/projects/{project_id}/connection-status":                    {"get"},
+		"/api/projects/{project_id}/terminal-sessions":                    {"get", "post"},
+		"/api/projects/{project_id}/terminal-sessions/{session_id}":       {"patch", "delete"},
+		"/api/projects/{project_id}/terminal-sessions/{session_id}/close": {"post"},
+		"/api/machine/activity-heartbeat":                                 {"post"},
+		"/api/admin/users/{user_id}/adjust-credits":                       {"post"},
+		"/api/admin/users/{user_id}/adjust-storage":                       {"post"},
 	}
 	for path, methods := range required {
 		operations, ok := doc.Paths[path]
@@ -220,8 +223,21 @@ func TestOpenAPIFreezesCLIContractSchemas(t *testing.T) {
 	assertRequiredBearerScope(t, listProjects, "projects:read", "GET /api/projects")
 	cliConnect := objectValue(t, doc.Paths["/api/projects/{project_id}/cli-connect"]["post"], "POST /api/projects/{project_id}/cli-connect")
 	assertRequiredBearerScope(t, cliConnect, "projects:connect", "POST /api/projects/{project_id}/cli-connect")
+	cliConnectResponses := objectValue(t, cliConnect["responses"], "CLI connect responses")
+	if _, ok := cliConnectResponses["503"]; !ok {
+		t.Fatal("CLI connect must document terminal runtime unavailability")
+	}
+	deleteSession := objectValue(t, doc.Paths["/api/projects/{project_id}/terminal-sessions/{session_id}"]["delete"], "DELETE terminal session")
+	deleteSessionResponses := objectValue(t, deleteSession["responses"], "delete terminal session responses")
+	if _, ok := deleteSessionResponses["200"]; !ok {
+		t.Fatal("terminal session deletion must document synchronous purge success")
+	}
 	connectionStatus := objectValue(t, doc.Paths["/api/projects/{project_id}/connection-status"]["get"], "GET /api/projects/{project_id}/connection-status")
 	assertRequiredBearerScope(t, connectionStatus, "projects:connect", "GET /api/projects/{project_id}/connection-status")
+	connectionStatusParameters := arrayValue(t, doc.Paths["/api/projects/{project_id}/connection-status"]["parameters"], "connection-status parameters")
+	if !hasParameter(connectionStatusParameters, "terminal_session_id", "query") {
+		t.Fatal("connection-status must document terminal_session_id")
+	}
 
 	variants := arrayValue(t, doc.Components.Schemas["ConnectionStatus"]["oneOf"], "ConnectionStatus.oneOf")
 	got := make(map[string]struct{})
@@ -248,11 +264,12 @@ func TestOpenAPIFreezesCLIContractSchemas(t *testing.T) {
 		}
 	}
 	want := map[string]struct{}{
-		"ready/ready":                            {},
-		"machine_starting/machine_start_queued":  {},
-		"machine_starting/machine_not_running":   {},
-		"tunnel_connecting/tunnel_offline":       {},
-		"papercode_starting/papercode_unhealthy": {},
+		"ready/ready":                                           {},
+		"machine_starting/machine_start_queued":                 {},
+		"machine_starting/machine_not_running":                  {},
+		"tunnel_connecting/tunnel_offline":                      {},
+		"papercode_starting/papercode_unhealthy":                {},
+		"papercode_starting/terminal_session_operation_pending": {},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("readiness combinations = %#v, want %#v", got, want)
@@ -313,6 +330,19 @@ func arrayValue(t *testing.T, value any, label string) []any {
 		t.Fatalf("%s is %T, want array", label, value)
 	}
 	return array
+}
+
+func hasParameter(parameters []any, name, location string) bool {
+	for _, raw := range parameters {
+		parameter, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if parameter["name"] == name && parameter["in"] == location {
+			return true
+		}
+	}
+	return false
 }
 
 func stringSet(t *testing.T, value any, label string) map[string]bool {
