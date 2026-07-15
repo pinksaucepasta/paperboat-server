@@ -207,6 +207,10 @@ func TestOpenAPIFreezesCLIContractSchemas(t *testing.T) {
 
 	get := objectValue(t, doc.Paths["/api/auth/clients"]["get"], "GET /api/auth/clients")
 	assertRequiredBearerScope(t, get, "account:read", "GET /api/auth/clients")
+	configSync := objectValue(t, doc.Paths["/api/config-sync/status"]["get"], "GET /api/config-sync/status")
+	assertRequiredBearerScope(t, configSync, "account:read", "GET /api/config-sync/status")
+	usageSummary := objectValue(t, doc.Paths["/api/dashboard/usage-summary"]["get"], "GET /api/dashboard/usage-summary")
+	assertRequiredBearerScope(t, usageSummary, "account:read", "GET /api/dashboard/usage-summary")
 	responses := objectValue(t, get["responses"], "authorized-client responses")
 	okResponse := objectValue(t, responses["200"], "authorized-client 200")
 	content := objectValue(t, okResponse["content"], "authorized-client content")

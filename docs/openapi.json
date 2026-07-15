@@ -600,7 +600,9 @@
     "/api/config-sync/status": {
       "get": {
         "summary": "Account configuration sync status",
-        "security": [{ "cookieSession": [] }],
+        "description": "Cookie authentication requires no bearer scope. Bearer authentication requires account:read.",
+        "security": [{ "cookieSession": [] }, { "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["account:read"],
         "responses": {
           "200": { "description": "Repository, policy, and per-machine sync status.", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessResponse" }], "properties": { "data": { "$ref": "#/components/schemas/ConfigSyncStatus" } } } } } },
           "401": { "$ref": "#/components/responses/Error" },
@@ -828,7 +830,7 @@
       }
     },
     "/api/github/config-repo/provision": { "post": { "summary": "Provision private config repo", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }], "responses": { "200": { "description": "Config repo metadata.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "400": { "$ref": "#/components/responses/Error" } } } },
-    "/api/dashboard/usage-summary": { "get": { "summary": "Dashboard usage summary", "responses": { "200": { "description": "Credit, storage, and project summary.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "401": { "$ref": "#/components/responses/Error" } } } },
+    "/api/dashboard/usage-summary": { "get": { "summary": "Account usage summary", "description": "Cookie authentication requires no bearer scope. Bearer authentication requires account:read.", "security": [{ "cookieSession": [] }, { "bearerAccess": [] }], "x-required-bearer-scopes": ["account:read"], "responses": { "200": { "description": "Credit, storage, and project summary.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "401": { "$ref": "#/components/responses/Error" } } } },
     "/api/projects": {
       "get": {
         "summary": "List projects",

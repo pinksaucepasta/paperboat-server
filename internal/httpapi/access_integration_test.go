@@ -386,6 +386,29 @@ func TestConfigSyncStatusEndpointAuthorizationAndStaleMachineSemantics(t *testin
 		t.Fatalf("fresh skewed response = %d %s", recorder.Code, recorder.Body.String())
 	}
 
+	cliTokens := authorizeCLI(t, router, cookies)
+	for _, path := range []string{"/api/config-sync/status", "/api/dashboard/usage-summary"} {
+		recorder = httptest.NewRecorder()
+		request = httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("Authorization", "Bearer "+cliTokens.AccessToken)
+		router.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("CLI bearer %s status = %d %s", path, recorder.Code, recorder.Body.String())
+		}
+	}
+	if _, err := store.SQL().ExecContext(context.Background(), `UPDATE paperboat.client_sessions SET scopes=ARRAY['projects:read']::text[] WHERE id=$1`, cliTokens.ClientSessionID); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/api/config-sync/status", "/api/dashboard/usage-summary"} {
+		recorder = httptest.NewRecorder()
+		request = httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("Authorization", "Bearer "+cliTokens.AccessToken)
+		router.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusForbidden || !strings.Contains(recorder.Body.String(), `"code":"insufficient_scope"`) {
+			t.Fatalf("missing account:read %s status = %d %s", path, recorder.Code, recorder.Body.String())
+		}
+	}
+
 	if _, err := store.SQL().ExecContext(context.Background(), `UPDATE paperboat.config_sync_statuses SET status_observed_at=now()-interval '10 minutes' WHERE project_id=$1 AND machine_id=$2`, projectID, machineID); err != nil {
 		t.Fatal(err)
 	}

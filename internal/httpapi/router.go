@@ -131,6 +131,12 @@ func notImplemented(w http.ResponseWriter, r *http.Request) {
 }
 
 func registerAuthRoutes(mux *http.ServeMux, opts Options) {
+	accountRead := func(next http.Handler) http.Handler {
+		if opts.DeviceAuth != nil {
+			return requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope("account:read", next))
+		}
+		return requireAuth(opts.Auth, next)
+	}
 	mux.HandleFunc("GET /api/auth/workos/state", workOSState(opts.Auth))
 	mux.HandleFunc("POST /api/auth/workos/callback", workOSCallback(opts.Auth))
 	mux.Handle("GET /api/auth/workos/reauth/state", requireAuth(opts.Auth, workOSReauthState(opts.Auth)))
@@ -143,7 +149,7 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 	}
 	mux.Handle("GET /api/me", meHandler)
 	if opts.ConfigSync != nil {
-		mux.Handle("GET /api/config-sync/status", requireAuth(opts.Auth, requireEntitlement(opts.Auth, configSyncStatus(opts.ConfigSync))))
+		mux.Handle("GET /api/config-sync/status", accountRead(requireEntitlement(opts.Auth, configSyncStatus(opts.ConfigSync))))
 		mux.Handle("GET /api/config-sync/overrides", requireAuth(opts.Auth, requireEntitlement(opts.Auth, configSyncOverrides(opts.ConfigSync))))
 		mux.Handle("PUT /api/config-sync/overrides", requireAuth(opts.Auth, requireEntitlement(opts.Auth, configSyncOverridePut(opts.ConfigSync))))
 		mux.Handle("DELETE /api/config-sync/overrides", requireAuth(opts.Auth, requireEntitlement(opts.Auth, configSyncOverrideDelete(opts.ConfigSync))))
@@ -174,7 +180,7 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 		mux.Handle("POST /api/billing/checkout", requireAuth(opts.Auth, requireCSRF(opts.Auth, billingCheckout(opts.Billing))))
 		mux.Handle("POST /api/billing/customer-portal", requireAuth(opts.Auth, requireCSRF(opts.Auth, billingCustomerPortal(opts.Billing))))
 		if opts.Projects != nil {
-			mux.Handle("GET /api/dashboard/usage-summary", requireAuth(opts.Auth, requireEntitlement(opts.Auth, dashboardUsageSummary(opts.Billing, opts.Projects))))
+			mux.Handle("GET /api/dashboard/usage-summary", accountRead(requireEntitlement(opts.Auth, dashboardUsageSummary(opts.Billing, opts.Projects))))
 		}
 	} else {
 		mux.Handle("GET /api/billing/entitlement", requireAuth(opts.Auth, http.HandlerFunc(paymentRequired)))
