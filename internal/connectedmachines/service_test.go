@@ -19,3 +19,16 @@ func TestPairingJSONUsesConnectorFieldNames(t *testing.T) {
 		}
 	}
 }
+
+func TestMachineJSONUsesDashboardFieldNames(t *testing.T) {
+	encoded, err := json.Marshal(Machine{ID: "cm_1", EnvironmentID: "env_1", DisplayName: "Test Mac", SeatState: "occupied", RuntimeVersions: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := string(encoded)
+	for _, field := range []string{"\"id\"", "\"environment_id\"", "\"display_name\"", "\"seat_state\"", "\"runtime_versions\""} {
+		if !strings.Contains(value, field) {
+			t.Fatalf("machine response missing %s: %s", field, value)
+		}
+	}
+}

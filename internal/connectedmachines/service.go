@@ -179,10 +179,18 @@ func (s *Service) CreatePairing(ctx context.Context, in PairingInput) (Pairing, 
 }
 
 type Machine struct {
-	ID, EnvironmentID, DisplayName, Platform, Architecture, WorkspaceRoot, State, SeatState string
-	Online                                                                                  bool
-	RuntimeVersions                                                                         json.RawMessage
-	EnrolledAt, LastSeenAt                                                                  *time.Time
+	ID              string          `json:"id"`
+	EnvironmentID   string          `json:"environment_id"`
+	DisplayName     string          `json:"display_name"`
+	Platform        string          `json:"platform"`
+	Architecture    string          `json:"architecture"`
+	WorkspaceRoot   string          `json:"workspace_root"`
+	State           string          `json:"state"`
+	SeatState       string          `json:"seat_state"`
+	Online          bool            `json:"online"`
+	RuntimeVersions json.RawMessage `json:"runtime_versions"`
+	EnrolledAt      *time.Time      `json:"enrolled_at,omitempty"`
+	LastSeenAt      *time.Time      `json:"last_seen_at,omitempty"`
 }
 
 // Overview is the dashboard-safe accounting snapshot. Bytes are returned as
