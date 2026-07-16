@@ -153,8 +153,9 @@ type PairingInput struct {
 	RuntimeVersions                                              json.RawMessage
 }
 type Pairing struct {
-	ID, UserCode string
-	ExpiresAt    time.Time
+	ID        string    `json:"id"`
+	UserCode  string    `json:"user_code"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 func (s *Service) CreatePairing(ctx context.Context, in PairingInput) (Pairing, error) {
