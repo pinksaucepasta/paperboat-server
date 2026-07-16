@@ -466,7 +466,11 @@ func (s *Service) provisionApprovedMachine(ctx context.Context, userID, pairingI
 	if err != nil {
 		return err
 	}
-	material, err := json.Marshal(map[string]any{"machine_id": machine.ID, "environment_id": machine.EnvironmentID, "agentunnel_client_id": resource.ClientID, "agentunnel_route_id": resource.TunnelID, "agentunnel_token": resource.MachineToken, "http_base_url": resource.HTTPBaseURL, "websocket_base_url": resource.WebSocketBaseURL})
+	papercodeLocalURL, _ := resource.Metadata["local_url"].(string)
+	if strings.TrimSpace(resource.ServerURL) == "" || strings.TrimSpace(papercodeLocalURL) == "" {
+		return errors.New("connected-machine provisioning returned incomplete agentunnel runtime configuration")
+	}
+	material, err := json.Marshal(map[string]any{"machine_id": machine.ID, "environment_id": machine.EnvironmentID, "agentunnel_client_id": resource.ClientID, "agentunnel_route_id": resource.TunnelID, "agentunnel_server_url": resource.ServerURL, "papercode_local_url": papercodeLocalURL, "agentunnel_token": resource.MachineToken, "http_base_url": resource.HTTPBaseURL, "websocket_base_url": resource.WebSocketBaseURL})
 	if err != nil {
 		return err
 	}

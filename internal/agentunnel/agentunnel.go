@@ -76,6 +76,7 @@ type ProjectRef struct {
 }
 
 type ResourceDescriptor struct {
+	ServerURL        string         `json:"server_url,omitempty"`
 	TunnelID         string         `json:"tunnel_id"`
 	ClientID         string         `json:"client_id,omitempty"`
 	ResourceID       string         `json:"resource_id,omitempty"`
@@ -189,6 +190,7 @@ func (f FakeClient) EnsureProjectResources(_ context.Context, project ProjectRef
 		base = "https://agentunnel.local"
 	}
 	return ResourceDescriptor{
+		ServerURL:        base,
 		TunnelID:         "tun_" + project.ID,
 		ClientID:         "cli_" + project.ID,
 		ResourceID:       "res_" + project.ID,
@@ -308,6 +310,7 @@ func (c HTTPClient) EnsureProjectResources(ctx context.Context, project ProjectR
 		return fail(ErrTunnelUnavailable)
 	}
 	resource := ResourceDescriptor{
+		ServerURL:        strings.TrimRight(c.BaseURL, "/"),
 		TunnelID:         httpPayload.TunnelID,
 		ClientID:         clientID,
 		ResourceID:       httpPayload.TunnelID,
@@ -364,7 +367,7 @@ func (c HTTPClient) ReattachProjectResources(ctx context.Context, project Projec
 	delete(metadata, "tcp_lifecycle")
 	delete(metadata, "tcp_forwarding_status")
 	return ResourceDescriptor{
-		TunnelID: resource.TunnelID, ClientID: clientID, ResourceID: resource.ResourceID,
+		ServerURL: strings.TrimRight(c.BaseURL, "/"), TunnelID: resource.TunnelID, ClientID: clientID, ResourceID: resource.ResourceID,
 		HTTPBaseURL: httpURL, WebSocketBaseURL: wsURL, MachineToken: machineToken, Metadata: metadata,
 	}, nil
 }
