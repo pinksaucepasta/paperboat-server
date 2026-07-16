@@ -108,6 +108,33 @@ func TestSeedValidationRejectsZeroMachineWeightWithLeadingZeroes(t *testing.T) {
 	}
 }
 
+func TestSeedValidationRejectsActivePlaceholderBillingIDs(t *testing.T) {
+	seed := catalog.Seed{
+		Plans: []catalog.Plan{
+			{Code: "trial", Name: "Trial", IncludedCredits: "10", IncludedStorageGB: 5},
+		},
+		MachineTypes: []catalog.MachineType{
+			{Code: "standard-1x", Name: "Standard 1x", VCPU: 4, MemoryMB: 8192, CreditWeight: "1"},
+		},
+		BillingProducts: []catalog.BillingProduct{
+			{
+				Code:              "trial-monthly",
+				Provider:          "polar",
+				ProviderProductID: "replace-with-polar-product-id",
+				ProviderPriceID:   "placeholder-price-id",
+				CatalogType:       "plan",
+				CatalogRef:        "trial",
+				Active:            true,
+			},
+		},
+	}
+
+	err := seed.Validate()
+	if err == nil || !strings.Contains(err.Error(), "placeholder provider IDs") {
+		t.Fatalf("expected placeholder provider ID validation error, got %v", err)
+	}
+}
+
 func TestCatalogRepositoryListsSeededCatalogs(t *testing.T) {
 	dsn := os.Getenv("PAPERBOAT_TEST_DATABASE_DSN")
 	if dsn == "" {

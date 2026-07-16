@@ -182,6 +182,9 @@ func (s Seed) Validate() error {
 		if product.Provider == "" || product.ProviderProductID == "" || product.ProviderPriceID == "" || product.CatalogType == "" || product.CatalogRef == "" {
 			errs = append(errs, fmt.Errorf("billing product %q provider and catalog mapping fields are required", product.Code))
 		}
+		if product.Active && (placeholderProviderID(product.ProviderProductID) || placeholderProviderID(product.ProviderPriceID)) {
+			errs = append(errs, fmt.Errorf("active billing product %q cannot use placeholder provider IDs", product.Code))
+		}
 		if product.Active {
 			providerKey := product.Provider + ":" + product.ProviderProductID
 			if seen["provider product"] == nil {
@@ -200,6 +203,11 @@ func (s Seed) Validate() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func placeholderProviderID(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.HasPrefix(value, "replace-with-") || strings.Contains(value, "placeholder")
 }
 
 func Apply(ctx context.Context, store *db.DB, seed Seed) error {

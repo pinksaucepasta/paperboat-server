@@ -25,12 +25,30 @@ Run the service skeleton with fake providers:
 go run ./cmd/paperboat-server serve -config config/local.example.json
 ```
 
+For automatic reloads during local development, add the required settings to
+`.env.local` and run:
+
+```sh
+make dev
+```
+
+This uses [Air](https://github.com/air-verse/air) to rebuild and restart the server when
+application files change. Install it once if it is not already available:
+
+```sh
+go install github.com/air-verse/air@latest
+```
+
 Apply Postgres migrations and seed dynamic catalogs:
 
 ```sh
 PAPERBOAT_DATABASE_DSN='postgres://...' go run ./cmd/paperboat-server migrate -config config/local.example.json
 PAPERBOAT_DATABASE_DSN='postgres://...' go run ./cmd/paperboat-server seed-catalogs -config config/local.example.json
 ```
+
+Run `seed-catalogs` again after changing a catalog file. The server reads active plan and
+billing-provider mappings from the database, so editing the JSON file alone does not update
+a running environment.
 
 Useful checks:
 

@@ -88,7 +88,9 @@ func polarFailureCode(err error) string {
 type PolarClient interface {
 	CreateCheckout(ctx context.Context, input CheckoutInput) (CheckoutSession, error)
 	UpdateSubscription(ctx context.Context, input SubscriptionUpdateInput) error
+	GetSubscription(ctx context.Context, providerSubscriptionID string) (ProviderSubscription, error)
 	CreateOffSessionOrder(ctx context.Context, input OffSessionOrderInput) (string, error)
+	FindSubscription(ctx context.Context, input SubscriptionLookupInput) (ProviderSubscription, error)
 	GetSubscriptionPricing(ctx context.Context, providerSubscriptionID string) (SubscriptionPricing, error)
 	CreateCustomerPortal(ctx context.Context, input CustomerPortalInput) (CustomerPortalSession, error)
 }
@@ -103,6 +105,20 @@ type SubscriptionPricing struct {
 	PeriodStart, PeriodEnd time.Time
 	TierType               string
 	Tiers                  []SeatPriceTier
+}
+
+type SubscriptionLookupInput struct {
+	UserID            string
+	ProviderProductID string
+}
+
+type ProviderSubscription struct {
+	ID                 string
+	Status             string
+	ProviderProductID  string
+	CurrentPeriodStart time.Time
+	CurrentPeriodEnd   time.Time
+	Seats              int
 }
 
 type StorageChangePreview struct {
@@ -134,6 +150,7 @@ type SubscriptionUpdateInput struct {
 	ProviderSubscriptionID string
 	ProviderProductID      string
 	ProrationBehavior      string
+	EndTrialNow            bool
 	IdempotencyKey         string
 	Seats                  *int
 }
@@ -222,8 +239,11 @@ type Product struct {
 
 type ActivePolarSubscription struct {
 	ProviderSubscriptionID string
+	State                  string
 	PlanCode               string
 	PlanRank               int
+	IsTrial                bool
+	PendingPlanVersionID   string
 	StorageUnitGB          int
 	StorageSeatOffset      int
 	StorageUnits           int
@@ -235,7 +255,7 @@ func (r *Repository) ActivePolarSubscription(ctx context.Context, userID string)
 	if err != nil {
 		return ActivePolarSubscription{}, err
 	}
-	return ActivePolarSubscription{ProviderSubscriptionID: row.ProviderSubscriptionID, PlanCode: row.PlanCode, PlanRank: int(row.PlanRank), StorageUnitGB: int(row.StorageUnitGb), StorageSeatOffset: int(row.StorageSeatOffset), StorageUnits: int(row.StorageUnits), PendingStorageUnits: nullableInt(row.PendingStorageUnits)}, nil
+	return ActivePolarSubscription{ProviderSubscriptionID: row.ProviderSubscriptionID, State: row.State, PlanCode: row.PlanCode, PlanRank: int(row.PlanRank), IsTrial: row.IsTrial, PendingPlanVersionID: nullableString(row.PendingPlanVersionID), StorageUnitGB: int(row.StorageUnitGb), StorageSeatOffset: int(row.StorageSeatOffset), StorageUnits: int(row.StorageUnits), PendingStorageUnits: nullableInt(row.PendingStorageUnits)}, nil
 }
 
 func nullableInt(v sql.NullInt32) *int {
@@ -244,6 +264,13 @@ func nullableInt(v sql.NullInt32) *int {
 	}
 	i := int(v.Int32)
 	return &i
+}
+
+func nullableString(v sql.NullString) string {
+	if !v.Valid {
+		return ""
+	}
+	return v.String
 }
 
 func (r *Repository) Entitlement(ctx context.Context, userID string) (Entitlement, error) {
@@ -410,7 +437,7 @@ func (r *Repository) ProductByProviderIDs(ctx context.Context, tx *db.Tx, provid
 	if err != nil {
 		return Product{}, fmt.Errorf("query billing product by provider ids: %w", err)
 	}
-	return Product{Code: row.Code, CatalogType: row.CatalogType, CatalogRef: row.CatalogRef, ProviderProductID: row.ProviderProductID, ProviderPriceID: row.ProviderPriceID}, nil
+	return Product{Code: row.Code, CatalogType: row.CatalogType, CatalogRef: row.CatalogRef, ProviderProductID: row.ProviderProductID, ProviderPriceID: row.ProviderPriceID, IsTrial: row.IsTrial}, nil
 }
 
 func (r *Repository) GrantCredits(ctx context.Context, userID, entryID, idempotencyKey, sourceType, sourceID, amount string, metadata map[string]any) error {
@@ -563,10 +590,143 @@ func (s *Service) SetCheckoutReservationTTL(value time.Duration) {
 }
 
 func (s *Service) Entitlement(ctx context.Context, userID string) (Entitlement, error) {
+	entitlement, err := s.repo.Entitlement(ctx, userID)
+	if err != nil || entitlement.Active {
+		return entitlement, err
+	}
+	if err := s.reconcilePendingCheckout(ctx, userID); err != nil {
+		return Entitlement{}, err
+	}
 	return s.repo.Entitlement(ctx, userID)
 }
 
+// reconcilePendingCheckout covers the window where Polar completed checkout
+// but its webhook has not reached Paperboat yet (notably local development).
+func (s *Service) reconcilePendingCheckout(ctx context.Context, userID string) error {
+	reservation, err := s.repo.db.Queries().GetBillingCheckoutReservation(ctx, userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if reservation.State != "reserved" || !reservation.ProviderCheckoutID.Valid {
+		return nil
+	}
+	product, err := s.repo.ProductByCode(ctx, reservation.ProductCode)
+	if err != nil {
+		return err
+	}
+	subscription, err := s.client.FindSubscription(ctx, SubscriptionLookupInput{
+		UserID:            userID,
+		ProviderProductID: product.ProviderProductID,
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if subscription.Status != "active" && subscription.Status != "trialing" {
+		return nil
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"id":                   subscription.ID,
+		"external_customer_id": userID,
+		"product_id":           product.ProviderProductID,
+		"status":               subscription.Status,
+		"current_period_start": subscription.CurrentPeriodStart.UTC().Format(time.RFC3339Nano),
+		"current_period_end":   subscription.CurrentPeriodEnd.UTC().Format(time.RFC3339Nano),
+		"seats":                subscription.Seats,
+	})
+	if err != nil {
+		return err
+	}
+	event := WebhookEvent{
+		ID:   "checkout-reconcile:" + reservation.ProviderCheckoutID.String + ":" + subscription.ID,
+		Type: "subscription.updated",
+		Data: payload,
+	}
+	return s.repo.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := s.applyPlanWebhook(ctx, tx, event, webhookPayload(event), userID, product); err != nil {
+			return err
+		}
+		return tx.Queries().ClearBillingCheckoutReservation(ctx, userID)
+	})
+}
+
+// reconcileCurrentSubscription prevents a stale webhook delivery from causing
+// Paperboat to mutate a subscription that Polar has already changed or ended.
+func (s *Service) reconcileCurrentSubscription(ctx context.Context, userID string) error {
+	active, err := s.repo.ActivePolarSubscription(ctx, userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	subscription, err := s.client.GetSubscription(ctx, active.ProviderSubscriptionID)
+	if err != nil {
+		var apiErr PolarAPIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			return s.repo.db.Queries().UpdateRefundedSubscription(ctx, dbsqlc.UpdateRefundedSubscriptionParams{
+				ProviderSubscriptionID: active.ProviderSubscriptionID,
+				UserID:                 userID,
+				State:                  "canceled",
+			})
+		}
+		return err
+	}
+	if strings.TrimSpace(subscription.ProviderProductID) == "" {
+		return fmt.Errorf("polar subscription %q has no product", subscription.ID)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"id":                   subscription.ID,
+		"external_customer_id": userID,
+		"product_id":           subscription.ProviderProductID,
+		"status":               subscription.Status,
+		"current_period_start": subscription.CurrentPeriodStart.UTC().Format(time.RFC3339Nano),
+		"current_period_end":   subscription.CurrentPeriodEnd.UTC().Format(time.RFC3339Nano),
+		"seats":                subscription.Seats,
+	})
+	if err != nil {
+		return err
+	}
+	event := WebhookEvent{
+		ID:   "subscription-reconcile:" + subscription.ID + ":" + subscription.Status + ":" + subscription.ProviderProductID + ":" + subscription.CurrentPeriodStart.UTC().Format(time.RFC3339Nano),
+		Type: "subscription.updated",
+		Data: payload,
+	}
+	return s.repo.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		product, err := s.repo.ProductByProviderIDs(ctx, tx, subscription.ProviderProductID, "")
+		if err != nil {
+			return err
+		}
+		return s.applyPlanWebhook(ctx, tx, event, webhookPayload(event), userID, product)
+	})
+}
+
 func (s *Service) Usage(ctx context.Context, userID string) (Usage, error) {
+	active, err := s.repo.ActivePolarSubscription(ctx, userID)
+	if err == nil && active.State == "active" && !active.IsTrial {
+		grantedAt, grantErr := s.repo.db.Queries().GetSubscriptionPlanCreditGrantedAt(ctx, dbsqlc.GetSubscriptionPlanCreditGrantedAtParams{
+			UserID:                 userID,
+			ProviderSubscriptionID: active.ProviderSubscriptionID,
+			PlanCode:               active.PlanCode,
+		})
+		if grantErr != nil && !errors.Is(grantErr, sql.ErrNoRows) {
+			return Usage{}, grantErr
+		}
+		if grantErr == nil {
+			err = s.repo.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+				return expireIntroductoryCreditsTx(ctx, tx, userID, grantedAt, active.ProviderSubscriptionID)
+			})
+		}
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return Usage{}, err
+	}
 	return s.repo.Usage(ctx, userID)
 }
 
@@ -802,6 +962,9 @@ func (s *Service) AutoTopupWorker(interval time.Duration) func(context.Context) 
 }
 
 func (s *Service) CreateCheckout(ctx context.Context, userID, email, productCode, idempotencyKey, successURL string) (CheckoutSession, error) {
+	if err := s.reconcileCurrentSubscription(ctx, userID); err != nil {
+		return CheckoutSession{}, fmt.Errorf("reconcile current subscription: %w", err)
+	}
 	product, err := s.repo.ProductByCode(ctx, productCode)
 	if err != nil {
 		return CheckoutSession{}, err
@@ -827,8 +990,20 @@ func (s *Service) CreateCheckout(ctx context.Context, userID, email, productCode
 			if active.PlanCode == product.CatalogRef {
 				return CheckoutSession{}, ErrSamePlan
 			}
+			if active.PendingPlanVersionID != "" {
+				if active.PendingPlanVersionID == product.PlanVersionID {
+					return s.subscriptionChangePortal(ctx, userID, email, idempotencyKey, successURL, active.ProviderSubscriptionID)
+				}
+				return CheckoutSession{}, ErrCheckoutPending
+			}
 			prorationBehavior := "invoice"
-			if product.PlanRank < active.PlanRank {
+			endTrialNow := false
+			if active.State == "trialing" {
+				// End the trial as part of the plan update so Polar starts billing
+				// the selected paid product immediately instead of prorating the
+				// trial's zero-value period.
+				endTrialNow = true
+			} else if product.PlanRank < active.PlanRank {
 				prorationBehavior = "next_period"
 				usage, usageErr := s.repo.Usage(ctx, userID)
 				if usageErr != nil {
@@ -837,23 +1012,22 @@ func (s *Service) CreateCheckout(ctx context.Context, userID, email, productCode
 				if product.IncludedStorageGB+usage.PurchasedStorageGB < usage.AllocatedStorageGB {
 					return CheckoutSession{}, ErrInsufficientStorage
 				}
-				if err := s.repo.db.Queries().SetPendingSubscriptionPlan(ctx, dbsqlc.SetPendingSubscriptionPlanParams{PendingPlanVersionID: sql.NullString{String: product.PlanVersionID, Valid: true}, ProviderSubscriptionID: active.ProviderSubscriptionID, UserID: userID}); err != nil {
-					return CheckoutSession{}, err
-				}
+			}
+			if err := s.repo.db.Queries().SetPendingSubscriptionPlan(ctx, dbsqlc.SetPendingSubscriptionPlanParams{PendingPlanVersionID: sql.NullString{String: product.PlanVersionID, Valid: true}, ProviderSubscriptionID: active.ProviderSubscriptionID, UserID: userID}); err != nil {
+				return CheckoutSession{}, err
 			}
 			if err := s.client.UpdateSubscription(ctx, SubscriptionUpdateInput{
 				ProviderSubscriptionID: active.ProviderSubscriptionID,
 				ProviderProductID:      product.ProviderProductID,
 				ProrationBehavior:      prorationBehavior,
+				EndTrialNow:            endTrialNow,
 				IdempotencyKey:         idempotencyKey,
 			}); err != nil {
-				if prorationBehavior == "next_period" {
-					_ = s.repo.db.Queries().SetPendingSubscriptionPlan(ctx, dbsqlc.SetPendingSubscriptionPlanParams{PendingPlanVersionID: sql.NullString{}, ProviderSubscriptionID: active.ProviderSubscriptionID, UserID: userID})
-				}
+				_ = s.repo.db.Queries().SetPendingSubscriptionPlan(ctx, dbsqlc.SetPendingSubscriptionPlanParams{PendingPlanVersionID: sql.NullString{}, ProviderSubscriptionID: active.ProviderSubscriptionID, UserID: userID})
 				return CheckoutSession{}, err
 			}
 			_ = s.audit.Write(ctx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "billing.subscription_update_requested", ResourceType: "subscription", ResourceID: active.ProviderSubscriptionID, IdempotencyKey: "billing.subscription_update:" + idempotencyKey, Metadata: map[string]any{"from_plan": active.PlanCode, "to_plan": product.CatalogRef, "proration_behavior": prorationBehavior}})
-			return CheckoutSession{URL: successURL, ProviderSessionID: active.ProviderSubscriptionID}, nil
+			return s.subscriptionChangePortal(ctx, userID, email, idempotencyKey, successURL, active.ProviderSubscriptionID)
 		}
 	}
 	var reservation dbsqlc.ReserveBillingCheckoutRow
@@ -865,7 +1039,7 @@ func (s *Service) CreateCheckout(ctx context.Context, userID, email, productCode
 			if existingErr != nil {
 				return CheckoutSession{}, existingErr
 			}
-			if existing.IdempotencyKey == idempotencyKey && existing.CheckoutUrl.Valid {
+			if existing.ProductCode == product.Code && existing.CheckoutUrl.Valid {
 				return CheckoutSession{URL: existing.CheckoutUrl.String, ProviderSessionID: existing.ProviderCheckoutID.String}, nil
 			}
 			return CheckoutSession{}, ErrCheckoutPending
@@ -888,6 +1062,18 @@ func (s *Service) CreateCheckout(ctx context.Context, userID, email, productCode
 	}
 	_ = s.audit.Write(ctx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "billing.checkout_created", ResourceType: "billing_product", ResourceID: product.Code, IdempotencyKey: "billing.checkout:" + idempotencyKey, Metadata: map[string]any{"catalog_type": product.CatalogType}})
 	return session, nil
+}
+
+// subscriptionChangePortal keeps the plan-change handoff on Polar after the
+// server has submitted the idempotent subscription update. The customer sees
+// the provider's confirmation and billing controls instead of a misleading
+// local success URL.
+func (s *Service) subscriptionChangePortal(ctx context.Context, userID, email, idempotencyKey, returnURL, subscriptionID string) (CheckoutSession, error) {
+	portal, err := s.CreateCustomerPortal(ctx, userID, email, idempotencyKey+":portal", returnURL)
+	if err != nil {
+		return CheckoutSession{}, err
+	}
+	return CheckoutSession{URL: portal.URL, ProviderSessionID: subscriptionID}, nil
 }
 
 func (s *Service) CreateCustomerPortal(ctx context.Context, userID, email, idempotencyKey, returnURL string) (CustomerPortalSession, error) {
@@ -1170,6 +1356,11 @@ func (s *Service) applyPlanWebhook(ctx context.Context, tx *db.Tx, event Webhook
 			periodKey = "subscription:" + subscriptionID + ":period:" + startTime.UTC().Format(time.RFC3339Nano)
 			ledgerSourceID = subscriptionID
 		}
+		if state == "active" && (!product.IsTrial || planCode != product.CatalogRef) {
+			if err := expireIntroductoryCreditsTx(ctx, tx, userID, time.Now().UTC(), subscriptionID); err != nil {
+				return err
+			}
+		}
 		periodCreditsApplied := false
 		if startOK {
 			periodCreditsApplied, err = q.HasSubscriptionPeriodCredits(ctx, dbsqlc.HasSubscriptionPeriodCreditsParams{UserID: userID, ProviderSubscriptionID: subscriptionID, PeriodKeyPrefix: periodKey + ":"})
@@ -1213,6 +1404,43 @@ func (s *Service) applyPlanWebhook(ctx context.Context, tx *db.Tx, event Webhook
 		return setPurchasedStorageTx(ctx, tx, accountID, newID("sled"), "purchased_set", purchasedGB, "polar_subscription", ledgerSourceID, event.ID+":purchased-storage", map[string]any{"event_type": event.Type, "plan_code": planCode, "storage_units": storageUnits})
 	}
 	return nil
+}
+
+func expireIntroductoryCreditsTx(ctx context.Context, tx *db.Tx, userID string, cutoff time.Time, subscriptionID string) error {
+	expirable, err := tx.Queries().GetExpirableIntroductoryCredits(ctx, dbsqlc.GetExpirableIntroductoryCreditsParams{
+		UserID: userID,
+		Cutoff: cutoff,
+	})
+	if err != nil {
+		return err
+	}
+	expirableValue, ok := new(big.Rat).SetString(expirable)
+	if !ok || expirableValue.Sign() <= 0 {
+		return nil
+	}
+	accountID, err := ensureCreditAccount(ctx, tx, userID)
+	if err != nil {
+		return err
+	}
+	balance, err := tx.Queries().GetCreditBalanceForUpdate(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	balanceValue, ok := new(big.Rat).SetString(balance)
+	if !ok {
+		return fmt.Errorf("invalid credit balance %q", balance)
+	}
+	if balanceValue.Sign() <= 0 {
+		return nil
+	}
+	amount := expirableValue
+	if balanceValue.Cmp(amount) < 0 {
+		amount = balanceValue
+	}
+	amountString := amount.FloatString(6)
+	return insertCreditLedger(ctx, tx, accountID, newID("cled"), "expiration", amountString,
+		"plan_expiration", subscriptionID, "paid-plan-transition:"+subscriptionID+":introductory-credits",
+		map[string]any{"reason": "paid_plan_started", "cutoff": cutoff.UTC().Format(time.RFC3339Nano)}, false)
 }
 
 func nullableInt32String(value string) sql.NullInt32 {
@@ -1318,6 +1546,9 @@ func (c HTTPPolarClient) UpdateSubscription(ctx context.Context, input Subscript
 	if input.Seats != nil {
 		payload["seats"] = *input.Seats
 	}
+	if input.EndTrialNow {
+		payload["trial_end"] = "now"
+	}
 	return c.patch(ctx, "/v1/subscriptions/"+input.ProviderSubscriptionID, input.IdempotencyKey, payload)
 }
 
@@ -1374,6 +1605,65 @@ func (c HTTPPolarClient) GetSubscriptionPricing(ctx context.Context, providerSub
 		}
 	}
 	return SubscriptionPricing{}, fmt.Errorf("polar subscription has no active seat-based storage price")
+}
+
+func (c HTTPPolarClient) FindSubscription(ctx context.Context, input SubscriptionLookupInput) (ProviderSubscription, error) {
+	if c.Client == nil {
+		c.Client = http.DefaultClient
+	}
+	query := url.Values{}
+	query.Set("external_customer_id", input.UserID)
+	query.Set("product_id", input.ProviderProductID)
+	query.Set("limit", "10")
+	var response struct {
+		Items []struct {
+			ID                 string    `json:"id"`
+			Status             string    `json:"status"`
+			CurrentPeriodStart time.Time `json:"current_period_start"`
+			CurrentPeriodEnd   time.Time `json:"current_period_end"`
+			Seats              int       `json:"seats"`
+		} `json:"items"`
+	}
+	if err := c.get(ctx, "/v1/subscriptions/?"+query.Encode(), &response); err != nil {
+		return ProviderSubscription{}, err
+	}
+	for _, item := range response.Items {
+		if item.Status == "active" || item.Status == "trialing" {
+			return ProviderSubscription{
+				ID:                 item.ID,
+				Status:             item.Status,
+				CurrentPeriodStart: item.CurrentPeriodStart,
+				CurrentPeriodEnd:   item.CurrentPeriodEnd,
+				Seats:              item.Seats,
+			}, nil
+		}
+	}
+	return ProviderSubscription{}, sql.ErrNoRows
+}
+
+func (c HTTPPolarClient) GetSubscription(ctx context.Context, providerSubscriptionID string) (ProviderSubscription, error) {
+	if c.Client == nil {
+		c.Client = http.DefaultClient
+	}
+	var response struct {
+		ID                 string    `json:"id"`
+		Status             string    `json:"status"`
+		ProductID          string    `json:"product_id"`
+		CurrentPeriodStart time.Time `json:"current_period_start"`
+		CurrentPeriodEnd   time.Time `json:"current_period_end"`
+		Seats              int       `json:"seats"`
+	}
+	if err := c.get(ctx, "/v1/subscriptions/"+url.PathEscape(providerSubscriptionID), &response); err != nil {
+		return ProviderSubscription{}, err
+	}
+	return ProviderSubscription{
+		ID:                 response.ID,
+		Status:             response.Status,
+		ProviderProductID:  response.ProductID,
+		CurrentPeriodStart: response.CurrentPeriodStart,
+		CurrentPeriodEnd:   response.CurrentPeriodEnd,
+		Seats:              response.Seats,
+	}, nil
 }
 
 func (c HTTPPolarClient) CreateCheckout(ctx context.Context, input CheckoutInput) (CheckoutSession, error) {
@@ -1481,7 +1771,9 @@ func (c HTTPPolarClient) get(ctx context.Context, path string, out any) error {
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
-type FakePolarClient struct{}
+type FakePolarClient struct {
+	Subscription *ProviderSubscription
+}
 
 func (FakePolarClient) CreateCheckout(_ context.Context, input CheckoutInput) (CheckoutSession, error) {
 	return CheckoutSession{URL: "https://polar.example.test/checkout/" + input.IdempotencyKey, ProviderSessionID: "fake_checkout_" + input.IdempotencyKey}, nil
@@ -1493,6 +1785,20 @@ func (FakePolarClient) UpdateSubscription(_ context.Context, _ SubscriptionUpdat
 
 func (FakePolarClient) CreateOffSessionOrder(_ context.Context, input OffSessionOrderInput) (string, error) {
 	return "fake_order_" + input.IdempotencyKey, nil
+}
+
+func (c FakePolarClient) FindSubscription(_ context.Context, _ SubscriptionLookupInput) (ProviderSubscription, error) {
+	if c.Subscription == nil {
+		return ProviderSubscription{}, sql.ErrNoRows
+	}
+	return *c.Subscription, nil
+}
+
+func (c FakePolarClient) GetSubscription(_ context.Context, _ string) (ProviderSubscription, error) {
+	if c.Subscription == nil {
+		return ProviderSubscription{}, sql.ErrNoRows
+	}
+	return *c.Subscription, nil
 }
 
 func (FakePolarClient) GetSubscriptionPricing(_ context.Context, _ string) (SubscriptionPricing, error) {

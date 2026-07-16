@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -165,6 +166,49 @@ func TestHTTPPolarClientCreateCustomerPortalUsesCustomerSession(t *testing.T) {
 	}
 }
 
+func TestHTTPPolarClientFindsActiveSubscriptionForCheckoutUser(t *testing.T) {
+	var gotQuery url.Values
+	client := HTTPPolarClient{
+		BaseURL: "https://polar.example.test",
+		Client: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			gotQuery = req.URL.Query()
+			return jsonResponse(`{"items":[{"id":"sub_trial","status":"trialing","current_period_start":"2026-07-01T00:00:00Z","current_period_end":"2026-07-08T00:00:00Z","seats":1}]}`), nil
+		}).client(),
+	}
+	subscription, err := client.FindSubscription(context.Background(), SubscriptionLookupInput{
+		UserID:            "usr_test",
+		ProviderProductID: "prod_trial",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotQuery.Get("external_customer_id") != "usr_test" || gotQuery.Get("product_id") != "prod_trial" || gotQuery.Get("limit") != "10" {
+		t.Fatalf("query = %s", gotQuery.Encode())
+	}
+	if subscription.ID != "sub_trial" || subscription.Status != "trialing" || subscription.Seats != 1 {
+		t.Fatalf("subscription = %+v", subscription)
+	}
+}
+
+func TestHTTPPolarClientGetsSubscriptionForReconciliation(t *testing.T) {
+	client := HTTPPolarClient{
+		BaseURL: "https://polar.example.test",
+		Client: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.Method != http.MethodGet || req.URL.Path != "/v1/subscriptions/sub_trial" {
+				t.Fatalf("request = %s %s", req.Method, req.URL.Path)
+			}
+			return jsonResponse(`{"id":"sub_trial","status":"canceled","product_id":"prod_sailor","current_period_start":"2026-07-01T00:00:00Z","current_period_end":"2026-08-01T00:00:00Z","seats":1}`), nil
+		}).client(),
+	}
+	subscription, err := client.GetSubscription(context.Background(), "sub_trial")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if subscription.ID != "sub_trial" || subscription.Status != "canceled" || subscription.ProviderProductID != "prod_sailor" || subscription.Seats != 1 {
+		t.Fatalf("subscription = %+v", subscription)
+	}
+}
+
 func TestHTTPPolarClientUpdateSubscriptionUsesInvoiceProration(t *testing.T) {
 	var gotMethod, gotPath, gotIDKey string
 	var gotPayload map[string]any
@@ -193,6 +237,31 @@ func TestHTTPPolarClientUpdateSubscriptionUsesInvoiceProration(t *testing.T) {
 		t.Fatalf("method/path/idempotency = %q/%q/%q", gotMethod, gotPath, gotIDKey)
 	}
 	if gotPayload["product_id"] != "prod_navigator" || gotPayload["proration_behavior"] != "invoice" {
+		t.Fatalf("payload = %#v", gotPayload)
+	}
+}
+
+func TestHTTPPolarClientEndsTrialWhenChangingPlan(t *testing.T) {
+	var gotPayload map[string]any
+	client := HTTPPolarClient{
+		BaseURL: "https://polar.example.test",
+		Client: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if err := json.NewDecoder(req.Body).Decode(&gotPayload); err != nil {
+				t.Fatal(err)
+			}
+			return jsonResponse(`{"id":"sub_test","status":"active"}`), nil
+		}).client(),
+	}
+	if err := client.UpdateSubscription(context.Background(), SubscriptionUpdateInput{
+		ProviderSubscriptionID: "sub_test",
+		ProviderProductID:      "prod_sailor",
+		ProrationBehavior:      "invoice",
+		EndTrialNow:            true,
+		IdempotencyKey:         "trial-switch-key",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if gotPayload["product_id"] != "prod_sailor" || gotPayload["proration_behavior"] != "invoice" || gotPayload["trial_end"] != "now" {
 		t.Fatalf("payload = %#v", gotPayload)
 	}
 }

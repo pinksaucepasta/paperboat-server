@@ -6,8 +6,9 @@ LEFT JOIN plans p ON p.id = pv.plan_id
 WHERE s.user_id = $1 ORDER BY s.updated_at DESC, s.created_at DESC LIMIT 1;
 
 -- name: GetActivePolarSubscriptionForUser :one
-SELECT s.provider_subscription_id, p.code AS plan_code,
+SELECT s.provider_subscription_id, s.state, s.pending_plan_version_id, p.code AS plan_code,
        coalesce((pv.metadata->'billing'->>'rank')::integer, 0)::integer AS plan_rank,
+       (coalesce((pv.metadata->'billing'->>'converts_to_plan') <> '', false))::boolean AS is_trial,
        coalesce((pv.metadata->'billing'->>'storage_unit_gb')::integer, 0)::integer AS storage_unit_gb,
        coalesce((pv.metadata->'billing'->>'storage_seat_offset')::integer, 0)::integer AS storage_seat_offset,
        s.storage_units, s.pending_storage_units
@@ -64,11 +65,14 @@ WHERE provider = 'polar' AND active AND catalog_type = 'credit_topup'
 ORDER BY updated_at DESC LIMIT 1;
 
 -- name: GetBillingProductByProviderIDs :one
-SELECT code, catalog_type, catalog_ref, provider_product_id, provider_price_id
-FROM billing_products
-WHERE provider = 'polar' AND active
-  AND provider_product_id = sqlc.arg(provider_product_id)
-ORDER BY updated_at DESC LIMIT 1;
+SELECT bp.code, bp.catalog_type, bp.catalog_ref, bp.provider_product_id, bp.provider_price_id
+       ,(coalesce((pv.metadata->'billing'->>'converts_to_plan') <> '', false))::boolean AS is_trial
+FROM billing_products bp
+LEFT JOIN plans p ON bp.catalog_type = 'plan' AND p.code = bp.catalog_ref
+LEFT JOIN plan_versions pv ON pv.id = p.current_version_id
+WHERE bp.provider = 'polar' AND bp.active
+  AND bp.provider_product_id = sqlc.arg(provider_product_id)
+ORDER BY bp.updated_at DESC LIMIT 1;
 
 -- name: InsertPolarEvent :execrows
 INSERT INTO polar_events (id, provider_event_id, event_type, processed_state, payload)
@@ -121,6 +125,58 @@ SELECT EXISTS (
     AND cle.source_id = sqlc.arg(provider_subscription_id)
     AND cle.idempotency_key LIKE sqlc.arg(period_key_prefix)::text || '%'
 );
+
+-- Introductory credits are consumed before bought credits. When a user moves
+-- onto a paid plan, any unused free-plan or trial allocation must expire rather
+-- than increasing the paid plan's allowance. The cutoff is the moment the
+-- paid plan's grant is made, so later runtime usage cannot alter this result.
+-- name: GetExpirableIntroductoryCredits :one
+WITH account AS (
+  SELECT id FROM credit_accounts WHERE user_id = sqlc.arg(user_id)
+), grants AS (
+  SELECT coalesce(sum(cle.amount), 0) AS amount
+  FROM credit_ledger_entries cle
+  JOIN account ca ON ca.id = cle.account_id
+  LEFT JOIN plans p ON p.code = cle.metadata->>'plan_code'
+  LEFT JOIN plan_versions pv ON pv.id = p.current_version_id
+  WHERE cle.entry_type = 'grant'
+    AND cle.created_at <= sqlc.arg(cutoff)
+    AND (
+      cle.source_type = 'plan'
+      OR (
+        cle.source_type = 'polar_subscription'
+        AND coalesce(pv.metadata->'billing'->>'converts_to_plan', '') <> ''
+      )
+    )
+), consumed AS (
+  SELECT coalesce(sum(cle.amount), 0) AS amount
+  FROM credit_ledger_entries cle
+  JOIN account ca ON ca.id = cle.account_id
+  WHERE cle.entry_type = 'debit'
+    AND cle.source_type = 'metering'
+    AND cle.created_at <= sqlc.arg(cutoff)
+), expired AS (
+  SELECT coalesce(sum(cle.amount), 0) AS amount
+  FROM credit_ledger_entries cle
+  JOIN account ca ON ca.id = cle.account_id
+  WHERE cle.entry_type = 'expiration'
+    AND cle.source_type = 'plan_expiration'
+    AND cle.created_at <= sqlc.arg(cutoff)
+)
+SELECT greatest(0, grants.amount - consumed.amount - expired.amount)::text AS amount
+FROM grants, consumed, expired;
+
+-- name: GetSubscriptionPlanCreditGrantedAt :one
+SELECT cle.created_at
+FROM credit_ledger_entries cle
+JOIN credit_accounts ca ON ca.id = cle.account_id
+WHERE ca.user_id = sqlc.arg(user_id)
+  AND cle.entry_type = 'grant'
+  AND cle.source_type = 'polar_subscription'
+  AND cle.source_id = sqlc.arg(provider_subscription_id)
+  AND cle.metadata->>'plan_code' = sqlc.arg(plan_code)::text
+ORDER BY cle.created_at ASC
+LIMIT 1;
 
 -- name: UpsertPolarSubscription :exec
 INSERT INTO subscriptions (id, user_id, provider, provider_subscription_id, state, active_plan_version_id, current_period_start, current_period_end, storage_units, pending_storage_units)

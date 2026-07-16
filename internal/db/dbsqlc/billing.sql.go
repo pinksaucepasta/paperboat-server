@@ -149,8 +149,9 @@ func (q *Queries) GetActivePlanVersionForWebhook(ctx context.Context, code strin
 }
 
 const getActivePolarSubscriptionForUser = `-- name: GetActivePolarSubscriptionForUser :one
-SELECT s.provider_subscription_id, p.code AS plan_code,
+SELECT s.provider_subscription_id, s.state, s.pending_plan_version_id, p.code AS plan_code,
        coalesce((pv.metadata->'billing'->>'rank')::integer, 0)::integer AS plan_rank,
+       (coalesce((pv.metadata->'billing'->>'converts_to_plan') <> '', false))::boolean AS is_trial,
        coalesce((pv.metadata->'billing'->>'storage_unit_gb')::integer, 0)::integer AS storage_unit_gb,
        coalesce((pv.metadata->'billing'->>'storage_seat_offset')::integer, 0)::integer AS storage_seat_offset,
        s.storage_units, s.pending_storage_units
@@ -167,8 +168,11 @@ LIMIT 1
 
 type GetActivePolarSubscriptionForUserRow struct {
 	ProviderSubscriptionID string
+	State                  string
+	PendingPlanVersionID   sql.NullString
 	PlanCode               string
 	PlanRank               int32
+	IsTrial                bool
 	StorageUnitGb          int32
 	StorageSeatOffset      int32
 	StorageUnits           int32
@@ -180,8 +184,11 @@ func (q *Queries) GetActivePolarSubscriptionForUser(ctx context.Context, userID 
 	var i GetActivePolarSubscriptionForUserRow
 	err := row.Scan(
 		&i.ProviderSubscriptionID,
+		&i.State,
+		&i.PendingPlanVersionID,
 		&i.PlanCode,
 		&i.PlanRank,
+		&i.IsTrial,
 		&i.StorageUnitGb,
 		&i.StorageSeatOffset,
 		&i.StorageUnits,
@@ -335,11 +342,14 @@ func (q *Queries) GetBillingProductByCode(ctx context.Context, code string) (Get
 }
 
 const getBillingProductByProviderIDs = `-- name: GetBillingProductByProviderIDs :one
-SELECT code, catalog_type, catalog_ref, provider_product_id, provider_price_id
-FROM billing_products
-WHERE provider = 'polar' AND active
-  AND provider_product_id = $1
-ORDER BY updated_at DESC LIMIT 1
+SELECT bp.code, bp.catalog_type, bp.catalog_ref, bp.provider_product_id, bp.provider_price_id
+       ,(coalesce((pv.metadata->'billing'->>'converts_to_plan') <> '', false))::boolean AS is_trial
+FROM billing_products bp
+LEFT JOIN plans p ON bp.catalog_type = 'plan' AND p.code = bp.catalog_ref
+LEFT JOIN plan_versions pv ON pv.id = p.current_version_id
+WHERE bp.provider = 'polar' AND bp.active
+  AND bp.provider_product_id = $1
+ORDER BY bp.updated_at DESC LIMIT 1
 `
 
 type GetBillingProductByProviderIDsRow struct {
@@ -348,6 +358,7 @@ type GetBillingProductByProviderIDsRow struct {
 	CatalogRef        string
 	ProviderProductID string
 	ProviderPriceID   string
+	IsTrial           bool
 }
 
 func (q *Queries) GetBillingProductByProviderIDs(ctx context.Context, providerProductID string) (GetBillingProductByProviderIDsRow, error) {
@@ -359,6 +370,7 @@ func (q *Queries) GetBillingProductByProviderIDs(ctx context.Context, providerPr
 		&i.CatalogRef,
 		&i.ProviderProductID,
 		&i.ProviderPriceID,
+		&i.IsTrial,
 	)
 	return i, err
 }
@@ -522,6 +534,59 @@ func (q *Queries) GetCreditTopupUnit(ctx context.Context) (GetCreditTopupUnitRow
 	return i, err
 }
 
+const getExpirableIntroductoryCredits = `-- name: GetExpirableIntroductoryCredits :one
+WITH account AS (
+  SELECT id FROM credit_accounts WHERE user_id = $1
+), grants AS (
+  SELECT coalesce(sum(cle.amount), 0) AS amount
+  FROM credit_ledger_entries cle
+  JOIN account ca ON ca.id = cle.account_id
+  LEFT JOIN plans p ON p.code = cle.metadata->>'plan_code'
+  LEFT JOIN plan_versions pv ON pv.id = p.current_version_id
+  WHERE cle.entry_type = 'grant'
+    AND cle.created_at <= $2
+    AND (
+      cle.source_type = 'plan'
+      OR (
+        cle.source_type = 'polar_subscription'
+        AND coalesce(pv.metadata->'billing'->>'converts_to_plan', '') <> ''
+      )
+    )
+), consumed AS (
+  SELECT coalesce(sum(cle.amount), 0) AS amount
+  FROM credit_ledger_entries cle
+  JOIN account ca ON ca.id = cle.account_id
+  WHERE cle.entry_type = 'debit'
+    AND cle.source_type = 'metering'
+    AND cle.created_at <= $2
+), expired AS (
+  SELECT coalesce(sum(cle.amount), 0) AS amount
+  FROM credit_ledger_entries cle
+  JOIN account ca ON ca.id = cle.account_id
+  WHERE cle.entry_type = 'expiration'
+    AND cle.source_type = 'plan_expiration'
+    AND cle.created_at <= $2
+)
+SELECT greatest(0, grants.amount - consumed.amount - expired.amount)::text AS amount
+FROM grants, consumed, expired
+`
+
+type GetExpirableIntroductoryCreditsParams struct {
+	UserID string
+	Cutoff time.Time
+}
+
+// Introductory credits are consumed before bought credits. When a user moves
+// onto a paid plan, any unused free-plan or trial allocation must expire rather
+// than increasing the paid plan's allowance. The cutoff is the moment the
+// paid plan's grant is made, so later runtime usage cannot alter this result.
+func (q *Queries) GetExpirableIntroductoryCredits(ctx context.Context, arg GetExpirableIntroductoryCreditsParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, getExpirableIntroductoryCredits, arg.UserID, arg.Cutoff)
+	var amount string
+	err := row.Scan(&amount)
+	return amount, err
+}
+
 const getFreeBillingPlan = `-- name: GetFreeBillingPlan :one
 SELECT pv.id, p.name, pv.included_credits::text AS included_credits, pv.included_storage_gb
 FROM plans p JOIN plan_versions pv ON pv.id = p.current_version_id
@@ -600,6 +665,32 @@ func (q *Queries) GetPolarSubscriptionForUpdate(ctx context.Context, arg GetPola
 		&i.StorageUnits,
 	)
 	return i, err
+}
+
+const getSubscriptionPlanCreditGrantedAt = `-- name: GetSubscriptionPlanCreditGrantedAt :one
+SELECT cle.created_at
+FROM credit_ledger_entries cle
+JOIN credit_accounts ca ON ca.id = cle.account_id
+WHERE ca.user_id = $1
+  AND cle.entry_type = 'grant'
+  AND cle.source_type = 'polar_subscription'
+  AND cle.source_id = $2
+  AND cle.metadata->>'plan_code' = $3::text
+ORDER BY cle.created_at ASC
+LIMIT 1
+`
+
+type GetSubscriptionPlanCreditGrantedAtParams struct {
+	UserID                 string
+	ProviderSubscriptionID string
+	PlanCode               string
+}
+
+func (q *Queries) GetSubscriptionPlanCreditGrantedAt(ctx context.Context, arg GetSubscriptionPlanCreditGrantedAtParams) (time.Time, error) {
+	row := q.db.QueryRowContext(ctx, getSubscriptionPlanCreditGrantedAt, arg.UserID, arg.ProviderSubscriptionID, arg.PlanCode)
+	var created_at time.Time
+	err := row.Scan(&created_at)
+	return created_at, err
 }
 
 const hasSubscriptionPeriodCredits = `-- name: HasSubscriptionPeriodCredits :one

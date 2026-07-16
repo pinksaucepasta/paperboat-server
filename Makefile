@@ -12,7 +12,11 @@ ENV_FILE ?= .env.local
 load-env = set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a
 config-arg = $(if $(strip $(CONFIG)),-config $(CONFIG),)
 
-.PHONY: run migrate seed-catalogs generate test vet fmt check
+.PHONY: dev run migrate seed-catalogs generate test vet fmt check
+
+## dev: start the server with automatic reloads when Go files change
+dev:
+	$(load-env); air
 
 ## run: start the server with .env.local loaded (real providers)
 run:

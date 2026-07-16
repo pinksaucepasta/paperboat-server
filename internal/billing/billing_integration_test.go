@@ -87,7 +87,11 @@ func TestPolarTrialConvertsSameSubscriptionToSailor(t *testing.T) {
 	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.plan_versions SET metadata=jsonb_build_object('billing', jsonb_build_object('converts_to_plan', $2)) WHERE id=(SELECT current_version_id FROM paperboat.plans WHERE code=$1)`, trialCode, sailorCode); err != nil {
 		t.Fatal(err)
 	}
-	service := billing.NewService(billing.NewRepository(store), billing.FakePolarClient{}, audit.NewWriter(store))
+	repo := billing.NewRepository(store)
+	if err := repo.GrantCredits(ctx, userID, "cled_free_"+suffix, "free-plan:"+suffix, "plan", "free-plan-"+suffix, "10", map[string]any{"plan_code": "free"}); err != nil {
+		t.Fatal(err)
+	}
+	service := billing.NewService(repo, billing.FakePolarClient{}, audit.NewWriter(store))
 	subscriptionID := "sub_trial_" + suffix
 	trial := []byte(fmt.Sprintf(`{"type":"subscription.created","data":{"id":%q,"customer":{"external_id":%q},"product_id":%q,"price_id":%q,"status":"trialing","current_period_start":"2026-07-01T00:00:00Z","current_period_end":"2026-07-08T00:00:00Z"}}`, subscriptionID, userID, productID, priceID))
 	if _, err := service.HandleWebhookWithID(ctx, "evt_trial_"+suffix, trial); err != nil {
@@ -96,6 +100,13 @@ func TestPolarTrialConvertsSameSubscriptionToSailor(t *testing.T) {
 	active := []byte(fmt.Sprintf(`{"type":"subscription.active","data":{"id":%q,"customer":{"external_id":%q},"product_id":%q,"price_id":%q,"status":"active","current_period_start":"2026-07-08T00:00:00Z","current_period_end":"2026-08-08T00:00:00Z"}}`, subscriptionID, userID, productID, priceID))
 	if _, err := service.HandleWebhookWithID(ctx, "evt_trial_active_"+suffix, active); err != nil {
 		t.Fatal(err)
+	}
+	usage, err := repo.Usage(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.CreditsBalance != "100.000000" {
+		t.Fatalf("credit balance = %s, want 100.000000", usage.CreditsBalance)
 	}
 	var subscriptions int
 	var planCode string
@@ -110,6 +121,159 @@ func TestPolarTrialConvertsSameSubscriptionToSailor(t *testing.T) {
 	}
 }
 
+func TestUsageExpiresLegacyIntroductoryCreditsAfterPaidCheckout(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID := "usr_usage_intro_expiry_" + suffix
+	insertUser(t, store, userID, "usage-intro-expiry-"+suffix+"@example.com")
+	trialCode, sailorCode := "usage-trial-"+suffix, "usage-sailor-"+suffix
+	trialProductID, sailorProductID := "prod_usage_trial_"+suffix, "prod_usage_sailor_"+suffix
+	insertPlanProduct(t, store, trialCode, trialProductID, "price_usage_trial_"+suffix, "10", 5)
+	insertPlanProduct(t, store, sailorCode, sailorProductID, "price_usage_sailor_"+suffix, "100", 30)
+	cleanupPlanProducts(t, store, trialCode, sailorCode)
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.plan_versions SET metadata=jsonb_build_object('billing', jsonb_build_object('converts_to_plan', $2)) WHERE id=(SELECT current_version_id FROM paperboat.plans WHERE code=$1)`, trialCode, sailorCode); err != nil {
+		t.Fatal(err)
+	}
+
+	repo := billing.NewRepository(store)
+	if err := repo.GrantCredits(ctx, userID, "cled_usage_free_"+suffix, "free-plan:"+suffix, "plan", "free-plan-"+suffix, "10", map[string]any{"plan_code": "free"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.GrantCredits(ctx, userID, "cled_usage_trial_"+suffix, "trial-credits:"+suffix, "polar_subscription", "sub_usage_trial_"+suffix, "10", map[string]any{"plan_code": trialCode}); err != nil {
+		t.Fatal(err)
+	}
+	currentSubscriptionID := "sub_usage_sailor_" + suffix
+	if err := repo.GrantCredits(ctx, userID, "cled_usage_sailor_"+suffix, "sailor-credits:"+suffix, "polar_subscription", currentSubscriptionID, "100", map[string]any{"plan_code": sailorCode}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `
+INSERT INTO paperboat.subscriptions (id, user_id, provider, provider_subscription_id, state, active_plan_version_id, current_period_start, current_period_end)
+VALUES ($1, $2, 'polar', $3, 'active', $4, now(), now() + interval '1 month')`, "sub_row_"+suffix, userID, currentSubscriptionID, "pv_"+sailorCode); err != nil {
+		t.Fatal(err)
+	}
+
+	service := billing.NewService(repo, billing.FakePolarClient{}, audit.NewWriter(store))
+	usage, err := service.Usage(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.CreditsBalance != "100.000000" {
+		t.Fatalf("credit balance = %s, want 100.000000", usage.CreditsBalance)
+	}
+}
+
+func TestTrialUserCanSwitchDirectlyToAnotherPlan(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID := "usr_trial_switch_" + suffix
+	insertUser(t, store, userID, "trial-switch-"+suffix+"@example.com")
+	trialCode, sailorCode := "trial-switch-"+suffix, "sailor-switch-"+suffix
+	trialProductID, sailorProductID := "prod_trial_switch_"+suffix, "prod_sailor_switch_"+suffix
+	insertPlanProduct(t, store, trialCode, trialProductID, "price_trial_switch_"+suffix, "10", 5)
+	insertPlanProduct(t, store, sailorCode, sailorProductID, "price_sailor_switch_"+suffix, "100", 30)
+	cleanupPlanProducts(t, store, trialCode, sailorCode)
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.plan_versions SET metadata=jsonb_build_object('billing', jsonb_build_object('converts_to_plan', $2, 'rank', 0)) WHERE id=(SELECT current_version_id FROM paperboat.plans WHERE code=$1)`, trialCode, sailorCode); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.plan_versions SET metadata=jsonb_build_object('billing', jsonb_build_object('rank', 1)) WHERE id=(SELECT current_version_id FROM paperboat.plans WHERE code=$1)`, sailorCode); err != nil {
+		t.Fatal(err)
+	}
+
+	subscriptionID := "sub_trial_switch_" + suffix
+	trial := []byte(fmt.Sprintf(`{"type":"subscription.created","data":{"id":%q,"customer":{"external_id":%q},"product_id":%q,"status":"trialing","current_period_start":"2026-07-01T00:00:00Z","current_period_end":"2026-07-08T00:00:00Z"}}`, subscriptionID, userID, trialProductID))
+	client := &recordingPolarClient{FakePolarClient: billing.FakePolarClient{Subscription: &billing.ProviderSubscription{
+		ID:                 subscriptionID,
+		Status:             "trialing",
+		ProviderProductID:  trialProductID,
+		CurrentPeriodStart: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+		CurrentPeriodEnd:   time.Date(2026, 7, 8, 0, 0, 0, 0, time.UTC),
+	}}}
+	service := billing.NewService(billing.NewRepository(store), client, audit.NewWriter(store))
+	if _, err := service.HandleWebhookWithID(ctx, "evt_trial_switch_"+suffix, trial); err != nil {
+		t.Fatal(err)
+	}
+
+	checkout, err := service.CreateCheckout(ctx, userID, "trial-switch@example.com", "product-"+sailorCode, "switch-key-"+suffix, "https://example.test/success")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checkout.URL != "https://polar.example.test/portal/switch-key-"+suffix+":portal" || checkout.ProviderSessionID != subscriptionID {
+		t.Fatalf("checkout = %+v", checkout)
+	}
+	if len(client.updates) != 1 {
+		t.Fatalf("subscription updates = %+v", client.updates)
+	}
+	update := client.updates[0]
+	if update.ProviderSubscriptionID != subscriptionID || update.ProviderProductID != sailorProductID || update.ProrationBehavior != "invoice" || !update.EndTrialNow {
+		t.Fatalf("subscription update = %+v", update)
+	}
+
+	retry, err := service.CreateCheckout(ctx, userID, "trial-switch@example.com", "product-"+sailorCode, "switch-retry-"+suffix, "https://example.test/success")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retry.URL != "https://polar.example.test/portal/switch-retry-"+suffix+":portal" || len(client.updates) != 1 {
+		t.Fatalf("retry = %+v, subscription updates = %+v", retry, client.updates)
+	}
+}
+
+func TestCheckoutReconcilesAnEndedProviderSubscriptionBeforeStartingANewCheckout(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID := "usr_stale_subscription_" + suffix
+	insertUser(t, store, userID, "stale-subscription-"+suffix+"@example.com")
+	trialCode, sailorCode := "stale-trial-"+suffix, "stale-sailor-"+suffix
+	trialProductID, sailorProductID := "prod_stale_trial_"+suffix, "prod_stale_sailor_"+suffix
+	insertPlanProduct(t, store, trialCode, trialProductID, "price_stale_trial_"+suffix, "10", 5)
+	insertPlanProduct(t, store, sailorCode, sailorProductID, "price_stale_sailor_"+suffix, "100", 30)
+	cleanupPlanProducts(t, store, trialCode, sailorCode)
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.plan_versions SET metadata=jsonb_build_object('billing', jsonb_build_object('converts_to_plan', $2, 'rank', 0)) WHERE id=(SELECT current_version_id FROM paperboat.plans WHERE code=$1)`, trialCode, sailorCode); err != nil {
+		t.Fatal(err)
+	}
+
+	subscriptionID := "sub_stale_" + suffix
+	trial := []byte(fmt.Sprintf(`{"type":"subscription.created","data":{"id":%q,"customer":{"external_id":%q},"product_id":%q,"status":"trialing","current_period_start":"2026-07-01T00:00:00Z","current_period_end":"2026-07-08T00:00:00Z"}}`, subscriptionID, userID, trialProductID))
+	client := &recordingPolarClient{FakePolarClient: billing.FakePolarClient{Subscription: &billing.ProviderSubscription{
+		ID:                 subscriptionID,
+		Status:             "canceled",
+		ProviderProductID:  sailorProductID,
+		CurrentPeriodStart: time.Date(2026, 7, 8, 0, 0, 0, 0, time.UTC),
+		CurrentPeriodEnd:   time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC),
+	}}}
+	service := billing.NewService(billing.NewRepository(store), client, audit.NewWriter(store))
+	if _, err := service.HandleWebhookWithID(ctx, "evt_stale_trial_"+suffix, trial); err != nil {
+		t.Fatal(err)
+	}
+
+	checkout, err := service.CreateCheckout(ctx, userID, "stale-subscription@example.com", "product-"+sailorCode, "stale-checkout-"+suffix, "https://example.test/success")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checkout.URL != "https://polar.example.test/checkout/stale-checkout-"+suffix || len(client.updates) != 0 {
+		t.Fatalf("checkout = %+v, subscription updates = %+v", checkout, client.updates)
+	}
+	var state, planCode string
+	if err := store.SQL().QueryRowContext(ctx, `SELECT s.state, p.code FROM paperboat.subscriptions s JOIN paperboat.plan_versions pv ON pv.id=s.active_plan_version_id JOIN paperboat.plans p ON p.id=pv.plan_id WHERE s.provider_subscription_id=$1`, subscriptionID).Scan(&state, &planCode); err != nil {
+		t.Fatal(err)
+	}
+	if state != "canceled" || planCode != sailorCode {
+		t.Fatalf("subscription state/plan = %q/%q", state, planCode)
+	}
+}
+
+type recordingPolarClient struct {
+	billing.FakePolarClient
+	updates []billing.SubscriptionUpdateInput
+}
+
+func (c *recordingPolarClient) UpdateSubscription(_ context.Context, input billing.SubscriptionUpdateInput) error {
+	c.updates = append(c.updates, input)
+	return nil
+}
+
 func TestCheckoutReservationPreventsConcurrentSubscriptions(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
@@ -118,7 +282,9 @@ func TestCheckoutReservationPreventsConcurrentSubscriptions(t *testing.T) {
 	insertUser(t, store, userID, "guard-"+suffix+"@example.com")
 	planCode := "guard-plan-" + suffix
 	insertPlanProduct(t, store, planCode, "prod_guard_"+suffix, "price_guard_"+suffix, "10", 5)
-	cleanupPlanProducts(t, store, planCode)
+	otherPlanCode := "guard-other-plan-" + suffix
+	insertPlanProduct(t, store, otherPlanCode, "prod_guard_other_"+suffix, "price_guard_other_"+suffix, "20", 10)
+	cleanupPlanProducts(t, store, planCode, otherPlanCode)
 	service := billing.NewService(billing.NewRepository(store), billing.FakePolarClient{}, audit.NewWriter(store))
 	first, err := service.CreateCheckout(ctx, userID, "guard@example.com", "product-"+planCode, "guard-key-"+suffix, "https://example.test/success")
 	if err != nil {
@@ -128,8 +294,51 @@ func TestCheckoutReservationPreventsConcurrentSubscriptions(t *testing.T) {
 	if err != nil || retry.URL != first.URL {
 		t.Fatalf("same-key retry = %+v, %v", retry, err)
 	}
-	if _, err := service.CreateCheckout(ctx, userID, "guard@example.com", "product-"+planCode, "different-key-"+suffix, "https://example.test/success"); !errors.Is(err, billing.ErrCheckoutPending) {
+	retryWithNewKey, err := service.CreateCheckout(ctx, userID, "guard@example.com", "product-"+planCode, "different-key-"+suffix, "https://example.test/success")
+	if err != nil || retryWithNewKey.URL != first.URL {
+		t.Fatalf("same-product retry = %+v, %v", retryWithNewKey, err)
+	}
+	if _, err := service.CreateCheckout(ctx, userID, "guard@example.com", "product-"+otherPlanCode, "other-product-key-"+suffix, "https://example.test/success"); !errors.Is(err, billing.ErrCheckoutPending) {
 		t.Fatalf("concurrent checkout error = %v", err)
+	}
+}
+
+func TestEntitlementReconcilesCompletedCheckoutWithoutWebhook(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID := "usr_checkout_reconcile_" + suffix
+	insertUser(t, store, userID, "reconcile-"+suffix+"@example.com")
+	planCode := "reconcile-plan-" + suffix
+	productID := "prod_reconcile_" + suffix
+	insertPlanProduct(t, store, planCode, productID, "price_reconcile_"+suffix, "10", 5)
+	cleanupPlanProducts(t, store, planCode)
+
+	now := time.Now().UTC()
+	client := billing.FakePolarClient{Subscription: &billing.ProviderSubscription{
+		ID:                 "sub_reconcile_" + suffix,
+		Status:             "trialing",
+		CurrentPeriodStart: now,
+		CurrentPeriodEnd:   now.Add(7 * 24 * time.Hour),
+		Seats:              1,
+	}}
+	service := billing.NewService(billing.NewRepository(store), client, audit.NewWriter(store))
+	if _, err := service.CreateCheckout(ctx, userID, "reconcile@example.com", "product-"+planCode, "reconcile-key-"+suffix, "https://example.test/success"); err != nil {
+		t.Fatal(err)
+	}
+	entitlement, err := service.Entitlement(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !entitlement.Active || entitlement.State != "trialing" || entitlement.PlanCode != planCode {
+		t.Fatalf("entitlement = %+v", entitlement)
+	}
+	var reservationState string
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state FROM paperboat.billing_checkout_reservations WHERE user_id = $1`, userID).Scan(&reservationState); err != nil {
+		t.Fatal(err)
+	}
+	if reservationState != "completed" {
+		t.Fatalf("reservation state = %q", reservationState)
 	}
 }
 
