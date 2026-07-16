@@ -419,6 +419,99 @@ VALUES ($1, $2, 'polar', $3, $4, 'extra_storage', '0', true)`, "bp_storage_"+suf
 	}
 }
 
+func TestConnectedMachineSubscriptionAllocatesPeriodsAndRevokesOnCancellation(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID := "usr_connected_subscription_" + suffix
+	machineID := "cm_" + suffix
+	insertUser(t, store, userID, "connected-subscription-"+suffix+"@example.com")
+	if _, err := store.SQL().ExecContext(ctx, `
+INSERT INTO paperboat.connected_machines (id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state)
+VALUES ($1, $2, $3, $4, 'darwin', 'arm64', '/Users/example', 'offline', 'occupied')`, machineID, userID, "env_"+suffix, "Mac "+suffix); err != nil {
+		t.Fatal(err)
+	}
+	productID, priceID := "prod_connected_sub_"+suffix, "price_connected_sub_"+suffix
+	if _, err := store.SQL().ExecContext(ctx, `
+INSERT INTO paperboat.billing_products (id, code, provider, provider_product_id, provider_price_id, catalog_type, catalog_ref, active)
+VALUES ($1, $2, 'polar', $3, $4, 'connected_machine_subscription', '{"allowance_bytes":1048576}', true)`, "bp_connected_sub_"+suffix, "connected-subscription-"+suffix, productID, priceID); err != nil {
+		t.Fatal(err)
+	}
+	service := billing.NewService(billing.NewRepository(store), billing.FakePolarClient{}, audit.NewWriter(store))
+	subscriptionID := "sub_connected_" + suffix
+	created := []byte(fmt.Sprintf(`{"id":%q,"type":"subscription.active","data":{"id":%q,"customer":{"external_id":%q},"product_id":%q,"price_id":%q,"status":"active","seats":2,"current_period_start":"2026-07-01T00:00:00Z","current_period_end":"2026-08-01T00:00:00Z"}}`, "evt_connected_created_"+suffix, subscriptionID, userID, productID, priceID))
+	if _, err := service.HandleWebhook(ctx, created); err != nil {
+		t.Fatal(err)
+	}
+	var seats int
+	var allowance int64
+	if err := store.SQL().QueryRowContext(ctx, `SELECT seat_quantity, allowance_bytes FROM paperboat.connected_machine_entitlements WHERE user_id = $1`, userID).Scan(&seats, &allowance); err != nil {
+		t.Fatal(err)
+	}
+	if seats != 2 || allowance != 1048576 {
+		t.Fatalf("entitlement seats/allowance = %d/%d", seats, allowance)
+	}
+	var included int64
+	if err := store.SQL().QueryRowContext(ctx, `SELECT included_bytes FROM paperboat.connected_machine_bandwidth_periods WHERE connected_machine_id = $1`, machineID).Scan(&included); err != nil {
+		t.Fatal(err)
+	}
+	if included != 1048576 {
+		t.Fatalf("included period bytes = %d", included)
+	}
+	canceled := []byte(fmt.Sprintf(`{"id":%q,"type":"subscription.canceled","data":{"id":%q,"customer":{"external_id":%q},"product_id":%q,"price_id":%q,"status":"canceled"}}`, "evt_connected_canceled_"+suffix, subscriptionID, userID, productID, priceID))
+	if _, err := service.HandleWebhook(ctx, canceled); err != nil {
+		t.Fatal(err)
+	}
+	var entitlementState, machineState, seatState string
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state FROM paperboat.connected_machine_entitlements WHERE user_id = $1`, userID).Scan(&entitlementState); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state, seat_state FROM paperboat.connected_machines WHERE id = $1`, machineID).Scan(&machineState, &seatState); err != nil {
+		t.Fatal(err)
+	}
+	if entitlementState != "canceled" || machineState != "revoked" || seatState != "occupied" {
+		t.Fatalf("states entitlement/machine/seat = %q/%q/%q", entitlementState, machineState, seatState)
+	}
+}
+
+func TestConnectedMachineBandwidthTopupGrantAndRefund(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID := "usr_connected_topup_" + suffix
+	insertUser(t, store, userID, "connected-topup-"+suffix+"@example.com")
+	productID, priceID := "prod_connected_topup_"+suffix, "price_connected_topup_"+suffix
+	if _, err := store.SQL().ExecContext(ctx, `
+INSERT INTO paperboat.billing_products (id, code, provider, provider_product_id, provider_price_id, catalog_type, catalog_ref, active)
+VALUES ($1, $2, 'polar', $3, $4, 'connected_machine_bandwidth_topup', '{"bytes":4194304}', true)`, "bp_connected_topup_"+suffix, "connected-topup-"+suffix, productID, priceID); err != nil {
+		t.Fatal(err)
+	}
+	service := billing.NewService(billing.NewRepository(store), billing.FakePolarClient{}, audit.NewWriter(store))
+	orderID := "order_connected_topup_" + suffix
+	paid := []byte(fmt.Sprintf(`{"id":%q,"type":"order.paid","data":{"id":%q,"customer":{"external_id":%q},"product_id":%q,"price_id":%q,"order":{"id":%q}}}`, "evt_connected_topup_paid_"+suffix, orderID, userID, productID, priceID, orderID))
+	if _, err := service.HandleWebhook(ctx, paid); err != nil {
+		t.Fatal(err)
+	}
+	var remaining int64
+	if err := store.SQL().QueryRowContext(ctx, `SELECT remaining_bytes FROM paperboat.connected_machine_bandwidth_topups WHERE provider_order_id = $1`, orderID).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 4194304 {
+		t.Fatalf("remaining top-up bytes = %d", remaining)
+	}
+	refunded := []byte(fmt.Sprintf(`{"id":%q,"type":"order.refunded","data":{"id":%q,"customer":{"external_id":%q},"product_id":%q,"price_id":%q,"order":{"id":%q}}}`, "evt_connected_topup_refund_"+suffix, "refund_"+suffix, userID, productID, priceID, orderID))
+	if _, err := service.HandleWebhook(ctx, refunded); err != nil {
+		t.Fatal(err)
+	}
+	var state string
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state, remaining_bytes FROM paperboat.connected_machine_bandwidth_topups WHERE provider_order_id = $1`, orderID).Scan(&state, &remaining); err != nil {
+		t.Fatal(err)
+	}
+	if state != "void" || remaining != 0 {
+		t.Fatalf("top-up state/remaining = %q/%d", state, remaining)
+	}
+}
+
 func testStore(t *testing.T) *db.DB {
 	t.Helper()
 	dsn := os.Getenv("PAPERBOAT_TEST_DATABASE_DSN")

@@ -195,6 +195,146 @@ type ConfigSyncStatus struct {
 	EncryptionKeyVersion     int32
 }
 
+type ConnectedMachine struct {
+	ID                         string
+	UserID                     string
+	EnvironmentID              string
+	DisplayName                string
+	Platform                   string
+	Architecture               string
+	WorkspaceRoot              string
+	State                      string
+	SeatState                  string
+	Online                     bool
+	AgentunnelRouteID          sql.NullString
+	AgentunnelClientID         sql.NullString
+	AgentunnelHttpBaseUrl      sql.NullString
+	AgentunnelWebsocketBaseUrl sql.NullString
+	RuntimeVersions            json.RawMessage
+	EnrolledAt                 sql.NullTime
+	LastSeenAt                 sql.NullTime
+	RevokedAt                  sql.NullTime
+	DisconnectedAt             sql.NullTime
+	DeletedAt                  sql.NullTime
+	Version                    int64
+	CreatedAt                  time.Time
+	UpdatedAt                  time.Time
+}
+
+type ConnectedMachineAccessSession struct {
+	ID                         string
+	ConnectedMachineID         string
+	UserID                     string
+	EnvironmentID              string
+	ClientSessionID            string
+	HttpBaseUrl                string
+	PapercodeTerminalSessionID sql.NullString
+	PapercodeFileSessionID     sql.NullString
+	State                      string
+	RevocationReason           sql.NullString
+	RevokedAt                  sql.NullTime
+	PapercodeRevokedAt         sql.NullTime
+	ExpiresAt                  time.Time
+	CreatedAt                  time.Time
+	UpdatedAt                  time.Time
+}
+
+type ConnectedMachineBandwidthPeriod struct {
+	ID                    string
+	ConnectedMachineID    string
+	PeriodStart           time.Time
+	PeriodEnd             time.Time
+	IncludedBytes         int64
+	ConsumedIncludedBytes int64
+	ConsumedTopupBytes    int64
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+}
+
+type ConnectedMachineBandwidthTopup struct {
+	ID              string
+	UserID          string
+	ProviderOrderID sql.NullString
+	PurchasedBytes  int64
+	RemainingBytes  int64
+	State           string
+	ExpiresAt       sql.NullTime
+	ConsumedAt      sql.NullTime
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+type ConnectedMachineEntitlement struct {
+	ID                     string
+	UserID                 string
+	ProviderSubscriptionID string
+	ProductCode            string
+	State                  string
+	SeatQuantity           int32
+	AllowanceBytes         int64
+	CurrentPeriodStart     time.Time
+	CurrentPeriodEnd       time.Time
+	UpdatedAt              time.Time
+	CreatedAt              time.Time
+}
+
+type ConnectedMachinePairing struct {
+	ID                           string
+	VerifierHash                 []byte
+	UserCode                     string
+	RequestedDisplayName         string
+	Platform                     string
+	Architecture                 string
+	WorkspaceRoot                string
+	RuntimeVersions              json.RawMessage
+	State                        string
+	ApprovedByUserID             sql.NullString
+	ConnectedMachineID           sql.NullString
+	InstallationConfigCiphertext []byte
+	InstallationConfigNonce      []byte
+	InstallationConfigConsumedAt sql.NullTime
+	ExpiresAt                    time.Time
+	ApprovedAt                   sql.NullTime
+	DeniedAt                     sql.NullTime
+	CreatedAt                    time.Time
+	UpdatedAt                    time.Time
+}
+
+type ConnectedMachineTerminalSession struct {
+	ID                  string
+	ConnectedMachineID  string
+	TerminalID          string
+	ThreadID            string
+	Name                string
+	IdempotencyKey      sql.NullString
+	IsDefault           bool
+	AutoNameOrdinal     sql.NullInt32
+	LaunchCwd           string
+	DesiredState        string
+	RuntimeState        string
+	LastActivityAt      sql.NullTime
+	LastRuntimeSyncAt   sql.NullTime
+	LastRuntimeSequence sql.NullInt64
+	DeletedAt           sql.NullTime
+	Version             int64
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
+type ConnectedMachineTerminalSessionOperation struct {
+	ID                 string
+	ConnectedMachineID string
+	TerminalSessionID  string
+	Operation          string
+	State              string
+	Attempts           int32
+	NextAttemptAt      time.Time
+	LastError          sql.NullString
+	CompletedAt        sql.NullTime
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+}
+
 type ConnectionEvent struct {
 	ID              string
 	UserID          sql.NullString

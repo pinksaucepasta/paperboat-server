@@ -21,6 +21,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/classifier"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/configsync"
+	"github.com/pinksaucepasta/paperboat-server/internal/connectedmachines"
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
@@ -35,24 +36,25 @@ type ReadinessChecker interface {
 }
 
 type Options struct {
-	Config           config.Config
-	Logger           *slog.Logger
-	ReadinessChecker ReadinessChecker
-	Auth             *auth.Service
-	DeviceAuth       *auth.DeviceService
-	Billing          *billing.Service
-	Catalog          catalog.Reader
-	CatalogWriter    catalog.RegionWriter
-	Fly              fly.Client
-	GitHub           *pbgithub.Service
-	Projects         *projects.Service
-	TerminalSessions *terminalsessions.Service
-	Agentunnel       *agentunnel.Service
-	MeteringRepo     *metering.RuntimeRepository
-	ConfigSync       *configsync.Repository
-	Classifier       *classifier.Controller
-	MintKeys         *mint.Provider
-	OverrideHandler  http.Handler
+	Config            config.Config
+	Logger            *slog.Logger
+	ReadinessChecker  ReadinessChecker
+	Auth              *auth.Service
+	DeviceAuth        *auth.DeviceService
+	Billing           *billing.Service
+	Catalog           catalog.Reader
+	CatalogWriter     catalog.RegionWriter
+	Fly               fly.Client
+	GitHub            *pbgithub.Service
+	Projects          *projects.Service
+	TerminalSessions  *terminalsessions.Service
+	Agentunnel        *agentunnel.Service
+	MeteringRepo      *metering.RuntimeRepository
+	ConfigSync        *configsync.Repository
+	Classifier        *classifier.Controller
+	ConnectedMachines *connectedmachines.Service
+	MintKeys          *mint.Provider
+	OverrideHandler   http.Handler
 }
 
 func NewRouter(opts Options) http.Handler {
@@ -72,6 +74,36 @@ func NewRouter(opts Options) http.Handler {
 		}
 		if opts.Auth != nil {
 			registerAuthRoutes(mux, opts)
+		}
+		if opts.ConnectedMachines != nil {
+			connectedMachineAuth := func(scope string, next http.Handler) http.Handler {
+				if opts.DeviceAuth != nil {
+					return requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope(scope, next))
+				}
+				return requireAuth(opts.Auth, next)
+			}
+			mux.HandleFunc("POST /api/connected-machines/pairings", connectedMachinePairings(opts.ConnectedMachines))
+			mux.Handle("GET /api/connected-machines/overview", connectedMachineAuth("projects:read", connectedMachineOverview(opts.ConnectedMachines)))
+			mux.Handle("GET /api/connected-machines/{connected_machine_id}", requireAuth(opts.Auth, connectedMachineGet(opts.ConnectedMachines)))
+			if opts.DeviceAuth != nil {
+				mux.Handle("POST /api/connected-machines/{connected_machine_id}/connect", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", connectedMachineConnect(opts.ConnectedMachines))))
+				mux.Handle("GET /api/connected-machines/{connected_machine_id}/connection-status", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", connectedMachineConnectionStatus(opts.ConnectedMachines))))
+			}
+			mux.Handle("GET /api/connected-machines/{connected_machine_id}/terminal-sessions", connectedMachineAuth("projects:read", connectedMachineTerminalSessionsList(opts.ConnectedMachines)))
+			mux.Handle("POST /api/connected-machines/{connected_machine_id}/terminal-sessions", connectedMachineAuth("projects:connect", connectedMachineTerminalSessionsCreate(opts.ConnectedMachines)))
+			mux.Handle("PATCH /api/connected-machines/{connected_machine_id}/terminal-sessions/{session_id}", connectedMachineAuth("projects:connect", connectedMachineTerminalSessionsRename(opts.ConnectedMachines)))
+			mux.Handle("POST /api/connected-machines/{connected_machine_id}/terminal-sessions/{session_id}/close", connectedMachineAuth("projects:connect", connectedMachineTerminalSessionsClose(opts.ConnectedMachines)))
+			mux.Handle("DELETE /api/connected-machines/{connected_machine_id}/terminal-sessions/{session_id}", connectedMachineAuth("projects:connect", connectedMachineTerminalSessionsDelete(opts.ConnectedMachines)))
+			mux.HandleFunc("POST /api/connected-machines/pairings/installation", connectedMachineInstallationConsume(opts.ConnectedMachines))
+			mux.HandleFunc("POST /api/internal/connected-machine-bandwidth/reservations", connectedMachineBandwidthReserve(opts.ConnectedMachines, opts.Config.Secrets.ConnectedMachineDataPlaneToken))
+			mux.Handle("POST /api/connected-machines/pairings/{user_code}/approve", requireAuth(opts.Auth, requireCSRF(opts.Auth, connectedMachinePairingApprove(opts.ConnectedMachines))))
+			mux.Handle("POST /api/connected-machines/{connected_machine_id}/disconnect", requireAuth(opts.Auth, requireCSRF(opts.Auth, connectedMachineDisconnect(opts.ConnectedMachines))))
+			mux.Handle("DELETE /api/connected-machines/{connected_machine_id}", requireAuth(opts.Auth, requireCSRF(opts.Auth, connectedMachineDelete(opts.ConnectedMachines))))
+			if opts.DeviceAuth != nil {
+				mux.Handle("GET /api/connected-machines", requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope("projects:read", connectedMachinesList(opts.ConnectedMachines))))
+			} else {
+				mux.Handle("GET /api/connected-machines", requireAuth(opts.Auth, connectedMachinesList(opts.ConnectedMachines)))
+			}
 		}
 		if opts.Billing != nil {
 			mux.HandleFunc("POST /api/webhooks/polar", polarWebhook(opts.Billing, opts.Config.Secrets.PolarWebhookSecret, opts.Config.Billing.PolarWebhookTolerance))

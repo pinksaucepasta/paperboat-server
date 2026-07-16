@@ -238,6 +238,33 @@ Approved baseline:
   stable ids.
 - Upload endpoint path, image size limit, and MIME policy are dynamic credential issuer or
   server configuration values, never CLI constants.
+
+## Connected-machine descriptors
+
+`POST /api/connected-machines/{connected_machine_id}/connect` and
+`GET /api/connected-machines/{connected_machine_id}/connection-status` use the same
+terminal and staged-image descriptor shape as project `cli-connect`. The connect request
+accepts the optional `terminal_session_id` body field; status accepts it as a query field.
+
+Ready responses bind both layers to the connected machine:
+
+```json
+{
+  "connected_machine_id": "cm_...",
+  "connected_machine_state": "online",
+  "environment": {
+    "environment_id": "env_...",
+    "connected_machine_id": "cm_...",
+    "project_root": "/home/user"
+  }
+}
+```
+
+The descriptor must not contain `project_id`, raw connector addresses, connector tokens,
+or agentunnel control credentials. Terminal and upload endpoints remain the single
+agentunnel HTTPS/WSS route assigned to this connected environment. A descriptor request
+fails closed when the machine is revoked, disconnected, offline, lacks a seat, or has no
+remaining allowance/top-up capacity.
 - The environment id is allocated with the project and is stable across machine stop/start,
   machine replacement, and route reconciliation. It changes only when the project identity
   is permanently deleted and recreated.

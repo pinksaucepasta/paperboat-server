@@ -17,6 +17,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/classifier"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/configsync"
+	"github.com/pinksaucepasta/paperboat-server/internal/connectedmachines"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
@@ -98,24 +99,31 @@ func New(opts Options) (*App, error) {
 	}
 	classificationController := classifier.NewController(store, classificationProvider, opts.Config.Classifier, opts.Config.ConfigSync.PolicyRevision, auditWriter)
 	configSyncRepo := configsync.NewRepository(store, opts.Config.ConfigSync, opts.Config.Secrets.EncryptionKey, auditWriter)
+	connectedMachineService := connectedmachines.New(store, auditWriter, connectedmachines.Policy{PairingLifetime: opts.Config.ConnectedMachines.PairingLifetime, AllowedPlatforms: opts.Config.ConnectedMachines.AllowedPlatforms}, billingService)
+	connectedMachineService.ConfigureProvisioning(agentunnelProvider, opts.Config.Secrets.EncryptionKey)
+	connectedMachineService.ConfigureAccess(credentialIssuer, normalizePapercodeIssuer(opts.Config.HTTP.PublicBaseURL), opts.Config.CLIAuth.AccessTokenLifetime, opts.Config.Providers.Agentunnel.UploadMaxBytes, opts.Config.Providers.Agentunnel.UploadAllowedMIMEs, int64(opts.Config.Providers.Agentunnel.UploadRetention/time.Second))
+	connectedMachineService.ConfigureTerminalSessions(opts.Config.TerminalSessions.MaxActivePerProject, mintKeys, &http.Client{Timeout: opts.Config.TerminalSessions.OperationTimeout})
+	connectedMachineService.ConfigureBootstrapCommand(opts.Config.ConnectedMachines.BootstrapCommand)
+	billingService.SetConnectedMachineSessionRevoker(connectedMachineService)
 	router := httpapi.NewRouter(httpapi.Options{
-		Config:           opts.Config,
-		Logger:           opts.Logger,
-		ReadinessChecker: checker,
-		Auth:             authService,
-		DeviceAuth:       deviceAuthService,
-		Billing:          billingService,
-		Catalog:          catalogRepo,
-		CatalogWriter:    catalogRepo,
-		Fly:              flyProvider,
-		GitHub:           githubService,
-		Projects:         projectService,
-		TerminalSessions: terminalSessionService,
-		Agentunnel:       agentunnelService,
-		MeteringRepo:     metering.NewRuntimeRepository(store, opts.Config.Secrets.EncryptionKey),
-		ConfigSync:       configSyncRepo,
-		Classifier:       classificationController,
-		MintKeys:         mintKeys,
+		Config:            opts.Config,
+		Logger:            opts.Logger,
+		ReadinessChecker:  checker,
+		Auth:              authService,
+		DeviceAuth:        deviceAuthService,
+		Billing:           billingService,
+		Catalog:           catalogRepo,
+		CatalogWriter:     catalogRepo,
+		Fly:               flyProvider,
+		GitHub:            githubService,
+		Projects:          projectService,
+		TerminalSessions:  terminalSessionService,
+		Agentunnel:        agentunnelService,
+		MeteringRepo:      metering.NewRuntimeRepository(store, opts.Config.Secrets.EncryptionKey),
+		ConfigSync:        configSyncRepo,
+		Classifier:        classificationController,
+		ConnectedMachines: connectedMachineService,
+		MintKeys:          mintKeys,
 	})
 	return &App{
 		cfg:    opts.Config,
@@ -132,6 +140,7 @@ func New(opts Options) (*App, error) {
 			billingService.AutoTopupWorker(opts.Config.HTTP.RequestTimeout),
 			configSyncRepo.RotationWorker(time.Minute),
 			terminalSessionService.Worker(opts.Config.TerminalSessions.WorkerInterval),
+			connectedMachineService.Worker(opts.Config.TerminalSessions.WorkerInterval),
 		),
 	}, nil
 }

@@ -172,6 +172,8 @@ func (FakeCredentialIssuer) IssueCLI(_ context.Context, input CredentialInput) (
 			"expires_at": input.ExpiresAt,
 			"scopes":     fileScopes,
 		},
+		TerminalSessionID: "fake-terminal-" + input.ProjectID + "-" + input.ClientSessionID,
+		FileSessionID:     "fake-file-" + input.ProjectID + "-" + input.ClientSessionID,
 	}, nil
 }
 

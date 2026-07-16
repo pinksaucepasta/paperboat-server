@@ -26,20 +26,21 @@ const (
 )
 
 type Config struct {
-	Environment      Environment      `json:"environment"`
-	HTTP             HTTPConfig       `json:"http"`
-	Database         Database         `json:"database"`
-	Catalogs         Catalogs         `json:"catalogs"`
-	Billing          Billing          `json:"billing"`
-	Metering         Metering         `json:"metering"`
-	TerminalSessions TerminalSessions `json:"terminal_sessions"`
-	ConfigSync       ConfigSync       `json:"config_sync"`
-	Classifier       Classifier       `json:"classifier"`
-	CLIAuth          CLIAuth          `json:"cli_auth"`
-	GitHub           GitHub           `json:"github"`
-	Fly              Fly              `json:"fly"`
-	Providers        Providers        `json:"providers"`
-	Secrets          Secrets          `json:"secrets"`
+	Environment       Environment       `json:"environment"`
+	HTTP              HTTPConfig        `json:"http"`
+	Database          Database          `json:"database"`
+	Catalogs          Catalogs          `json:"catalogs"`
+	Billing           Billing           `json:"billing"`
+	Metering          Metering          `json:"metering"`
+	ConnectedMachines ConnectedMachines `json:"connected_machines"`
+	TerminalSessions  TerminalSessions  `json:"terminal_sessions"`
+	ConfigSync        ConfigSync        `json:"config_sync"`
+	Classifier        Classifier        `json:"classifier"`
+	CLIAuth           CLIAuth           `json:"cli_auth"`
+	GitHub            GitHub            `json:"github"`
+	Fly               Fly               `json:"fly"`
+	Providers         Providers         `json:"providers"`
+	Secrets           Secrets           `json:"secrets"`
 }
 
 type HTTPConfig struct {
@@ -100,6 +101,12 @@ type Billing struct {
 type Metering struct {
 	MinimumStartCreditWindow time.Duration `json:"minimum_start_credit_window"`
 	MaxKeepAliveDuration     time.Duration `json:"max_keep_alive_duration"`
+}
+
+type ConnectedMachines struct {
+	PairingLifetime  time.Duration `json:"pairing_lifetime"`
+	AllowedPlatforms []string      `json:"allowed_platforms"`
+	BootstrapCommand string        `json:"bootstrap_command"`
 }
 
 type TerminalSessions struct {
@@ -211,21 +218,22 @@ type ProviderConfig struct {
 }
 
 type Secrets struct {
-	SessionKeys            []string `json:"session_keys"`
-	EncryptionKey          string   `json:"encryption_key"`
-	WorkOSAPIKey           string   `json:"workos_api_key"`
-	WorkOSClientID         string   `json:"workos_client_id"`
-	WorkOSClientSecret     string   `json:"workos_client_secret"`
-	PolarAPIKey            string   `json:"polar_api_key"`
-	PolarWebhookSecret     string   `json:"polar_webhook_secret"`
-	GitHubClientID         string   `json:"github_client_id"`
-	GitHubClientSecret     string   `json:"github_client_secret"`
-	FlyAPIToken            string   `json:"fly_api_token"`
-	AgentunnelAPIKey       string   `json:"agentunnel_api_key"`
-	AgentunnelMachineToken string   `json:"agentunnel_machine_token"`
-	MachineActivityToken   string   `json:"machine_activity_token"`
-	MintSigningKeys        []string `json:"mint_signing_keys"`
-	ClassifierAPIKey       string   `json:"classifier_api_key"`
+	SessionKeys                    []string `json:"session_keys"`
+	EncryptionKey                  string   `json:"encryption_key"`
+	WorkOSAPIKey                   string   `json:"workos_api_key"`
+	WorkOSClientID                 string   `json:"workos_client_id"`
+	WorkOSClientSecret             string   `json:"workos_client_secret"`
+	PolarAPIKey                    string   `json:"polar_api_key"`
+	PolarWebhookSecret             string   `json:"polar_webhook_secret"`
+	GitHubClientID                 string   `json:"github_client_id"`
+	GitHubClientSecret             string   `json:"github_client_secret"`
+	FlyAPIToken                    string   `json:"fly_api_token"`
+	AgentunnelAPIKey               string   `json:"agentunnel_api_key"`
+	AgentunnelMachineToken         string   `json:"agentunnel_machine_token"`
+	ConnectedMachineDataPlaneToken string   `json:"connected_machine_data_plane_token"`
+	MachineActivityToken           string   `json:"machine_activity_token"`
+	MintSigningKeys                []string `json:"mint_signing_keys"`
+	ClassifierAPIKey               string   `json:"classifier_api_key"`
 }
 
 type LoadOptions struct {
@@ -291,7 +299,8 @@ func Default() Config {
 			MinimumStartCreditWindow: 5 * time.Minute,
 			MaxKeepAliveDuration:     12 * time.Hour,
 		},
-		TerminalSessions: TerminalSessions{MaxActivePerProject: 32, OperationTimeout: 15 * time.Second, RetryBackoff: time.Second, WorkerInterval: time.Second, MaxAttemptsBeforeAlert: 10},
+		ConnectedMachines: ConnectedMachines{PairingLifetime: 10 * time.Minute, AllowedPlatforms: []string{"darwin", "linux"}},
+		TerminalSessions:  TerminalSessions{MaxActivePerProject: 32, OperationTimeout: 15 * time.Second, RetryBackoff: time.Second, WorkerInterval: time.Second, MaxAttemptsBeforeAlert: 10},
 		ConfigSync: ConfigSync{
 			MandatoryExcludes: configsyncpolicy.MandatoryExcludes(),
 			MaxFileBytes:      5 << 20, MaxBatchBytes: 25 << 20,
@@ -409,6 +418,15 @@ func (c Config) Validate() error {
 	}
 	if c.Metering.MaxKeepAliveDuration <= 0 {
 		errs = append(errs, fmt.Errorf("metering.max_keep_alive_duration must be positive"))
+	}
+	if c.ConnectedMachines.PairingLifetime <= 0 || len(c.ConnectedMachines.AllowedPlatforms) == 0 {
+		errs = append(errs, fmt.Errorf("connected_machines pairing lifetime and allowed platforms are required"))
+	} else {
+		for _, platform := range c.ConnectedMachines.AllowedPlatforms {
+			if platform != "darwin" && platform != "linux" {
+				errs = append(errs, fmt.Errorf("connected_machines allowed platform %q is unsupported", platform))
+			}
+		}
 	}
 	if c.TerminalSessions.MaxActivePerProject <= 0 || c.TerminalSessions.OperationTimeout <= 0 || c.TerminalSessions.RetryBackoff <= 0 || c.TerminalSessions.WorkerInterval <= 0 || c.TerminalSessions.MaxAttemptsBeforeAlert <= 0 {
 		errs = append(errs, fmt.Errorf("terminal_sessions limits and timings must be positive"))
@@ -528,7 +546,7 @@ func (c Config) Validate() error {
 		if len(c.HTTP.AllowedOrigins) == 0 {
 			errs = append(errs, fmt.Errorf("http.allowed_origins is required in production"))
 		}
-		if c.Secrets.WorkOSAPIKey == "" || c.Secrets.WorkOSClientID == "" || c.Secrets.WorkOSClientSecret == "" || c.Secrets.PolarAPIKey == "" || c.Secrets.PolarWebhookSecret == "" || c.Secrets.GitHubClientID == "" || c.Secrets.GitHubClientSecret == "" || c.Secrets.FlyAPIToken == "" || c.Secrets.AgentunnelAPIKey == "" || c.Secrets.ClassifierAPIKey == "" {
+		if c.Secrets.WorkOSAPIKey == "" || c.Secrets.WorkOSClientID == "" || c.Secrets.WorkOSClientSecret == "" || c.Secrets.PolarAPIKey == "" || c.Secrets.PolarWebhookSecret == "" || c.Secrets.GitHubClientID == "" || c.Secrets.GitHubClientSecret == "" || c.Secrets.FlyAPIToken == "" || c.Secrets.AgentunnelAPIKey == "" || c.Secrets.ClassifierAPIKey == "" || c.Secrets.ConnectedMachineDataPlaneToken == "" {
 			errs = append(errs, fmt.Errorf("production provider secrets are required"))
 		}
 		if strings.TrimSpace(c.CLIAuth.MintActiveKeyID) == "" || len(c.Secrets.MintSigningKeys) == 0 {
@@ -603,6 +621,7 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_AGENTUNNEL_PAPERCODE_LOCAL_URL", &c.Providers.Agentunnel.PapercodeLocalURL)
 	setString("PAPERBOAT_AGENTUNNEL_ROUTE_SUBDOMAIN_PREFIX", &c.Providers.Agentunnel.RouteSubdomainPrefix)
 	setString("PAPERBOAT_AGENTUNNEL_ACCESS_POLICY_ID", &c.Providers.Agentunnel.AccessPolicyID)
+	setString("PAPERBOAT_CONNECTED_MACHINES_BOOTSTRAP_COMMAND", &c.ConnectedMachines.BootstrapCommand)
 	if v, ok := lookup("PAPERBOAT_AGENTUNNEL_UPLOAD_ALLOWED_MIME_TYPES"); ok {
 		c.Providers.Agentunnel.UploadAllowedMIMEs = splitCSV(v)
 	}
@@ -867,6 +886,9 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 		return err
 	}
 	if err := setSecret("PAPERBOAT_AGENTUNNEL_MACHINE_TOKEN", &c.Secrets.AgentunnelMachineToken); err != nil {
+		return err
+	}
+	if err := setSecret("PAPERBOAT_CONNECTED_MACHINE_DATA_PLANE_TOKEN", &c.Secrets.ConnectedMachineDataPlaneToken); err != nil {
 		return err
 	}
 	if err := setSecret("PAPERBOAT_MACHINE_ACTIVITY_TOKEN", &c.Secrets.MachineActivityToken); err != nil {
