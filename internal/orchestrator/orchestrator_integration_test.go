@@ -1039,7 +1039,7 @@ func newOrchestratorTestDB(t *testing.T) *db.DB {
 func resetOrchestratorTestTables(t *testing.T, store *db.DB) {
 	t.Helper()
 	dsn := os.Getenv("PAPERBOAT_TEST_DATABASE_DSN")
-	if !safeOrchestratorTestDSN(dsn) && os.Getenv("PAPERBOAT_ALLOW_DESTRUCTIVE_TEST_DB_RESET") != "true" {
+	if !safeOrchestratorTestDSN(dsn) || sameOrchestratorDatabaseDSN(dsn, os.Getenv("PAPERBOAT_DATABASE_DSN")) {
 		t.Fatalf("refusing to truncate paperboat schema for unsafe PAPERBOAT_TEST_DATABASE_DSN")
 	}
 	if _, err := store.SQL().ExecContext(context.Background(), `
@@ -1067,7 +1067,16 @@ func safeOrchestratorTestDSN(dsn string) bool {
 		return false
 	}
 	name := strings.ToLower(strings.Trim(strings.TrimSpace(u.Path), "/"))
-	return strings.Contains(name, "test") || strings.Contains(name, "dev") || strings.Contains(name, "local")
+	return strings.HasSuffix(name, "_test")
+}
+
+func sameOrchestratorDatabaseDSN(left, right string) bool {
+	if strings.TrimSpace(right) == "" {
+		return false
+	}
+	l, lerr := url.Parse(left)
+	r, rerr := url.Parse(right)
+	return lerr == nil && rerr == nil && strings.EqualFold(l.Host, r.Host) && strings.EqualFold(strings.Trim(l.Path, "/"), strings.Trim(r.Path, "/"))
 }
 
 func insertOrchestratorUser(t *testing.T, store *db.DB, userID string, includedGB int) {

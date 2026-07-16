@@ -259,16 +259,15 @@ SELECT purchased_gb FROM paperboat.storage_accounts WHERE user_id = $1`, targetI
 }
 
 func TestSafeIntegrationTestDSNRequiresTestLikeDatabaseName(t *testing.T) {
-	for _, dsn := range []string{
-		"postgres://user:pass@localhost/paperboat_test?sslmode=disable",
-		"postgres://user:pass@localhost/paperboat_dev?sslmode=disable",
-		"postgres://user:pass@localhost/paperboat_local?sslmode=disable",
-	} {
+	for _, dsn := range []string{"postgres://user:pass@localhost/paperboat_test?sslmode=disable"} {
 		if !safeIntegrationTestDSN(dsn) {
 			t.Fatalf("dsn %q should be considered safe for integration tests", dsn)
 		}
 	}
 	for _, dsn := range []string{
+		"postgres://user:pass@localhost/paperboat_dev?sslmode=disable",
+		"postgres://user:pass@localhost/paperboat_local?sslmode=disable",
+		"postgres://user:pass@localhost/paperboat_test_backup?sslmode=disable",
 		"postgres://user:pass@localhost/paperboat_prod?sslmode=disable",
 		"postgres://user:pass@localhost/postgres?sslmode=disable",
 		"not a dsn",
@@ -276,6 +275,12 @@ func TestSafeIntegrationTestDSNRequiresTestLikeDatabaseName(t *testing.T) {
 		if safeIntegrationTestDSN(dsn) {
 			t.Fatalf("dsn %q should not be considered safe for integration tests", dsn)
 		}
+	}
+	if !sameDatabaseDSN(
+		"postgres://test:secret@db.example/paperboat_test?sslmode=require",
+		"postgres://production:different@db.example/paperboat_test?sslmode=disable",
+	) {
+		t.Fatal("same database host and name must be rejected even when credentials differ")
 	}
 }
 
@@ -328,8 +333,8 @@ VALUES ('pv_free', 'plan_free', 1, $1::numeric, $2)`, credits, storageGB); err !
 func resetIntegrationTables(t *testing.T, store *db.DB) {
 	t.Helper()
 	dsn := os.Getenv("PAPERBOAT_TEST_DATABASE_DSN")
-	if !safeIntegrationTestDSN(dsn) && os.Getenv("PAPERBOAT_ALLOW_DESTRUCTIVE_TEST_DB_RESET") != "true" {
-		t.Fatalf("refusing to truncate paperboat schema for unsafe PAPERBOAT_TEST_DATABASE_DSN; use a database name containing test/dev/local or set PAPERBOAT_ALLOW_DESTRUCTIVE_TEST_DB_RESET=true")
+	if !safeIntegrationTestDSN(dsn) || sameDatabaseDSN(dsn, os.Getenv("PAPERBOAT_DATABASE_DSN")) {
+		t.Fatalf("refusing to truncate paperboat schema: PAPERBOAT_TEST_DATABASE_DSN must name a dedicated *_test database and must not match PAPERBOAT_DATABASE_DSN")
 	}
 	if _, err := store.SQL().ExecContext(context.Background(), `
 DO $$
@@ -360,12 +365,16 @@ func safeIntegrationTestDSN(dsn string) bool {
 		return false
 	}
 	name := strings.ToLower(database)
-	for _, marker := range []string{"test", "dev", "local"} {
-		if strings.Contains(name, marker) {
-			return true
-		}
+	return strings.HasSuffix(name, "_test")
+}
+
+func sameDatabaseDSN(left, right string) bool {
+	if strings.TrimSpace(right) == "" {
+		return false
 	}
-	return false
+	l, lerr := url.Parse(left)
+	r, rerr := url.Parse(right)
+	return lerr == nil && rerr == nil && strings.EqualFold(l.Host, r.Host) && strings.EqualFold(strings.Trim(l.Path, "/"), strings.Trim(r.Path, "/"))
 }
 
 func loginCookies(t *testing.T, router http.Handler, code string) []*http.Cookie {

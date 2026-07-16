@@ -222,7 +222,13 @@ func newTerminalSessionTestDB(t *testing.T) *db.DB {
 		t.Skip("set PAPERBOAT_TEST_DATABASE_DSN to run terminal-session integration tests")
 	}
 	u, err := url.Parse(dsn)
-	if err != nil || !strings.Contains(strings.ToLower(strings.Trim(u.Path, "/")), "test") && os.Getenv("PAPERBOAT_ALLOW_DESTRUCTIVE_TEST_DB_RESET") != "true" {
+	production, productionErr := url.Parse(os.Getenv("PAPERBOAT_DATABASE_DSN"))
+	databaseName := ""
+	if err == nil {
+		databaseName = strings.ToLower(strings.Trim(u.Path, "/"))
+	}
+	matchesProduction := os.Getenv("PAPERBOAT_DATABASE_DSN") != "" && productionErr == nil && strings.EqualFold(u.Host, production.Host) && strings.EqualFold(strings.Trim(u.Path, "/"), strings.Trim(production.Path, "/"))
+	if err != nil || !strings.HasSuffix(databaseName, "_test") || matchesProduction {
 		t.Fatal("refusing to truncate an unsafe PAPERBOAT_TEST_DATABASE_DSN")
 	}
 	store, err := db.Open(config.Database{Driver: "postgres", DSN: dsn})
