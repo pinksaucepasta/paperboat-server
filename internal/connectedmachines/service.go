@@ -97,6 +97,7 @@ type Service struct {
 	controlSigner    *mint.Provider
 	controlHTTP      *http.Client
 	bootstrapCommand string
+	papercodeMintKey string
 }
 
 // Worker retries revocations after the connector becomes reachable again. A
@@ -142,6 +143,10 @@ func (s *Service) ConfigureTerminalSessions(maxActive int, signer *mint.Provider
 
 func (s *Service) ConfigureBootstrapCommand(command string) {
 	s.bootstrapCommand = strings.TrimSpace(command)
+}
+
+func (s *Service) ConfigurePapercodeBootstrap(publicKey string) {
+	s.papercodeMintKey = strings.TrimSpace(publicKey)
 }
 
 func New(store *db.DB, auditWriter *audit.Writer, policy Policy, seats SeatAuthorizer) *Service {
@@ -467,10 +472,14 @@ func (s *Service) provisionApprovedMachine(ctx context.Context, userID, pairingI
 		return err
 	}
 	papercodeLocalURL, _ := resource.Metadata["local_url"].(string)
-	if strings.TrimSpace(resource.ServerURL) == "" || strings.TrimSpace(papercodeLocalURL) == "" {
+	if strings.TrimSpace(resource.ServerURL) == "" || strings.TrimSpace(papercodeLocalURL) == "" || strings.TrimSpace(s.issuer) == "" || strings.TrimSpace(s.papercodeMintKey) == "" {
 		return errors.New("connected-machine provisioning returned incomplete agentunnel runtime configuration")
 	}
-	material, err := json.Marshal(map[string]any{"machine_id": machine.ID, "environment_id": machine.EnvironmentID, "agentunnel_client_id": resource.ClientID, "agentunnel_route_id": resource.TunnelID, "agentunnel_server_url": resource.ServerURL, "papercode_local_url": papercodeLocalURL, "agentunnel_token": resource.MachineToken, "http_base_url": resource.HTTPBaseURL, "websocket_base_url": resource.WebSocketBaseURL})
+	environmentCredential, err := randomCode(48)
+	if err != nil {
+		return err
+	}
+	material, err := json.Marshal(map[string]any{"machine_id": machine.ID, "environment_id": machine.EnvironmentID, "agentunnel_client_id": resource.ClientID, "agentunnel_route_id": resource.TunnelID, "agentunnel_server_url": resource.ServerURL, "papercode_local_url": papercodeLocalURL, "papercode_bootstrap": map[string]string{"relay_url": s.issuer, "relay_issuer": s.issuer, "cloud_user_id": userID, "environment_credential": environmentCredential, "cloud_mint_public_key": s.papercodeMintKey}, "agentunnel_token": resource.MachineToken, "http_base_url": resource.HTTPBaseURL, "websocket_base_url": resource.WebSocketBaseURL})
 	if err != nil {
 		return err
 	}

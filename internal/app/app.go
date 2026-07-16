@@ -102,6 +102,12 @@ func New(opts Options) (*App, error) {
 	connectedMachineService := connectedmachines.New(store, auditWriter, connectedmachines.Policy{PairingLifetime: opts.Config.ConnectedMachines.PairingLifetime, AllowedPlatforms: opts.Config.ConnectedMachines.AllowedPlatforms}, billingService)
 	connectedMachineService.ConfigureProvisioning(agentunnelProvider, opts.Config.Secrets.EncryptionKey)
 	connectedMachineService.ConfigureAccess(credentialIssuer, normalizePapercodeIssuer(opts.Config.HTTP.PublicBaseURL), opts.Config.CLIAuth.AccessTokenLifetime, opts.Config.Providers.Agentunnel.UploadMaxBytes, opts.Config.Providers.Agentunnel.UploadAllowedMIMEs, int64(opts.Config.Providers.Agentunnel.UploadRetention/time.Second))
+	mintPublicKey, err := mintKeys.ActivePublicKeyPEM()
+	if err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	connectedMachineService.ConfigurePapercodeBootstrap(mintPublicKey)
 	connectedMachineService.ConfigureTerminalSessions(opts.Config.TerminalSessions.MaxActivePerProject, mintKeys, &http.Client{Timeout: opts.Config.TerminalSessions.OperationTimeout})
 	connectedMachineService.ConfigureBootstrapCommand(opts.Config.ConnectedMachines.BootstrapCommand)
 	billingService.SetConnectedMachineSessionRevoker(connectedMachineService)

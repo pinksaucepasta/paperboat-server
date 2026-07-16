@@ -3,8 +3,10 @@ package mint
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/http"
@@ -230,6 +232,19 @@ func (p *Provider) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", maxAge))
 	_ = json.NewEncoder(w).Encode(map[string]any{"keys": keys})
+}
+
+// ActivePublicKeyPEM returns the active Ed25519 verification key in the
+// format required by the Papercode relay-config contract.
+func (p *Provider) ActivePublicKeyPEM() (string, error) {
+	p.mu.RLock()
+	key := append(ed25519.PrivateKey(nil), p.keys[p.activeID]...)
+	p.mu.RUnlock()
+	publicDER, err := x509.MarshalPKIXPublicKey(key.Public())
+	if err != nil {
+		return "", err
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicDER})), nil
 }
 
 func encode(value []byte) string { return base64.RawURLEncoding.EncodeToString(value) }
