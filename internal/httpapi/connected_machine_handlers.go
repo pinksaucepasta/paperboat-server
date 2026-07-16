@@ -1,49 +1,15 @@
 package httpapi
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
 	"github.com/pinksaucepasta/paperboat-server/internal/connectedmachines"
 )
-
-func connectedMachineBandwidthReserve(service *connectedmachines.Service, token string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
-		if token == "" || subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
-			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Data-plane authentication failed.")
-			return
-		}
-		var body struct {
-			RouteID        string `json:"route_id"`
-			RequestedBytes int64  `json:"requested_bytes"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			writeError(w, r, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON.")
-			return
-		}
-		reservation, err := service.ReserveBandwidthForRoute(r.Context(), body.RouteID, body.RequestedBytes)
-		if errors.Is(err, connectedmachines.ErrNotFound) || errors.Is(err, connectedmachines.ErrBandwidthDenied) {
-			writeError(w, r, http.StatusForbidden, "connected_machine_bandwidth_denied", "Connected-machine bandwidth is unavailable.")
-			return
-		}
-		if errors.Is(err, connectedmachines.ErrInvalidBandwidth) {
-			writeError(w, r, http.StatusBadRequest, "invalid_request", "Requested bytes must be positive.")
-			return
-		}
-		if err != nil {
-			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
-			return
-		}
-		writeJSON(w, http.StatusOK, SuccessResponse{Data: reservation})
-	}
-}
 
 func connectedMachinePairings(service *connectedmachines.Service) http.HandlerFunc {
 	type request struct {

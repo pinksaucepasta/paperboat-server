@@ -95,7 +95,6 @@ func NewRouter(opts Options) http.Handler {
 			mux.Handle("POST /api/connected-machines/{connected_machine_id}/terminal-sessions/{session_id}/close", connectedMachineAuth("projects:connect", connectedMachineTerminalSessionsClose(opts.ConnectedMachines)))
 			mux.Handle("DELETE /api/connected-machines/{connected_machine_id}/terminal-sessions/{session_id}", connectedMachineAuth("projects:connect", connectedMachineTerminalSessionsDelete(opts.ConnectedMachines)))
 			mux.HandleFunc("POST /api/connected-machines/pairings/installation", connectedMachineInstallationConsume(opts.ConnectedMachines))
-			mux.HandleFunc("POST /api/internal/connected-machine-bandwidth/reservations", connectedMachineBandwidthReserve(opts.ConnectedMachines, opts.Config.Secrets.ConnectedMachineDataPlaneToken))
 			mux.Handle("POST /api/connected-machines/pairings/{user_code}/approve", requireAuth(opts.Auth, requireCSRF(opts.Auth, connectedMachinePairingApprove(opts.ConnectedMachines))))
 			mux.Handle("POST /api/connected-machines/{connected_machine_id}/disconnect", requireAuth(opts.Auth, requireCSRF(opts.Auth, connectedMachineDisconnect(opts.ConnectedMachines))))
 			mux.Handle("DELETE /api/connected-machines/{connected_machine_id}", requireAuth(opts.Auth, requireCSRF(opts.Auth, connectedMachineDelete(opts.ConnectedMachines))))

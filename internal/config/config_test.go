@@ -185,7 +185,6 @@ func TestProductionValidationDoesNotRequireMachineActivityToken(t *testing.T) {
 	cfg.Secrets.GitHubClientSecret = "github-client-secret"
 	cfg.Secrets.FlyAPIToken = "fly-api-token"
 	cfg.Secrets.AgentunnelAPIKey = "agentunnel-api-key"
-	cfg.Secrets.ConnectedMachineDataPlaneToken = "connected-machine-data-plane-token"
 	cfg.Secrets.ClassifierAPIKey = "classifier-api-key"
 	cfg.Secrets.MachineActivityToken = ""
 	cfg.CLIAuth.MintActiveKeyID = "current"

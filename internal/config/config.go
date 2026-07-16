@@ -218,22 +218,21 @@ type ProviderConfig struct {
 }
 
 type Secrets struct {
-	SessionKeys                    []string `json:"session_keys"`
-	EncryptionKey                  string   `json:"encryption_key"`
-	WorkOSAPIKey                   string   `json:"workos_api_key"`
-	WorkOSClientID                 string   `json:"workos_client_id"`
-	WorkOSClientSecret             string   `json:"workos_client_secret"`
-	PolarAPIKey                    string   `json:"polar_api_key"`
-	PolarWebhookSecret             string   `json:"polar_webhook_secret"`
-	GitHubClientID                 string   `json:"github_client_id"`
-	GitHubClientSecret             string   `json:"github_client_secret"`
-	FlyAPIToken                    string   `json:"fly_api_token"`
-	AgentunnelAPIKey               string   `json:"agentunnel_api_key"`
-	AgentunnelMachineToken         string   `json:"agentunnel_machine_token"`
-	ConnectedMachineDataPlaneToken string   `json:"connected_machine_data_plane_token"`
-	MachineActivityToken           string   `json:"machine_activity_token"`
-	MintSigningKeys                []string `json:"mint_signing_keys"`
-	ClassifierAPIKey               string   `json:"classifier_api_key"`
+	SessionKeys            []string `json:"session_keys"`
+	EncryptionKey          string   `json:"encryption_key"`
+	WorkOSAPIKey           string   `json:"workos_api_key"`
+	WorkOSClientID         string   `json:"workos_client_id"`
+	WorkOSClientSecret     string   `json:"workos_client_secret"`
+	PolarAPIKey            string   `json:"polar_api_key"`
+	PolarWebhookSecret     string   `json:"polar_webhook_secret"`
+	GitHubClientID         string   `json:"github_client_id"`
+	GitHubClientSecret     string   `json:"github_client_secret"`
+	FlyAPIToken            string   `json:"fly_api_token"`
+	AgentunnelAPIKey       string   `json:"agentunnel_api_key"`
+	AgentunnelMachineToken string   `json:"agentunnel_machine_token"`
+	MachineActivityToken   string   `json:"machine_activity_token"`
+	MintSigningKeys        []string `json:"mint_signing_keys"`
+	ClassifierAPIKey       string   `json:"classifier_api_key"`
 }
 
 type LoadOptions struct {
@@ -546,7 +545,7 @@ func (c Config) Validate() error {
 		if len(c.HTTP.AllowedOrigins) == 0 {
 			errs = append(errs, fmt.Errorf("http.allowed_origins is required in production"))
 		}
-		if c.Secrets.WorkOSAPIKey == "" || c.Secrets.WorkOSClientID == "" || c.Secrets.WorkOSClientSecret == "" || c.Secrets.PolarAPIKey == "" || c.Secrets.PolarWebhookSecret == "" || c.Secrets.GitHubClientID == "" || c.Secrets.GitHubClientSecret == "" || c.Secrets.FlyAPIToken == "" || c.Secrets.AgentunnelAPIKey == "" || c.Secrets.ClassifierAPIKey == "" || c.Secrets.ConnectedMachineDataPlaneToken == "" {
+		if c.Secrets.WorkOSAPIKey == "" || c.Secrets.WorkOSClientID == "" || c.Secrets.WorkOSClientSecret == "" || c.Secrets.PolarAPIKey == "" || c.Secrets.PolarWebhookSecret == "" || c.Secrets.GitHubClientID == "" || c.Secrets.GitHubClientSecret == "" || c.Secrets.FlyAPIToken == "" || c.Secrets.AgentunnelAPIKey == "" || c.Secrets.ClassifierAPIKey == "" {
 			errs = append(errs, fmt.Errorf("production provider secrets are required"))
 		}
 		if strings.TrimSpace(c.CLIAuth.MintActiveKeyID) == "" || len(c.Secrets.MintSigningKeys) == 0 {
@@ -886,9 +885,6 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 		return err
 	}
 	if err := setSecret("PAPERBOAT_AGENTUNNEL_MACHINE_TOKEN", &c.Secrets.AgentunnelMachineToken); err != nil {
-		return err
-	}
-	if err := setSecret("PAPERBOAT_CONNECTED_MACHINE_DATA_PLANE_TOKEN", &c.Secrets.ConnectedMachineDataPlaneToken); err != nil {
 		return err
 	}
 	if err := setSecret("PAPERBOAT_MACHINE_ACTIVITY_TOKEN", &c.Secrets.MachineActivityToken); err != nil {

@@ -559,17 +559,6 @@ func (s *Service) ReserveBandwidth(ctx context.Context, machineID string, reques
 	return reservation, err
 }
 
-func (s *Service) ReserveBandwidthForRoute(ctx context.Context, routeID string, requestedBytes int64) (BandwidthReservation, error) {
-	machineID, err := s.db.Queries().GetConnectedMachineIDForRoute(ctx, sql.NullString{String: strings.TrimSpace(routeID), Valid: strings.TrimSpace(routeID) != ""})
-	if errors.Is(err, sql.ErrNoRows) {
-		return BandwidthReservation{}, ErrNotFound
-	}
-	if err != nil {
-		return BandwidthReservation{}, err
-	}
-	return s.ReserveBandwidth(ctx, machineID, requestedBytes)
-}
-
 func (s *Service) ensureCurrentBandwidthPeriod(ctx context.Context, tx *db.Tx, machine dbsqlc.ConnectedMachine) (dbsqlc.ConnectedMachineBandwidthPeriod, error) {
 	entitlement, err := tx.Queries().GetConnectedMachineEntitlementForUpdate(ctx, machine.UserID)
 	if errors.Is(err, sql.ErrNoRows) {
