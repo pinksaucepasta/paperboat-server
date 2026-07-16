@@ -165,6 +165,48 @@ func TestHTTPPolarClientCreateCustomerPortalUsesCustomerSession(t *testing.T) {
 	}
 }
 
+func TestHTTPPolarClientCreateCustomerPortalRetriesTeamCustomerWithMember(t *testing.T) {
+	var payloads []map[string]any
+	client := HTTPPolarClient{
+		BaseURL: "https://polar.example.test",
+		Client: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			var payload map[string]any
+			if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			payloads = append(payloads, payload)
+			if len(payloads) == 1 {
+				return &http.Response{
+					StatusCode: http.StatusUnprocessableEntity,
+					Body:       io.NopCloser(bytes.NewBufferString(`{}`)),
+					Header:     make(http.Header),
+				}, nil
+			}
+			return jsonResponse(`{"customer_portal_url":"https://polar.example.test/portal"}`), nil
+		}).client(),
+	}
+
+	session, err := client.CreateCustomerPortal(context.Background(), CustomerPortalInput{
+		UserID:         "usr_test",
+		IdempotencyKey: "portal-key",
+		ReturnURL:      "https://paperboat.example/account",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payloads) != 2 {
+		t.Fatalf("requests = %d, want 2", len(payloads))
+	}
+	if _, ok := payloads[0]["external_member_id"]; ok {
+		t.Fatalf("unexpected member on first request: %#v", payloads[0])
+	}
+	if payloads[1]["external_member_id"] != "usr_test" {
+		t.Fatalf("member retry payload = %#v", payloads[1])
+	}
+	if session.URL != "https://polar.example.test/portal" {
+		t.Fatalf("portal URL = %q", session.URL)
+	}
+}
 func TestHTTPPolarClientUpdateSubscriptionUsesInvoiceProration(t *testing.T) {
 	var gotMethod, gotPath, gotIDKey string
 	var gotPayload map[string]any

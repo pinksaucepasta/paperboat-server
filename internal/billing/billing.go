@@ -1406,6 +1406,20 @@ func (c HTTPPolarClient) CreateCustomerPortal(ctx context.Context, input Custome
 	var out struct {
 		URL string `json:"customer_portal_url"`
 	}
+	if err := c.post(ctx, "/v1/customer-sessions/", input.IdempotencyKey, payload, &out); err == nil {
+		return CustomerPortalSession{URL: out.URL}, nil
+	} else {
+		var apiErr PolarAPIError
+		if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusUnprocessableEntity {
+			return CustomerPortalSession{}, err
+		}
+	}
+
+	// Team customers require a member session. Paperboat assigns the authenticated
+	// user's immutable ID to both the Polar customer and its owner member, so a
+	// validation failure from the customer-only request can be retried safely with
+	// that member identity. Individual customers continue to use the first request.
+	payload["external_member_id"] = input.UserID
 	if err := c.post(ctx, "/v1/customer-sessions/", input.IdempotencyKey, payload, &out); err != nil {
 		return CustomerPortalSession{}, err
 	}
