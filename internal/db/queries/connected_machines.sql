@@ -331,7 +331,7 @@ WHERE connected_machine_id=sqlc.arg(connected_machine_id) AND id=sqlc.arg(id)
 -- name: QueueConnectedMachineTerminalSessionOperation :exec
 INSERT INTO connected_machine_terminal_session_operations (id,connected_machine_id,terminal_session_id,operation)
 VALUES (sqlc.arg(id),sqlc.arg(connected_machine_id),sqlc.arg(terminal_session_id),sqlc.arg(operation))
-ON CONFLICT (terminal_session_id,operation,state) DO NOTHING;
+ON CONFLICT (terminal_session_id,operation) WHERE state='pending' DO NOTHING;
 
 -- name: ConnectedMachineTerminalSessionOperationPending :one
 SELECT EXISTS (

@@ -53,7 +53,7 @@ func deviceToken(service *auth.DeviceService, requestNetwork func(*http.Request)
 	}
 }
 
-func deviceRequest(service *auth.DeviceService) http.HandlerFunc {
+func deviceRequest(service *auth.DeviceService, issuer string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, _ := principalFromContext(r.Context())
 		if err := service.RateAccount(r.Context(), p.User.ID); writeDeviceError(w, r, err) {
@@ -64,17 +64,17 @@ func deviceRequest(service *auth.DeviceService) http.HandlerFunc {
 			return
 		}
 		noStore(w)
-		writeJSON(w, http.StatusOK, SuccessResponse{Data: deviceRequestPayload(out)})
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: deviceRequestPayload(out, p.User, issuer)})
 	}
 }
-func deviceDecision(service *auth.DeviceService, approve bool) http.HandlerFunc {
+func deviceDecision(service *auth.DeviceService, issuer string, approve bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, _ := principalFromContext(r.Context())
 		out, err := service.Decide(r.Context(), r.PathValue("user_code"), p.User.ID, approve)
 		if writeDeviceError(w, r, err) {
 			return
 		}
-		writeJSON(w, http.StatusOK, SuccessResponse{Data: deviceRequestPayload(out)})
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: deviceRequestPayload(out, p.User, issuer)})
 	}
 }
 
@@ -154,8 +154,13 @@ func writeClientDeleteError(w http.ResponseWriter, r *http.Request, err error) {
 	writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
 }
 
-func deviceRequestPayload(out auth.DeviceRequest) map[string]any {
-	return map[string]any{"client_label": out.ClientLabel, "device_type": out.DeviceType, "os": out.OS, "scopes": out.Scopes, "issued_at": out.IssuedAt, "expires_at": out.ExpiresAt, "user_code": out.UserCode, "state": out.State}
+func deviceRequestPayload(out auth.DeviceRequest, user auth.User, issuer string) map[string]any {
+	return map[string]any{
+		"client_label": out.ClientLabel, "device_type": out.DeviceType, "os": out.OS,
+		"scopes": out.Scopes, "issued_at": out.IssuedAt, "expires_at": out.ExpiresAt,
+		"user_code": out.UserCode, "state": out.State, "issuer": strings.TrimRight(issuer, "/"),
+		"account": map[string]any{"id": user.ID, "email": user.PrimaryEmail, "display_name": user.DisplayName},
+	}
 }
 func writeTokenSet(w http.ResponseWriter, out auth.TokenSet) {
 	noStore(w)

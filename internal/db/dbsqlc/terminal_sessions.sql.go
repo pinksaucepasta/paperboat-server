@@ -416,7 +416,7 @@ func (q *Queries) NextTerminalSessionOrdinal(ctx context.Context, projectID stri
 const queueTerminalSessionOperation = `-- name: QueueTerminalSessionOperation :exec
 INSERT INTO terminal_session_operations (id,project_id,terminal_session_id,operation)
 VALUES ($1,$2,$3,$4)
-ON CONFLICT (terminal_session_id,operation,state) DO NOTHING
+ON CONFLICT (terminal_session_id,operation) WHERE state='pending' DO NOTHING
 `
 
 type QueueTerminalSessionOperationParams struct {

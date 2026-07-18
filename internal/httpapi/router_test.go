@@ -327,7 +327,7 @@ func TestPolarWebhookReturnsRetryableStatusForRetryableBillingError(t *testing.T
 	secret := "whsec_" + base64.StdEncoding.EncodeToString([]byte("handler-secret"))
 	webhookID := "msg_retryable_handler"
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
-	signature := signedWebhookSignature(t, []byte("handler-secret"), webhookID, timestamp, body)
+	signature := signedWebhookSignature(t, []byte(secret), webhookID, timestamp, body)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/polar", bytes.NewReader(body))

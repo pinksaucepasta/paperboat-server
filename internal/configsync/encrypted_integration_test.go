@@ -34,6 +34,9 @@ func TestEncryptedChezmoiRoundTripContainsNoPlaintextCredential(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if engine.classifier.journalPath != filepath.Join(runtime, "config-sync", "classification-pending.json") {
+			t.Fatalf("classification journal path = %q", engine.classifier.journalPath)
+		}
 		return engine
 	}
 	homeA := t.TempDir()

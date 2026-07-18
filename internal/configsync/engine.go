@@ -86,6 +86,9 @@ func New(cfg Config) (*Engine, error) {
 	if cfg.Now == nil {
 		cfg.Now = func() time.Time { return time.Now().UTC() }
 	}
+	if strings.TrimSpace(cfg.PendingJournalPath) == "" {
+		cfg.PendingJournalPath = filepath.Join(cfg.RuntimeDir, "config-sync", "classification-pending.json")
+	}
 	if cfg.Policy.Revision == "" {
 		cfg.Policy = PolicyFromEnv()
 	}

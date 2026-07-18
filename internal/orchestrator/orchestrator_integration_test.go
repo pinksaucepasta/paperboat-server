@@ -576,9 +576,9 @@ func TestDeleteReleasesStorageAfterProviderCleanup(t *testing.T) {
 	if len(fakeFly.Volumes) != 0 || len(fakeFly.Machines) != 0 {
 		t.Fatalf("provider resources remain after delete: volumes=%d machines=%d", len(fakeFly.Volumes), len(fakeFly.Machines))
 	}
-	// Agentunnel, GitHub, and machine-activity tokens are all removed.
-	if calls := countCalls(fakeFly.Calls, "DeleteSecret:"); calls != 3 {
-		t.Fatalf("DeleteSecret calls = %d, want 3; calls=%#v", calls, fakeFly.Calls)
+	// Agentunnel, config encryption, GitHub, and machine-activity secrets are removed.
+	if calls := countCalls(fakeFly.Calls, "DeleteSecret:"); calls != 4 {
+		t.Fatalf("DeleteSecret calls = %d, want 4; calls=%#v", calls, fakeFly.Calls)
 	}
 }
 

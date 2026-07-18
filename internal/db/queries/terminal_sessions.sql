@@ -60,7 +60,7 @@ WHERE project_id=sqlc.arg(project_id) AND deleted_at IS NULL;
 -- name: QueueTerminalSessionOperation :exec
 INSERT INTO terminal_session_operations (id,project_id,terminal_session_id,operation)
 VALUES (sqlc.arg(id),sqlc.arg(project_id),sqlc.arg(terminal_session_id),sqlc.arg(operation))
-ON CONFLICT (terminal_session_id,operation,state) DO NOTHING;
+ON CONFLICT (terminal_session_id,operation) WHERE state='pending' DO NOTHING;
 
 -- name: TerminalSessionOperationPending :one
 SELECT EXISTS (

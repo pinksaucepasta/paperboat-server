@@ -654,7 +654,7 @@ func TestCLIConnectIssuesPapercodeDescriptorWithScopedAuth(t *testing.T) {
 
 func TestCLIClientRevocationRevokesLinkedAccessSessions(t *testing.T) {
 	store, router, projectID := newAccessIntegrationRouter(t, "cli-client-revoke@example.com")
-	cookies := loginCookies(t, router, "workos_cli_client_revoke:cli-client-revoke@example.com:CLI Revoke")
+	cookies := loginCookies(t, router, "workos_seed_cli-client-revoke@example.com:cli-client-revoke@example.com:CLI Revoke")
 	grant := authorizeDevice(t, router)
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/device/requests/"+grant.UserCode+"/approve", nil)
 	addCookies(req, cookies)
@@ -694,7 +694,7 @@ func TestCLIClientRevocationRevokesLinkedAccessSessions(t *testing.T) {
 func TestCLIClientRevocationPersistsBeforePapercodeDelivery(t *testing.T) {
 	issuer := &recordingLifecycleCredentialIssuer{issue: testLifecycleCredentials()}
 	store, router, accessService, projectID := newAccessIntegrationRouterWithService(t, "cli-revoke-retry@example.com", agentunnel.FakeClient{BaseURL: "https://agentunnel.example"}, issuer)
-	cookies := loginCookies(t, router, "workos_cli_revoke_retry:cli-revoke-retry@example.com:CLI Revoke Retry")
+	cookies := loginCookies(t, router, "workos_seed_cli-revoke-retry@example.com:cli-revoke-retry@example.com:CLI Revoke Retry")
 	tokens := authorizeCLI(t, router, cookies)
 
 	rec := httptest.NewRecorder()
@@ -755,7 +755,7 @@ SELECT papercode_revoked_at IS NOT NULL FROM paperboat.access_sessions WHERE pro
 func TestPapercodeRevocationRetryContinuesAfterIndependentFailure(t *testing.T) {
 	issuer := &recordingLifecycleCredentialIssuer{issue: testLifecycleCredentials()}
 	store, router, accessService, projectID := newAccessIntegrationRouterWithService(t, "cli-retry-continues@example.com", agentunnel.FakeClient{BaseURL: "https://agentunnel.example"}, issuer)
-	cookies := loginCookies(t, router, "workos_cli_retry_continues:cli-retry-continues@example.com:CLI Retry Continues")
+	cookies := loginCookies(t, router, "workos_seed_cli-retry-continues@example.com:cli-retry-continues@example.com:CLI Retry Continues")
 	tokens := authorizeCLI(t, router, cookies)
 
 	rec := httptest.NewRecorder()
@@ -804,7 +804,7 @@ SELECT propagated_at IS NOT NULL FROM paperboat.papercode_revocation_outbox WHER
 func TestCLIConnectRevokesCredentialsWhenAccessSessionPersistenceFails(t *testing.T) {
 	issuer := &recordingLifecycleCredentialIssuer{issue: testLifecycleCredentials(), revokeErr: errors.New("papercode unavailable")}
 	store, router, accessService, projectID := newAccessIntegrationRouterWithService(t, "cli-persist-fails@example.com", agentunnel.FakeClient{BaseURL: "https://agentunnel.example"}, issuer)
-	cookies := loginCookies(t, router, "workos_cli_persist_fails:cli-persist-fails@example.com:CLI Persist Fails")
+	cookies := loginCookies(t, router, "workos_seed_cli-persist-fails@example.com:cli-persist-fails@example.com:CLI Persist Fails")
 	tokens := authorizeCLI(t, router, cookies)
 
 	if _, err := store.SQL().ExecContext(context.Background(), `
@@ -927,7 +927,7 @@ func TestProjectStopCleansTunnelWhenPapercodeRevocationFails(t *testing.T) {
 	client := &recordingAccessClient{Client: agentunnel.FakeClient{BaseURL: "https://agentunnel.example"}}
 	issuer := &recordingLifecycleCredentialIssuer{issue: testLifecycleCredentials()}
 	store, router, _, projectID := newAccessIntegrationRouterWithService(t, "stop-papercode-fails@example.com", client, issuer)
-	cookies := loginCookies(t, router, "workos_stop_papercode_fails:stop-papercode-fails@example.com:Stop Papercode Fails")
+	cookies := loginCookies(t, router, "workos_seed_stop-papercode-fails@example.com:stop-papercode-fails@example.com:Stop Papercode Fails")
 	tokens := authorizeCLI(t, router, cookies)
 
 	rec := httptest.NewRecorder()
@@ -992,7 +992,7 @@ LIMIT 1`, projectID).Scan(&state, &revoked); err != nil {
 func TestProjectStopRetriesFailedProviderCleanup(t *testing.T) {
 	client := &retryableCleanupAccessClient{Client: agentunnel.FakeClient{BaseURL: "https://agentunnel.example"}, err: errors.New("agentunnel cleanup failed")}
 	store, router, accessService, projectID := newAccessIntegrationRouterWithService(t, "stop-cleanup-retry@example.com", client, nil)
-	cookies := loginCookies(t, router, "workos_stop_cleanup_retry:stop-cleanup-retry@example.com:Stop Cleanup Retry")
+	cookies := loginCookies(t, router, "workos_seed_stop-cleanup-retry@example.com:stop-cleanup-retry@example.com:Stop Cleanup Retry")
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/papercode-connect", nil)
@@ -1130,7 +1130,7 @@ func TestCLIConnectRequiresCredentialIssuerBeforeProviderSideEffects(t *testing.
 	}
 }
 
-func TestCLIConnectRequiresCredentialIssueBeforeProviderSideEffects(t *testing.T) {
+func TestCLIConnectRequiresCredentialPreflightBeforeProviderSideEffects(t *testing.T) {
 	store, router, projectID := newAccessIntegrationRouterWithAccessService(t, "cli-issue-fails@example.com", agentunnel.FakeClient{BaseURL: "https://agentunnel.example"}, failingIssueCredentialIssuer{})
 	cookies := loginCookies(t, router, "workos_seed_cli-issue-fails@example.com:cli-issue-fails@example.com:CLI Issue Fails")
 	if _, err := store.SQL().ExecContext(context.Background(), `DELETE FROM paperboat.agentunnel_resources WHERE project_id = $1`, projectID); err != nil {
@@ -1166,7 +1166,7 @@ func TestCLIConnectRequiresCredentialIssueBeforeProviderSideEffects(t *testing.T
 func TestCLIConnectPersistsFailedPartialIssuanceCleanup(t *testing.T) {
 	issuer := &partialCleanupFailureCredentialIssuer{}
 	store, router, accessService, projectID := newAccessIntegrationRouterWithService(t, "cli-partial-cleanup@example.com", agentunnel.FakeClient{BaseURL: "https://agentunnel.example"}, issuer)
-	cookies := loginCookies(t, router, "workos_cli_partial_cleanup:cli-partial-cleanup@example.com:CLI Partial Cleanup")
+	cookies := loginCookies(t, router, "workos_seed_cli-partial-cleanup@example.com:cli-partial-cleanup@example.com:CLI Partial Cleanup")
 	tokens := authorizeCLI(t, router, cookies)
 
 	rec := httptest.NewRecorder()
@@ -1544,7 +1544,7 @@ func (c *failingCleanupAccessClient) CleanupProjectResources(context.Context, ag
 type failingIssueCredentialIssuer struct{}
 
 func (failingIssueCredentialIssuer) CheckCLI(context.Context, agentunnel.CredentialInput) error {
-	return nil
+	return errors.New("credential issuer transient failure")
 }
 
 func (failingIssueCredentialIssuer) IssueCLI(context.Context, agentunnel.CredentialInput) (agentunnel.CLICredentials, error) {

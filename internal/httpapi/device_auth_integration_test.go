@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -36,6 +37,9 @@ func TestDeviceAuthorizationApprovalBearerRefreshAndReplay(t *testing.T) {
 	}
 	if requestDetails.Header().Get("Cache-Control") != "no-store" || requestDetails.Header().Get("Pragma") != "no-cache" {
 		t.Fatalf("device request cache headers=%q/%q", requestDetails.Header().Get("Cache-Control"), requestDetails.Header().Get("Pragma"))
+	}
+	if !strings.Contains(requestDetails.Body.String(), `"issuer":"http://127.0.0.1:8080"`) || !strings.Contains(requestDetails.Body.String(), `"email":"device-e2e@example.com"`) {
+		t.Fatalf("device request omitted approval authority: %s", requestDetails.Body.String())
 	}
 
 	approve := httptest.NewRecorder()

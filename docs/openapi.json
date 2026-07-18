@@ -131,7 +131,7 @@
       "DeviceRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["user_code", "client_label", "device_type", "os", "scopes", "issued_at", "expires_at", "state"],
+        "required": ["user_code", "client_label", "device_type", "os", "scopes", "issued_at", "expires_at", "state", "issuer", "account"],
         "properties": {
           "user_code": { "type": "string" },
           "client_label": { "type": "string" },
@@ -140,7 +140,18 @@
           "scopes": { "type": "array", "minItems": 5, "maxItems": 5, "uniqueItems": true, "items": { "type": "string", "enum": ["account:read", "clients:revoke", "projects:read", "projects:connect", "session:refresh"] } },
           "issued_at": { "type": "string", "format": "date-time" },
           "expires_at": { "type": "string", "format": "date-time" },
-          "state": { "type": "string", "enum": ["pending", "approved", "denied", "expired", "consumed"] }
+          "state": { "type": "string", "enum": ["pending", "approved", "denied", "expired", "consumed"] },
+          "issuer": { "type": "string", "format": "uri" },
+          "account": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "email", "display_name"],
+            "properties": {
+              "id": { "type": "string" },
+              "email": { "type": "string", "format": "email" },
+              "display_name": { "type": "string" }
+            }
+          }
         }
       },
       "CLIConnectDescriptor": {

@@ -84,7 +84,7 @@ func TestPolarTrialConvertsSameSubscriptionToSailor(t *testing.T) {
 	insertPlanProduct(t, store, trialCode, productID, priceID, "10", 5)
 	insertPlanProduct(t, store, sailorCode, "prod_sailor_"+suffix, "price_sailor_"+suffix, "100", 30)
 	cleanupPlanProducts(t, store, trialCode, sailorCode)
-	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.plan_versions SET metadata=jsonb_build_object('billing', jsonb_build_object('converts_to_plan', $2)) WHERE id=(SELECT current_version_id FROM paperboat.plans WHERE code=$1)`, trialCode, sailorCode); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.plan_versions SET metadata=jsonb_build_object('billing', jsonb_build_object('converts_to_plan', $2::text)) WHERE id=(SELECT current_version_id FROM paperboat.plans WHERE code=$1)`, trialCode, sailorCode); err != nil {
 		t.Fatal(err)
 	}
 	service := billing.NewService(billing.NewRepository(store), billing.FakePolarClient{}, audit.NewWriter(store))

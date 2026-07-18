@@ -1082,6 +1082,8 @@ func (s *Service) Status(ctx context.Context, userID, projectID, terminalSession
 			response.RetryAfterSeconds = s.retryAfterSeconds()
 		}
 	}
+	status.HTTPBaseURL = firstNonEmpty(status.HTTPBaseURL, resource.HTTPBaseURL)
+	status.WebSocketBaseURL = firstNonEmpty(status.WebSocketBaseURL, resource.WebSocketBaseURL)
 	response.Terminal = terminalStatusDescriptor(status, terminalSession)
 	if terminalProjectState(project.State) {
 		response.Connectable = false

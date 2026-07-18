@@ -138,7 +138,8 @@ func (s *Service) applyOperations(ctx context.Context, items []dbsqlc.ListDueTer
 			jti, jtiErr := randomID("jti")
 			nonce, nonceErr := randomID("nonce")
 			if jtiErr == nil && nonceErr == nil {
-				proof, signErr := s.signer.SignTerminalControl(mint.TerminalControlInput{Issuer: s.issuer, EnvironmentID: item.ProjectID, UserID: item.UserID, JTI: jti, Nonce: nonce, IssuedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(mint.MaxProofTTL), Operation: item.Operation, ThreadID: item.ThreadID, TerminalIDs: []string{item.TerminalID}})
+				now := time.Now().UTC()
+				proof, signErr := s.signer.SignTerminalControl(mint.TerminalControlInput{Issuer: s.issuer, EnvironmentID: item.ProjectID, UserID: item.UserID, JTI: jti, Nonce: nonce, IssuedAt: now, ExpiresAt: now.Add(mint.MaxProofTTL), Operation: item.Operation, ThreadID: item.ThreadID, TerminalIDs: []string{item.TerminalID}})
 				if signErr == nil {
 					var runtime terminalControlResponse
 					runtime, err = s.postControl(ctx, route, proof)
@@ -400,13 +401,14 @@ func (s *Service) Create(ctx context.Context, userID, projectID, name, idempoten
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return Session{}, err
 	}
-	name = strings.TrimSpace(name)
-	if name != "" && !validName(name) {
+	requestedName := strings.TrimSpace(name)
+	if requestedName != "" && !validName(requestedName) {
 		return Session{}, ErrInvalidName
 	}
 	var id string
 	err := s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		q := tx.Queries()
+		sessionName := requestedName
 		if _, err := q.LockProjectTerminalSessions(ctx, projectID); err != nil {
 			return err
 		}
@@ -418,15 +420,15 @@ func (s *Service) Create(ctx context.Context, userID, projectID, name, idempoten
 			return ErrLimit
 		}
 		ordinal := int32(0)
-		if name == "" {
+		if sessionName == "" {
 			ordinal, err = q.NextTerminalSessionOrdinal(ctx, projectID)
 			if err != nil {
 				return err
 			}
-			name = fmt.Sprintf("shell-%d", ordinal)
+			sessionName = fmt.Sprintf("shell-%d", ordinal)
 		}
 		id = newID("pts")
-		return q.CreateTerminalSession(ctx, dbsqlc.CreateTerminalSessionParams{ID: id, ProjectID: projectID, TerminalID: newID("term"), Name: name, AutoNameOrdinal: ordinal, IdempotencyKey: sql.NullString{String: idempotencyKey, Valid: true}})
+		return q.CreateTerminalSession(ctx, dbsqlc.CreateTerminalSessionParams{ID: id, ProjectID: projectID, TerminalID: newID("term"), Name: sessionName, AutoNameOrdinal: ordinal, IdempotencyKey: sql.NullString{String: idempotencyKey, Valid: true}})
 	})
 	if err != nil {
 		if unique(err) {

@@ -17,7 +17,10 @@ GO_FILES := $(shell find . -path ./.git -prune -o -name '*.go' -print)
 load-env = set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a
 config-arg = $(if $(strip $(CONFIG)),-config $(CONFIG),)
 
-.PHONY: build check clean fmt fmt-check generate generate-check migrate race run seed-catalogs test tidy verify-toolchain vet
+.PHONY: build check clean contracts fmt fmt-check generate generate-check migrate race run seed-catalogs test tidy verify-toolchain vet
+
+contracts:
+	@./testdata/contracts/validate.sh
 
 verify-toolchain:
 	@test "$$(GOTOOLCHAIN=local go env GOVERSION)" = "go$(GO_VERSION)" || { echo "required Go $(GO_VERSION), found $$(GOTOOLCHAIN=local go env GOVERSION)" >&2; exit 1; }
@@ -44,7 +47,7 @@ generate:
 generate-check:
 	@before="$$(git diff -- internal/db/dbsqlc)"; $(MAKE) generate >/dev/null; test "$$(git diff -- internal/db/dbsqlc)" = "$$before" || { echo "generated sqlc output is stale; run make generate" >&2; git diff -- internal/db/dbsqlc; exit 1; }
 
-check: verify-toolchain fmt-check generate-check vet test build
+check: verify-toolchain contracts fmt-check generate-check vet test build
 
 ## test: run the test suite
 test:

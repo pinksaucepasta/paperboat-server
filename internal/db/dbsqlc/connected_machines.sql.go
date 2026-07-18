@@ -1329,7 +1329,7 @@ func (q *Queries) NextConnectedMachineTerminalSessionOrdinal(ctx context.Context
 const queueConnectedMachineTerminalSessionOperation = `-- name: QueueConnectedMachineTerminalSessionOperation :exec
 INSERT INTO connected_machine_terminal_session_operations (id,connected_machine_id,terminal_session_id,operation)
 VALUES ($1,$2,$3,$4)
-ON CONFLICT (terminal_session_id,operation,state) DO NOTHING
+ON CONFLICT (terminal_session_id,operation) WHERE state='pending' DO NOTHING
 `
 
 type QueueConnectedMachineTerminalSessionOperationParams struct {
