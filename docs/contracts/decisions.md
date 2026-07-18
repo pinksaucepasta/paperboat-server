@@ -7,7 +7,6 @@ Status: implemented contract baseline, pending final cross-project sign-off.
 - Workspace `AGENTS.md`
 - Workspace `USERSTORY.md`
 - `paperboat-server/AGENTS.md`
-- `paperboat-server/docs/PLAN.md`
 - `agentunnel/docs/api.md`
 - `agentunnel/docs/cloud-agents-platform-plan.md`
 - `papercode/AGENTS.md`

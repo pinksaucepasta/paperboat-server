@@ -30,8 +30,8 @@ source_revision() {
   printf '%s' "$revision"
 }
 
-papercode_revision="$(source_revision "$workspace_root/papercode")"
-agentunnel_revision="$(source_revision "$workspace_root/agentunnel")"
+papercode_revision="$(source_revision "$workspace_root/legacy/papercode")"
+agentunnel_revision="$(source_revision "$workspace_root/legacy/agentunnel")"
 server_revision="$(source_revision "$workspace_root/paperboat-server")"
 
 docker build \

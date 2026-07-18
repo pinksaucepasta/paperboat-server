@@ -8,15 +8,15 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends python3 make g++ \
   && rm -rf /var/lib/apt/lists/*
 RUN corepack enable
-COPY papercode/package.json papercode/pnpm-lock.yaml papercode/pnpm-workspace.yaml ./
-COPY papercode/tsconfig.base.json papercode/vite.config.ts ./
-COPY papercode/patches ./patches
-COPY papercode/apps ./apps
-COPY papercode/packages ./packages
-COPY papercode/scripts ./scripts
-COPY papercode/oxlint-plugin-t3code ./oxlint-plugin-t3code
+COPY legacy/papercode/package.json legacy/papercode/pnpm-lock.yaml legacy/papercode/pnpm-workspace.yaml ./
+COPY legacy/papercode/tsconfig.base.json legacy/papercode/vite.config.ts ./
+COPY legacy/papercode/patches ./patches
+COPY legacy/papercode/apps ./apps
+COPY legacy/papercode/packages ./packages
+COPY legacy/papercode/scripts ./scripts
+COPY legacy/papercode/oxlint-plugin-t3code ./oxlint-plugin-t3code
 RUN pnpm install --frozen-lockfile
-COPY papercode/assets ./assets
+COPY legacy/papercode/assets ./assets
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates \
   && rm -rf /var/lib/apt/lists/*
@@ -26,9 +26,9 @@ RUN pnpm --filter t3 deploy --prod --legacy /opt/papercode-server
 FROM ${GO_BASE_IMAGE} AS agentunnel
 
 WORKDIR /src/agentunnel
-COPY agentunnel/go.mod agentunnel/go.sum ./
+COPY legacy/agentunnel/go.mod legacy/agentunnel/go.sum ./
 RUN go mod download
-COPY agentunnel ./
+COPY legacy/agentunnel ./
 RUN go build -o /out/agentunnel ./cmd/agentunnel
 
 FROM ${GO_BASE_IMAGE} AS paperboat-server-tools
