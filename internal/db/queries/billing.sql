@@ -63,6 +63,75 @@ SELECT code, catalog_ref, provider_product_id FROM billing_products
 WHERE provider = 'polar' AND active AND catalog_type = 'credit_topup'
 ORDER BY updated_at DESC LIMIT 1;
 
+-- name: ReserveBillingPortalOperation :one
+INSERT INTO billing_portal_operations (idempotency_key,user_id,request_hash)
+VALUES (sqlc.arg(idempotency_key),sqlc.arg(user_id),sqlc.arg(request_hash))
+ON CONFLICT (idempotency_key) DO UPDATE SET state='pending',last_error=NULL,updated_at=now()
+WHERE billing_portal_operations.state='failed'
+  AND billing_portal_operations.user_id=EXCLUDED.user_id
+  AND billing_portal_operations.request_hash=EXCLUDED.request_hash
+RETURNING *;
+
+-- name: GetBillingPortalOperation :one
+SELECT * FROM billing_portal_operations WHERE idempotency_key=$1;
+
+-- name: CompleteBillingPortalOperation :execrows
+UPDATE billing_portal_operations SET state='succeeded',result_ciphertext=sqlc.arg(result_ciphertext),last_error=NULL,updated_at=now()
+WHERE idempotency_key=sqlc.arg(idempotency_key) AND state='pending';
+
+-- name: MarkBillingPortalOperation :execrows
+UPDATE billing_portal_operations SET state=sqlc.arg(state),last_error=sqlc.arg(last_error),updated_at=now()
+WHERE idempotency_key=sqlc.arg(idempotency_key) AND state='pending';
+
+-- name: ReserveBillingSubscriptionUpdate :one
+INSERT INTO billing_subscription_update_operations (idempotency_key,user_id,provider_subscription_id,request_hash)
+VALUES (sqlc.arg(idempotency_key),sqlc.arg(user_id),sqlc.arg(provider_subscription_id),sqlc.arg(request_hash))
+ON CONFLICT (idempotency_key) DO UPDATE SET state='pending',last_error=NULL,updated_at=now()
+WHERE billing_subscription_update_operations.state='failed'
+  AND billing_subscription_update_operations.user_id=EXCLUDED.user_id
+  AND billing_subscription_update_operations.provider_subscription_id=EXCLUDED.provider_subscription_id
+  AND billing_subscription_update_operations.request_hash=EXCLUDED.request_hash
+RETURNING *;
+
+-- name: GetBillingSubscriptionUpdate :one
+SELECT * FROM billing_subscription_update_operations WHERE idempotency_key=$1;
+
+-- name: MarkBillingSubscriptionUpdate :execrows
+UPDATE billing_subscription_update_operations SET state=sqlc.arg(state),last_error=sqlc.arg(last_error),updated_at=now()
+WHERE idempotency_key=sqlc.arg(idempotency_key) AND state='pending';
+
+-- name: GetBillingUncertainMetrics :one
+SELECT
+  (SELECT count(*) FROM billing_checkout_reservations WHERE state='uncertain')::bigint AS checkout_uncertain,
+  (SELECT count(*) FROM billing_portal_operations WHERE state='uncertain')::bigint AS portal_uncertain,
+  (SELECT count(*) FROM billing_subscription_update_operations WHERE state='uncertain')::bigint AS subscription_update_uncertain,
+  (SELECT count(*) FROM credit_auto_topup_attempts WHERE state='uncertain')::bigint AS auto_topup_uncertain;
+
+-- name: ReserveBillingUncertainRecovery :one
+INSERT INTO billing_uncertain_recoveries (idempotency_key,operation_kind,operation_id,request_hash,actor_user_id)
+VALUES (sqlc.arg(idempotency_key),sqlc.arg(operation_kind),sqlc.arg(operation_id),sqlc.arg(request_hash),sqlc.narg(actor_user_id))
+ON CONFLICT (idempotency_key) DO NOTHING
+RETURNING *;
+
+-- name: GetBillingUncertainRecovery :one
+SELECT * FROM billing_uncertain_recoveries WHERE idempotency_key=$1;
+
+-- name: RecoverUncertainBillingCheckout :execrows
+UPDATE billing_checkout_reservations SET state='failed',last_error='operator_evidence_no_mutation',updated_at=now()
+WHERE idempotency_key=$1 AND state='uncertain';
+
+-- name: RecoverUncertainBillingPortal :execrows
+UPDATE billing_portal_operations SET state='failed',last_error='operator_evidence_no_mutation',updated_at=now()
+WHERE idempotency_key=$1 AND state='uncertain';
+
+-- name: RecoverUncertainBillingSubscriptionUpdate :execrows
+UPDATE billing_subscription_update_operations SET state='failed',last_error='operator_evidence_no_mutation',updated_at=now()
+WHERE idempotency_key=$1 AND state='uncertain';
+
+-- name: RecoverUncertainBillingAutoTopup :execrows
+UPDATE credit_auto_topup_attempts SET state='failed',last_error='operator_evidence_no_mutation',updated_at='epoch'::timestamptz
+WHERE idempotency_key=$1 AND state='uncertain';
+
 -- name: GetBillingProductByProviderIDs :one
 SELECT code, catalog_type, catalog_ref, provider_product_id, provider_price_id
 FROM billing_products
@@ -181,8 +250,9 @@ INSERT INTO billing_checkout_reservations (id, user_id, product_code, idempotenc
 VALUES (sqlc.arg(id), sqlc.arg(user_id), sqlc.arg(product_code), sqlc.arg(idempotency_key), sqlc.arg(expires_at))
 ON CONFLICT (user_id) DO UPDATE SET id=EXCLUDED.id, product_code=EXCLUDED.product_code,
  idempotency_key=EXCLUDED.idempotency_key, provider_checkout_id=NULL, checkout_url=NULL,
- state='reserved', expires_at=EXCLUDED.expires_at, updated_at=now()
-WHERE billing_checkout_reservations.state IN ('failed','completed') OR billing_checkout_reservations.expires_at <= now()
+ state='reserved', expires_at=EXCLUDED.expires_at, last_error=NULL, uncertain_at=NULL, updated_at=now()
+WHERE billing_checkout_reservations.state IN ('failed','completed')
+   OR (billing_checkout_reservations.state = 'reserved' AND billing_checkout_reservations.expires_at <= now())
 RETURNING id, product_code, idempotency_key, provider_checkout_id, checkout_url, state, expires_at;
 
 -- name: GetBillingCheckoutReservation :one
@@ -194,7 +264,12 @@ UPDATE billing_checkout_reservations SET provider_checkout_id=sqlc.arg(provider_
 WHERE user_id=sqlc.arg(user_id) AND idempotency_key=sqlc.arg(idempotency_key) AND state='reserved';
 
 -- name: FailBillingCheckoutReservation :exec
-UPDATE billing_checkout_reservations SET state='failed', updated_at=now() WHERE user_id=$1 AND state='reserved';
+UPDATE billing_checkout_reservations SET state='failed', last_error=NULL, updated_at=now() WHERE user_id=$1 AND state='reserved';
+
+-- name: MarkBillingCheckoutUncertain :execrows
+UPDATE billing_checkout_reservations
+SET state='uncertain', last_error=sqlc.arg(last_error), uncertain_at=sqlc.arg(now), updated_at=sqlc.arg(now)
+WHERE user_id=sqlc.arg(user_id) AND idempotency_key=sqlc.arg(idempotency_key) AND state='reserved';
 
 -- name: ClearBillingCheckoutReservation :exec
 UPDATE billing_checkout_reservations SET state='completed', updated_at=now() WHERE user_id=$1 AND state='reserved';

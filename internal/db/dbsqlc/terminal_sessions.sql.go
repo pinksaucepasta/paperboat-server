@@ -371,7 +371,8 @@ func (q *Queries) ListPendingTerminalSessionOperationsForProject(ctx context.Con
 }
 
 const lockProjectTerminalSessions = `-- name: LockProjectTerminalSessions :one
-SELECT id FROM projects WHERE id=$1 FOR UPDATE
+UPDATE projects SET version=version+1,updated_at=now()
+WHERE id=$1 RETURNING id
 `
 
 func (q *Queries) LockProjectTerminalSessions(ctx context.Context, projectID string) (string, error) {

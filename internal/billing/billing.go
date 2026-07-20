@@ -23,6 +23,8 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
+	"github.com/pinksaucepasta/paperboat-server/internal/observability"
+	"github.com/pinksaucepasta/paperboat-server/internal/secrets"
 )
 
 var (
@@ -34,6 +36,7 @@ var (
 	ErrSamePlan                        = errors.New("billing subscription is already on this plan")
 	ErrTrialUnavailable                = errors.New("free trial is only available once per account")
 	ErrCheckoutPending                 = errors.New("another billing checkout is already pending")
+	ErrProviderOutcomeUnknown          = errors.New("billing provider outcome is unknown")
 	ErrRetryableWebhook                = errors.New("webhook could not be processed yet")
 	ErrConnectedMachineSeatUnavailable = errors.New("connected-machine subscription has no available seat")
 )
@@ -532,6 +535,7 @@ type Service struct {
 	audit                   *audit.Writer
 	autoTopupRetryCooldown  time.Duration
 	checkoutReservationTTL  time.Duration
+	encryptionKey           string
 	connectedMachineRevoker ConnectedMachineSessionRevoker
 }
 
@@ -561,6 +565,8 @@ func (s *Service) SetCheckoutReservationTTL(value time.Duration) {
 		s.checkoutReservationTTL = value
 	}
 }
+
+func (s *Service) SetEncryptionKey(value string) { s.encryptionKey = value }
 
 func (s *Service) Entitlement(ctx context.Context, userID string) (Entitlement, error) {
 	return s.repo.Entitlement(ctx, userID)
@@ -772,8 +778,15 @@ func (s *Service) RunAutoTopups(ctx context.Context) error {
 				continue
 			}
 			failureCode = polarFailureCode(orderErr)
+			if polarOutcomeUncertain(orderErr) {
+				failureCode = "provider_outcome_unknown"
+			}
 		}
-		_ = s.repo.db.Queries().CompleteCreditAutoTopup(ctx, dbsqlc.CompleteCreditAutoTopupParams{ProviderOrderID: sql.NullString{}, State: "failed", LastError: failureCode, IdempotencyKey: key})
+		state := "failed"
+		if failureCode == "provider_outcome_unknown" {
+			state = "uncertain"
+		}
+		_ = s.repo.db.Queries().CompleteCreditAutoTopup(ctx, dbsqlc.CompleteCreditAutoTopupParams{ProviderOrderID: sql.NullString{}, State: state, LastError: failureCode, IdempotencyKey: key})
 		if failureCode == "payment_failed" || failureCode == "off_session_disabled" {
 			_ = s.repo.db.Queries().DisableCreditAutoTopupPolicy(ctx, row.UserID)
 		}
@@ -837,7 +850,36 @@ func (s *Service) CreateCheckout(ctx context.Context, userID, email, productCode
 				if product.IncludedStorageGB+usage.PurchasedStorageGB < usage.AllocatedStorageGB {
 					return CheckoutSession{}, ErrInsufficientStorage
 				}
+			}
+			updatePayload, marshalErr := json.Marshal(map[string]string{"user_id": userID, "subscription_id": active.ProviderSubscriptionID, "product_id": product.ProviderProductID, "proration_behavior": prorationBehavior, "success_url": successURL})
+			if marshalErr != nil {
+				return CheckoutSession{}, marshalErr
+			}
+			updateHash := sha256.Sum256(updatePayload)
+			_, reserveErr := s.repo.db.Queries().ReserveBillingSubscriptionUpdate(ctx, dbsqlc.ReserveBillingSubscriptionUpdateParams{IdempotencyKey: idempotencyKey, UserID: userID, ProviderSubscriptionID: active.ProviderSubscriptionID, RequestHash: updateHash[:]})
+			if errors.Is(reserveErr, sql.ErrNoRows) {
+				existing, existingErr := s.repo.db.Queries().GetBillingSubscriptionUpdate(ctx, idempotencyKey)
+				if existingErr != nil {
+					return CheckoutSession{}, existingErr
+				}
+				if existing.UserID != userID || existing.ProviderSubscriptionID != active.ProviderSubscriptionID || !bytes.Equal(existing.RequestHash, updateHash[:]) {
+					return CheckoutSession{}, ErrIdempotencyConflict
+				}
+				switch existing.State {
+				case "succeeded":
+					return CheckoutSession{URL: successURL, ProviderSessionID: active.ProviderSubscriptionID}, nil
+				case "uncertain":
+					return CheckoutSession{}, ErrProviderOutcomeUnknown
+				default:
+					return CheckoutSession{}, ErrCheckoutPending
+				}
+			}
+			if reserveErr != nil {
+				return CheckoutSession{}, reserveErr
+			}
+			if prorationBehavior == "next_period" {
 				if err := s.repo.db.Queries().SetPendingSubscriptionPlan(ctx, dbsqlc.SetPendingSubscriptionPlanParams{PendingPlanVersionID: sql.NullString{String: product.PlanVersionID, Valid: true}, ProviderSubscriptionID: active.ProviderSubscriptionID, UserID: userID}); err != nil {
+					_, _ = s.repo.db.Queries().MarkBillingSubscriptionUpdate(ctx, dbsqlc.MarkBillingSubscriptionUpdateParams{State: "failed", LastError: sql.NullString{String: "persist_pending_plan_failed", Valid: true}, IdempotencyKey: idempotencyKey})
 					return CheckoutSession{}, err
 				}
 			}
@@ -847,10 +889,19 @@ func (s *Service) CreateCheckout(ctx context.Context, userID, email, productCode
 				ProrationBehavior:      prorationBehavior,
 				IdempotencyKey:         idempotencyKey,
 			}); err != nil {
+				if polarOutcomeUncertain(err) {
+					_, _ = s.repo.db.Queries().MarkBillingSubscriptionUpdate(ctx, dbsqlc.MarkBillingSubscriptionUpdateParams{State: "uncertain", LastError: sql.NullString{String: "provider_outcome_unknown", Valid: true}, IdempotencyKey: idempotencyKey})
+					return CheckoutSession{}, errors.Join(ErrProviderOutcomeUnknown, err)
+				}
+				_, _ = s.repo.db.Queries().MarkBillingSubscriptionUpdate(ctx, dbsqlc.MarkBillingSubscriptionUpdateParams{State: "failed", LastError: sql.NullString{String: polarFailureCode(err), Valid: true}, IdempotencyKey: idempotencyKey})
 				if prorationBehavior == "next_period" {
 					_ = s.repo.db.Queries().SetPendingSubscriptionPlan(ctx, dbsqlc.SetPendingSubscriptionPlanParams{PendingPlanVersionID: sql.NullString{}, ProviderSubscriptionID: active.ProviderSubscriptionID, UserID: userID})
 				}
 				return CheckoutSession{}, err
+			}
+			updated, updateErr := s.repo.db.Queries().MarkBillingSubscriptionUpdate(ctx, dbsqlc.MarkBillingSubscriptionUpdateParams{State: "succeeded", LastError: sql.NullString{}, IdempotencyKey: idempotencyKey})
+			if updateErr != nil || updated != 1 {
+				return CheckoutSession{}, errors.Join(ErrProviderOutcomeUnknown, updateErr)
 			}
 			_ = s.audit.Write(ctx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "billing.subscription_update_requested", ResourceType: "subscription", ResourceID: active.ProviderSubscriptionID, IdempotencyKey: "billing.subscription_update:" + idempotencyKey, Metadata: map[string]any{"from_plan": active.PlanCode, "to_plan": product.CatalogRef, "proration_behavior": prorationBehavior}})
 			return CheckoutSession{URL: successURL, ProviderSessionID: active.ProviderSubscriptionID}, nil
@@ -868,6 +919,9 @@ func (s *Service) CreateCheckout(ctx context.Context, userID, email, productCode
 			if existing.IdempotencyKey == idempotencyKey && existing.CheckoutUrl.Valid {
 				return CheckoutSession{URL: existing.CheckoutUrl.String, ProviderSessionID: existing.ProviderCheckoutID.String}, nil
 			}
+			if existing.IdempotencyKey == idempotencyKey && existing.State == "uncertain" {
+				return CheckoutSession{}, ErrProviderOutcomeUnknown
+			}
 			return CheckoutSession{}, ErrCheckoutPending
 		}
 		if reserveErr != nil {
@@ -877,7 +931,18 @@ func (s *Service) CreateCheckout(ctx context.Context, userID, email, productCode
 	session, err := s.client.CreateCheckout(ctx, CheckoutInput{UserID: userID, UserEmail: email, ProductCode: productCode, ProviderProductID: product.ProviderProductID, ProviderPriceID: product.ProviderPriceID, IdempotencyKey: idempotencyKey, SuccessURL: successURL})
 	if err != nil {
 		if product.CatalogType == "plan" {
-			_ = s.repo.db.Queries().FailBillingCheckoutReservation(ctx, userID)
+			if polarOutcomeUncertain(err) {
+				now := time.Now().UTC()
+				updated, updateErr := s.repo.db.Queries().MarkBillingCheckoutUncertain(ctx, dbsqlc.MarkBillingCheckoutUncertainParams{LastError: sql.NullString{String: "provider_outcome_unknown", Valid: true}, Now: sql.NullTime{Time: now, Valid: true}, UserID: userID, IdempotencyKey: idempotencyKey})
+				if updateErr != nil {
+					return CheckoutSession{}, errors.Join(ErrProviderOutcomeUnknown, updateErr)
+				}
+				if updated == 1 {
+					return CheckoutSession{}, ErrProviderOutcomeUnknown
+				}
+			} else {
+				_ = s.repo.db.Queries().FailBillingCheckoutReservation(ctx, userID)
+			}
 		}
 		return CheckoutSession{}, err
 	}
@@ -890,10 +955,73 @@ func (s *Service) CreateCheckout(ctx context.Context, userID, email, productCode
 	return session, nil
 }
 
+func polarOutcomeUncertain(err error) bool {
+	var apiErr PolarAPIError
+	return !errors.As(err, &apiErr) || apiErr.StatusCode >= http.StatusInternalServerError
+}
+
 func (s *Service) CreateCustomerPortal(ctx context.Context, userID, email, idempotencyKey, returnURL string) (CustomerPortalSession, error) {
-	session, err := s.client.CreateCustomerPortal(ctx, CustomerPortalInput{UserID: userID, UserEmail: email, IdempotencyKey: idempotencyKey, ReturnURL: returnURL})
+	requestPayload, err := json.Marshal(map[string]string{"user_id": userID, "email": email, "return_url": returnURL})
 	if err != nil {
 		return CustomerPortalSession{}, err
+	}
+	requestHash := sha256.Sum256(requestPayload)
+	if strings.TrimSpace(s.encryptionKey) == "" {
+		return CustomerPortalSession{}, errors.New("billing portal encryption key is not configured")
+	}
+	_, err = s.repo.db.Queries().ReserveBillingPortalOperation(ctx, dbsqlc.ReserveBillingPortalOperationParams{IdempotencyKey: idempotencyKey, UserID: userID, RequestHash: requestHash[:]})
+	if errors.Is(err, sql.ErrNoRows) {
+		existing, getErr := s.repo.db.Queries().GetBillingPortalOperation(ctx, idempotencyKey)
+		if getErr != nil {
+			return CustomerPortalSession{}, getErr
+		}
+		if existing.UserID != userID || !bytes.Equal(existing.RequestHash, requestHash[:]) {
+			return CustomerPortalSession{}, ErrIdempotencyConflict
+		}
+		switch existing.State {
+		case "succeeded":
+			plaintext, decryptErr := secrets.Decrypt(s.encryptionKey, existing.ResultCiphertext)
+			if decryptErr != nil {
+				return CustomerPortalSession{}, decryptErr
+			}
+			var replay CustomerPortalSession
+			if unmarshalErr := json.Unmarshal([]byte(plaintext), &replay); unmarshalErr != nil {
+				return CustomerPortalSession{}, unmarshalErr
+			}
+			return replay, nil
+		case "uncertain":
+			return CustomerPortalSession{}, ErrProviderOutcomeUnknown
+		default:
+			return CustomerPortalSession{}, ErrCheckoutPending
+		}
+	}
+	if err != nil {
+		return CustomerPortalSession{}, err
+	}
+	session, err := s.client.CreateCustomerPortal(ctx, CustomerPortalInput{UserID: userID, UserEmail: email, IdempotencyKey: idempotencyKey, ReturnURL: returnURL})
+	if err != nil {
+		state, code := "failed", polarFailureCode(err)
+		if polarOutcomeUncertain(err) {
+			state, code = "uncertain", "provider_outcome_unknown"
+		}
+		_, _ = s.repo.db.Queries().MarkBillingPortalOperation(ctx, dbsqlc.MarkBillingPortalOperationParams{State: state, LastError: sql.NullString{String: code, Valid: true}, IdempotencyKey: idempotencyKey})
+		if state == "uncertain" {
+			return CustomerPortalSession{}, ErrProviderOutcomeUnknown
+		}
+		return CustomerPortalSession{}, err
+	}
+	resultPayload, err := json.Marshal(session)
+	if err != nil {
+		return CustomerPortalSession{}, err
+	}
+	ciphertext, err := secrets.Encrypt(s.encryptionKey, string(resultPayload))
+	if err != nil {
+		_, _ = s.repo.db.Queries().MarkBillingPortalOperation(ctx, dbsqlc.MarkBillingPortalOperationParams{State: "uncertain", LastError: sql.NullString{String: "result_persistence_failed", Valid: true}, IdempotencyKey: idempotencyKey})
+		return CustomerPortalSession{}, errors.Join(ErrProviderOutcomeUnknown, err)
+	}
+	updated, err := s.repo.db.Queries().CompleteBillingPortalOperation(ctx, dbsqlc.CompleteBillingPortalOperationParams{ResultCiphertext: ciphertext, IdempotencyKey: idempotencyKey})
+	if err != nil || updated != 1 {
+		return CustomerPortalSession{}, errors.Join(ErrProviderOutcomeUnknown, err)
 	}
 	_ = s.audit.Write(ctx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "billing.customer_portal_created", ResourceType: "user", ResourceID: userID, IdempotencyKey: "billing.portal:" + idempotencyKey, Metadata: map[string]any{}})
 	return session, nil
@@ -1309,7 +1437,7 @@ type HTTPPolarClient struct {
 
 func (c HTTPPolarClient) UpdateSubscription(ctx context.Context, input SubscriptionUpdateInput) error {
 	if c.Client == nil {
-		c.Client = http.DefaultClient
+		c.Client = observability.DefaultProviderClient("polar")
 	}
 	payload := map[string]any{"proration_behavior": input.ProrationBehavior}
 	if input.ProviderProductID != "" {
@@ -1323,7 +1451,7 @@ func (c HTTPPolarClient) UpdateSubscription(ctx context.Context, input Subscript
 
 func (c HTTPPolarClient) CreateOffSessionOrder(ctx context.Context, input OffSessionOrderInput) (string, error) {
 	if c.Client == nil {
-		c.Client = http.DefaultClient
+		c.Client = observability.DefaultProviderClient("polar")
 	}
 	var customer struct {
 		ID string `json:"id"`
@@ -1349,7 +1477,7 @@ func (c HTTPPolarClient) CreateOffSessionOrder(ctx context.Context, input OffSes
 
 func (c HTTPPolarClient) GetSubscriptionPricing(ctx context.Context, providerSubscriptionID string) (SubscriptionPricing, error) {
 	if c.Client == nil {
-		c.Client = http.DefaultClient
+		c.Client = observability.DefaultProviderClient("polar")
 	}
 	var response struct {
 		CurrentPeriodStart time.Time `json:"current_period_start"`
@@ -1378,7 +1506,7 @@ func (c HTTPPolarClient) GetSubscriptionPricing(ctx context.Context, providerSub
 
 func (c HTTPPolarClient) CreateCheckout(ctx context.Context, input CheckoutInput) (CheckoutSession, error) {
 	if c.Client == nil {
-		c.Client = http.DefaultClient
+		c.Client = observability.DefaultProviderClient("polar")
 	}
 	payload := map[string]any{
 		"products":             []string{input.ProviderProductID},
@@ -1400,7 +1528,7 @@ func (c HTTPPolarClient) CreateCheckout(ctx context.Context, input CheckoutInput
 
 func (c HTTPPolarClient) CreateCustomerPortal(ctx context.Context, input CustomerPortalInput) (CustomerPortalSession, error) {
 	if c.Client == nil {
-		c.Client = http.DefaultClient
+		c.Client = observability.DefaultProviderClient("polar")
 	}
 	payload := map[string]any{"external_customer_id": input.UserID, "return_url": input.ReturnURL}
 	var out struct {

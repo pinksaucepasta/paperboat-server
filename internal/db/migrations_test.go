@@ -31,6 +31,22 @@ func TestMigrateRequiresPostgresIntegrationDSN(t *testing.T) {
 	if !applied {
 		t.Fatal("Goose migration version 16 was not recorded")
 	}
+	var controlPlaneMigrationApplied bool
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (SELECT 1 FROM paperboat.goose_db_version WHERE version_id = 28 AND is_applied)`).Scan(&controlPlaneMigrationApplied); err != nil {
+		t.Fatal(err)
+	}
+	if !controlPlaneMigrationApplied {
+		t.Fatal("Goose control-plane foundation migration was not recorded")
+	}
+	for _, version := range []int{29, 30, 31, 32} {
+		var applied bool
+		if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (SELECT 1 FROM paperboat.goose_db_version WHERE version_id=$1 AND is_applied)`, version).Scan(&applied); err != nil {
+			t.Fatal(err)
+		}
+		if !applied {
+			t.Fatalf("Goose billing operation migration %d was not recorded", version)
+		}
+	}
 	var hasRole bool
 	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (
 		SELECT 1 FROM information_schema.columns
@@ -103,6 +119,47 @@ func TestMigrateRequiresPostgresIntegrationDSN(t *testing.T) {
 	}
 	if !hasEncryptionVersion {
 		t.Fatal("config sync encryption version column missing")
+	}
+	for _, table := range []string{
+		"control_environments",
+		"control_helpers",
+		"control_helper_enrollments",
+		"control_config_repositories",
+		"control_config_assignments",
+		"control_operations",
+		"control_reconciliation_attempts",
+		"control_tunnel_nodes",
+		"control_usage_verification_keys",
+		"control_connector_generations",
+		"control_routes",
+		"control_usage_counters",
+		"control_usage_receipts",
+	} {
+		var exists bool
+		if err := store.SQL().QueryRowContext(context.Background(), `SELECT to_regclass('paperboat.' || $1) IS NOT NULL`, table).Scan(&exists); err != nil {
+			t.Fatalf("check control-plane table %s: %v", table, err)
+		}
+		if !exists {
+			t.Fatalf("control-plane migration did not create %s", table)
+		}
+	}
+	for _, table := range []string{"billing_portal_operations", "billing_subscription_update_operations", "billing_uncertain_recoveries"} {
+		var exists bool
+		if err := store.SQL().QueryRowContext(context.Background(), `SELECT to_regclass('paperboat.' || $1) IS NOT NULL`, table).Scan(&exists); err != nil {
+			t.Fatalf("check billing operation table %s: %v", table, err)
+		}
+		if !exists {
+			t.Fatalf("billing operation migration did not create %s", table)
+		}
+	}
+	for _, column := range []string{"last_error", "uncertain_at"} {
+		var exists bool
+		if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='paperboat' AND table_name='billing_checkout_reservations' AND column_name=$1)`, column).Scan(&exists); err != nil {
+			t.Fatal(err)
+		}
+		if !exists {
+			t.Fatalf("billing checkout migration did not create %s", column)
+		}
 	}
 }
 

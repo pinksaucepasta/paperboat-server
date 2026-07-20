@@ -230,6 +230,7 @@ type Secrets struct {
 	FlyAPIToken            string   `json:"fly_api_token"`
 	AgentunnelAPIKey       string   `json:"agentunnel_api_key"`
 	AgentunnelMachineToken string   `json:"agentunnel_machine_token"`
+	EdgeControlCredential  string   `json:"edge_control_credential"`
 	MachineActivityToken   string   `json:"machine_activity_token"`
 	MintSigningKeys        []string `json:"mint_signing_keys"`
 	ClassifierAPIKey       string   `json:"classifier_api_key"`
@@ -535,6 +536,9 @@ func (c Config) Validate() error {
 	if len(c.Secrets.SessionKeys) == 0 || c.Secrets.EncryptionKey == "" {
 		errs = append(errs, fmt.Errorf("session and encryption secrets are required"))
 	}
+	if c.Secrets.EdgeControlCredential != "" && len(c.Secrets.EdgeControlCredential) < 32 {
+		errs = append(errs, fmt.Errorf("edge control credential must be at least 32 characters"))
+	}
 	if c.Environment == EnvironmentProduction {
 		if c.Providers.FakeMode {
 			errs = append(errs, fmt.Errorf("providers.fake_mode cannot be enabled in production"))
@@ -547,6 +551,9 @@ func (c Config) Validate() error {
 		}
 		if c.Secrets.WorkOSAPIKey == "" || c.Secrets.WorkOSClientID == "" || c.Secrets.WorkOSClientSecret == "" || c.Secrets.PolarAPIKey == "" || c.Secrets.PolarWebhookSecret == "" || c.Secrets.GitHubClientID == "" || c.Secrets.GitHubClientSecret == "" || c.Secrets.FlyAPIToken == "" || c.Secrets.AgentunnelAPIKey == "" || c.Secrets.ClassifierAPIKey == "" {
 			errs = append(errs, fmt.Errorf("production provider secrets are required"))
+		}
+		if len(c.Secrets.EdgeControlCredential) < 32 {
+			errs = append(errs, fmt.Errorf("production edge control credential is required"))
 		}
 		if strings.TrimSpace(c.CLIAuth.MintActiveKeyID) == "" || len(c.Secrets.MintSigningKeys) == 0 {
 			errs = append(errs, fmt.Errorf("production mint active key id and signing keys are required"))
@@ -885,6 +892,9 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 		return err
 	}
 	if err := setSecret("PAPERBOAT_AGENTUNNEL_MACHINE_TOKEN", &c.Secrets.AgentunnelMachineToken); err != nil {
+		return err
+	}
+	if err := setSecret("PAPERBOAT_EDGE_CONTROL_CREDENTIAL", &c.Secrets.EdgeControlCredential); err != nil {
 		return err
 	}
 	if err := setSecret("PAPERBOAT_MACHINE_ACTIVITY_TOKEN", &c.Secrets.MachineActivityToken); err != nil {

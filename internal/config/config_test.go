@@ -185,6 +185,7 @@ func TestProductionValidationDoesNotRequireMachineActivityToken(t *testing.T) {
 	cfg.Secrets.GitHubClientSecret = "github-client-secret"
 	cfg.Secrets.FlyAPIToken = "fly-api-token"
 	cfg.Secrets.AgentunnelAPIKey = "agentunnel-api-key"
+	cfg.Secrets.EdgeControlCredential = "edge-control-credential-0123456789"
 	cfg.Secrets.ClassifierAPIKey = "classifier-api-key"
 	cfg.Secrets.MachineActivityToken = ""
 	cfg.CLIAuth.MintActiveKeyID = "current"
@@ -251,12 +252,14 @@ func TestRedactedJSONDoesNotExposeSecrets(t *testing.T) {
 	cfg.Secrets.EncryptionKey = "super-secret-encryption-key"
 	cfg.Secrets.FlyAPIToken = "fly-token-secret"
 	cfg.Secrets.AgentunnelAPIKey = "agentunnel-api-key-secret"
+	cfg.Secrets.EdgeControlCredential = "edge-control-credential-secret"
 	cfg.Secrets.GitHubClientID = "github-client-id-secret"
 	cfg.Secrets.GitHubClientSecret = "github-client-secret"
 	out := cfg.RedactedJSON()
 	if strings.Contains(out, "super-secret-encryption-key") ||
 		strings.Contains(out, "fly-token-secret") ||
 		strings.Contains(out, "agentunnel-api-key-secret") ||
+		strings.Contains(out, "edge-control-credential-secret") ||
 		strings.Contains(out, "github-client-id-secret") ||
 		strings.Contains(out, "github-client-secret") {
 		t.Fatalf("redacted config leaked secrets: %s", out)

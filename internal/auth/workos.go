@@ -7,6 +7,8 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+
+	"github.com/pinksaucepasta/paperboat-server/internal/observability"
 )
 
 type FakeWorkOSVerifier struct{}
@@ -43,7 +45,7 @@ func (v HTTPWorkOSVerifier) VerifyCallback(ctx context.Context, input CallbackIn
 	}
 	client := v.HTTPClient
 	if client == nil {
-		client = http.DefaultClient
+		client = observability.DefaultProviderClient("workos")
 	}
 	payload := map[string]string{
 		"client_id":     v.ClientID,

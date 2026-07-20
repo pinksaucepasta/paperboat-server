@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/mint"
+	"github.com/pinksaucepasta/paperboat-server/internal/observability"
 )
 
 const papercodeResponseLimit = 1 << 20
@@ -304,7 +305,7 @@ func (p *PapercodeCredentialIssuer) requestJSON(ctx context.Context, method, end
 	}
 	client := p.HTTPClient
 	if client == nil {
-		client = http.DefaultClient
+		client = observability.DefaultProviderClient("papercode")
 	}
 	resp, err := client.Do(req)
 	if err != nil {

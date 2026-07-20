@@ -92,6 +92,19 @@ type BillingCheckoutReservation struct {
 	ExpiresAt          time.Time
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+	LastError          sql.NullString
+	UncertainAt        sql.NullTime
+}
+
+type BillingPortalOperation struct {
+	IdempotencyKey   string
+	UserID           string
+	RequestHash      []byte
+	State            string
+	ResultCiphertext []byte
+	LastError        sql.NullString
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 type BillingProduct struct {
@@ -106,6 +119,26 @@ type BillingProduct struct {
 	Version           int64
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+}
+
+type BillingSubscriptionUpdateOperation struct {
+	IdempotencyKey         string
+	UserID                 string
+	ProviderSubscriptionID string
+	RequestHash            []byte
+	State                  string
+	LastError              sql.NullString
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+}
+
+type BillingUncertainRecovery struct {
+	IdempotencyKey string
+	OperationKind  string
+	OperationID    string
+	RequestHash    []byte
+	ActorUserID    sql.NullString
+	CreatedAt      time.Time
 }
 
 type ClientAccessToken struct {
@@ -344,6 +377,239 @@ type ConnectionEvent struct {
 	FailureReason   string
 	Metadata        json.RawMessage
 	CreatedAt       time.Time
+}
+
+type ControlConfigAssignment struct {
+	ID              string
+	EnvironmentID   string
+	RepositoryID    sql.NullString
+	ConsentState    string
+	WarningRevision sql.NullString
+	AcceptedAt      sql.NullTime
+	RevokedAt       sql.NullTime
+	Version         int64
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+type ControlConfigCredential struct {
+	JtiHash              []byte
+	Jti                  string
+	OperationKey         string
+	RequestHash          []byte
+	EnvironmentID        string
+	HelperID             string
+	AssignmentID         string
+	WarningRevision      sql.NullString
+	CredentialCiphertext []byte
+	ExpiresAt            time.Time
+	RevokedAt            sql.NullTime
+	CreatedAt            time.Time
+}
+
+type ControlConfigRepository struct {
+	ID          string
+	OwnerUserID string
+	Provider    string
+	ExternalRef string
+	DisplayName string
+	State       string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type ControlConnectorGeneration struct {
+	EnvironmentID                 string
+	HelperID                      string
+	Generation                    int64
+	EdgePool                      string
+	EdgeNodeID                    sql.NullString
+	State                         string
+	AdmissionJtiHash              []byte
+	AdmissionOperationKey         sql.NullString
+	AdmissionRequestHash          []byte
+	AdmissionCredentialCiphertext []byte
+	ExpiresAt                     sql.NullTime
+	RevokedAt                     sql.NullTime
+	Version                       int64
+	UpdatedAt                     time.Time
+}
+
+type ControlEnvironment struct {
+	ID             string
+	WorkspaceID    string
+	OwnerUserID    sql.NullString
+	DesiredState   string
+	DesiredVersion int64
+	AppliedState   string
+	AppliedVersion int64
+	RevokedAt      sql.NullTime
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+type ControlHelper struct {
+	ID                             string
+	EnvironmentID                  string
+	KeyThumbprint                  sql.NullString
+	PublicKey                      []byte
+	State                          string
+	Generation                     int64
+	ReplacementOperationKey        sql.NullString
+	ReplacementConnectorGeneration sql.NullInt64
+	LastSeenAt                     sql.NullTime
+	RevokedAt                      sql.NullTime
+	CreatedAt                      time.Time
+	UpdatedAt                      time.Time
+}
+
+type ControlHelperEnrollment struct {
+	ID              string
+	EnvironmentID   string
+	HelperID        string
+	JtiHash         []byte
+	OperationKey    string
+	RequestHash     []byte
+	GrantCiphertext []byte
+	State           string
+	ExpiresAt       time.Time
+	ConsumedAt      sql.NullTime
+	RevokedAt       sql.NullTime
+	CreatedAt       time.Time
+}
+
+type ControlOperation struct {
+	ID             string
+	OperationKey   string
+	OperationType  string
+	RequestHash    []byte
+	State          string
+	Result         json.RawMessage
+	LastError      sql.NullString
+	Attempts       int32
+	NextAttemptAt  sql.NullTime
+	LeaseExpiresAt sql.NullTime
+	UncertainAt    sql.NullTime
+	CompletedAt    sql.NullTime
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+type ControlOperationRecovery struct {
+	OperationKey string
+	OperationID  string
+	ActorUserID  sql.NullString
+	CreatedAt    time.Time
+}
+
+type ControlReconciliationAttempt struct {
+	ID             string
+	EnvironmentID  string
+	DesiredVersion int64
+	State          string
+	OperationID    sql.NullString
+	StartedAt      time.Time
+	FinishedAt     sql.NullTime
+	LastError      sql.NullString
+}
+
+type ControlRoute struct {
+	ID                string
+	EnvironmentID     string
+	Kind              string
+	PublicHost        string
+	TargetHost        string
+	TargetPort        int32
+	DesiredRevision   int64
+	DesiredState      string
+	AppliedRevision   int64
+	AppliedNodeID     sql.NullString
+	AppliedGeneration sql.NullInt64
+	DrainDeadline     sql.NullTime
+	Version           int64
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+type ControlRouteOperation struct {
+	OperationKey   string
+	OperationType  string
+	RequestHash    []byte
+	RouteID        string
+	ResultRevision sql.NullInt64
+	Result         json.RawMessage
+	CreatedAt      time.Time
+}
+
+type ControlSigningKeyRevocation struct {
+	KeyID       string
+	Reason      string
+	RevokedAt   time.Time
+	ActorUserID sql.NullString
+	CreatedAt   time.Time
+}
+
+type ControlSigningKeyRevocationOperation struct {
+	OperationKey string
+	KeyID        string
+	Reason       string
+	CreatedAt    time.Time
+}
+
+type ControlTunnelNode struct {
+	ID               string
+	EdgePool         string
+	ProtocolVersion  string
+	ProcessEpoch     string
+	EndpointHost     sql.NullString
+	EndpointTcpPort  sql.NullInt32
+	EndpointQuicPort sql.NullInt32
+	State            string
+	Ready            bool
+	Capacity         json.RawMessage
+	Observation      json.RawMessage
+	LastHeartbeatAt  sql.NullTime
+	DrainDeadline    sql.NullTime
+	Version          int64
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+type ControlUsageCounter struct {
+	EdgeNodeID    string
+	CounterEpoch  string
+	EnvironmentID string
+	RouteID       string
+	RouteRevision int64
+	Direction     string
+	Bytes         int64
+	ObservedAt    time.Time
+}
+
+type ControlUsageReceipt struct {
+	OperationID    string
+	EdgeNodeID     string
+	CounterEpoch   string
+	EnvironmentID  string
+	RouteID        string
+	RouteRevision  int64
+	Direction      string
+	ObservedBytes  int64
+	DeltaBytes     int64
+	IntervalStart  time.Time
+	IntervalEnd    time.Time
+	AcknowledgedAt sql.NullTime
+	CreatedAt      time.Time
+}
+
+type ControlUsageVerificationKey struct {
+	KeyID      string
+	EdgeNodeID string
+	PublicKey  []byte
+	NotBefore  time.Time
+	ExpiresAt  time.Time
+	RevokedAt  sql.NullTime
+	CreatedAt  time.Time
 }
 
 type CreditAccount struct {

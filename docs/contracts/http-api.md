@@ -189,6 +189,7 @@ Initial contract:
 - `project_not_ready`
 - `machine_not_ready`
 - `provider_unavailable`
+- `provider_outcome_unknown`
 - `provider_conflict`
 - `tunnel_unavailable`
 - `credential_issuer_unavailable`
@@ -213,6 +214,38 @@ Initial contract:
 - `internal_error`
 
 Adding or renaming public codes after approval requires explicit contract approval.
+
+## Private Control-Plane Endpoints
+
+The following endpoints are private service-to-service contracts and are not browser or
+CLI APIs:
+
+- `POST /v1/connectors/admission` requires the helper identity bearer credential and an
+  unpadded base64url `X-Paperboat-Helper-Proof` envelope signed by that helper's enrolled
+  Ed25519 key. The proof binds `POST`, the exact path and body hash, helper/environment,
+  operation ID, and a lifetime of at most one minute. The strict body contains
+  `operation_id`, `environment_id`, `helper_id`, `edge_pool`, and protocol version `1.0`.
+  The response is the canonical connector-admission document: the same operation and
+  identity bindings, generation, assigned node/pool, one `{host,port}` endpoint, at least
+  one revisioned route handoff, protocol version, optional capabilities, and the scoped
+  connector credential. It contains no provider credential or internal alternate port.
+  Exact retries replay the encrypted recorded document; changed body or proof bindings
+  fail before a new admission is minted.
+- `POST /v1/config/credentials` accepts a helper identity credential, a bounded `{}` JSON
+  body, and `X-Paperboat-Helper-Proof`; it returns a short-lived `config_sync` credential
+  bound to the active environment/helper assignment and warning revision. Exact operation
+  replays return the original credential; conflicting replays return `operation_conflict`.
+- `GET /v1/trust/revocations` requires the edge-control bearer credential and returns the
+  bounded revocation document consumed by tunnel trust snapshots (`jtis`, `environments`,
+  `helper_generations`, and `key_ids`).
+- `POST /v1/routes/observed` accepts the bounded applied route snapshot from the assigned
+  tunnel node. Each item is accepted only when route revision, node ID, and connector
+  generation still match current desired ownership; stale observations return
+  `version_conflict` and cannot mutate newer intent.
+
+These endpoints never return repository/provider secrets. Assignment replacement, consent
+revocation, helper replacement, and environment revocation invalidate subsequent credential
+use through the snapshot document.
 
 ## Project State Enums
 

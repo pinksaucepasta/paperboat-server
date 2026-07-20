@@ -524,64 +524,93 @@ func (s *Service) ReserveBandwidth(ctx context.Context, machineID string, reques
 		if err != nil {
 			return err
 		}
-		if machine.State != "online" || machine.SeatState != "occupied" {
-			return ErrBandwidthDenied
-		}
-		period, err := s.ensureCurrentBandwidthPeriod(ctx, tx, machine)
-		if err != nil {
-			return err
-		}
-		remaining := requestedBytes
-		includedAvailable := period.IncludedBytes - period.ConsumedIncludedBytes
-		if includedAvailable > 0 {
-			consume := minInt64(remaining, includedAvailable)
-			rows, err := tx.Queries().ConsumeConnectedMachineIncludedBandwidth(ctx, dbsqlc.ConsumeConnectedMachineIncludedBandwidthParams{ID: period.ID, Bytes: consume})
-			if err != nil {
-				return err
-			}
-			if rows != 1 {
-				return ErrBandwidthDenied
-			}
-			remaining -= consume
-			reservation.GrantedBytes += consume
-		}
-		if remaining > 0 {
-			topups, err := tx.Queries().ListActiveConnectedMachineTopupsForUpdate(ctx, machine.UserID)
-			if err != nil {
-				return err
-			}
-			for _, topup := range topups {
-				if remaining == 0 {
-					break
-				}
-				consume := minInt64(remaining, topup.RemainingBytes)
-				rows, err := tx.Queries().ConsumeConnectedMachineTopup(ctx, dbsqlc.ConsumeConnectedMachineTopupParams{ID: topup.ID, Bytes: consume})
-				if err != nil {
-					return err
-				}
-				if rows != 1 {
-					return ErrBandwidthDenied
-				}
-				remaining -= consume
-				reservation.GrantedBytes += consume
-			}
-		}
-		if reservation.GrantedBytes > 0 {
-			rows, err := tx.Queries().RecordConnectedMachineTopupConsumption(ctx, dbsqlc.RecordConnectedMachineTopupConsumptionParams{ID: period.ID, Bytes: reservation.GrantedBytes - minInt64(reservation.GrantedBytes, includedAvailable)})
-			if err != nil {
-				return err
-			}
-			if rows != 1 {
-				return ErrBandwidthDenied
-			}
-		}
-		reservation.Exhausted = remaining > 0
-		return nil
+		reservation, err = s.reserveBandwidthForMachineTx(ctx, tx, machine, requestedBytes, s.now().UTC())
+		return err
 	})
 	return reservation, err
 }
 
+// DebitEnvironmentBandwidthTx reconciles trusted edge usage against a BYOD
+// environment inside the caller's transaction. Hosted environments return a
+// zero, non-exhausted result because they do not use the BYOD entitlement.
+func (s *Service) DebitEnvironmentBandwidthTx(ctx context.Context, tx *db.Tx, environmentID string, bytes int64, now time.Time) (int64, bool, error) {
+	if tx == nil || strings.TrimSpace(environmentID) == "" || bytes <= 0 {
+		return 0, false, ErrInvalidBandwidth
+	}
+	machine, err := tx.Queries().GetConnectedMachineForEnvironmentBandwidthUpdate(ctx, strings.TrimSpace(environmentID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	reservation, err := s.reserveBandwidthForMachineTx(ctx, tx, machine, bytes, now.UTC())
+	return reservation.GrantedBytes, reservation.Exhausted, err
+}
+
+func (s *Service) reserveBandwidthForMachineTx(ctx context.Context, tx *db.Tx, machine dbsqlc.ConnectedMachine, requestedBytes int64, now time.Time) (BandwidthReservation, error) {
+	if machine.State != "online" || machine.SeatState != "occupied" {
+		return BandwidthReservation{}, ErrBandwidthDenied
+	}
+	period, err := s.ensureCurrentBandwidthPeriodAt(ctx, tx, machine, now)
+	if err != nil {
+		return BandwidthReservation{}, err
+	}
+	reservation := BandwidthReservation{}
+	remaining := requestedBytes
+	includedAvailable := period.IncludedBytes - period.ConsumedIncludedBytes
+	if includedAvailable > 0 {
+		consume := minInt64(remaining, includedAvailable)
+		rows, err := tx.Queries().ConsumeConnectedMachineIncludedBandwidth(ctx, dbsqlc.ConsumeConnectedMachineIncludedBandwidthParams{ID: period.ID, Bytes: consume})
+		if err != nil || rows != 1 {
+			if err != nil {
+				return BandwidthReservation{}, err
+			}
+			return BandwidthReservation{}, ErrBandwidthDenied
+		}
+		remaining -= consume
+		reservation.GrantedBytes += consume
+	}
+	if remaining > 0 {
+		topups, err := tx.Queries().ListActiveConnectedMachineTopupsForUpdate(ctx, machine.UserID)
+		if err != nil {
+			return BandwidthReservation{}, err
+		}
+		for _, topup := range topups {
+			if remaining == 0 {
+				break
+			}
+			consume := minInt64(remaining, topup.RemainingBytes)
+			rows, err := tx.Queries().ConsumeConnectedMachineTopup(ctx, dbsqlc.ConsumeConnectedMachineTopupParams{ID: topup.ID, Bytes: consume})
+			if err != nil || rows != 1 {
+				if err != nil {
+					return BandwidthReservation{}, err
+				}
+				return BandwidthReservation{}, ErrBandwidthDenied
+			}
+			remaining -= consume
+			reservation.GrantedBytes += consume
+		}
+	}
+	if reservation.GrantedBytes > 0 {
+		topupBytes := reservation.GrantedBytes - minInt64(reservation.GrantedBytes, includedAvailable)
+		rows, err := tx.Queries().RecordConnectedMachineTopupConsumption(ctx, dbsqlc.RecordConnectedMachineTopupConsumptionParams{ID: period.ID, Bytes: topupBytes})
+		if err != nil || rows != 1 {
+			if err != nil {
+				return BandwidthReservation{}, err
+			}
+			return BandwidthReservation{}, ErrBandwidthDenied
+		}
+	}
+	reservation.Exhausted = remaining > 0
+	return reservation, nil
+}
+
 func (s *Service) ensureCurrentBandwidthPeriod(ctx context.Context, tx *db.Tx, machine dbsqlc.ConnectedMachine) (dbsqlc.ConnectedMachineBandwidthPeriod, error) {
+	return s.ensureCurrentBandwidthPeriodAt(ctx, tx, machine, s.now().UTC())
+}
+
+func (s *Service) ensureCurrentBandwidthPeriodAt(ctx context.Context, tx *db.Tx, machine dbsqlc.ConnectedMachine, now time.Time) (dbsqlc.ConnectedMachineBandwidthPeriod, error) {
 	entitlement, err := tx.Queries().GetConnectedMachineEntitlementForUpdate(ctx, machine.UserID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return dbsqlc.ConnectedMachineBandwidthPeriod{}, ErrBandwidthDenied
@@ -589,7 +618,6 @@ func (s *Service) ensureCurrentBandwidthPeriod(ctx context.Context, tx *db.Tx, m
 	if err != nil {
 		return dbsqlc.ConnectedMachineBandwidthPeriod{}, err
 	}
-	now := s.now().UTC()
 	if (entitlement.State != "active" && entitlement.State != "trialing") || !now.Before(entitlement.CurrentPeriodEnd) || now.Before(entitlement.CurrentPeriodStart) {
 		return dbsqlc.ConnectedMachineBandwidthPeriod{}, ErrBandwidthDenied
 	}

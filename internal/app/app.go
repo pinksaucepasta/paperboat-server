@@ -18,12 +18,14 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/configsync"
 	"github.com/pinksaucepasta/paperboat-server/internal/connectedmachines"
+	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
 	"github.com/pinksaucepasta/paperboat-server/internal/httpapi"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
 	"github.com/pinksaucepasta/paperboat-server/internal/mint"
+	"github.com/pinksaucepasta/paperboat-server/internal/observability"
 	"github.com/pinksaucepasta/paperboat-server/internal/orchestrator"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 	"github.com/pinksaucepasta/paperboat-server/internal/terminalsessions"
@@ -60,6 +62,7 @@ func New(opts Options) (*App, error) {
 	billingService := billing.NewService(billingRepo, polarClient(opts.Config), auditWriter)
 	billingService.SetAutoTopupRetryCooldown(opts.Config.Billing.AutoTopupRetryCooldown)
 	billingService.SetCheckoutReservationTTL(opts.Config.Billing.CheckoutReservationTTL)
+	billingService.SetEncryptionKey(opts.Config.Secrets.EncryptionKey)
 	githubService := pbgithub.NewService(store, auditWriter, githubClient(opts.Config), opts.Config)
 	projectService := projects.NewService(store, auditWriter, opts.Config)
 	terminalSessionService := terminalsessions.New(store, projectService, opts.Config.TerminalSessions.MaxActivePerProject, opts.Config.TerminalSessions.RetryBackoff, opts.Config.TerminalSessions.MaxAttemptsBeforeAlert)
@@ -73,7 +76,7 @@ func New(opts Options) (*App, error) {
 	if !opts.Config.Providers.FakeMode {
 		credentialIssuer = &agentunnel.PapercodeCredentialIssuer{
 			Issuer: normalizePapercodeIssuer(opts.Config.HTTP.PublicBaseURL), Signer: mintKeys,
-			HTTPClient: &http.Client{Timeout: opts.Config.HTTP.RequestTimeout}, RequireHTTPS: true,
+			HTTPClient: providerHTTPClient("papercode", opts.Config.HTTP.RequestTimeout), RequireHTTPS: true,
 			ProofTTL: opts.Config.CLIAuth.MintProofLifetime,
 		}
 	}
@@ -111,26 +114,63 @@ func New(opts Options) (*App, error) {
 	connectedMachineService.ConfigureTerminalSessions(opts.Config.TerminalSessions.MaxActivePerProject, mintKeys, &http.Client{Timeout: opts.Config.TerminalSessions.OperationTimeout})
 	connectedMachineService.ConfigureBootstrapCommand(opts.Config.ConnectedMachines.BootstrapCommand)
 	billingService.SetConnectedMachineSessionRevoker(connectedMachineService)
+	enrollmentService := controlplane.NewEnrollmentService(store, mintKeys, auditWriter, config.NormalizeIssuer(opts.Config.HTTP.PublicBaseURL), opts.Config.Secrets.EncryptionKey)
+	configAssignmentService := controlplane.NewConfigAssignmentService(store, auditWriter)
+	configCredentialService := controlplane.NewConfigCredentialService(store, mintKeys, config.NormalizeIssuer(opts.Config.HTTP.PublicBaseURL), opts.Config.Secrets.EncryptionKey)
+	configCredentialService.SetAuditWriter(auditWriter)
+	routeService := controlplane.NewRouteService(store, auditWriter)
+	controlDiagnostics := controlplane.NewDiagnosticsService(store)
+	operationRecovery := controlplane.NewOperationRecoveryService(store, auditWriter)
+	billingRecovery := billing.NewRecoveryService(store, auditWriter)
+	var edgeControlHandler http.Handler
+	var edgeControlService *controlplane.EdgeService
+	if opts.Config.Secrets.EdgeControlCredential != "" {
+		edgeControlService = controlplane.NewEdgeService(store, opts.Config.Secrets.EdgeControlCredential)
+		edgeControlService.SetBandwidthDebiter(connectedMachineService)
+		edgeControlService.SetAuditWriter(auditWriter)
+		edgeControlService.SetCredentialIssuer(mintKeys, config.NormalizeIssuer(opts.Config.HTTP.PublicBaseURL), opts.Config.Secrets.EncryptionKey)
+		edgeControlHandler = edgeControlService.Handler()
+	}
 	router := httpapi.NewRouter(httpapi.Options{
-		Config:            opts.Config,
-		Logger:            opts.Logger,
-		ReadinessChecker:  checker,
-		Auth:              authService,
-		DeviceAuth:        deviceAuthService,
-		Billing:           billingService,
-		Catalog:           catalogRepo,
-		CatalogWriter:     catalogRepo,
-		Fly:               flyProvider,
-		GitHub:            githubService,
-		Projects:          projectService,
-		TerminalSessions:  terminalSessionService,
-		Agentunnel:        agentunnelService,
-		MeteringRepo:      metering.NewRuntimeRepository(store, opts.Config.Secrets.EncryptionKey),
-		ConfigSync:        configSyncRepo,
-		Classifier:        classificationController,
-		ConnectedMachines: connectedMachineService,
-		MintKeys:          mintKeys,
+		Config:             opts.Config,
+		Logger:             opts.Logger,
+		ReadinessChecker:   checker,
+		Auth:               authService,
+		DeviceAuth:         deviceAuthService,
+		Billing:            billingService,
+		BillingRecovery:    billingRecovery,
+		Catalog:            catalogRepo,
+		CatalogWriter:      catalogRepo,
+		Fly:                flyProvider,
+		GitHub:             githubService,
+		Projects:           projectService,
+		TerminalSessions:   terminalSessionService,
+		Agentunnel:         agentunnelService,
+		MeteringRepo:       metering.NewRuntimeRepository(store, opts.Config.Secrets.EncryptionKey),
+		ConfigSync:         configSyncRepo,
+		Classifier:         classificationController,
+		ConnectedMachines:  connectedMachineService,
+		MintKeys:           mintKeys,
+		EdgeControl:        edgeControlHandler,
+		EdgeControlAdmin:   edgeControlService,
+		Enrollment:         enrollmentService,
+		ConfigAssignments:  configAssignmentService,
+		ConfigCredentials:  configCredentialService,
+		Routes:             routeService,
+		ControlDiagnostics: controlDiagnostics,
+		OperationRecovery:  operationRecovery,
 	})
+	serverWorkers := []workers.Worker{
+		orchestratorService.Worker(2 * opts.Config.HTTP.RequestTimeout / 15),
+		meteringService.Worker(opts.Config.HTTP.RequestTimeout),
+		billingService.AutoTopupWorker(opts.Config.HTTP.RequestTimeout),
+		configSyncRepo.RotationWorker(time.Minute),
+		terminalSessionService.Worker(opts.Config.TerminalSessions.WorkerInterval),
+		connectedMachineService.Worker(opts.Config.TerminalSessions.WorkerInterval),
+	}
+	if edgeControlService != nil {
+		serverWorkers = append(serverWorkers, edgeControlService.StaleNodeWorker(opts.Config.TerminalSessions.WorkerInterval, 3*opts.Config.TerminalSessions.WorkerInterval))
+	}
 	return &App{
 		cfg:    opts.Config,
 		logger: opts.Logger,
@@ -140,14 +180,7 @@ func New(opts Options) (*App, error) {
 			Handler:           router,
 			ReadHeaderTimeout: opts.Config.HTTP.ReadHeaderTimeout,
 		},
-		worker: workers.NewSupervisor(
-			orchestratorService.Worker(2*opts.Config.HTTP.RequestTimeout/15),
-			meteringService.Worker(opts.Config.HTTP.RequestTimeout),
-			billingService.AutoTopupWorker(opts.Config.HTTP.RequestTimeout),
-			configSyncRepo.RotationWorker(time.Minute),
-			terminalSessionService.Worker(opts.Config.TerminalSessions.WorkerInterval),
-			connectedMachineService.Worker(opts.Config.TerminalSessions.WorkerInterval),
-		),
+		worker: workers.NewSupervisor(serverWorkers...),
 	}, nil
 }
 
@@ -184,6 +217,7 @@ func githubClient(cfg config.Config) pbgithub.Client {
 	return pbgithub.HTTPClient{
 		BaseURL:  cfg.Providers.GitHub.BaseURL,
 		TokenURL: cfg.GitHub.OAuthTokenURL,
+		Client:   providerHTTPClient("github", cfg.HTTP.RequestTimeout),
 	}
 }
 
@@ -199,6 +233,7 @@ func agentunnelClient(cfg config.Config) agentunnel.Client {
 		RouteSubdomainPrefix: cfg.Providers.Agentunnel.RouteSubdomainPrefix,
 		AccessPolicyID:       cfg.Providers.Agentunnel.AccessPolicyID,
 		UploadMaxBytes:       cfg.Providers.Agentunnel.UploadMaxBytes,
+		HTTPClient:           providerHTTPClient("agentunnel", cfg.HTTP.RequestTimeout),
 	}
 }
 
@@ -209,6 +244,7 @@ func polarClient(cfg config.Config) billing.PolarClient {
 	return billing.HTTPPolarClient{
 		BaseURL: cfg.Providers.Polar.BaseURL,
 		APIKey:  cfg.Secrets.PolarAPIKey,
+		Client:  providerHTTPClient("polar", cfg.HTTP.RequestTimeout),
 	}
 }
 
@@ -220,7 +256,12 @@ func workOSVerifier(cfg config.Config) auth.WorkOSVerifier {
 		BaseURL:      cfg.Providers.WorkOS.BaseURL,
 		ClientID:     cfg.Secrets.WorkOSClientID,
 		ClientSecret: cfg.Secrets.WorkOSClientSecret,
+		HTTPClient:   providerHTTPClient("workos", cfg.HTTP.RequestTimeout),
 	}
+}
+
+func providerHTTPClient(provider string, timeout time.Duration) *http.Client {
+	return &http.Client{Timeout: timeout, Transport: observability.InstrumentProviderTransport(provider, http.DefaultTransport)}
 }
 
 func publicURLSecure(raw string) bool {

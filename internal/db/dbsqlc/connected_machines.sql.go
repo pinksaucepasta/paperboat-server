@@ -637,6 +637,43 @@ func (q *Queries) GetConnectedMachineForBandwidthUpdate(ctx context.Context, id 
 	return i, err
 }
 
+const getConnectedMachineForEnvironmentBandwidthUpdate = `-- name: GetConnectedMachineForEnvironmentBandwidthUpdate :one
+SELECT id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state, online, agentunnel_route_id, agentunnel_client_id, agentunnel_http_base_url, agentunnel_websocket_base_url, runtime_versions, enrolled_at, last_seen_at, revoked_at, disconnected_at, deleted_at, version, created_at, updated_at FROM connected_machines
+WHERE environment_id = $1 AND deleted_at IS NULL
+FOR UPDATE
+`
+
+func (q *Queries) GetConnectedMachineForEnvironmentBandwidthUpdate(ctx context.Context, environmentID string) (ConnectedMachine, error) {
+	row := q.db.QueryRowContext(ctx, getConnectedMachineForEnvironmentBandwidthUpdate, environmentID)
+	var i ConnectedMachine
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.EnvironmentID,
+		&i.DisplayName,
+		&i.Platform,
+		&i.Architecture,
+		&i.WorkspaceRoot,
+		&i.State,
+		&i.SeatState,
+		&i.Online,
+		&i.AgentunnelRouteID,
+		&i.AgentunnelClientID,
+		&i.AgentunnelHttpBaseUrl,
+		&i.AgentunnelWebsocketBaseUrl,
+		&i.RuntimeVersions,
+		&i.EnrolledAt,
+		&i.LastSeenAt,
+		&i.RevokedAt,
+		&i.DisconnectedAt,
+		&i.DeletedAt,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getConnectedMachineForUpdate = `-- name: GetConnectedMachineForUpdate :one
 SELECT id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state, online, agentunnel_route_id, agentunnel_client_id, agentunnel_http_base_url, agentunnel_websocket_base_url, runtime_versions, enrolled_at, last_seen_at, revoked_at, disconnected_at, deleted_at, version, created_at, updated_at FROM connected_machines
 WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL FOR UPDATE

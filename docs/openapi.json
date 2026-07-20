@@ -36,6 +36,16 @@
         "type": "http",
         "scheme": "bearer",
         "description": "Rotating refresh token accepted only by the refresh endpoint."
+      },
+      "bearerEdgeControl": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Private edge-control service credential. Never exposed to browser or CLI clients."
+      },
+      "bearerHelperIdentity": {
+		"type": "http",
+		"scheme": "bearer",
+		"description": "Short-lived helper identity credential bound to the helper Ed25519 key."
       }
     },
     "schemas": {
@@ -524,6 +534,49 @@
           "enabled": { "type": "boolean" },
           "version": { "type": "integer" }
         }
+      },
+      "ConnectorAdmissionRequest": {
+		"type": "object",
+		"additionalProperties": false,
+		"required": ["operation_id", "environment_id", "helper_id", "edge_pool", "protocol_version"],
+		"properties": {
+		  "operation_id": { "type": "string", "minLength": 8, "maxLength": 128 },
+		  "environment_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+		  "helper_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+		  "edge_pool": { "type": "string", "minLength": 1, "maxLength": 64 },
+		  "protocol_version": { "const": "1.0" }
+		}
+      },
+      "ConnectorRouteHandoff": {
+		"type": "object",
+		"additionalProperties": false,
+		"required": ["route_id", "route_revision", "kind", "public_host", "proxy_name", "target"],
+		"properties": {
+		  "route_id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,127}$" },
+		  "route_revision": { "type": "integer", "minimum": 1 },
+		  "kind": { "type": "string", "enum": ["helper_https_wss", "preview_public_https_wss"] },
+		  "public_host": { "type": "string", "format": "hostname", "maxLength": 253 },
+		  "proxy_name": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,127}$" },
+		  "target": { "type": "object", "additionalProperties": false, "required": ["host", "port"], "properties": { "host": { "type": "string", "enum": ["127.0.0.1", "::1"] }, "port": { "type": "integer", "minimum": 1, "maximum": 65535 } } }
+		}
+      },
+      "ConnectorAdmission": {
+		"type": "object",
+		"additionalProperties": false,
+		"required": ["operation_id", "environment_id", "helper_id", "connector_generation", "edge_pool", "edge_node_id", "edge_endpoint", "routes", "protocol_version", "credential"],
+		"properties": {
+		  "operation_id": { "type": "string", "minLength": 8, "maxLength": 128 },
+		  "environment_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+		  "helper_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+		  "connector_generation": { "type": "integer", "minimum": 1 },
+		  "edge_pool": { "type": "string", "minLength": 1, "maxLength": 64 },
+		  "edge_node_id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,127}$" },
+		  "edge_endpoint": { "type": "object", "additionalProperties": false, "required": ["host", "port"], "properties": { "host": { "type": "string", "minLength": 1, "maxLength": 253 }, "port": { "type": "integer", "minimum": 1, "maximum": 65535 } } },
+		  "routes": { "type": "array", "minItems": 1, "maxItems": 128, "items": { "$ref": "#/components/schemas/ConnectorRouteHandoff" } },
+		  "protocol_version": { "const": "1.0" },
+		  "capabilities": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "type": "string", "maxLength": 64 } },
+		  "credential": { "type": "string", "minLength": 32, "maxLength": 8192 }
+		}
       }
     },
     "responses": {
@@ -578,6 +631,28 @@
         }
       }
     },
+    "/v1/assignment/current": { "post": { "summary": "Fetch current connector assignment", "security": [{ "bearerEdgeControl": [] }], "responses": { "200": { "description": "Current assignment." }, "401": { "$ref": "#/components/responses/Error" } } } },
+    "/v1/nodes/register": { "post": { "summary": "Register tunnel node", "security": [{ "bearerEdgeControl": [] }], "responses": { "204": { "description": "Node registered." }, "401": { "$ref": "#/components/responses/Error" } } } },
+    "/v1/nodes/heartbeat": { "post": { "summary": "Record tunnel node heartbeat", "security": [{ "bearerEdgeControl": [] }], "responses": { "204": { "description": "Heartbeat recorded." }, "401": { "$ref": "#/components/responses/Error" } } } },
+    "/v1/routes/desired": { "post": { "summary": "Fetch desired routes for tunnel node", "security": [{ "bearerEdgeControl": [] }], "responses": { "200": { "description": "Desired route snapshot." }, "401": { "$ref": "#/components/responses/Error" } } } },
+    "/v1/usage/report": { "post": { "summary": "Reconcile signed absolute usage", "security": [{ "bearerEdgeControl": [] }], "responses": { "200": { "description": "Usage receipt." }, "401": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" } } } },
+    "/v1/connectors/admission": { "post": { "summary": "Issue connector admission", "description": "Consumes an environment/helper-bound identity and Ed25519 proof over the exact request body. Exact operation replays return the encrypted recorded decision.", "security": [{ "bearerHelperIdentity": [] }], "parameters": [{ "name": "X-Paperboat-Helper-Proof", "in": "header", "required": true, "schema": { "type": "string", "description": "Unpadded base64url helper-proof envelope." } }], "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ConnectorAdmissionRequest" } } } }, "responses": { "200": { "description": "Connector admission credential, assigned endpoint, and route handoffs.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ConnectorAdmission" } } } }, "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" } } } },
+    "/v1/helpers/enroll": { "post": { "summary": "Exchange one-time helper enrollment", "security": [], "responses": { "200": { "description": "Helper identity credential." }, "401": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" } } } },
+    "/v1/config/credentials": { "post": { "summary": "Issue helper-bound config-sync credential", "description": "Private helper identity and proof endpoint. Returns a short-lived credential bound to the active assignment and warning revision.", "security": [], "responses": { "200": { "description": "Config-sync credential issued." }, "401": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" } } } },
+    "/v1/routes/observed": { "post": { "summary": "Record applied route snapshot", "description": "Private edge-control endpoint. Stale revision, node, or connector generation observations are rejected.", "security": [{ "bearerEdgeControl": [] }], "responses": { "204": { "description": "Observation accepted." }, "409": { "$ref": "#/components/responses/Error" } } } },
+    "/v1/trust/revocations": { "get": { "summary": "Fetch bounded revocation snapshot", "description": "Private edge-control endpoint consumed by tunnel trust refresh.", "security": [{ "bearerEdgeControl": [] }], "responses": { "200": { "description": "Revocation document." }, "503": { "$ref": "#/components/responses/Error" } } } },
+    "/api/config-repositories": { "get": { "summary": "List connected config repositories", "security": [{ "cookieSession": [] }], "responses": { "200": { "description": "Owned repositories." } } }, "post": { "summary": "Connect a config repository", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "responses": { "201": { "description": "Repository connected." }, "400": { "$ref": "#/components/responses/Error" } } } },
+    "/api/environments/{environment_id}/helper-enrollments": { "post": { "summary": "Issue one-time helper enrollment", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }], "responses": { "201": { "description": "Enrollment grant." }, "409": { "$ref": "#/components/responses/Error" } } } },
+    "/api/environments/{environment_id}/helpers/{helper_id}/replace": { "post": { "summary": "Replace environment helper", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }], "responses": { "200": { "description": "Replacement generation." }, "409": { "$ref": "#/components/responses/Error" } } } },
+    "/api/environments/{environment_id}/config-assignment": { "get": { "summary": "Read environment config assignment", "security": [{ "cookieSession": [] }], "responses": { "200": { "description": "Assignment state." }, "404": { "$ref": "#/components/responses/Error" } } }, "put": { "summary": "Assign config repository", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "responses": { "200": { "description": "Assignment updated." }, "409": { "$ref": "#/components/responses/Error" } } }, "delete": { "summary": "Clear config assignment", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "responses": { "204": { "description": "Assignment cleared." }, "409": { "$ref": "#/components/responses/Error" } } } },
+    "/api/environments/{environment_id}/config-assignment/consent": { "post": { "summary": "Accept config warning revision", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "responses": { "200": { "description": "Consent accepted." }, "409": { "$ref": "#/components/responses/Error" } } } },
+    "/api/environments/{environment_id}/routes": { "post": { "summary": "Create revisioned route intent", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "responses": { "201": { "description": "Route intent created." }, "409": { "$ref": "#/components/responses/Error" } } } },
+    "/api/routes/{route_id}": { "patch": { "summary": "Transition route intent", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "responses": { "200": { "description": "Route intent transitioned." }, "409": { "$ref": "#/components/responses/Error" } } } },
+    "/api/admin/mint/signing-keys/{key_id}/revoke": { "post": { "summary": "Revoke mint signing key", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }], "responses": { "204": { "description": "Signing key revoked." }, "409": { "$ref": "#/components/responses/Error" } } } },
+    "/api/admin/control-operations/{operation_id}/recover": { "post": { "summary": "Recover dead-lettered control operation", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "parameters": [{ "name": "operation_id", "in": "path", "required": true, "schema": { "type": "string" } }, { "$ref": "#/components/parameters/IdempotencyKey" }], "responses": { "204": { "description": "Control operation requeued." }, "409": { "$ref": "#/components/responses/Error" } } } },
+    "/api/admin/billing/uncertain/{kind}/{operation_id}/recover": { "post": { "summary": "Requeue an uncertain billing operation after provider evidence confirms no mutation", "description": "Admin-only, CSRF-protected and idempotent. Supported kinds are checkout, portal, subscription_update, and auto_topup. The evidence reference is hashed before persistence or audit.", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "parameters": [{ "name": "kind", "in": "path", "required": true, "schema": { "type": "string", "enum": ["checkout", "portal", "subscription_update", "auto_topup"] } }, { "name": "operation_id", "in": "path", "required": true, "schema": { "type": "string", "minLength": 1, "maxLength": 256 } }, { "$ref": "#/components/parameters/IdempotencyKey" }], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "additionalProperties": false, "required": ["evidence_reference"], "properties": { "evidence_reference": { "type": "string", "minLength": 8, "maxLength": 256, "pattern": "^[A-Za-z0-9][A-Za-z0-9:._/-]{7,255}$" } } } } } }, "responses": { "204": { "description": "Uncertain operation moved to its existing retryable failed state." }, "400": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" }, "503": { "$ref": "#/components/responses/Error" } } } },
+    "/api/admin/edge/usage-keys": { "post": { "summary": "Provision edge usage verification key", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }], "responses": { "201": { "description": "Usage key provisioned." }, "409": { "$ref": "#/components/responses/Error" } } } },
+    "/api/admin/edge/usage-keys/{key_id}/revoke": { "post": { "summary": "Revoke edge usage verification key", "security": [{ "cookieSession": [] }, { "csrfHeader": [] }], "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }], "responses": { "204": { "description": "Usage key revoked." } } } },
     "/metrics": {
       "get": {
         "summary": "Local operational metrics snapshot",

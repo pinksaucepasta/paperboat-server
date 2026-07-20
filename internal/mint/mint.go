@@ -1,6 +1,7 @@
 package mint
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
@@ -9,7 +10,9 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -69,6 +72,57 @@ type TerminalControlInput struct {
 	Operation     string
 	ThreadID      string
 	TerminalIDs   []string
+}
+
+type CredentialInput struct {
+	Issuer              string
+	Audience            string
+	Subject             string
+	JTI                 string
+	IssuedAt            time.Time
+	ExpiresAt           time.Time
+	CredentialClass     string
+	Scopes              []string
+	EnvironmentID       string
+	EnrollmentID        string
+	AssignmentID        string
+	WarningRevision     string
+	HelperID            string
+	KeyThumbprint       string
+	ConnectorGeneration int64
+	EdgePool            string
+	EdgeNodeID          string
+}
+
+type CredentialClaims struct {
+	Issuer              string   `json:"iss"`
+	Audience            string   `json:"aud"`
+	Subject             string   `json:"sub"`
+	JTI                 string   `json:"jti"`
+	IssuedAt            int64    `json:"iat"`
+	ExpiresAt           int64    `json:"exp"`
+	Scopes              []string `json:"scope"`
+	CredentialClass     string   `json:"credential_class"`
+	EnvironmentID       string   `json:"environment_id"`
+	EnrollmentID        string   `json:"enrollment_id,omitempty"`
+	AssignmentID        string   `json:"assignment_id,omitempty"`
+	WarningRevision     string   `json:"warning_revision,omitempty"`
+	HelperID            string   `json:"helper_id,omitempty"`
+	KeyThumbprint       string   `json:"key_thumbprint,omitempty"`
+	ConnectorGeneration int64    `json:"connector_generation,omitempty"`
+	EdgePool            string   `json:"edge_pool,omitempty"`
+	EdgeNodeID          string   `json:"edge_node_id,omitempty"`
+}
+
+var credentialPolicies = map[string]struct {
+	audience string
+	scopes   []string
+	maxTTL   time.Duration
+}{
+	"helper_enrollment":   {audience: "paperboat-enrollment", scopes: []string{"helper:enroll"}, maxTTL: 10 * time.Minute},
+	"helper_identity":     {audience: "paperboat-control", scopes: []string{"helper:connect", "helper:renew"}, maxTTL: time.Hour},
+	"connector_admission": {audience: "paperboat-edge", scopes: []string{"connector:admit"}, maxTTL: 5 * time.Minute},
+	"config_sync":         {audience: "paperboat-helper", scopes: []string{"config:pull", "config:apply", "config:report"}, maxTTL: 5 * time.Minute},
 }
 
 func New(keys []Key, activeID string, maxAge time.Duration) (*Provider, error) {
@@ -192,6 +246,111 @@ func (p *Provider) SignTerminalControl(input TerminalControlInput) (string, erro
 		"nonce": input.Nonce, "scope": []string{TerminalControlScope}, "operation": input.Operation,
 		"threadId": input.ThreadID, "terminalIds": input.TerminalIDs,
 	})
+}
+
+func (p *Provider) SignCredential(input CredentialInput) (string, error) {
+	policy, ok := credentialPolicies[input.CredentialClass]
+	issuedAt, expiresAt := input.IssuedAt.UTC(), input.ExpiresAt.UTC()
+	if !ok || input.Issuer == "" || input.Subject == "" || input.JTI == "" || input.EnvironmentID == "" || input.Audience != policy.audience || !slices.Equal(input.Scopes, policy.scopes) || !expiresAt.After(issuedAt) || expiresAt.Sub(issuedAt) > policy.maxTTL {
+		return "", errors.New("credential claims are invalid")
+	}
+	claims := map[string]any{"iss": input.Issuer, "aud": input.Audience, "sub": input.Subject, "jti": input.JTI, "iat": issuedAt.Unix(), "exp": expiresAt.Unix(), "scope": input.Scopes, "credential_class": input.CredentialClass, "environment_id": input.EnvironmentID}
+	switch input.CredentialClass {
+	case "helper_enrollment":
+		if input.EnrollmentID == "" {
+			return "", errors.New("enrollment binding is required")
+		}
+		claims["enrollment_id"] = input.EnrollmentID
+	case "helper_identity":
+		if input.HelperID == "" || input.KeyThumbprint == "" {
+			return "", errors.New("helper identity bindings are required")
+		}
+		claims["helper_id"], claims["key_thumbprint"] = input.HelperID, input.KeyThumbprint
+	case "connector_admission":
+		if input.HelperID == "" || input.ConnectorGeneration < 1 || input.EdgePool == "" || input.EdgeNodeID == "" {
+			return "", errors.New("connector admission bindings are required")
+		}
+		claims["helper_id"], claims["connector_generation"], claims["edge_pool"], claims["edge_node_id"] = input.HelperID, input.ConnectorGeneration, input.EdgePool, input.EdgeNodeID
+	case "config_sync":
+		if input.HelperID == "" || input.AssignmentID == "" || input.WarningRevision == "" {
+			return "", errors.New("config sync bindings are required")
+		}
+		claims["helper_id"], claims["assignment_id"], claims["warning_revision"] = input.HelperID, input.AssignmentID, input.WarningRevision
+	}
+	return p.signClaims("paperboat-credential+jwt", claims)
+}
+
+func (p *Provider) VerifyCredential(token, expectedIssuer, expectedClass string, now time.Time) (CredentialClaims, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return CredentialClaims{}, errors.New("credential is malformed")
+	}
+	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return CredentialClaims{}, errors.New("credential is malformed")
+	}
+	var header struct {
+		Algorithm string `json:"alg"`
+		Type      string `json:"typ"`
+		KeyID     string `json:"kid"`
+	}
+	if strictCredentialJSON(headerBytes, &header) != nil || header.Algorithm != "EdDSA" || header.Type != "paperboat-credential+jwt" || header.KeyID == "" {
+		return CredentialClaims{}, errors.New("credential header is invalid")
+	}
+	p.mu.RLock()
+	privateKey, ok := p.keys[header.KeyID]
+	p.mu.RUnlock()
+	if !ok {
+		return CredentialClaims{}, errors.New("credential key is unknown")
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil || !ed25519.Verify(privateKey.Public().(ed25519.PublicKey), []byte(parts[0]+"."+parts[1]), signature) {
+		return CredentialClaims{}, errors.New("credential signature is invalid")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return CredentialClaims{}, errors.New("credential is malformed")
+	}
+	var claims CredentialClaims
+	if strictCredentialJSON(payload, &claims) != nil {
+		return CredentialClaims{}, errors.New("credential claims are invalid")
+	}
+	policy, ok := credentialPolicies[expectedClass]
+	current := now.UTC().Unix()
+	if !ok || claims.CredentialClass != expectedClass || claims.Issuer != expectedIssuer || claims.Audience != policy.audience || !slices.Equal(claims.Scopes, policy.scopes) || claims.Subject == "" || claims.JTI == "" || claims.EnvironmentID == "" || claims.ExpiresAt <= current || claims.IssuedAt > current+60 || claims.ExpiresAt <= claims.IssuedAt || time.Duration(claims.ExpiresAt-claims.IssuedAt)*time.Second > policy.maxTTL {
+		return CredentialClaims{}, errors.New("credential claims are invalid")
+	}
+	switch expectedClass {
+	case "helper_enrollment":
+		if claims.EnrollmentID == "" {
+			return CredentialClaims{}, errors.New("credential claims are invalid")
+		}
+	case "helper_identity":
+		if claims.HelperID == "" || claims.KeyThumbprint == "" {
+			return CredentialClaims{}, errors.New("credential claims are invalid")
+		}
+	case "connector_admission":
+		if claims.HelperID == "" || claims.ConnectorGeneration < 1 || claims.EdgePool == "" || claims.EdgeNodeID == "" {
+			return CredentialClaims{}, errors.New("credential claims are invalid")
+		}
+	case "config_sync":
+		if claims.HelperID == "" || claims.AssignmentID == "" || claims.WarningRevision == "" {
+			return CredentialClaims{}, errors.New("credential claims are invalid")
+		}
+	}
+	return claims, nil
+}
+
+func strictCredentialJSON(data []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return errors.New("trailing credential data")
+	}
+	return nil
 }
 
 func (p *Provider) signClaims(proofType string, claims map[string]any) (string, error) {

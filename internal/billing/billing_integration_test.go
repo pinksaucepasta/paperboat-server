@@ -1,6 +1,7 @@
 package billing_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -13,6 +14,71 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 )
+
+func TestBillingUncertainRecoveryIsAuditedIdempotentAndKindBound(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID := "usr_billing_recovery_" + suffix
+	insertUser(t, store, userID, "billing-recovery-"+suffix+"@example.com")
+	operations := map[string]string{
+		"checkout":            "checkout_recovery_" + suffix,
+		"portal":              "portal_recovery_" + suffix,
+		"subscription_update": "subscription_recovery_" + suffix,
+		"auto_topup":          "auto_topup_recovery_" + suffix,
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.billing_checkout_reservations (id,user_id,product_code,idempotency_key,state,expires_at,last_error,uncertain_at) VALUES ($1,$2,'product-test',$3,'uncertain',now()+interval '5 minutes','provider_outcome_unknown',now())`, "bcr_"+suffix, userID, operations["checkout"]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.billing_portal_operations (idempotency_key,user_id,request_hash,state,last_error) VALUES ($1,$2,$3,'uncertain','provider_outcome_unknown')`, operations["portal"], userID, bytes.Repeat([]byte{1}, 32)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.billing_subscription_update_operations (idempotency_key,user_id,provider_subscription_id,request_hash,state,last_error) VALUES ($1,$2,$3,$4,'uncertain','provider_outcome_unknown')`, operations["subscription_update"], userID, "sub_"+suffix, bytes.Repeat([]byte{2}, 32)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.credit_auto_topup_attempts (id,user_id,idempotency_key,state,last_error) VALUES ($1,$2,$3,'uncertain','provider_outcome_unknown')`, "ata_"+suffix, userID, operations["auto_topup"]); err != nil {
+		t.Fatal(err)
+	}
+	recovery := billing.NewRecoveryService(store, audit.NewWriter(store))
+	for kind, operationID := range operations {
+		recoveryKey := "billing-recovery-" + kind + "-" + suffix
+		evidence := "polar:event:no-mutation:" + kind + ":" + suffix
+		if err := recovery.Recover(ctx, userID, recoveryKey, kind, operationID, evidence); err != nil {
+			t.Fatalf("recover %s: %v", kind, err)
+		}
+		if err := recovery.Recover(ctx, userID, recoveryKey, kind, operationID, evidence); err != nil {
+			t.Fatalf("replay %s: %v", kind, err)
+		}
+		if err := recovery.Recover(ctx, userID, recoveryKey, kind, operationID, evidence+"-different"); !errors.Is(err, billing.ErrBillingRecoveryConflict) {
+			t.Fatalf("conflict %s: %v", kind, err)
+		}
+	}
+	checks := []struct{ table, operation string }{
+		{"billing_checkout_reservations", operations["checkout"]},
+		{"billing_portal_operations", operations["portal"]},
+		{"billing_subscription_update_operations", operations["subscription_update"]},
+		{"credit_auto_topup_attempts", operations["auto_topup"]},
+	}
+	for _, check := range checks {
+		var state string
+		if err := store.SQL().QueryRowContext(ctx, `SELECT state FROM paperboat.`+check.table+` WHERE idempotency_key=$1`, check.operation).Scan(&state); err != nil || state != "failed" {
+			t.Fatalf("%s state=%q err=%v", check.table, state, err)
+		}
+	}
+	var recoveryCount, auditCount int
+	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.billing_uncertain_recoveries WHERE operation_id LIKE '%' || $1`, suffix).Scan(&recoveryCount); err != nil || recoveryCount != 4 {
+		t.Fatalf("recoveries=%d err=%v", recoveryCount, err)
+	}
+	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.audit_events WHERE event_type='billing.uncertain_operation_recovered' AND actor_user_id=$1`, userID).Scan(&auditCount); err != nil || auditCount != 4 {
+		t.Fatalf("audits=%d err=%v", auditCount, err)
+	}
+	if err := recovery.Recover(ctx, userID, "billing-recovery-not-uncertain-"+suffix, "portal", operations["portal"], "polar:event:no-mutation:retry:"+suffix); !errors.Is(err, billing.ErrBillingOperationNotUncertain) {
+		t.Fatalf("non-uncertain recovery=%v", err)
+	}
+	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.billing_uncertain_recoveries WHERE idempotency_key=$1`, "billing-recovery-not-uncertain-"+suffix).Scan(&recoveryCount); err != nil || recoveryCount != 0 {
+		t.Fatalf("rolled-back recovery count=%d err=%v", recoveryCount, err)
+	}
+}
 
 func TestPolarWebhookAppliesPlanResourcesIdempotently(t *testing.T) {
 	store := testStore(t)
@@ -130,6 +196,167 @@ func TestCheckoutReservationPreventsConcurrentSubscriptions(t *testing.T) {
 	}
 	if _, err := service.CreateCheckout(ctx, userID, "guard@example.com", "product-"+planCode, "different-key-"+suffix, "https://example.test/success"); !errors.Is(err, billing.ErrCheckoutPending) {
 		t.Fatalf("concurrent checkout error = %v", err)
+	}
+}
+
+type uncertainPolarClient struct{ billing.FakePolarClient }
+
+func (uncertainPolarClient) CreateCheckout(context.Context, billing.CheckoutInput) (billing.CheckoutSession, error) {
+	return billing.CheckoutSession{}, context.DeadlineExceeded
+}
+
+type countingPortalClient struct {
+	billing.FakePolarClient
+	calls int
+	fail  error
+}
+
+func (c *countingPortalClient) CreateCustomerPortal(ctx context.Context, input billing.CustomerPortalInput) (billing.CustomerPortalSession, error) {
+	c.calls++
+	if c.fail != nil {
+		return billing.CustomerPortalSession{}, c.fail
+	}
+	return c.FakePolarClient.CreateCustomerPortal(ctx, input)
+}
+
+func TestCustomerPortalOperationReplayAndUncertainState(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID := "usr_portal_operation_" + suffix
+	insertUser(t, store, userID, "portal-"+suffix+"@example.com")
+	key := "portal-key-" + suffix
+	client := &countingPortalClient{}
+	service := billing.NewService(billing.NewRepository(store), client, audit.NewWriter(store))
+	service.SetEncryptionKey("portal-test-encryption-key")
+	first, err := service.CreateCustomerPortal(ctx, userID, "portal@example.com", key, "https://example.test/return")
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := service.CreateCustomerPortal(ctx, userID, "portal@example.com", key, "https://example.test/return")
+	if err != nil || replay.URL != first.URL || client.calls != 1 {
+		t.Fatalf("replay = %#v, err=%v, calls=%d", replay, err, client.calls)
+	}
+	var ciphertext []byte
+	if err := store.SQL().QueryRowContext(ctx, `SELECT result_ciphertext FROM paperboat.billing_portal_operations WHERE idempotency_key=$1`, key).Scan(&ciphertext); err != nil {
+		t.Fatal(err)
+	}
+	if len(ciphertext) == 0 || string(ciphertext) == first.URL {
+		t.Fatal("portal result was not encrypted at rest")
+	}
+	if _, err := service.CreateCustomerPortal(ctx, userID, "portal@example.com", key, "https://example.test/different"); !errors.Is(err, billing.ErrIdempotencyConflict) {
+		t.Fatalf("conflicting replay = %v, want ErrIdempotencyConflict", err)
+	}
+
+	uncertainKey := "portal-uncertain-" + suffix
+	uncertainClient := &countingPortalClient{fail: context.DeadlineExceeded}
+	uncertainService := billing.NewService(billing.NewRepository(store), uncertainClient, audit.NewWriter(store))
+	uncertainService.SetEncryptionKey("portal-test-encryption-key")
+	if _, err := uncertainService.CreateCustomerPortal(ctx, userID, "portal@example.com", uncertainKey, "https://example.test/return"); !errors.Is(err, billing.ErrProviderOutcomeUnknown) {
+		t.Fatalf("uncertain portal error = %v, want ErrProviderOutcomeUnknown", err)
+	}
+	if _, err := uncertainService.CreateCustomerPortal(ctx, userID, "portal@example.com", uncertainKey, "https://example.test/return"); !errors.Is(err, billing.ErrProviderOutcomeUnknown) || uncertainClient.calls != 1 {
+		t.Fatalf("uncertain replay = %v, calls=%d", err, uncertainClient.calls)
+	}
+	recovery := billing.NewRecoveryService(store, audit.NewWriter(store))
+	if err := recovery.Recover(ctx, userID, "portal-recovery-"+suffix, "portal", uncertainKey, "polar:event:no-mutation:portal:"+suffix); err != nil {
+		t.Fatal(err)
+	}
+	retryClient := &countingPortalClient{}
+	retryService := billing.NewService(billing.NewRepository(store), retryClient, audit.NewWriter(store))
+	retryService.SetEncryptionKey("portal-test-encryption-key")
+	if retried, err := retryService.CreateCustomerPortal(ctx, userID, "portal@example.com", uncertainKey, "https://example.test/return"); err != nil || retried.URL == "" || retryClient.calls != 1 {
+		t.Fatalf("recovered portal = %#v, err=%v, calls=%d", retried, err, retryClient.calls)
+	}
+}
+
+type uncertainSubscriptionClient struct {
+	billing.FakePolarClient
+	calls *int
+}
+
+func (c uncertainSubscriptionClient) UpdateSubscription(context.Context, billing.SubscriptionUpdateInput) error {
+	*c.calls++
+	return context.DeadlineExceeded
+}
+
+func TestSubscriptionDowngradeTimeoutPreservesPendingIntent(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID := "usr_subscription_uncertain_" + suffix
+	insertUser(t, store, userID, "subscription-uncertain-"+suffix+"@example.com")
+	highPlan, lowPlan := "uncertain-high-"+suffix, "uncertain-low-"+suffix
+	highProduct, lowProduct := "prod_uncertain_high_"+suffix, "prod_uncertain_low_"+suffix
+	insertPlanProduct(t, store, highPlan, highProduct, "price_uncertain_high_"+suffix, "100", 100)
+	insertPlanProduct(t, store, lowPlan, lowProduct, "price_uncertain_low_"+suffix, "10", 10)
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.plan_versions SET metadata=jsonb_build_object('billing',jsonb_build_object('rank',CASE WHEN id=$1 THEN 2 ELSE 1 END)) WHERE id IN ($1,$2)`, "pv_"+highPlan, "pv_"+lowPlan); err != nil {
+		t.Fatal(err)
+	}
+	seed := billing.NewService(billing.NewRepository(store), billing.FakePolarClient{}, audit.NewWriter(store))
+	initial := []byte(fmt.Sprintf(`{"type":"subscription.active","data":{"id":%q,"customer":{"external_id":%q},"product_id":%q,"status":"active","current_period_start":"2026-07-01T00:00:00Z","current_period_end":"2099-08-01T00:00:00Z"}}`, "sub_uncertain_"+suffix, userID, highProduct))
+	if _, err := seed.HandleWebhookWithID(ctx, "evt_subscription_uncertain_"+suffix, initial); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	service := billing.NewService(billing.NewRepository(store), uncertainSubscriptionClient{calls: &calls}, audit.NewWriter(store))
+	key := "downgrade-" + suffix
+	if _, err := service.CreateCheckout(ctx, userID, "subscription-uncertain@example.com", "product-"+lowPlan, key, "https://example.test/success"); !errors.Is(err, billing.ErrProviderOutcomeUnknown) {
+		t.Fatalf("downgrade error = %v, want ErrProviderOutcomeUnknown", err)
+	}
+	if _, err := service.CreateCheckout(ctx, userID, "subscription-uncertain@example.com", "product-"+lowPlan, key, "https://example.test/success"); !errors.Is(err, billing.ErrProviderOutcomeUnknown) || calls != 1 {
+		t.Fatalf("downgrade replay error = %v, calls=%d", err, calls)
+	}
+	if _, err := service.CreateCheckout(ctx, userID, "subscription-uncertain@example.com", "product-"+lowPlan, key, "https://example.test/different"); !errors.Is(err, billing.ErrIdempotencyConflict) || calls != 1 {
+		t.Fatalf("conflicting downgrade replay error = %v, calls=%d", err, calls)
+	}
+	var operationState string
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state FROM paperboat.billing_subscription_update_operations WHERE idempotency_key=$1`, key).Scan(&operationState); err != nil {
+		t.Fatal(err)
+	}
+	if operationState != "uncertain" {
+		t.Fatalf("operation state = %q, want uncertain", operationState)
+	}
+	var pending string
+	if err := store.SQL().QueryRowContext(ctx, `SELECT pending_plan_version_id FROM paperboat.subscriptions WHERE user_id=$1`, userID).Scan(&pending); err != nil {
+		t.Fatal(err)
+	}
+	if pending != "pv_"+lowPlan {
+		t.Fatalf("pending plan = %q, want %q", pending, "pv_"+lowPlan)
+	}
+}
+
+func TestCheckoutProviderTimeoutPersistsUncertainOutcome(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID := "usr_checkout_uncertain_" + suffix
+	insertUser(t, store, userID, "uncertain-"+suffix+"@example.com")
+	planCode := "uncertain-plan-" + suffix
+	insertPlanProduct(t, store, planCode, "prod_uncertain_"+suffix, "price_uncertain_"+suffix, "10", 5)
+	cleanupPlanProducts(t, store, planCode)
+	service := billing.NewService(billing.NewRepository(store), uncertainPolarClient{}, audit.NewWriter(store))
+	key := "uncertain-key-" + suffix
+
+	if _, err := service.CreateCheckout(ctx, userID, "uncertain@example.com", "product-"+planCode, key, "https://example.test/success"); !errors.Is(err, billing.ErrProviderOutcomeUnknown) {
+		t.Fatalf("initial checkout error = %v, want ErrProviderOutcomeUnknown", err)
+	}
+	if _, err := service.CreateCheckout(ctx, userID, "uncertain@example.com", "product-"+planCode, key, "https://example.test/success"); !errors.Is(err, billing.ErrProviderOutcomeUnknown) {
+		t.Fatalf("replay checkout error = %v, want ErrProviderOutcomeUnknown", err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.billing_checkout_reservations SET expires_at=now()-interval '1 hour' WHERE user_id=$1`, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.CreateCheckout(ctx, userID, "uncertain@example.com", "product-"+planCode, "different-"+key, "https://example.test/success"); !errors.Is(err, billing.ErrCheckoutPending) {
+		t.Fatalf("different-key checkout error = %v, want ErrCheckoutPending", err)
+	}
+	var state, lastError string
+	var uncertainAt time.Time
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state,last_error,uncertain_at FROM paperboat.billing_checkout_reservations WHERE user_id=$1`, userID).Scan(&state, &lastError, &uncertainAt); err != nil {
+		t.Fatal(err)
+	}
+	if state != "uncertain" || lastError != "provider_outcome_unknown" || uncertainAt.IsZero() {
+		t.Fatalf("reservation = %q/%q/%s, want uncertain/provider_outcome_unknown/timestamp", state, lastError, uncertainAt)
 	}
 }
 
@@ -565,7 +792,7 @@ func cleanupPlanProducts(t *testing.T, store *db.DB, planCodes ...string) {
 	t.Helper()
 	t.Cleanup(func() {
 		ctx := context.Background()
-		if _, err := store.SQL().ExecContext(ctx, `DELETE FROM paperboat.subscriptions WHERE active_plan_version_id IN (SELECT pv.id FROM paperboat.plan_versions pv JOIN paperboat.plans p ON p.id = pv.plan_id WHERE p.code = ANY($1))`, planCodes); err != nil {
+		if _, err := store.SQL().ExecContext(ctx, `DELETE FROM paperboat.subscriptions WHERE active_plan_version_id IN (SELECT pv.id FROM paperboat.plan_versions pv JOIN paperboat.plans p ON p.id = pv.plan_id WHERE p.code = ANY($1)) OR pending_plan_version_id IN (SELECT pv.id FROM paperboat.plan_versions pv JOIN paperboat.plans p ON p.id = pv.plan_id WHERE p.code = ANY($1))`, planCodes); err != nil {
 			t.Errorf("clean subscriptions: %v", err)
 			return
 		}

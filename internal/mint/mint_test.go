@@ -109,6 +109,48 @@ func TestSignRejectsOverlongProof(t *testing.T) {
 	}
 }
 
+func TestSignCredentialUsesExactClassBindings(t *testing.T) {
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	provider, err := New([]Key{{ID: "key-1", PrivateKey: testKey(1)}}, "key-1", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := provider.SignCredential(CredentialInput{Issuer: "https://api.example.test", Audience: "paperboat-enrollment", Subject: "env_1", JTI: "jti_enroll_1", IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute), CredentialClass: "helper_enrollment", Scopes: []string{"helper:enroll"}, EnvironmentID: "env_1", EnrollmentID: "enr_1"})
+	if err != nil || token == "" {
+		t.Fatalf("enrollment credential = %q, %v", token, err)
+	}
+	claims, err := provider.VerifyCredential(token, "https://api.example.test", "helper_enrollment", now)
+	if err != nil || claims.EnrollmentID != "enr_1" || claims.EnvironmentID != "env_1" {
+		t.Fatalf("verified claims = %#v, %v", claims, err)
+	}
+	tampered := token[:len(token)-1] + "A"
+	if _, err := provider.VerifyCredential(tampered, "https://api.example.test", "helper_enrollment", now); err == nil {
+		t.Fatal("tampered credential accepted")
+	}
+	if _, err := provider.SignCredential(CredentialInput{Issuer: "https://api.example.test", Audience: "paperboat-enrollment", Subject: "env_1", JTI: "jti_enroll_2", IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute), CredentialClass: "helper_enrollment", Scopes: []string{"helper:connect"}, EnvironmentID: "env_1", EnrollmentID: "enr_1"}); err == nil {
+		t.Fatal("broader or wrong scope accepted")
+	}
+}
+
+func TestSignCredentialConfigSyncBindsAssignmentAndWarning(t *testing.T) {
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	provider, err := New([]Key{{ID: "key-config", PrivateKey: testKey(11)}}, "key-config", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := provider.SignCredential(CredentialInput{Issuer: "https://api.example.test", Audience: "paperboat-helper", Subject: "helper_1", JTI: "jti_config_1", IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute), CredentialClass: "config_sync", Scopes: []string{"config:pull", "config:apply", "config:report"}, EnvironmentID: "env_1", HelperID: "helper_1", AssignmentID: "assignment_1", WarningRevision: "warning_7"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := provider.VerifyCredential(token, "https://api.example.test", "config_sync", now)
+	if err != nil || claims.AssignmentID != "assignment_1" || claims.WarningRevision != "warning_7" || claims.HelperID != "helper_1" {
+		t.Fatalf("claims = %#v, %v", claims, err)
+	}
+	if _, err := provider.SignCredential(CredentialInput{Issuer: "https://api.example.test", Audience: "paperboat-helper", Subject: "helper_1", JTI: "jti_config_2", IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute), CredentialClass: "config_sync", Scopes: []string{"config:pull"}, EnvironmentID: "env_1", HelperID: "helper_1", AssignmentID: "assignment_1", WarningRevision: "warning_7"}); err == nil {
+		t.Fatal("incomplete config scopes accepted")
+	}
+}
+
 func TestSignTerminalControlBindsOperationAndTerminalIDs(t *testing.T) {
 	provider, _ := New([]Key{{ID: "key", PrivateKey: testKey(9)}}, "key", time.Minute)
 	now := time.Unix(1_700_000_000, 0)

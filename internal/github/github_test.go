@@ -22,6 +22,18 @@ func TestAlreadyExistsValidationOnlyMatchesSpecificGitHubError(t *testing.T) {
 	}
 }
 
+func TestGitHubOutcomeUncertainClassification(t *testing.T) {
+	if !githubOutcomeUncertain(context.DeadlineExceeded) {
+		t.Fatal("network timeout must be outcome-unknown")
+	}
+	if !githubOutcomeUncertain(APIError{StatusCode: http.StatusBadGateway}) {
+		t.Fatal("5xx response must be outcome-unknown")
+	}
+	if githubOutcomeUncertain(APIError{StatusCode: http.StatusUnprocessableEntity}) {
+		t.Fatal("validation response must be definitive")
+	}
+}
+
 func TestAlreadyExistsValidationDoesNotHideOther422Errors(t *testing.T) {
 	err := APIError{
 		StatusCode: http.StatusUnprocessableEntity,

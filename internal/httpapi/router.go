@@ -22,6 +22,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/configsync"
 	"github.com/pinksaucepasta/paperboat-server/internal/connectedmachines"
+	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
@@ -36,25 +37,34 @@ type ReadinessChecker interface {
 }
 
 type Options struct {
-	Config            config.Config
-	Logger            *slog.Logger
-	ReadinessChecker  ReadinessChecker
-	Auth              *auth.Service
-	DeviceAuth        *auth.DeviceService
-	Billing           *billing.Service
-	Catalog           catalog.Reader
-	CatalogWriter     catalog.RegionWriter
-	Fly               fly.Client
-	GitHub            *pbgithub.Service
-	Projects          *projects.Service
-	TerminalSessions  *terminalsessions.Service
-	Agentunnel        *agentunnel.Service
-	MeteringRepo      *metering.RuntimeRepository
-	ConfigSync        *configsync.Repository
-	Classifier        *classifier.Controller
-	ConnectedMachines *connectedmachines.Service
-	MintKeys          *mint.Provider
-	OverrideHandler   http.Handler
+	Config             config.Config
+	Logger             *slog.Logger
+	ReadinessChecker   ReadinessChecker
+	Auth               *auth.Service
+	DeviceAuth         *auth.DeviceService
+	Billing            *billing.Service
+	BillingRecovery    *billing.RecoveryService
+	Catalog            catalog.Reader
+	CatalogWriter      catalog.RegionWriter
+	Fly                fly.Client
+	GitHub             *pbgithub.Service
+	Projects           *projects.Service
+	TerminalSessions   *terminalsessions.Service
+	Agentunnel         *agentunnel.Service
+	MeteringRepo       *metering.RuntimeRepository
+	ConfigSync         *configsync.Repository
+	Classifier         *classifier.Controller
+	ConnectedMachines  *connectedmachines.Service
+	MintKeys           *mint.Provider
+	EdgeControl        http.Handler
+	EdgeControlAdmin   *controlplane.EdgeService
+	Enrollment         *controlplane.EnrollmentService
+	ConfigAssignments  *controlplane.ConfigAssignmentService
+	ConfigCredentials  *controlplane.ConfigCredentialService
+	Routes             *controlplane.RouteService
+	ControlDiagnostics *controlplane.DiagnosticsService
+	OperationRecovery  *controlplane.OperationRecoveryService
+	OverrideHandler    http.Handler
 }
 
 func NewRouter(opts Options) http.Handler {
@@ -68,12 +78,37 @@ func NewRouter(opts Options) http.Handler {
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /healthz", health)
 		mux.HandleFunc("GET /readyz", ready(opts.ReadinessChecker))
-		mux.HandleFunc("GET /metrics", metrics)
+		mux.Handle("GET /metrics", metrics(opts.ControlDiagnostics))
 		if opts.MintKeys != nil {
 			mux.Handle("GET /.well-known/jwks.json", opts.MintKeys)
 		}
+		if opts.EdgeControl != nil {
+			mux.Handle("/v1/", opts.EdgeControl)
+		}
+		if opts.Enrollment != nil {
+			mux.HandleFunc("POST /v1/helpers/enroll", helperEnrollmentExchange(opts.Enrollment))
+			if opts.Auth != nil {
+				mux.Handle("POST /api/environments/{environment_id}/helper-enrollments", requireAuth(opts.Auth, requireCSRF(opts.Auth, helperEnrollmentIssue(opts.Enrollment))))
+				mux.Handle("POST /api/environments/{environment_id}/helpers/{helper_id}/replace", requireAuth(opts.Auth, requireCSRF(opts.Auth, helperReplacement(opts.Enrollment))))
+			}
+		}
+		if opts.ConfigCredentials != nil {
+			mux.HandleFunc("POST /v1/config/credentials", configCredentialIssue(opts.ConfigCredentials))
+		}
 		if opts.Auth != nil {
 			registerAuthRoutes(mux, opts)
+			if opts.Routes != nil {
+				mux.Handle("POST /api/environments/{environment_id}/routes", requireAuth(opts.Auth, requireCSRF(opts.Auth, routeIntentCreate(opts.Routes))))
+				mux.Handle("PATCH /api/routes/{route_id}", requireAuth(opts.Auth, requireCSRF(opts.Auth, routeIntentTransition(opts.Routes))))
+			}
+			if opts.ConfigAssignments != nil {
+				mux.Handle("GET /api/config-repositories", requireAuth(opts.Auth, configRepositories(opts.ConfigAssignments)))
+				mux.Handle("POST /api/config-repositories", requireAuth(opts.Auth, requireCSRF(opts.Auth, configRepositoryConnect(opts.ConfigAssignments))))
+				mux.Handle("GET /api/environments/{environment_id}/config-assignment", requireAuth(opts.Auth, configAssignmentGet(opts.ConfigAssignments)))
+				mux.Handle("PUT /api/environments/{environment_id}/config-assignment", requireAuth(opts.Auth, requireCSRF(opts.Auth, configAssignmentSet(opts.ConfigAssignments))))
+				mux.Handle("POST /api/environments/{environment_id}/config-assignment/consent", requireAuth(opts.Auth, requireCSRF(opts.Auth, configConsent(opts.ConfigAssignments))))
+				mux.Handle("DELETE /api/environments/{environment_id}/config-assignment", requireAuth(opts.Auth, requireCSRF(opts.Auth, configAssignmentClear(opts.ConfigAssignments))))
+			}
 		}
 		if opts.ConnectedMachines != nil {
 			connectedMachineAuth := func(scope string, next http.Handler) http.Handler {
@@ -132,13 +167,26 @@ func health(w http.ResponseWriter, _ *http.Request) {
 	}})
 }
 
-func metrics(w http.ResponseWriter, r *http.Request) {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil || !net.ParseIP(host).IsLoopback() {
-		writeError(w, r, http.StatusForbidden, "forbidden", "Metrics are available only from localhost.")
-		return
+func metrics(diagnostics *controlplane.DiagnosticsService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil || !net.ParseIP(host).IsLoopback() {
+			writeError(w, r, http.StatusForbidden, "forbidden", "Metrics are available only from localhost.")
+			return
+		}
+		result := observability.MetricsSnapshot()
+		if diagnostics != nil {
+			durable, err := diagnostics.Metrics(r.Context())
+			if err != nil {
+				writeError(w, r, http.StatusServiceUnavailable, "provider_unavailable", "Control-plane diagnostics are unavailable.")
+				return
+			}
+			for key, value := range durable {
+				result[key] = value
+			}
+		}
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: result})
 	}
-	writeJSON(w, http.StatusOK, SuccessResponse{Data: observability.MetricsSnapshot()})
 }
 
 func ready(checker ReadinessChecker) http.HandlerFunc {
@@ -224,6 +272,17 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 		mux.Handle("PUT /api/billing/auto-topup", requireAuth(opts.Auth, requireCSRF(opts.Auth, http.HandlerFunc(notImplemented))))
 		mux.Handle("POST /api/billing/checkout", requireAuth(opts.Auth, requireCSRF(opts.Auth, http.HandlerFunc(notImplemented))))
 		mux.Handle("POST /api/billing/customer-portal", requireAuth(opts.Auth, requireCSRF(opts.Auth, http.HandlerFunc(notImplemented))))
+	}
+	if opts.EdgeControlAdmin != nil {
+		mux.Handle("POST /api/admin/edge/usage-keys", requireAuth(opts.Auth, requireCSRF(opts.Auth, requireAdmin(adminProvisionUsageKey(opts.EdgeControlAdmin)))))
+		mux.Handle("POST /api/admin/edge/usage-keys/{key_id}/revoke", requireAuth(opts.Auth, requireCSRF(opts.Auth, requireAdmin(adminRevokeUsageKey(opts.EdgeControlAdmin)))))
+		mux.Handle("POST /api/admin/mint/signing-keys/{key_id}/revoke", requireAuth(opts.Auth, requireCSRF(opts.Auth, requireAdmin(adminRevokeSigningKey(opts.EdgeControlAdmin)))))
+	}
+	if opts.OperationRecovery != nil {
+		mux.Handle("POST /api/admin/control-operations/{operation_id}/recover", requireAuth(opts.Auth, requireCSRF(opts.Auth, requireAdmin(adminRecoverControlOperation(opts.OperationRecovery)))))
+	}
+	if opts.BillingRecovery != nil {
+		mux.Handle("POST /api/admin/billing/uncertain/{kind}/{operation_id}/recover", requireAuth(opts.Auth, requireCSRF(opts.Auth, requireAdmin(adminRecoverBillingOperation(opts.BillingRecovery)))))
 	}
 	if opts.Catalog != nil {
 		mux.Handle("GET /api/catalog/plans", requireAuth(opts.Auth, catalogPlans(opts.Catalog)))

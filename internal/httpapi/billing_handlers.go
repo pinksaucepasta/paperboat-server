@@ -27,6 +27,40 @@ func billingEntitlement(service *billing.Service) http.Handler {
 	})
 }
 
+func adminRecoverBillingOperation(service *billing.RecoveryService) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		recoveryKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+		if recoveryKey == "" {
+			writeError(w, r, http.StatusBadRequest, "idempotency_key_required", "Idempotency-Key header is required.")
+			return
+		}
+		var input struct {
+			EvidenceReference string `json:"evidence_reference"`
+		}
+		if !decodeStrictJSON(w, r, &input) {
+			return
+		}
+		err := service.Recover(r.Context(), principal.User.ID, recoveryKey, r.PathValue("kind"), r.PathValue("operation_id"), input.EvidenceReference)
+		switch {
+		case err == nil:
+			w.WriteHeader(http.StatusNoContent)
+		case errors.Is(err, billing.ErrBillingRecoveryInvalid):
+			writeError(w, r, http.StatusBadRequest, "validation_failed", "Billing recovery request is invalid.")
+		case errors.Is(err, billing.ErrBillingRecoveryConflict):
+			writeError(w, r, http.StatusConflict, "idempotency_key_conflict", "Idempotency-Key conflicts with an existing billing recovery action.")
+		case errors.Is(err, billing.ErrBillingOperationNotUncertain):
+			writeError(w, r, http.StatusConflict, "operation_not_recoverable", "Billing operation is not uncertain.")
+		default:
+			writeError(w, r, http.StatusServiceUnavailable, "provider_unavailable", "Billing operation recovery is unavailable.")
+		}
+	})
+}
+
 func billingUsage(service *billing.Service) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p, ok := principalFromContext(r.Context())
@@ -239,6 +273,14 @@ func billingCustomerPortal(service *billing.Service) http.Handler {
 		}
 		session, err := service.CreateCustomerPortal(r.Context(), p.User.ID, p.User.PrimaryEmail, idempotencyKey, body.ReturnURL)
 		if err != nil {
+			if errors.Is(err, billing.ErrIdempotencyConflict) {
+				writeError(w, r, http.StatusConflict, "idempotency_key_conflict", "Idempotency-Key conflicts with an existing portal operation.")
+				return
+			}
+			if errors.Is(err, billing.ErrProviderOutcomeUnknown) {
+				writeError(w, r, http.StatusServiceUnavailable, "provider_outcome_unknown", "Billing provider outcome is unknown; retry with the same Idempotency-Key.")
+				return
+			}
 			writeError(w, r, http.StatusServiceUnavailable, "provider_unavailable", "Billing provider is unavailable.")
 			return
 		}

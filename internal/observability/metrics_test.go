@@ -20,6 +20,12 @@ func TestMetricsSnapshotTracksBoundedPlatformCounters(t *testing.T) {
 	TerminalOperationAlerted()
 	TerminalSnapshot()
 	TerminalSnapshotFailed()
+	ControlRouteObserved(2)
+	ControlRouteDetached(1)
+	ControlNodeStale(1)
+	ControlUsageReceipt()
+	ControlCredentialIssued()
+	ControlRevocationFetched()
 	after := MetricsSnapshot()
 	for _, key := range []string{"device_requested_total", "device_completed_total", "connect_attempts_total", "connect_approved_total", "connect_denied_total", "route_ready_total", "credentials_minted_total", "revocations_propagated_total", "terminal_sessions_created_total", "terminal_sessions_closed_total", "terminal_sessions_deleted_total", "terminal_operations_applied_total", "terminal_operation_retries_total", "terminal_operation_alerts_total", "terminal_snapshots_total", "terminal_snapshot_failures_total"} {
 		if after[key] != before[key]+1 {
@@ -31,5 +37,13 @@ func TestMetricsSnapshotTracksBoundedPlatformCounters(t *testing.T) {
 	}
 	if after["device_login_latency_ms_max"] < 25 {
 		t.Fatalf("latency max = %d", after["device_login_latency_ms_max"])
+	}
+	if after["control_route_observations_total"] != before["control_route_observations_total"]+2 {
+		t.Fatal("route observations not tracked")
+	}
+	for _, key := range []string{"control_route_detaches_total", "control_node_stale_total", "control_usage_receipts_total", "control_credentials_issued_total", "control_revocation_fetches_total"} {
+		if after[key] != before[key]+1 {
+			t.Fatalf("%s not tracked", key)
+		}
 	}
 }

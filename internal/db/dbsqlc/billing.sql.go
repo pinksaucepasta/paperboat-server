@@ -67,6 +67,24 @@ func (q *Queries) CompleteBillingCheckoutReservation(ctx context.Context, arg Co
 	return err
 }
 
+const completeBillingPortalOperation = `-- name: CompleteBillingPortalOperation :execrows
+UPDATE billing_portal_operations SET state='succeeded',result_ciphertext=$1,last_error=NULL,updated_at=now()
+WHERE idempotency_key=$2 AND state='pending'
+`
+
+type CompleteBillingPortalOperationParams struct {
+	ResultCiphertext []byte
+	IdempotencyKey   string
+}
+
+func (q *Queries) CompleteBillingPortalOperation(ctx context.Context, arg CompleteBillingPortalOperationParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, completeBillingPortalOperation, arg.ResultCiphertext, arg.IdempotencyKey)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const completeCreditAutoTopup = `-- name: CompleteCreditAutoTopup :exec
 UPDATE credit_auto_topup_attempts SET provider_order_id = $1, state = $2, last_error = $3, updated_at = now() WHERE idempotency_key = $4
 `
@@ -112,7 +130,7 @@ func (q *Queries) DisableCreditAutoTopupPolicy(ctx context.Context, userID strin
 }
 
 const failBillingCheckoutReservation = `-- name: FailBillingCheckoutReservation :exec
-UPDATE billing_checkout_reservations SET state='failed', updated_at=now() WHERE user_id=$1 AND state='reserved'
+UPDATE billing_checkout_reservations SET state='failed', last_error=NULL, updated_at=now() WHERE user_id=$1 AND state='reserved'
 `
 
 func (q *Queries) FailBillingCheckoutReservation(ctx context.Context, userID string) error {
@@ -293,6 +311,26 @@ func (q *Queries) GetBillingEntitlement(ctx context.Context, userID string) (Get
 	return i, err
 }
 
+const getBillingPortalOperation = `-- name: GetBillingPortalOperation :one
+SELECT idempotency_key, user_id, request_hash, state, result_ciphertext, last_error, created_at, updated_at FROM billing_portal_operations WHERE idempotency_key=$1
+`
+
+func (q *Queries) GetBillingPortalOperation(ctx context.Context, idempotencyKey string) (BillingPortalOperation, error) {
+	row := q.db.QueryRowContext(ctx, getBillingPortalOperation, idempotencyKey)
+	var i BillingPortalOperation
+	err := row.Scan(
+		&i.IdempotencyKey,
+		&i.UserID,
+		&i.RequestHash,
+		&i.State,
+		&i.ResultCiphertext,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getBillingProductByCode = `-- name: GetBillingProductByCode :one
 SELECT bp.code, bp.catalog_type, bp.catalog_ref, bp.provider_product_id, bp.provider_price_id,
        coalesce((pv.metadata->'billing'->>'rank')::integer, 0)::integer AS plan_rank,
@@ -359,6 +397,71 @@ func (q *Queries) GetBillingProductByProviderIDs(ctx context.Context, providerPr
 		&i.CatalogRef,
 		&i.ProviderProductID,
 		&i.ProviderPriceID,
+	)
+	return i, err
+}
+
+const getBillingSubscriptionUpdate = `-- name: GetBillingSubscriptionUpdate :one
+SELECT idempotency_key, user_id, provider_subscription_id, request_hash, state, last_error, created_at, updated_at FROM billing_subscription_update_operations WHERE idempotency_key=$1
+`
+
+func (q *Queries) GetBillingSubscriptionUpdate(ctx context.Context, idempotencyKey string) (BillingSubscriptionUpdateOperation, error) {
+	row := q.db.QueryRowContext(ctx, getBillingSubscriptionUpdate, idempotencyKey)
+	var i BillingSubscriptionUpdateOperation
+	err := row.Scan(
+		&i.IdempotencyKey,
+		&i.UserID,
+		&i.ProviderSubscriptionID,
+		&i.RequestHash,
+		&i.State,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getBillingUncertainMetrics = `-- name: GetBillingUncertainMetrics :one
+SELECT
+  (SELECT count(*) FROM billing_checkout_reservations WHERE state='uncertain')::bigint AS checkout_uncertain,
+  (SELECT count(*) FROM billing_portal_operations WHERE state='uncertain')::bigint AS portal_uncertain,
+  (SELECT count(*) FROM billing_subscription_update_operations WHERE state='uncertain')::bigint AS subscription_update_uncertain,
+  (SELECT count(*) FROM credit_auto_topup_attempts WHERE state='uncertain')::bigint AS auto_topup_uncertain
+`
+
+type GetBillingUncertainMetricsRow struct {
+	CheckoutUncertain           int64
+	PortalUncertain             int64
+	SubscriptionUpdateUncertain int64
+	AutoTopupUncertain          int64
+}
+
+func (q *Queries) GetBillingUncertainMetrics(ctx context.Context) (GetBillingUncertainMetricsRow, error) {
+	row := q.db.QueryRowContext(ctx, getBillingUncertainMetrics)
+	var i GetBillingUncertainMetricsRow
+	err := row.Scan(
+		&i.CheckoutUncertain,
+		&i.PortalUncertain,
+		&i.SubscriptionUpdateUncertain,
+		&i.AutoTopupUncertain,
+	)
+	return i, err
+}
+
+const getBillingUncertainRecovery = `-- name: GetBillingUncertainRecovery :one
+SELECT idempotency_key, operation_kind, operation_id, request_hash, actor_user_id, created_at FROM billing_uncertain_recoveries WHERE idempotency_key=$1
+`
+
+func (q *Queries) GetBillingUncertainRecovery(ctx context.Context, idempotencyKey string) (BillingUncertainRecovery, error) {
+	row := q.db.QueryRowContext(ctx, getBillingUncertainRecovery, idempotencyKey)
+	var i BillingUncertainRecovery
+	err := row.Scan(
+		&i.IdempotencyKey,
+		&i.OperationKind,
+		&i.OperationID,
+		&i.RequestHash,
+		&i.ActorUserID,
+		&i.CreatedAt,
 	)
 	return i, err
 }
@@ -840,6 +943,70 @@ func (q *Queries) ListEligibleCreditAutoTopups(ctx context.Context) ([]ListEligi
 	return items, nil
 }
 
+const markBillingCheckoutUncertain = `-- name: MarkBillingCheckoutUncertain :execrows
+UPDATE billing_checkout_reservations
+SET state='uncertain', last_error=$1, uncertain_at=$2, updated_at=$2
+WHERE user_id=$3 AND idempotency_key=$4 AND state='reserved'
+`
+
+type MarkBillingCheckoutUncertainParams struct {
+	LastError      sql.NullString
+	Now            sql.NullTime
+	UserID         string
+	IdempotencyKey string
+}
+
+func (q *Queries) MarkBillingCheckoutUncertain(ctx context.Context, arg MarkBillingCheckoutUncertainParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markBillingCheckoutUncertain,
+		arg.LastError,
+		arg.Now,
+		arg.UserID,
+		arg.IdempotencyKey,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const markBillingPortalOperation = `-- name: MarkBillingPortalOperation :execrows
+UPDATE billing_portal_operations SET state=$1,last_error=$2,updated_at=now()
+WHERE idempotency_key=$3 AND state='pending'
+`
+
+type MarkBillingPortalOperationParams struct {
+	State          string
+	LastError      sql.NullString
+	IdempotencyKey string
+}
+
+func (q *Queries) MarkBillingPortalOperation(ctx context.Context, arg MarkBillingPortalOperationParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markBillingPortalOperation, arg.State, arg.LastError, arg.IdempotencyKey)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const markBillingSubscriptionUpdate = `-- name: MarkBillingSubscriptionUpdate :execrows
+UPDATE billing_subscription_update_operations SET state=$1,last_error=$2,updated_at=now()
+WHERE idempotency_key=$3 AND state='pending'
+`
+
+type MarkBillingSubscriptionUpdateParams struct {
+	State          string
+	LastError      sql.NullString
+	IdempotencyKey string
+}
+
+func (q *Queries) MarkBillingSubscriptionUpdate(ctx context.Context, arg MarkBillingSubscriptionUpdateParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markBillingSubscriptionUpdate, arg.State, arg.LastError, arg.IdempotencyKey)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const markPolarEventFailed = `-- name: MarkPolarEventFailed :exec
 UPDATE polar_events SET processed_state = 'failed', processed_at = now() WHERE provider_event_id = $1
 `
@@ -890,13 +1057,66 @@ func (q *Queries) NumericGreaterThanOrEqual(ctx context.Context, arg NumericGrea
 	return column_1, err
 }
 
+const recoverUncertainBillingAutoTopup = `-- name: RecoverUncertainBillingAutoTopup :execrows
+UPDATE credit_auto_topup_attempts SET state='failed',last_error='operator_evidence_no_mutation',updated_at='epoch'::timestamptz
+WHERE idempotency_key=$1 AND state='uncertain'
+`
+
+func (q *Queries) RecoverUncertainBillingAutoTopup(ctx context.Context, idempotencyKey string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, recoverUncertainBillingAutoTopup, idempotencyKey)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const recoverUncertainBillingCheckout = `-- name: RecoverUncertainBillingCheckout :execrows
+UPDATE billing_checkout_reservations SET state='failed',last_error='operator_evidence_no_mutation',updated_at=now()
+WHERE idempotency_key=$1 AND state='uncertain'
+`
+
+func (q *Queries) RecoverUncertainBillingCheckout(ctx context.Context, idempotencyKey string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, recoverUncertainBillingCheckout, idempotencyKey)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const recoverUncertainBillingPortal = `-- name: RecoverUncertainBillingPortal :execrows
+UPDATE billing_portal_operations SET state='failed',last_error='operator_evidence_no_mutation',updated_at=now()
+WHERE idempotency_key=$1 AND state='uncertain'
+`
+
+func (q *Queries) RecoverUncertainBillingPortal(ctx context.Context, idempotencyKey string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, recoverUncertainBillingPortal, idempotencyKey)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const recoverUncertainBillingSubscriptionUpdate = `-- name: RecoverUncertainBillingSubscriptionUpdate :execrows
+UPDATE billing_subscription_update_operations SET state='failed',last_error='operator_evidence_no_mutation',updated_at=now()
+WHERE idempotency_key=$1 AND state='uncertain'
+`
+
+func (q *Queries) RecoverUncertainBillingSubscriptionUpdate(ctx context.Context, idempotencyKey string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, recoverUncertainBillingSubscriptionUpdate, idempotencyKey)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const reserveBillingCheckout = `-- name: ReserveBillingCheckout :one
 INSERT INTO billing_checkout_reservations (id, user_id, product_code, idempotency_key, expires_at)
 VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (user_id) DO UPDATE SET id=EXCLUDED.id, product_code=EXCLUDED.product_code,
  idempotency_key=EXCLUDED.idempotency_key, provider_checkout_id=NULL, checkout_url=NULL,
- state='reserved', expires_at=EXCLUDED.expires_at, updated_at=now()
-WHERE billing_checkout_reservations.state IN ('failed','completed') OR billing_checkout_reservations.expires_at <= now()
+ state='reserved', expires_at=EXCLUDED.expires_at, last_error=NULL, uncertain_at=NULL, updated_at=now()
+WHERE billing_checkout_reservations.state IN ('failed','completed')
+   OR (billing_checkout_reservations.state = 'reserved' AND billing_checkout_reservations.expires_at <= now())
 RETURNING id, product_code, idempotency_key, provider_checkout_id, checkout_url, state, expires_at
 `
 
@@ -935,6 +1155,112 @@ func (q *Queries) ReserveBillingCheckout(ctx context.Context, arg ReserveBilling
 		&i.CheckoutUrl,
 		&i.State,
 		&i.ExpiresAt,
+	)
+	return i, err
+}
+
+const reserveBillingPortalOperation = `-- name: ReserveBillingPortalOperation :one
+INSERT INTO billing_portal_operations (idempotency_key,user_id,request_hash)
+VALUES ($1,$2,$3)
+ON CONFLICT (idempotency_key) DO UPDATE SET state='pending',last_error=NULL,updated_at=now()
+WHERE billing_portal_operations.state='failed'
+  AND billing_portal_operations.user_id=EXCLUDED.user_id
+  AND billing_portal_operations.request_hash=EXCLUDED.request_hash
+RETURNING idempotency_key, user_id, request_hash, state, result_ciphertext, last_error, created_at, updated_at
+`
+
+type ReserveBillingPortalOperationParams struct {
+	IdempotencyKey string
+	UserID         string
+	RequestHash    []byte
+}
+
+func (q *Queries) ReserveBillingPortalOperation(ctx context.Context, arg ReserveBillingPortalOperationParams) (BillingPortalOperation, error) {
+	row := q.db.QueryRowContext(ctx, reserveBillingPortalOperation, arg.IdempotencyKey, arg.UserID, arg.RequestHash)
+	var i BillingPortalOperation
+	err := row.Scan(
+		&i.IdempotencyKey,
+		&i.UserID,
+		&i.RequestHash,
+		&i.State,
+		&i.ResultCiphertext,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const reserveBillingSubscriptionUpdate = `-- name: ReserveBillingSubscriptionUpdate :one
+INSERT INTO billing_subscription_update_operations (idempotency_key,user_id,provider_subscription_id,request_hash)
+VALUES ($1,$2,$3,$4)
+ON CONFLICT (idempotency_key) DO UPDATE SET state='pending',last_error=NULL,updated_at=now()
+WHERE billing_subscription_update_operations.state='failed'
+  AND billing_subscription_update_operations.user_id=EXCLUDED.user_id
+  AND billing_subscription_update_operations.provider_subscription_id=EXCLUDED.provider_subscription_id
+  AND billing_subscription_update_operations.request_hash=EXCLUDED.request_hash
+RETURNING idempotency_key, user_id, provider_subscription_id, request_hash, state, last_error, created_at, updated_at
+`
+
+type ReserveBillingSubscriptionUpdateParams struct {
+	IdempotencyKey         string
+	UserID                 string
+	ProviderSubscriptionID string
+	RequestHash            []byte
+}
+
+func (q *Queries) ReserveBillingSubscriptionUpdate(ctx context.Context, arg ReserveBillingSubscriptionUpdateParams) (BillingSubscriptionUpdateOperation, error) {
+	row := q.db.QueryRowContext(ctx, reserveBillingSubscriptionUpdate,
+		arg.IdempotencyKey,
+		arg.UserID,
+		arg.ProviderSubscriptionID,
+		arg.RequestHash,
+	)
+	var i BillingSubscriptionUpdateOperation
+	err := row.Scan(
+		&i.IdempotencyKey,
+		&i.UserID,
+		&i.ProviderSubscriptionID,
+		&i.RequestHash,
+		&i.State,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const reserveBillingUncertainRecovery = `-- name: ReserveBillingUncertainRecovery :one
+INSERT INTO billing_uncertain_recoveries (idempotency_key,operation_kind,operation_id,request_hash,actor_user_id)
+VALUES ($1,$2,$3,$4,$5)
+ON CONFLICT (idempotency_key) DO NOTHING
+RETURNING idempotency_key, operation_kind, operation_id, request_hash, actor_user_id, created_at
+`
+
+type ReserveBillingUncertainRecoveryParams struct {
+	IdempotencyKey string
+	OperationKind  string
+	OperationID    string
+	RequestHash    []byte
+	ActorUserID    sql.NullString
+}
+
+func (q *Queries) ReserveBillingUncertainRecovery(ctx context.Context, arg ReserveBillingUncertainRecoveryParams) (BillingUncertainRecovery, error) {
+	row := q.db.QueryRowContext(ctx, reserveBillingUncertainRecovery,
+		arg.IdempotencyKey,
+		arg.OperationKind,
+		arg.OperationID,
+		arg.RequestHash,
+		arg.ActorUserID,
+	)
+	var i BillingUncertainRecovery
+	err := row.Scan(
+		&i.IdempotencyKey,
+		&i.OperationKind,
+		&i.OperationID,
+		&i.RequestHash,
+		&i.ActorUserID,
+		&i.CreatedAt,
 	)
 	return i, err
 }

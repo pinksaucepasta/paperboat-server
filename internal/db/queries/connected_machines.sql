@@ -188,6 +188,11 @@ SELECT * FROM connected_machine_bandwidth_periods
 WHERE connected_machine_id = sqlc.arg(connected_machine_id)
   AND period_start = sqlc.arg(period_start) FOR UPDATE;
 
+-- name: GetConnectedMachineForEnvironmentBandwidthUpdate :one
+SELECT * FROM connected_machines
+WHERE environment_id = sqlc.arg(environment_id) AND deleted_at IS NULL
+FOR UPDATE;
+
 -- name: ConsumeConnectedMachineIncludedBandwidth :execrows
 UPDATE connected_machine_bandwidth_periods
 SET consumed_included_bytes = consumed_included_bytes + sqlc.arg(bytes), updated_at = now()

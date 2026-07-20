@@ -81,6 +81,18 @@ func TestFakePolarClientUsesIdempotencyKey(t *testing.T) {
 	}
 }
 
+func TestPolarOutcomeUncertainClassification(t *testing.T) {
+	if !polarOutcomeUncertain(context.DeadlineExceeded) {
+		t.Fatal("network timeout must be outcome-unknown")
+	}
+	if !polarOutcomeUncertain(PolarAPIError{StatusCode: http.StatusBadGateway}) {
+		t.Fatal("5xx provider response must be outcome-unknown")
+	}
+	if polarOutcomeUncertain(PolarAPIError{StatusCode: http.StatusBadRequest}) {
+		t.Fatal("4xx validation response must be definitive")
+	}
+}
+
 func TestHTTPPolarClientCreateCheckoutUsesPolarPayload(t *testing.T) {
 	var gotPath, gotIDKey string
 	var gotPayload map[string]any

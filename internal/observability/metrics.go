@@ -21,6 +21,12 @@ var platformMetrics struct {
 	terminalOperationAlerts   atomic.Int64
 	terminalSnapshots         atomic.Int64
 	terminalSnapshotFailures  atomic.Int64
+	controlRouteObservations  atomic.Int64
+	controlRouteDetaches      atomic.Int64
+	controlNodeStale          atomic.Int64
+	controlUsageReceipts      atomic.Int64
+	controlCredentialIssues   atomic.Int64
+	controlRevocationFetches  atomic.Int64
 }
 
 func DeviceRequested() { platformMetrics.deviceRequested.Add(1) }
@@ -29,23 +35,29 @@ func DeviceCompleted(latencyMS int64) {
 	platformMetrics.deviceLoginLatencyMS.Add(max(0, latencyMS))
 	updateMax(&platformMetrics.deviceLoginLatencyMax, latencyMS)
 }
-func ConnectAttempted()         { platformMetrics.connectAttempts.Add(1) }
-func ConnectApproved()          { platformMetrics.connectApproved.Add(1) }
-func ConnectDenied()            { platformMetrics.connectDenied.Add(1) }
-func RouteReady()               { platformMetrics.routeReady.Add(1) }
-func CredentialsMinted()        { platformMetrics.credentialsMinted.Add(1) }
-func RevocationPropagated()     { platformMetrics.revocationsPropagated.Add(1) }
-func TerminalSessionCreated()   { platformMetrics.terminalSessionsCreated.Add(1) }
-func TerminalSessionClosed()    { platformMetrics.terminalSessionsClosed.Add(1) }
-func TerminalSessionDeleted()   { platformMetrics.terminalSessionsDeleted.Add(1) }
-func TerminalOperationApplied() { platformMetrics.terminalOperationsApplied.Add(1) }
-func TerminalOperationRetried() { platformMetrics.terminalOperationRetries.Add(1) }
-func TerminalOperationAlerted() { platformMetrics.terminalOperationAlerts.Add(1) }
-func TerminalSnapshot()         { platformMetrics.terminalSnapshots.Add(1) }
-func TerminalSnapshotFailed()   { platformMetrics.terminalSnapshotFailures.Add(1) }
+func ConnectAttempted()                { platformMetrics.connectAttempts.Add(1) }
+func ConnectApproved()                 { platformMetrics.connectApproved.Add(1) }
+func ConnectDenied()                   { platformMetrics.connectDenied.Add(1) }
+func RouteReady()                      { platformMetrics.routeReady.Add(1) }
+func CredentialsMinted()               { platformMetrics.credentialsMinted.Add(1) }
+func RevocationPropagated()            { platformMetrics.revocationsPropagated.Add(1) }
+func TerminalSessionCreated()          { platformMetrics.terminalSessionsCreated.Add(1) }
+func TerminalSessionClosed()           { platformMetrics.terminalSessionsClosed.Add(1) }
+func TerminalSessionDeleted()          { platformMetrics.terminalSessionsDeleted.Add(1) }
+func TerminalOperationApplied()        { platformMetrics.terminalOperationsApplied.Add(1) }
+func TerminalOperationRetried()        { platformMetrics.terminalOperationRetries.Add(1) }
+func TerminalOperationAlerted()        { platformMetrics.terminalOperationAlerts.Add(1) }
+func TerminalSnapshot()                { platformMetrics.terminalSnapshots.Add(1) }
+func TerminalSnapshotFailed()          { platformMetrics.terminalSnapshotFailures.Add(1) }
+func ControlRouteObserved(count int64) { platformMetrics.controlRouteObservations.Add(max(0, count)) }
+func ControlRouteDetached(count int64) { platformMetrics.controlRouteDetaches.Add(max(0, count)) }
+func ControlNodeStale(count int64)     { platformMetrics.controlNodeStale.Add(max(0, count)) }
+func ControlUsageReceipt()             { platformMetrics.controlUsageReceipts.Add(1) }
+func ControlCredentialIssued()         { platformMetrics.controlCredentialIssues.Add(1) }
+func ControlRevocationFetched()        { platformMetrics.controlRevocationFetches.Add(1) }
 
 func MetricsSnapshot() map[string]int64 {
-	return map[string]int64{
+	result := map[string]int64{
 		"device_requested_total":            platformMetrics.deviceRequested.Load(),
 		"device_completed_total":            platformMetrics.deviceCompleted.Load(),
 		"device_login_latency_ms_total":     platformMetrics.deviceLoginLatencyMS.Load(),
@@ -64,7 +76,17 @@ func MetricsSnapshot() map[string]int64 {
 		"terminal_operation_alerts_total":   platformMetrics.terminalOperationAlerts.Load(),
 		"terminal_snapshots_total":          platformMetrics.terminalSnapshots.Load(),
 		"terminal_snapshot_failures_total":  platformMetrics.terminalSnapshotFailures.Load(),
+		"control_route_observations_total":  platformMetrics.controlRouteObservations.Load(),
+		"control_route_detaches_total":      platformMetrics.controlRouteDetaches.Load(),
+		"control_node_stale_total":          platformMetrics.controlNodeStale.Load(),
+		"control_usage_receipts_total":      platformMetrics.controlUsageReceipts.Load(),
+		"control_credentials_issued_total":  platformMetrics.controlCredentialIssues.Load(),
+		"control_revocation_fetches_total":  platformMetrics.controlRevocationFetches.Load(),
 	}
+	for key, value := range providerMetricsSnapshot() {
+		result[key] = value
+	}
+	return result
 }
 
 func updateMax(value *atomic.Int64, candidate int64) {

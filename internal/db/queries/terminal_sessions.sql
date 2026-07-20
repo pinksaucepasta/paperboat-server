@@ -15,7 +15,8 @@ FROM project_terminal_sessions WHERE project_id=sqlc.arg(project_id) AND is_defa
 SELECT user_id FROM projects WHERE id=sqlc.arg(project_id) AND state<>'deleted';
 
 -- name: LockProjectTerminalSessions :one
-SELECT id FROM projects WHERE id=sqlc.arg(project_id) FOR UPDATE;
+UPDATE projects SET version=version+1,updated_at=now()
+WHERE id=sqlc.arg(project_id) RETURNING id;
 
 -- name: CountActiveTerminalSessions :one
 SELECT count(*)::integer FROM project_terminal_sessions WHERE project_id=sqlc.arg(project_id) AND deleted_at IS NULL;

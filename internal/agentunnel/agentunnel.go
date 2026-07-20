@@ -489,7 +489,7 @@ func (c HTTPClient) doJSON(ctx context.Context, method, path string, body any, t
 	}
 	client := c.HTTPClient
 	if client == nil {
-		client = http.DefaultClient
+		client = observability.DefaultProviderClient("agentunnel")
 	}
 	resp, err := client.Do(req)
 	if err != nil {

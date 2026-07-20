@@ -21,6 +21,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
+	"github.com/pinksaucepasta/paperboat-server/internal/observability"
 	"github.com/pinksaucepasta/paperboat-server/internal/secrets"
 )
 
@@ -266,7 +267,11 @@ func (s *Service) ProvisionConfigRepo(ctx context.Context, userID, idempotencyKe
 		repo, err = s.client.CreateRepo(ctx, accessToken, RepoCreateInput{Name: repoName, Private: true, AutoInit: true, DefaultBranch: branch})
 	}
 	if err != nil {
-		_ = s.recordAttempt(ctx, userID, idempotencyKey, "retryable_failed", owner, repoName, err.Error())
+		state := "retryable_failed"
+		if githubOutcomeUncertain(err) {
+			state = "uncertain"
+		}
+		_ = s.recordAttempt(ctx, userID, idempotencyKey, state, owner, repoName, err.Error())
 		return ConfigRepo{}, err
 	}
 	if !repo.Private {
@@ -278,13 +283,22 @@ func (s *Service) ProvisionConfigRepo(ctx context.Context, userID, idempotencyKe
 		repo.DefaultBranch = branch
 	}
 	if err := s.initializeRepo(ctx, userID, accessToken, repo); err != nil {
-		_ = s.recordAttempt(ctx, userID, idempotencyKey, "retryable_failed", owner, repoName, err.Error())
+		state := "retryable_failed"
+		if githubOutcomeUncertain(err) {
+			state = "uncertain"
+		}
+		_ = s.recordAttempt(ctx, userID, idempotencyKey, state, owner, repoName, err.Error())
 		return ConfigRepo{}, err
 	}
 	if err := s.storeRepo(ctx, userID, idempotencyKey, repo); err != nil {
 		return ConfigRepo{}, err
 	}
 	return ConfigRepo{ID: repo.ID, Owner: repo.Owner, Name: repo.Name, DefaultBranch: repo.DefaultBranch, CloneURL: repo.CloneURL, HTMLURL: repo.HTMLURL, Private: repo.Private}, nil
+}
+
+func githubOutcomeUncertain(err error) bool {
+	var apiErr APIError
+	return !errors.As(err, &apiErr) || apiErr.StatusCode >= http.StatusInternalServerError
 }
 
 func (s *Service) CredentialForConfigSync(ctx context.Context, userID string) ([]byte, error) {
@@ -634,7 +648,7 @@ func (c HTTPClient) httpClient() *http.Client {
 	if c.Client != nil {
 		return c.Client
 	}
-	return http.DefaultClient
+	return observability.DefaultProviderClient("github")
 }
 
 type githubRepoResponse struct {
