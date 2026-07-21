@@ -1,136 +1,56 @@
-# Project VM Runtime
+# Hosted Project Image
 
-Phase 6 owns the Fly machine image contract consumed by `paperboat-server` machine specs.
-The default boot command is `/usr/local/bin/paperboat-entrypoint`.
+The managed image runs `paperboat-helper run`. Papercode and standalone Agentunnel are not
+image components: the helper owns workspace boot, durable sessions, the embedded frp
+connector, readiness, and bounded shutdown.
 
-Build the image from the workspace root through:
+Build from the workspace root through:
 
 ```sh
 paperboat-server/deploy/project-vm/build-image.sh registry.example/paperboat/project-vm:tag
 ```
 
-The build requires `PAPERBOAT_NODE_BASE_IMAGE` and `PAPERBOAT_GO_BASE_IMAGE`, each an
-immutable `name@sha256:<digest>` reference. Tag-only base images are rejected. It also
-requires clean `paperboat-server`, `papercode`, and `agentunnel` source trees and records
-each source and base-image reference in OCI labels. For local development only,
-`PAPERBOAT_ALLOW_DIRTY_SOURCES=true` permits an uncommitted source tree. Papercode is a
-mandatory image component; there is no production-disabled build or boot mode.
+`PAPERBOAT_NODE_BASE_IMAGE` and `PAPERBOAT_GO_BASE_IMAGE` must be immutable
+`name@sha256:<digest>` references. Clean `paperboat-helper` and `paperboat-server` revisions
+are recorded as OCI labels. The image records hosted contract/protocol metadata and installs
+Herdr 0.7.4 from architecture-specific release assets whose SHA-256 values are checked.
 
-## Required Runtime Inputs
+## Boot Contract
 
-- `PAPERBOAT_PROJECT_ID`
-- `PAPERBOAT_REPOSITORY_URL`
-- `PAPERBOAT_AGENTUNNEL_SERVER_URL`
-- `PAPERBOAT_AGENTUNNEL_CLIENT_ID`
-- `PAPERBOAT_AGENTUNNEL_TUNNEL_ID`
-- `AGENTUNNEL_MACHINE_TOKEN` from the Fly process secret configured as
-  `fly.agentunnel_secret`
-- `PAPERBOAT_CONFIG_REQUIRE_ENCRYPTION=1`, set by the control plane
-- `PAPERBOAT_CONFIG_AGE_RECIPIENT` and a valid key version
-- `PAPERBOAT_CONFIG_AGE_IDENTITY`, delivered as a Fly process secret and written to
-  `PAPERBOAT_CONFIG_AGE_IDENTITY_FILE` with mode `0600`
+The control plane supplies project/repository/branch/preset/setup intent, the control URL,
+the helper profile and state root, config-sync policy, and a one-time helper enrollment as
+a named Fly secret. The helper persists its key and renewable runtime identity below the
+mounted volume, removes one-time enrollment and setup values from its environment, writes
+the age identity to its configured `0600` file, and then performs:
 
-Optional inputs are env-driven: workspace path, papercode local URL, config repo URL,
-config branch, preset directory, setup script, activity interval, and the complete config-sync
-policy (home override, include/exclude patterns, byte ceilings, timing, retry, and retention).
+1. Validate the volume, project identity, repository host/URL, branch, preset catalog, and
+   all execution bounds.
+2. Create or verify the durable workspace identity and clone/fetch the exact HTTPS origin.
+3. Restore assigned configuration through `paperboat-config-sync`.
+4. Apply catalog presets and the bounded setup revision.
+5. Fetch control-plane JWKS, verify operation credentials, request connector admission,
+   and start the embedded frp route.
+6. Report ready only after the hosted lifecycle and edge connector are both ready.
 
-## Boot Order
+Shutdown stops admission, drains the connector and sessions, performs the bounded
+config-sync save hook, closes durable state, and exits within the Fly stop timeout. The
+Docker healthcheck reads the helper `/healthz` response and requires liveness plus ready
+`hosted_lifecycle` and `edge` capabilities.
 
-1. Validate required env and create runtime/log/workspace directories.
-2. Clone the project repository into the mounted workspace if it is not already a git repo.
-3. Restore managed home configuration from the GitHub-backed Paperboat config repo.
-4. Start the supervised config-sync daemon.
-5. Apply selected preset scripts from `/etc/paperboat/presets.d`.
-6. Start papercode `apps/server` in headless mode against the project workspace.
-7. Wait for the local papercode HTTP endpoint.
-8. Start the agentunnel machine client for the project route.
-9. Wait for the agentunnel route readiness probe.
-10. Start the activity reporter and write readiness JSON.
+The image contains Git, CA roots, Node/npm, Python/venv, the helper, Herdr, config-sync,
+version-pinned catalog preset definitions, and shell tooling required by supported presets. It exposes no Fly service;
+all terminal/upload/preview traffic traverses the assigned Paperboat edge route.
 
-The chezmoi source checkout lives under `/var/lib/paperboat/config-sync`, outside both `$HOME` and
-the project workspace. Repository file content is age-encrypted with the account recipient before
-Git staging. The identity is delivered as a Fly process secret, written `0600` outside `$HOME`, and
-removed from the entrypoint environment before services start. The daemon recursively watches managed home paths, reconciles remote changes,
-coalesces local writes, enforces file and batch ceilings, and writes atomic health state to
-`/var/lib/paperboat/config-sync-status.json`. Initial restore failures block readiness. Later
-network or Git failures leave the VM usable and retry; shutdown always recomputes the full managed
-snapshot and waits for a bounded final flush, even when the watcher observed no event. Classification-pending metadata is journaled under `.paperboat/system` on the mounted project volume.
-Shutdown keeps the activity reporter alive until the daemon flush or fallback save has written its
-terminal status. The reporter then sends one final heartbeat, bounded by
-`PAPERBOAT_ACTIVITY_SHUTDOWN_REPORT_SECONDS`, before it exits so the control plane observes the
-shutdown sync result.
-Fly's machine stop timeout is derived from the configured flush deadline, daemon grace period,
-and final-report timeout, so the platform grace period covers the complete shutdown sequence.
-The control plane persists the status file's own `updated_at` separately from activity-heartbeat
-time, so an active reporter cannot keep a failed or stopped sync daemon falsely online.
-On the first restore, the encrypted remote source state is canonical. The runtime requires the
-`paperboat-chezmoi-age` format marker and refuses legacy repositories. Before apply it rejects
-templates, scripts, externals, modifiers, removers, executable attributes, and source-tree symlinks;
-only literal files, directories, safe symlinks, and encrypted entries can be restored. When no config repository is configured, restore, sync, and flush are
-successful no-ops and shutdown does not wait for the flush deadline.
-Batch accounting counts unique config blobs newly introduced to Git. A conflict artifact may
-reference the losing blob already present in the remote history without charging those bytes a
-second time; its bounded Paperboat metadata is excluded from the user-data ceiling. The final
-staged-object guard still applies the per-file ceiling to preserved conflict content and rejects
-new config blob data above the batch ceiling.
+## Rollout And Rollback
 
-The runtime creates or upgrades `.paperboat/config-sync.json` in the private config repository.
-This manifest records the complete effective server policy and retains user include/exclude
-patterns and stricter repository byte limits. Upgrades never remove unrelated tracked content.
-Symlink targets are normalized to portable relative paths and restored only when they remain
-inside the destination home. Copy and deletion operations also resolve destination parent
-directories before modifying them, so an existing symlink cannot redirect a restore outside
-`$HOME`. Any snapshot read or traversal failure aborts that reconciliation instead of being
-interpreted as a remote deletion.
+Server catalogs must reference the image by immutable digest. Rollout metadata includes
+the helper/server revisions, helper protocol, hosted image contract, Herdr version,
+architecture, and both base-image digests. Rollback selects the previous compatible image
+digest and preserves the mounted volume; it does not rewrite workspace identity or apply
+pending project configuration silently.
 
-Mandatory exclusions are additive and cannot be replaced by server, repository, model, or user
-policy. They cover SSH/GPG private material, cloud credentials, browser/keyring state, project data,
-sessions, databases, caches, logs, histories, environment files, sockets, and temporary files.
-Claude, Codex, OpenCode, and npm account credentials are deterministic portable entries and are
-always encrypted. Unknown changed paths are classified from sanitized relative-path metadata only;
-provider outage, malformed output, or uncertainty leaves the path pending and local.
-The control plane classifier is configured with `PAPERBOAT_CLASSIFIER_BASE_URL`,
-`PAPERBOAT_CLASSIFIER_MODEL`, `PAPERBOAT_CLASSIFIER_SCHEMA_MODE`, timeout/retry, and
-request-budget settings. Its API key remains server-side and is never injected into the VM.
+Verify the retained rollback image before promotion:
 
-Concurrent same-path changes create an atomic, collision-resistant encrypted artifact under
-`.paperboat-conflicts` containing the losing file content or symlink target. The
-canonical path is changed only after artifact creation succeeds. Conflict summaries remain in
-health status across routine polls and restarts while their metadata remains in the private
-repository; deleting the reviewed artifact resolves the dashboard warning.
-
-Before cloning, the runtime stores the stable Paperboat project and papercode environment
-identities below `.paperboat/identity` on the mounted volume. A later boot with mismatched
-identity fails before modifying repository data. Project directory names are restricted to
-a single non-reserved path segment.
-
-Readiness is written to `/var/lib/paperboat/readiness.json`. A ready VM means the mounted
-workspace exists, config sync completed, papercode is listening locally, and the agentunnel
-machine client has completed its authenticated relay connection for the assigned project
-route. Agentunnel publishes its state atomically in
-`/var/lib/paperboat/agentunnel-status.json`; stale state is replaced with `connecting`
-before each connection and becomes `disconnected` when the route drops. The entrypoint
-changes VM readiness to failed during reconnect, and the Docker healthcheck independently
-requires the agentunnel state to be `connected`. Both return to ready after reconnection.
-
-Readiness updates are atomic and identify the active boot stage. A partial boot records
-`state=failed` with the failing stage before teardown; the next boot immediately replaces
-that stale state as it reconciles the workspace, config, services, and route. This keeps Fly
-health and control-plane diagnostics aligned without exposing command output or secrets.
-
-The image Docker healthcheck runs `/usr/local/bin/paperboat-healthcheck`, which reports
-healthy only when the readiness JSON state is `ready`.
-
-Production server configuration requires `agentunnel.machine_mode=required`. An agentunnel
-startup or runtime failure therefore fails the VM instead of leaving a papercode process
-running behind an unavailable route. Optional restart mode is limited to non-production
-diagnostics.
-
-`PAPERBOAT_AGENTUNNEL_FORWARD_COMMAND` can override the default client launch command.
-Use it when the hosted dev agentunnel exposes a more specific HTTP/WSS machine-client
-forwarder than `agentunnel client run --config`.
-
-Project Fly machine configs intentionally contain no `services` entries. Papercode binds
-inside the machine and is reachable only through its assigned Agentunnel HTTP/WSS route;
-no public Fly application port is created. The launcher rejects non-loopback papercode host
-configuration and invalid ports instead of accidentally exposing the application server.
+```sh
+deploy/project-vm/tests/image-rollback-check.sh CURRENT_IMAGE ROLLBACK_IMAGE
+```

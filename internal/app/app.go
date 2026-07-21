@@ -115,12 +115,25 @@ func New(opts Options) (*App, error) {
 	connectedMachineService.ConfigureBootstrapCommand(opts.Config.ConnectedMachines.BootstrapCommand)
 	billingService.SetConnectedMachineSessionRevoker(connectedMachineService)
 	enrollmentService := controlplane.NewEnrollmentService(store, mintKeys, auditWriter, config.NormalizeIssuer(opts.Config.HTTP.PublicBaseURL), opts.Config.Secrets.EncryptionKey)
+	orchestratorService.SetHostedEnrollmentIssuer(func(ctx context.Context, actorID, operationKey, environmentID string, lifetime time.Duration) (string, error) {
+		grant, err := enrollmentService.EnsureBootGrant(ctx, actorID, operationKey, environmentID, lifetime)
+		return grant.Credential, err
+	})
 	configAssignmentService := controlplane.NewConfigAssignmentService(store, auditWriter)
 	configCredentialService := controlplane.NewConfigCredentialService(store, mintKeys, config.NormalizeIssuer(opts.Config.HTTP.PublicBaseURL), opts.Config.Secrets.EncryptionKey)
 	configCredentialService.SetAuditWriter(auditWriter)
 	routeService := controlplane.NewRouteService(store, auditWriter)
+	orchestratorService.SetHostedRouteEnsurer(func(ctx context.Context, actorID, operationKey, environmentID, publicHost string) error {
+		_, err := routeService.Create(ctx, actorID, operationKey, environmentID, "helper_https_wss", publicHost, "127.0.0.1", 8080)
+		return err
+	})
+	readinessClient := &http.Client{Timeout: opts.Config.Fly.OperationTimeout}
+	orchestratorService.SetHostedReadinessVerifier(orchestrator.NewHTTPReadinessVerifierWithHost(readinessClient, func(projectID string) string {
+		return orchestrator.HostedHelperHealthURL(opts.Config, projectID)
+	}, func(projectID string) string { return orchestrator.HostedHelperHealthHost(opts.Config, projectID) }))
 	controlDiagnostics := controlplane.NewDiagnosticsService(store)
 	operationRecovery := controlplane.NewOperationRecoveryService(store, auditWriter)
+	hostedProviderRecovery := controlplane.NewHostedProviderRecoveryService(store, auditWriter)
 	billingRecovery := billing.NewRecoveryService(store, auditWriter)
 	var edgeControlHandler http.Handler
 	var edgeControlService *controlplane.EdgeService
@@ -132,33 +145,35 @@ func New(opts Options) (*App, error) {
 		edgeControlHandler = edgeControlService.Handler()
 	}
 	router := httpapi.NewRouter(httpapi.Options{
-		Config:             opts.Config,
-		Logger:             opts.Logger,
-		ReadinessChecker:   checker,
-		Auth:               authService,
-		DeviceAuth:         deviceAuthService,
-		Billing:            billingService,
-		BillingRecovery:    billingRecovery,
-		Catalog:            catalogRepo,
-		CatalogWriter:      catalogRepo,
-		Fly:                flyProvider,
-		GitHub:             githubService,
-		Projects:           projectService,
-		TerminalSessions:   terminalSessionService,
-		Agentunnel:         agentunnelService,
-		MeteringRepo:       metering.NewRuntimeRepository(store, opts.Config.Secrets.EncryptionKey),
-		ConfigSync:         configSyncRepo,
-		Classifier:         classificationController,
-		ConnectedMachines:  connectedMachineService,
-		MintKeys:           mintKeys,
-		EdgeControl:        edgeControlHandler,
-		EdgeControlAdmin:   edgeControlService,
-		Enrollment:         enrollmentService,
-		ConfigAssignments:  configAssignmentService,
-		ConfigCredentials:  configCredentialService,
-		Routes:             routeService,
-		ControlDiagnostics: controlDiagnostics,
-		OperationRecovery:  operationRecovery,
+		Config:                 opts.Config,
+		Logger:                 opts.Logger,
+		ReadinessChecker:       checker,
+		Auth:                   authService,
+		DeviceAuth:             deviceAuthService,
+		Billing:                billingService,
+		BillingRecovery:        billingRecovery,
+		Catalog:                catalogRepo,
+		CatalogWriter:          catalogRepo,
+		Fly:                    flyProvider,
+		GitHub:                 githubService,
+		Projects:               projectService,
+		TerminalSessions:       terminalSessionService,
+		Agentunnel:             agentunnelService,
+		MeteringRepo:           metering.NewRuntimeRepository(store, opts.Config.Secrets.EncryptionKey),
+		ActivityIdentity:       enrollmentService,
+		ConfigSync:             configSyncRepo,
+		Classifier:             classificationController,
+		ConnectedMachines:      connectedMachineService,
+		MintKeys:               mintKeys,
+		EdgeControl:            edgeControlHandler,
+		EdgeControlAdmin:       edgeControlService,
+		Enrollment:             enrollmentService,
+		ConfigAssignments:      configAssignmentService,
+		ConfigCredentials:      configCredentialService,
+		Routes:                 routeService,
+		ControlDiagnostics:     controlDiagnostics,
+		OperationRecovery:      operationRecovery,
+		HostedProviderRecovery: hostedProviderRecovery,
 	})
 	serverWorkers := []workers.Worker{
 		orchestratorService.Worker(2 * opts.Config.HTTP.RequestTimeout / 15),
@@ -169,7 +184,7 @@ func New(opts Options) (*App, error) {
 		connectedMachineService.Worker(opts.Config.TerminalSessions.WorkerInterval),
 	}
 	if edgeControlService != nil {
-		serverWorkers = append(serverWorkers, edgeControlService.StaleNodeWorker(opts.Config.TerminalSessions.WorkerInterval, 3*opts.Config.TerminalSessions.WorkerInterval))
+		serverWorkers = append(serverWorkers, edgeControlService.StaleNodeWorker(opts.Config.TerminalSessions.WorkerInterval, controlplane.ControlTunnelNodeStaleAfter()))
 	}
 	return &App{
 		cfg:    opts.Config,

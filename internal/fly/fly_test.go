@@ -1,8 +1,10 @@
 package fly
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
@@ -89,6 +91,13 @@ func TestSDKMachineConfigAlwaysIgnoresAppSecrets(t *testing.T) {
 	}
 }
 
+func TestSDKMachineConfigRetainsSecretReferenceWithoutRewritingValue(t *testing.T) {
+	cfg := sdkMachineConfig(MachineSpec{Secrets: []MachineSecret{{EnvVar: "ENROLLMENT", Name: "PBSECRET_ENROLLMENT", Value: ""}}})
+	if len(cfg.Processes) != 1 || len(cfg.Processes[0].Secrets) != 1 || cfg.Processes[0].Secrets[0].EnvVar != "ENROLLMENT" || cfg.Processes[0].Secrets[0].Name != "PBSECRET_ENROLLMENT" {
+		t.Fatalf("secret references = %#v", cfg.Processes)
+	}
+}
+
 func TestSDKMappingReadsMachineMetadata(t *testing.T) {
 	machine := machineFromSDK(&flygo.Machine{
 		ID:     "mach_1",
@@ -114,8 +123,133 @@ func TestSDKMappingReadsMachineMetadata(t *testing.T) {
 
 func TestSDKErrorMapsNotFound(t *testing.T) {
 	err := &flaps.FlapsError{ResponseStatusCode: http.StatusNotFound}
-	if !errors.Is(mapSDKError(err), ErrNotFound) {
+	mapped := mapSDKError(err)
+	if !errors.Is(mapped, ErrNotFound) {
 		t.Fatalf("error = %v, want ErrNotFound", mapSDKError(err))
+	}
+	var providerErr *ProviderError
+	if !errors.As(mapped, &providerErr) || providerErr.Outcome != OutcomeNotFound {
+		t.Fatalf("mapped = %#v, want not_found provider error", mapped)
+	}
+}
+
+func TestSDKMapsNilProviderObjectsToNotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/apps/paperboat-test/volumes/vol_missing" && r.URL.Path != "/v1/apps/paperboat-test/machines/mach_missing" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("null"))
+	}))
+	defer server.Close()
+
+	client := &SDKClient{AppName: "paperboat-test", BaseURL: server.URL}
+	if _, err := client.GetVolume(context.Background(), "vol_missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("volume error = %v, want ErrNotFound", err)
+	}
+	if _, err := client.GetMachine(context.Background(), "mach_missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("machine error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestSDKErrorClassifiesProviderOutcomes(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		want   Outcome
+	}{
+		{http.StatusTooManyRequests, OutcomeRetryable},
+		{http.StatusServiceUnavailable, OutcomeRetryable},
+		{http.StatusConflict, OutcomeConflict},
+		{http.StatusBadRequest, OutcomePermanent},
+	} {
+		mapped := mapSDKError(&flaps.FlapsError{ResponseStatusCode: tc.status})
+		var providerErr *ProviderError
+		if !errors.As(mapped, &providerErr) || providerErr.Outcome != tc.want {
+			t.Errorf("status %d mapped to %#v, want %s", tc.status, mapped, tc.want)
+		}
+	}
+}
+
+func TestSDKErrorClassifiesRegionalCapacity(t *testing.T) {
+	mapped := mapSDKError(&flaps.FlapsError{
+		ResponseStatusCode: http.StatusBadRequest,
+		ResponseBody:       []byte(`{"error":"no capacity","status":"insufficient_capacity"}`),
+	})
+	var providerErr *ProviderError
+	if !errors.As(mapped, &providerErr) || providerErr.Outcome != OutcomeCapacity {
+		t.Fatalf("mapped = %#v, want capacity error", mapped)
+	}
+}
+
+func TestMutationErrorMakesRetryableOutcomeUncertain(t *testing.T) {
+	mapped := mapMutationError("create_machine", &flaps.FlapsError{ResponseStatusCode: http.StatusServiceUnavailable})
+	var providerErr *ProviderError
+	if !errors.As(mapped, &providerErr) || providerErr.Outcome != OutcomeUncertain || providerErr.Operation != "create_machine" {
+		t.Fatalf("mapped = %#v, want uncertain create_machine error", mapped)
+	}
+
+	mapped = mapMutationError("create_machine", &flaps.FlapsError{ResponseStatusCode: http.StatusConflict})
+	if !errors.As(mapped, &providerErr) || providerErr.Outcome != OutcomeConflict {
+		t.Fatalf("mapped = %#v, want conflict error", mapped)
+	}
+}
+
+func TestMutationErrorTreatsMachineReplacementConflictAsUncertain(t *testing.T) {
+	mapped := mapMutationError("start_machine", &flaps.FlapsError{
+		ResponseStatusCode: http.StatusConflict,
+		ResponseBody:       []byte(`{"error":"failed_precondition: machine getting replaced, refusing to start"}`),
+	})
+	var providerErr *ProviderError
+	if !errors.As(mapped, &providerErr) || providerErr.Outcome != OutcomeUncertain || providerErr.Operation != "start_machine" {
+		t.Fatalf("mapped = %#v, want uncertain start_machine error", mapped)
+	}
+}
+
+func TestMutationErrorMakesTransportFailureUncertain(t *testing.T) {
+	mapped := mapMutationError("delete_secret", context.DeadlineExceeded)
+	var providerErr *ProviderError
+	if !errors.As(mapped, &providerErr) || providerErr.Outcome != OutcomeUncertain || providerErr.Operation != "delete_secret" || !errors.Is(mapped, context.DeadlineExceeded) {
+		t.Fatalf("mapped = %#v, want uncertain delete_secret deadline", mapped)
+	}
+}
+
+func TestSDKMutationPreservesProviderRequestID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/v1/apps/paperboat-test/secrets/PBSECRET_TEST" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("fly-request-id", "fly-request-123")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"provider unavailable"}`))
+	}))
+	defer server.Close()
+
+	err := (&SDKClient{AppName: "paperboat-test", BaseURL: server.URL}).DeleteSecret(context.Background(), "PBSECRET_TEST")
+	var providerErr *ProviderError
+	if !errors.As(err, &providerErr) || providerErr.Outcome != OutcomeUncertain || providerErr.Operation != "delete_secret" || providerErr.RequestID != "fly-request-123" {
+		t.Fatalf("error = %#v, want uncertain delete_secret with request ID", err)
+	}
+}
+
+func TestSDKMutationCancellationIsUncertain(t *testing.T) {
+	requestStarted := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requestStarted)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- (&SDKClient{AppName: "paperboat-test", BaseURL: server.URL}).DeleteSecret(ctx, "PBSECRET_TEST")
+	}()
+	<-requestStarted
+	cancel()
+	err := <-done
+	var providerErr *ProviderError
+	if !errors.As(err, &providerErr) || providerErr.Outcome != OutcomeUncertain || providerErr.Operation != "delete_secret" || !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %#v, want uncertain canceled delete_secret", err)
 	}
 }
 

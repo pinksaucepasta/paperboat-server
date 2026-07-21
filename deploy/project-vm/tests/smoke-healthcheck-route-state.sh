@@ -5,21 +5,26 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-export PAPERBOAT_READINESS_FILE="$tmp/readiness.json"
-export PAPERBOAT_AGENTUNNEL_STATUS_FILE="$tmp/agentunnel.json"
-printf '{"state":"ready","reason":"ready"}\n' > "$PAPERBOAT_READINESS_FILE"
+cat > "$tmp/curl" <<'EOF'
+#!/usr/bin/env bash
+cat "$PAPERBOAT_TEST_HEALTH_BODY"
+EOF
+chmod +x "$tmp/curl"
 
-printf '{"status":"disconnected"}\n' > "$PAPERBOAT_AGENTUNNEL_STATUS_FILE"
-if "$root/bin/paperboat-healthcheck"; then
-  printf 'healthcheck accepted a disconnected agentunnel route\n' >&2
-  exit 1
-fi
+export PATH="$tmp:$PATH"
+export PAPERBOAT_TEST_HEALTH_BODY="$tmp/health.json"
 
-printf '{"status":"connecting"}\n' > "$PAPERBOAT_AGENTUNNEL_STATUS_FILE"
-if "$root/bin/paperboat-healthcheck"; then
-  printf 'healthcheck accepted a connecting agentunnel route\n' >&2
-  exit 1
-fi
-
-printf '{"status":"connected"}\n' > "$PAPERBOAT_AGENTUNNEL_STATUS_FILE"
+printf '%s' '{"live":true,"capabilities":{"hosted_lifecycle":{"state":"ready"},"edge":{"state":"ready"}}}' > "$PAPERBOAT_TEST_HEALTH_BODY"
 "$root/bin/paperboat-healthcheck"
+
+printf '%s' '{"live":true,"capabilities":{"hosted_lifecycle":{"state":"ready"},"edge":{"state":"unavailable"}}}' > "$PAPERBOAT_TEST_HEALTH_BODY"
+if "$root/bin/paperboat-healthcheck"; then
+  echo "healthcheck accepted unavailable connector" >&2
+  exit 1
+fi
+
+printf '%s' '{"live":false,"capabilities":{"hosted_lifecycle":{"state":"ready"},"edge":{"state":"ready"}}}' > "$PAPERBOAT_TEST_HEALTH_BODY"
+if "$root/bin/paperboat-healthcheck"; then
+  echo "healthcheck accepted non-live helper" >&2
+  exit 1
+fi

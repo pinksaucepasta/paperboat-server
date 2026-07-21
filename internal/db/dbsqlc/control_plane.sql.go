@@ -736,6 +736,44 @@ func (q *Queries) CreateControlUsageVerificationKey(ctx context.Context, arg Cre
 	return i, err
 }
 
+const createHostedHelperIdentityRenewal = `-- name: CreateHostedHelperIdentityRenewal :one
+INSERT INTO hosted_helper_identity_renewals (operation_key,helper_id,environment_id,request_hash,identity_ciphertext,expires_at)
+VALUES ($1,$2,$3,$4,$5,$6)
+ON CONFLICT (operation_key) DO NOTHING
+RETURNING operation_key, helper_id, environment_id, request_hash, identity_ciphertext, expires_at, created_at
+`
+
+type CreateHostedHelperIdentityRenewalParams struct {
+	OperationKey       string
+	HelperID           string
+	EnvironmentID      string
+	RequestHash        []byte
+	IdentityCiphertext []byte
+	ExpiresAt          time.Time
+}
+
+func (q *Queries) CreateHostedHelperIdentityRenewal(ctx context.Context, arg CreateHostedHelperIdentityRenewalParams) (HostedHelperIdentityRenewal, error) {
+	row := q.db.QueryRowContext(ctx, createHostedHelperIdentityRenewal,
+		arg.OperationKey,
+		arg.HelperID,
+		arg.EnvironmentID,
+		arg.RequestHash,
+		arg.IdentityCiphertext,
+		arg.ExpiresAt,
+	)
+	var i HostedHelperIdentityRenewal
+	err := row.Scan(
+		&i.OperationKey,
+		&i.HelperID,
+		&i.EnvironmentID,
+		&i.RequestHash,
+		&i.IdentityCiphertext,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const drainControlTunnelNode = `-- name: DrainControlTunnelNode :one
 UPDATE control_tunnel_nodes
 SET state = 'draining', ready = false, drain_deadline = $1,
@@ -860,6 +898,32 @@ type GetActiveControlHelperParams struct {
 
 func (q *Queries) GetActiveControlHelper(ctx context.Context, arg GetActiveControlHelperParams) (ControlHelper, error) {
 	row := q.db.QueryRowContext(ctx, getActiveControlHelper, arg.ID, arg.EnvironmentID)
+	var i ControlHelper
+	err := row.Scan(
+		&i.ID,
+		&i.EnvironmentID,
+		&i.KeyThumbprint,
+		&i.PublicKey,
+		&i.State,
+		&i.Generation,
+		&i.ReplacementOperationKey,
+		&i.ReplacementConnectorGeneration,
+		&i.LastSeenAt,
+		&i.RevokedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getActiveControlHelperForEnvironment = `-- name: GetActiveControlHelperForEnvironment :one
+SELECT id, environment_id, key_thumbprint, public_key, state, generation, replacement_operation_key, replacement_connector_generation, last_seen_at, revoked_at, created_at, updated_at FROM control_helpers
+WHERE environment_id = $1 AND state = 'active' AND revoked_at IS NULL
+ORDER BY updated_at DESC LIMIT 1
+`
+
+func (q *Queries) GetActiveControlHelperForEnvironment(ctx context.Context, environmentID string) (ControlHelper, error) {
+	row := q.db.QueryRowContext(ctx, getActiveControlHelperForEnvironment, environmentID)
 	var i ControlHelper
 	err := row.Scan(
 		&i.ID,
@@ -1127,16 +1191,34 @@ SELECT
   (SELECT count(*) FROM control_reconciliation_attempts WHERE state IN ('started','uncertain'))::bigint AS reconciliation_depth,
   CAST(coalesce((SELECT extract(epoch FROM (now() - min(started_at))) FROM control_reconciliation_attempts WHERE state IN ('started','uncertain')), 0) AS bigint) AS reconciliation_oldest_age_seconds,
   (SELECT count(*) FROM control_tunnel_nodes WHERE state IN ('registered','ready') AND (last_heartbeat_at IS NULL OR last_heartbeat_at <= now() - interval '2 minutes'))::bigint AS stale_node_depth
+  ,(SELECT count(*) FROM orchestration_jobs WHERE state IN ('queued','running'))::bigint AS orchestration_queue_depth
+  ,(SELECT count(*) FROM orchestration_jobs WHERE state='running' AND lease_expires_at <= now())::bigint AS orchestration_expired_lease_depth
+  ,CAST(coalesce((SELECT extract(epoch FROM (now() - min(created_at))) FROM orchestration_jobs WHERE state IN ('queued','running')), 0) AS bigint) AS orchestration_oldest_age_seconds
+  ,(SELECT count(*) FROM hosted_provider_operations WHERE state='uncertain')::bigint AS hosted_provider_uncertain_depth
+  ,(SELECT count(*) FROM hosted_provider_operations WHERE state='pending' OR (state='running' AND updated_at < now() - interval '2 minutes'))::bigint AS hosted_provider_retryable_depth
+  ,CAST(coalesce((SELECT extract(epoch FROM (now() - min(created_at))) FROM hosted_provider_operations WHERE resource_type IN ('machine','volume','secret') AND state IN ('pending','running','uncertain')), 0) AS bigint) AS hosted_provider_oldest_age_seconds
+  ,(SELECT count(*) FROM hosted_readiness_observations WHERE state='failed' AND observed_at >= now() - interval '24 hours')::bigint AS hosted_readiness_failure_depth
+  ,CAST(coalesce((SELECT extract(epoch FROM (now() - max(observed_at))) FROM hosted_readiness_observations WHERE state='failed' AND observed_at >= now() - interval '24 hours'), 0) AS bigint) AS hosted_readiness_recent_failure_age_seconds
+  ,(SELECT count(*) FROM orchestration_jobs WHERE job_type='fly.orphan.remediate' AND state='needs_review')::bigint AS hosted_orphan_review_depth
 FROM control_operations
 `
 
 type GetControlPlaneQueueMetricsRow struct {
-	OperationDepth                 int64
-	OperationOldestAgeSeconds      int64
-	OperationDeadLetterDepth       int64
-	ReconciliationDepth            int64
-	ReconciliationOldestAgeSeconds int64
-	StaleNodeDepth                 int64
+	OperationDepth                         int64
+	OperationOldestAgeSeconds              int64
+	OperationDeadLetterDepth               int64
+	ReconciliationDepth                    int64
+	ReconciliationOldestAgeSeconds         int64
+	StaleNodeDepth                         int64
+	OrchestrationQueueDepth                int64
+	OrchestrationExpiredLeaseDepth         int64
+	OrchestrationOldestAgeSeconds          int64
+	HostedProviderUncertainDepth           int64
+	HostedProviderRetryableDepth           int64
+	HostedProviderOldestAgeSeconds         int64
+	HostedReadinessFailureDepth            int64
+	HostedReadinessRecentFailureAgeSeconds int64
+	HostedOrphanReviewDepth                int64
 }
 
 func (q *Queries) GetControlPlaneQueueMetrics(ctx context.Context) (GetControlPlaneQueueMetricsRow, error) {
@@ -1149,6 +1231,15 @@ func (q *Queries) GetControlPlaneQueueMetrics(ctx context.Context) (GetControlPl
 		&i.ReconciliationDepth,
 		&i.ReconciliationOldestAgeSeconds,
 		&i.StaleNodeDepth,
+		&i.OrchestrationQueueDepth,
+		&i.OrchestrationExpiredLeaseDepth,
+		&i.OrchestrationOldestAgeSeconds,
+		&i.HostedProviderUncertainDepth,
+		&i.HostedProviderRetryableDepth,
+		&i.HostedProviderOldestAgeSeconds,
+		&i.HostedReadinessFailureDepth,
+		&i.HostedReadinessRecentFailureAgeSeconds,
+		&i.HostedOrphanReviewDepth,
 	)
 	return i, err
 }
@@ -1329,6 +1420,43 @@ func (q *Queries) GetEligibleControlConfigAssignment(ctx context.Context, arg Ge
 	return i, err
 }
 
+const getHostedHelperIdentityRenewal = `-- name: GetHostedHelperIdentityRenewal :one
+SELECT operation_key, helper_id, environment_id, request_hash, identity_ciphertext, expires_at, created_at FROM hosted_helper_identity_renewals WHERE operation_key=$1
+`
+
+func (q *Queries) GetHostedHelperIdentityRenewal(ctx context.Context, operationKey string) (HostedHelperIdentityRenewal, error) {
+	row := q.db.QueryRowContext(ctx, getHostedHelperIdentityRenewal, operationKey)
+	var i HostedHelperIdentityRenewal
+	err := row.Scan(
+		&i.OperationKey,
+		&i.HelperID,
+		&i.EnvironmentID,
+		&i.RequestHash,
+		&i.IdentityCiphertext,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getHostedProviderOperationRecovery = `-- name: GetHostedProviderOperationRecovery :one
+SELECT operation_key, provider_operation_id, actor_user_id, action, evidence_reference, created_at FROM hosted_provider_operation_recoveries WHERE operation_key=$1
+`
+
+func (q *Queries) GetHostedProviderOperationRecovery(ctx context.Context, operationKey string) (HostedProviderOperationRecovery, error) {
+	row := q.db.QueryRowContext(ctx, getHostedProviderOperationRecovery, operationKey)
+	var i HostedProviderOperationRecovery
+	err := row.Scan(
+		&i.OperationKey,
+		&i.ProviderOperationID,
+		&i.ActorUserID,
+		&i.Action,
+		&i.EvidenceReference,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getOwnedControlConfigRepository = `-- name: GetOwnedControlConfigRepository :one
 SELECT id, owner_user_id, provider, external_ref, display_name, state, created_at, updated_at FROM control_config_repositories
 WHERE id = $1 AND owner_user_id = $2 AND state = 'active'
@@ -1351,6 +1479,32 @@ func (q *Queries) GetOwnedControlConfigRepository(ctx context.Context, arg GetOw
 		&i.State,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getPendingControlHelperEnrollmentForEnvironment = `-- name: GetPendingControlHelperEnrollmentForEnvironment :one
+SELECT id, environment_id, helper_id, jti_hash, operation_key, request_hash, grant_ciphertext, state, expires_at, consumed_at, revoked_at, created_at FROM control_helper_enrollments
+WHERE environment_id = $1 AND state = 'pending' AND revoked_at IS NULL
+ORDER BY created_at DESC LIMIT 1
+`
+
+func (q *Queries) GetPendingControlHelperEnrollmentForEnvironment(ctx context.Context, environmentID string) (ControlHelperEnrollment, error) {
+	row := q.db.QueryRowContext(ctx, getPendingControlHelperEnrollmentForEnvironment, environmentID)
+	var i ControlHelperEnrollment
+	err := row.Scan(
+		&i.ID,
+		&i.EnvironmentID,
+		&i.HelperID,
+		&i.JtiHash,
+		&i.OperationKey,
+		&i.RequestHash,
+		&i.GrantCiphertext,
+		&i.State,
+		&i.ExpiresAt,
+		&i.ConsumedAt,
+		&i.RevokedAt,
+		&i.CreatedAt,
 	)
 	return i, err
 }
@@ -1403,6 +1557,28 @@ func (q *Queries) HeartbeatControlTunnelNode(ctx context.Context, arg HeartbeatC
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const hostedHelperOwnsMachine = `-- name: HostedHelperOwnsMachine :one
+SELECT EXISTS (
+  SELECT 1 FROM control_helpers h
+  JOIN fly_machines fm ON fm.project_id=h.environment_id
+  WHERE h.id=$1 AND h.environment_id=$2
+    AND h.state='active' AND h.revoked_at IS NULL AND fm.fly_machine_id=$3
+)
+`
+
+type HostedHelperOwnsMachineParams struct {
+	HelperID      string
+	EnvironmentID string
+	MachineID     string
+}
+
+func (q *Queries) HostedHelperOwnsMachine(ctx context.Context, arg HostedHelperOwnsMachineParams) (bool, error) {
+	row := q.db.QueryRowContext(ctx, hostedHelperOwnsMachine, arg.HelperID, arg.EnvironmentID, arg.MachineID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const insertControlUsageReceipt = `-- name: InsertControlUsageReceipt :one
@@ -1999,6 +2175,27 @@ func (q *Queries) RecoverDeadLetterControlOperation(ctx context.Context, arg Rec
 	return result.RowsAffected()
 }
 
+const recoverUncertainHostedProviderOperation = `-- name: RecoverUncertainHostedProviderOperation :execrows
+UPDATE hosted_provider_operations
+SET state=CASE WHEN $1::text='confirm_deleted' THEN 'succeeded' ELSE 'pending' END,
+    outcome=CASE WHEN $1::text='confirm_deleted' THEN 'success' ELSE 'pending' END,
+    last_error='',uncertain_at=NULL,observed_at=now(),updated_at=now()
+WHERE id=$2 AND resource_type='secret' AND state='uncertain'
+`
+
+type RecoverUncertainHostedProviderOperationParams struct {
+	Action string
+	ID     string
+}
+
+func (q *Queries) RecoverUncertainHostedProviderOperation(ctx context.Context, arg RecoverUncertainHostedProviderOperationParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, recoverUncertainHostedProviderOperation, arg.Action, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const registerControlTunnelNode = `-- name: RegisterControlTunnelNode :one
 INSERT INTO control_tunnel_nodes (id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, last_heartbeat_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, 'registered', false,
@@ -2225,6 +2422,41 @@ func (q *Queries) ReserveControlSigningKeyRevocation(ctx context.Context, arg Re
 	return i, err
 }
 
+const reserveHostedProviderOperationRecovery = `-- name: ReserveHostedProviderOperationRecovery :one
+INSERT INTO hosted_provider_operation_recoveries (operation_key, provider_operation_id, actor_user_id, action, evidence_reference)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (operation_key) DO NOTHING
+RETURNING operation_key, provider_operation_id, actor_user_id, action, evidence_reference, created_at
+`
+
+type ReserveHostedProviderOperationRecoveryParams struct {
+	OperationKey        string
+	ProviderOperationID string
+	ActorUserID         sql.NullString
+	Action              string
+	EvidenceReference   string
+}
+
+func (q *Queries) ReserveHostedProviderOperationRecovery(ctx context.Context, arg ReserveHostedProviderOperationRecoveryParams) (HostedProviderOperationRecovery, error) {
+	row := q.db.QueryRowContext(ctx, reserveHostedProviderOperationRecovery,
+		arg.OperationKey,
+		arg.ProviderOperationID,
+		arg.ActorUserID,
+		arg.Action,
+		arg.EvidenceReference,
+	)
+	var i HostedProviderOperationRecovery
+	err := row.Scan(
+		&i.OperationKey,
+		&i.ProviderOperationID,
+		&i.ActorUserID,
+		&i.Action,
+		&i.EvidenceReference,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const revokeControlConfigCredentialsForEnvironment = `-- name: RevokeControlConfigCredentialsForEnvironment :execrows
 UPDATE control_config_credentials SET revoked_at = coalesce(revoked_at, $1)
 WHERE environment_id = $2 AND revoked_at IS NULL
@@ -2287,6 +2519,25 @@ type RevokeControlUsageVerificationKeyParams struct {
 
 func (q *Queries) RevokeControlUsageVerificationKey(ctx context.Context, arg RevokeControlUsageVerificationKeyParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, revokeControlUsageVerificationKey, arg.RevokedAt, arg.KeyID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const revokeExpiredControlHelperEnrollments = `-- name: RevokeExpiredControlHelperEnrollments :execrows
+UPDATE control_helper_enrollments
+SET state='revoked', revoked_at=$1
+WHERE environment_id=$2 AND state='pending' AND expires_at<=$1 AND revoked_at IS NULL
+`
+
+type RevokeExpiredControlHelperEnrollmentsParams struct {
+	Now           sql.NullTime
+	EnvironmentID string
+}
+
+func (q *Queries) RevokeExpiredControlHelperEnrollments(ctx context.Context, arg RevokeExpiredControlHelperEnrollmentsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, revokeExpiredControlHelperEnrollments, arg.Now, arg.EnvironmentID)
 	if err != nil {
 		return 0, err
 	}

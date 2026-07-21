@@ -64,7 +64,7 @@ func (c *SDKClient) CreateVolume(ctx context.Context, name, region string, sizeG
 		Encrypted: &encrypted,
 	})
 	if err != nil {
-		return Volume{}, mapSDKError(err)
+		return Volume{}, mapMutationError("create_volume", err)
 	}
 	return volumeFromSDK(volume), nil
 }
@@ -77,6 +77,9 @@ func (c *SDKClient) GetVolume(ctx context.Context, volumeID string) (Volume, err
 	volume, err := client.GetVolume(ctx, c.AppName, volumeID)
 	if err != nil {
 		return Volume{}, mapSDKError(err)
+	}
+	if volume == nil || strings.TrimSpace(volume.ID) == "" {
+		return Volume{}, ErrNotFound
 	}
 	return volumeFromSDK(volume), nil
 }
@@ -104,7 +107,7 @@ func (c *SDKClient) DestroyVolume(ctx context.Context, volumeID string) error {
 		return err
 	}
 	_, err = client.DeleteVolume(ctx, c.AppName, volumeID)
-	return mapSDKError(err)
+	return mapMutationError("destroy_volume", err)
 }
 
 func (c *SDKClient) CreateMachine(ctx context.Context, spec MachineSpec) (Machine, error) {
@@ -125,7 +128,7 @@ func (c *SDKClient) CreateMachine(ctx context.Context, spec MachineSpec) (Machin
 		SkipLaunch: true,
 	})
 	if err != nil {
-		return Machine{}, mapSDKError(err)
+		return Machine{}, mapMutationError("create_machine", err)
 	}
 	return machineFromSDK(machine), nil
 }
@@ -138,6 +141,9 @@ func (c *SDKClient) GetMachine(ctx context.Context, machineID string) (Machine, 
 	machine, err := client.Get(ctx, c.AppName, machineID)
 	if err != nil {
 		return Machine{}, mapSDKError(err)
+	}
+	if machine == nil || strings.TrimSpace(machine.ID) == "" {
+		return Machine{}, ErrNotFound
 	}
 	return machineFromSDK(machine), nil
 }
@@ -157,7 +163,7 @@ func (c *SDKClient) UpdateMachine(ctx context.Context, machineID string, spec Ma
 		Config: sdkMachineConfig(spec),
 	}, "")
 	if err != nil {
-		return Machine{}, mapSDKError(err)
+		return Machine{}, mapMutationError("update_machine", err)
 	}
 	return machineFromSDK(machine), nil
 }
@@ -168,7 +174,7 @@ func (c *SDKClient) StartMachine(ctx context.Context, machineID string) (Machine
 		return Machine{}, err
 	}
 	if _, err := client.Start(ctx, c.AppName, machineID, ""); err != nil {
-		return Machine{}, mapSDKError(err)
+		return Machine{}, mapMutationError("start_machine", err)
 	}
 	return c.GetMachine(ctx, machineID)
 }
@@ -179,7 +185,7 @@ func (c *SDKClient) StopMachine(ctx context.Context, machineID string) (Machine,
 		return Machine{}, err
 	}
 	if err := client.Stop(ctx, c.AppName, flygo.StopMachineInput{ID: machineID}, ""); err != nil {
-		return Machine{}, mapSDKError(err)
+		return Machine{}, mapMutationError("stop_machine", err)
 	}
 	return c.GetMachine(ctx, machineID)
 }
@@ -189,7 +195,7 @@ func (c *SDKClient) DestroyMachine(ctx context.Context, machineID string) error 
 	if err != nil {
 		return err
 	}
-	return mapSDKError(client.Destroy(ctx, c.AppName, flygo.RemoveMachineInput{ID: machineID, Kill: true}, ""))
+	return mapMutationError("destroy_machine", client.Destroy(ctx, c.AppName, flygo.RemoveMachineInput{ID: machineID, Kill: true}, ""))
 }
 
 func (c *SDKClient) ListMachines(ctx context.Context, tags map[string]string) ([]Machine, error) {
@@ -217,7 +223,7 @@ func (c *SDKClient) SetSecret(ctx context.Context, name, value string) error {
 		return err
 	}
 	_, err = client.SetAppSecret(ctx, c.AppName, name, value)
-	return mapSDKError(err)
+	return mapMutationError("set_secret", err)
 }
 
 func (c *SDKClient) DeleteSecret(ctx context.Context, name string) error {
@@ -226,7 +232,7 @@ func (c *SDKClient) DeleteSecret(ctx context.Context, name string) error {
 		return err
 	}
 	_, err = client.DeleteAppSecret(ctx, c.AppName, name)
-	return mapSDKError(err)
+	return mapMutationError("delete_secret", err)
 }
 
 func (c *SDKClient) ensureApp(ctx context.Context) error {
@@ -388,7 +394,47 @@ func mapSDKError(err error) error {
 		return nil
 	}
 	if errors.Is(err, flaps.FlapsErrorNotFound) || flygo.IsNotFoundError(err) {
-		return ErrNotFound
+		return &ProviderError{Outcome: OutcomeNotFound, Cause: ErrNotFound}
+	}
+	var flapsErr *flaps.FlapsError
+	if errors.As(err, &flapsErr) {
+		outcome := classifyHTTPStatus(flapsErr.ResponseStatusCode)
+		if status := flaps.GetErrorStatusCode(flapsErr); status != nil && string(*status) == "insufficient_capacity" {
+			outcome = OutcomeCapacity
+		} else if outcome == OutcomeConflict && transientMachineConflict(flapsErr.ResponseBody) {
+			outcome = OutcomeRetryable
+		}
+		return &ProviderError{Outcome: outcome, RequestID: flaps.GetErrorRequestID(flapsErr), Cause: err}
 	}
 	return err
+}
+
+func transientMachineConflict(body []byte) bool {
+	message := strings.ToLower(string(body))
+	for _, phrase := range []string{"machine getting replaced", "machine is being replaced", "machine currently being updated", "machine is currently being updated"} {
+		if strings.Contains(message, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func mapMutationError(operation string, err error) error {
+	mapped := mapSDKError(err)
+	var providerErr *ProviderError
+	if !errors.As(mapped, &providerErr) {
+		if mapped == nil {
+			return nil
+		}
+		// Transport errors and caller cancellation can arrive after Fly accepted
+		// the request. Mutations must be observed or explicitly recovered before
+		// retry, even when the SDK cannot provide an HTTP response.
+		return &ProviderError{Outcome: OutcomeUncertain, Operation: operation, Cause: mapped}
+	}
+	copy := *providerErr
+	copy.Operation = operation
+	if copy.Outcome == OutcomeRetryable {
+		copy.Outcome = OutcomeUncertain
+	}
+	return &copy
 }

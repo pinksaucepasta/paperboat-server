@@ -8,11 +8,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
+	"github.com/pinksaucepasta/paperboat-server/internal/orchestrator"
+	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 )
 
 func TestRuntimeMeteringDebitsWeightedConcurrentMachines(t *testing.T) {
@@ -215,6 +218,8 @@ func TestRuntimeMeteringQueuesStopOnCreditExhaustion(t *testing.T) {
 	if projectState != "stopping" {
 		t.Fatalf("project state = %s, want stopping", projectState)
 	}
+	processMeteringStop(t, store, flyClient, "prj_poor_"+suffix)
+	assertProjectStateAndStorage(t, store, "prj_poor_"+suffix, userID, "stopped", 10)
 }
 
 func TestRuntimeMeteringClosesIntervalOnStoppedProviderState(t *testing.T) {
@@ -250,8 +255,15 @@ func TestRuntimeMeteringClosesIntervalOnStoppedProviderState(t *testing.T) {
 	if err := store.SQL().QueryRowContext(ctx, `SELECT state FROM paperboat.projects WHERE id = $1`, "prj_state_"+suffix).Scan(&projectState); err != nil {
 		t.Fatal(err)
 	}
-	if projectState != "stopped" {
-		t.Fatalf("project state = %s, want stopped", projectState)
+	if projectState != "running" {
+		t.Fatalf("provider observation changed product state = %s, want running", projectState)
+	}
+	var machineState string
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state FROM paperboat.fly_machines WHERE project_id = $1`, "prj_state_"+suffix).Scan(&machineState); err != nil {
+		t.Fatal(err)
+	}
+	if machineState != "stopped" {
+		t.Fatalf("observed machine state = %s, want stopped", machineState)
 	}
 	var balance string
 	if err := store.SQL().QueryRowContext(ctx, `SELECT balance::numeric(18,6)::text FROM paperboat.credit_accounts WHERE user_id = $1`, userID).Scan(&balance); err != nil {
@@ -338,6 +350,29 @@ func TestRuntimeMeteringQueuesIdleStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertQueuedStop(t, store, "prj_idle_"+suffix, "project.stop.idle_timeout:prj_idle_"+suffix)
+	processMeteringStop(t, store, flyClient, "prj_idle_"+suffix)
+	assertProjectStateAndStorage(t, store, "prj_idle_"+suffix, userID, "stopped", 10)
+	if err := service.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var stopJobs int
+	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.orchestration_jobs WHERE idempotency_key=$1`, "project.stop.idle_timeout:prj_idle_"+suffix).Scan(&stopJobs); err != nil {
+		t.Fatal(err)
+	}
+	if stopJobs != 1 {
+		t.Fatalf("idle stop jobs after repeated enforcement = %d, want 1", stopJobs)
+	}
+
+	cfg := config.Default()
+	cfg.Secrets.EncryptionKey = "metering-lifecycle-test-key"
+	projectService := projects.NewService(store, audit.NewWriter(store), cfg)
+	if _, err := projectService.Start(ctx, userID, "prj_idle_"+suffix); err != nil {
+		t.Fatal(err)
+	}
+	if err := orchestrator.NewService(store, flyClient, cfg).RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertProjectStateAndStorage(t, store, "prj_idle_"+suffix, userID, "running", 10)
 }
 
 func TestRuntimeMeteringIdleWarningWithoutMarkerIsEmittedOnce(t *testing.T) {
@@ -573,5 +608,41 @@ func assertQueuedStop(t *testing.T, store *db.DB, projectID, key string) {
 	}
 	if projectState != "stopping" {
 		t.Fatalf("project state = %s, want stopping", projectState)
+	}
+}
+
+func processMeteringStop(t *testing.T, store *db.DB, flyClient *fly.FakeClient, projectID string) {
+	t.Helper()
+	cfg := config.Default()
+	cfg.Secrets.EncryptionKey = "metering-lifecycle-test-key"
+	if err := orchestrator.NewService(store, flyClient, cfg).RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, machine := range flyClient.Machines {
+		if machine.State != "stopped" {
+			t.Fatalf("provider machine state = %q, want stopped", machine.State)
+		}
+	}
+	var jobs int
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT count(*) FROM paperboat.orchestration_jobs WHERE aggregate_id=$1 AND job_type='project.stop' AND state='succeeded'`, projectID).Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+	if jobs != 1 {
+		t.Fatalf("succeeded stop jobs = %d, want 1", jobs)
+	}
+}
+
+func assertProjectStateAndStorage(t *testing.T, store *db.DB, projectID, userID, wantState string, wantAllocated int) {
+	t.Helper()
+	var state string
+	var allocated int
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT state FROM paperboat.projects WHERE id=$1`, projectID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT allocated_gb FROM paperboat.storage_accounts WHERE user_id=$1`, userID).Scan(&allocated); err != nil {
+		t.Fatal(err)
+	}
+	if state != wantState || allocated != wantAllocated {
+		t.Fatalf("project state/storage = %s/%d, want %s/%d", state, allocated, wantState, wantAllocated)
 	}
 }

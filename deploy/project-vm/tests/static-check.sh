@@ -2,77 +2,63 @@
 set -Eeuo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+workspace_root="$(cd "$root/../../.." && pwd)"
 
-for file in "$root"/bin/paperboat-*; do
-  test -x "$file"
-  bash -n "$file"
-done
-for file in "$root"/presets.d/*.sh; do
-  test -x "$file"
-  bash -n "$file"
-done
 test -x "$root/build-image.sh"
+test -f "$root/tests/image-rollback-check.sh"
 bash -n "$root/build-image.sh"
+bash -n "$root/tests/image-rollback-check.sh"
+bash -n "$root/bin/paperboat-healthcheck"
+bash -n "$root/bin/paperboat-workspace-cd.sh"
+for file in "$root"/presets.d/*.sh; do bash -n "$file"; done
 
-grep -q 'paperboat-entrypoint' "$root/Dockerfile"
-grep -q 'paperboat-healthcheck' "$root/Dockerfile"
-grep -q 'agentunnel-status.json' "$root/bin/paperboat-healthcheck"
-grep -q 'paperboat-server/deploy/project-vm/bin/' "$root/Dockerfile"
-test "$(grep -c 'COPY legacy/papercode/patches ./patches' "$root/Dockerfile")" -eq 1
-grep -q 'io.paperboat.source.papercode.revision' "$root/Dockerfile"
-grep -q 'PAPERCODE_REVISION' "$root/build-image.sh"
-grep -q 'PAPERBOAT_NODE_BASE_IMAGE' "$root/build-image.sh"
-grep -q 'PAPERBOAT_GO_BASE_IMAGE' "$root/build-image.sh"
-grep -q 'NODE_BASE_IMAGE' "$root/Dockerfile"
-grep -q 'GO_BASE_IMAGE' "$root/Dockerfile"
-grep -q 'npm --version' "$root/Dockerfile"
-if grep -q 'PAPERBOAT_PAPERCODE_MODE\|papercode-disabled\|PAPERCODE=disabled' "$root/Dockerfile" "$root/build-image.sh" "$root/bin/paperboat-entrypoint"; then
-  printf 'papercode must not be optional in the production project image\n' >&2
+# Preset installers must resolve immutable versions; runtime scripts may not
+# silently consume npm latest, release stable, or floating installer scripts.
+if grep -R -Eq 'releases/download/stable|aider\.chat/install\.sh|cursor\.com/install|antigravity\.google/cli/install\.sh' "$root/presets.d"; then
+  printf 'preset installer is not pinned to an immutable artifact\n' >&2
   exit 1
 fi
-grep -q 'AGENTUNNEL_MACHINE_TOKEN' "$root/bin/paperboat-entrypoint"
-grep -q 'PAPERBOAT_AGENTUNNEL_TOKEN_ENV' "$root/bin/paperboat-start-agentunnel"
-grep -q 'PAPERBOAT_PAPERCODE_ENVIRONMENT_ID' "$root/bin/paperboat-start-papercode"
-grep -q 'cloud-linked-user-id.bin' "$root/bin/paperboat-start-papercode"
-grep -q 'cloud-relay-issuer.bin' "$root/bin/paperboat-start-papercode"
-grep -q 'GIT_ASKPASS' "$root/bin/paperboat-entrypoint"
-grep -q 'PAPERBOAT_GITHUB_CONFIG_TOKEN' "$root/bin/paperboat-git-askpass"
-grep -q 'PAPERBOAT_GITHUB_TOKEN_ENV' "$root/bin/paperboat-git-askpass"
-grep -q 'PAPERBOAT_GITHUB_TOKEN_ALLOWED_HOSTS' "$root/bin/paperboat-git-askpass"
-grep -q 'PAPERBOAT_AGENTUNNEL_TUNNEL_ID' "$root/bin/paperboat-entrypoint"
-grep -q 'T3CODE_HOME' "$root/bin/paperboat-start-papercode"
-grep -q -- '--no-browser' "$root/bin/paperboat-start-papercode"
-grep -q 'PAPERBOAT_AGENTUNNEL_FORWARD_COMMAND' "$root/bin/paperboat-start-agentunnel"
-grep -q 'PAPERBOAT_WAIT_AGENTUNNEL_COMMAND' "$root/bin/paperboat-entrypoint"
-grep -q 'agentunnel-status.json' "$root/bin/paperboat-wait-agentunnel"
-grep -q 'child_pids' "$root/bin/paperboat-entrypoint"
-grep -q '/out/paperboat-config-sync' "$root/Dockerfile"
-grep -q './cmd/paperboat-config-sync' "$root/Dockerfile"
+for package in \
+  '@anthropic-ai/claude-code@2.1.215' '@openai/codex@0.144.6' \
+  '@mariozechner/pi-coding-agent@0.73.1' 'opencode-ai@1.18.3' \
+  '@sourcegraph/amp@0.0.1784551160-g777afc' '@charmland/crush@0.85.0'; do
+  grep -R -q "npm install -g $package" "$root/presets.d" || { printf 'missing pinned npm package: %s\n' "$package" >&2; exit 1; }
+done
+for command in claude codex pi opencode amp crush; do
+  grep -R -q "command -v $command" "$root/presets.d" || { printf 'preset does not verify installed command: %s\n' "$command" >&2; exit 1; }
+done
+
+grep -q 'paperboat-helper.*run' "$root/Dockerfile"
+grep -q 'COPY paperboat-helper' "$root/Dockerfile"
+grep -q 'io.paperboat.image.contract="hosted-helper-v1"' "$root/Dockerfile"
+grep -q 'io.paperboat.source.helper.revision' "$root/Dockerfile"
+grep -q 'io.paperboat.herdr.version' "$root/Dockerfile"
 grep -q 'CHEZMOI_VERSION=2.71.0' "$root/Dockerfile"
-grep -q '2a051bb2\|6ea2040e' "$root/Dockerfile"
-grep -q 'd8fb35f9' "$root/Dockerfile"
-grep -q 'config-age-identity.txt' "$root/bin/paperboat-entrypoint"
-if grep -q 'PAPERBOAT_CLASSIFIER_API_KEY' "$root/Dockerfile" "$root/bin/"paperboat-*; then
+grep -q 'bc0fc02d4ba500f9cac2353a43e67fe036785ecca6eb55378e050fac3c103059' "$root/Dockerfile"
+grep -q '544e0002de42806d1ab64ccdef3a7e7414f24717b0b6b022bc9e57d2eefd26a2' "$root/Dockerfile"
+grep -q 'PAPERBOAT_HELPER_REVISION' "$root/build-image.sh"
+grep -q 'PAPERBOAT_NODE_BASE_IMAGE' "$root/build-image.sh"
+grep -q 'PAPERBOAT_GO_BASE_IMAGE' "$root/build-image.sh"
+grep -q 'PAPERBOAT_PROJECT_VM_PUSH' "$root/build-image.sh"
+grep -q 'docker buildx build --push' "$root/build-image.sh"
+grep -q 'multi-platform builds require' "$root/build-image.sh"
+grep -q './cmd/paperboat-config-sync' "$root/Dockerfile"
+grep -q 'PAPERBOAT_HELPER_PROFILE=hosted' "$root/Dockerfile"
+grep -q '"hosted_lifecycle"' "$root/bin/paperboat-healthcheck"
+grep -q '"edge"' "$root/bin/paperboat-healthcheck"
+
+if grep -Eq 'legacy/(papercode|agentunnel)|paperboat-start-(papercode|agentunnel)|COPY .*paperboat-entrypoint' "$root/Dockerfile"; then
+  printf 'managed image retains transitional Papercode/Agentunnel ownership\n' >&2
+  exit 1
+fi
+if grep -R -q 'PAPERBOAT_CLASSIFIER_API_KEY' "$root/Dockerfile" "$root/bin"; then
   printf 'classifier provider credentials must not be present in the VM image\n' >&2
   exit 1
 fi
-grep -q 'PAPERBOAT_SETUP_SCRIPT' "$root/bin/paperboat-apply-presets"
-grep -q 'PAPERBOAT_SETUP_SCRIPT_ENV' "$root/bin/paperboat-apply-presets"
 
-"$root/tests/smoke-entrypoint.sh"
-"$root/tests/smoke-agentunnel-readiness-failure.sh"
-"$root/tests/smoke-cleanup-partial-start.sh"
-"$root/tests/smoke-config-sync-save.sh"
-"$root/tests/smoke-config-sync-flush-fallback.sh"
-"$root/tests/smoke-config-restore-failure.sh"
-"$root/tests/smoke-preset-failure-config-flush.sh"
-"$root/tests/smoke-setup-script-env.sh"
-"$root/tests/smoke-git-askpass-host-scope.sh"
-"$root/tests/smoke-agentunnel-token-env.sh"
-"$root/tests/smoke-papercode-loopback.sh"
-"$root/tests/smoke-workspace-identity.sh"
 "$root/tests/smoke-healthcheck-route-state.sh"
+(cd "$workspace_root/paperboat-helper" && go test ./internal/hosted ./internal/runtime)
 
 server_root="$(cd "$root/../.." && pwd)"
-grep -q 'BootCommand:.*paperboat-entrypoint' "$server_root/internal/config/config.go"
+grep -q 'BootCommand:.*paperboat-helper.*run' "$server_root/internal/config/config.go"
 grep -q 'paperboat-server/deploy/project-vm/presets.d/' "$root/Dockerfile"

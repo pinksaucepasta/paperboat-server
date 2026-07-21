@@ -621,6 +621,9 @@ func (r *Repository) createIntentOnce(ctx context.Context, input CreateInput, re
 		if err := q.InsertProject(ctx, dbsqlc.InsertProjectParams{ID: projectID, UserID: input.UserID, Name: input.Name, IdempotencyKey: input.IdempotencyKey, CreateRequestHash: createRequestHash(input)}); err != nil {
 			return err
 		}
+		if _, err := q.CreateControlEnvironment(ctx, dbsqlc.CreateControlEnvironmentParams{ID: projectID, WorkspaceID: projectID, OwnerUserID: sql.NullString{String: input.UserID, Valid: true}, DesiredState: "active"}); err != nil {
+			return err
+		}
 		if err := q.InsertProjectRepository(ctx, dbsqlc.InsertProjectRepositoryParams{ProjectID: projectID, SourceUrl: input.RepositoryURL, DefaultBranch: input.DefaultBranch}); err != nil {
 			return err
 		}
@@ -911,24 +914,29 @@ func markDeletedAndReleaseStorageTx(ctx context.Context, tx *db.Tx, projectID st
 func (r *Repository) QueueLifecycleJob(ctx context.Context, userID, projectID, jobType, nextState string) (Project, error) {
 	err := r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		q := tx.Queries()
-		state, err := q.GetProjectStateForUpdate(ctx, dbsqlc.GetProjectStateForUpdateParams{ID: projectID, UserID: userID})
+		locked, err := q.GetProjectStateForUpdate(ctx, dbsqlc.GetProjectStateForUpdateParams{ID: projectID, UserID: userID})
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrNotFound
 			}
 			return err
 		}
+		state := locked.State
 		if state == "deleted" || state == "deleting" {
 			return ErrDeleted
 		}
 		if state == "creating" || state == "provisioning_storage" || state == "provisioning_machine" || state == "failed" || state == "suspended" {
 			return ErrInvalidState
 		}
+		if state == nextState {
+			return nil
+		}
 		if err := q.UpdateProjectLifecycleState(ctx, dbsqlc.UpdateProjectLifecycleStateParams{ID: projectID, UserID: userID, State: nextState}); err != nil {
 			return err
 		}
 		payload, _ := json.Marshal(map[string]string{"previous_state": state})
-		if err := q.UpsertProjectLifecycleJob(ctx, dbsqlc.UpsertProjectLifecycleJobParams{ID: newID("job"), JobType: jobType, ProjectID: projectID, IdempotencyKey: jobType + ":" + projectID, Payload: payload}); err != nil {
+		jobKey := fmt.Sprintf("%s:%s:%d", jobType, projectID, locked.Version)
+		if err := q.UpsertProjectLifecycleJob(ctx, dbsqlc.UpsertProjectLifecycleJobParams{ID: newID("job"), JobType: jobType, ProjectID: projectID, IdempotencyKey: jobKey, Payload: payload}); err != nil {
 			return err
 		}
 		return insertEvent(ctx, tx, projectID, jobType+"_queued", "Project lifecycle operation was queued.", map[string]any{"state": nextState})

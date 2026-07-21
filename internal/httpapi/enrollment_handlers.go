@@ -1,14 +1,56 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
 )
+
+func helperIdentityRenew(service *controlplane.EnrollmentService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 4097))
+		if err != nil || len(body) > 4096 {
+			writeError(w, r, http.StatusBadRequest, "validation_failed", "Request body must match the documented schema.")
+			return
+		}
+		var input struct {
+			OperationID string `json:"operation_id"`
+		}
+		decoder := json.NewDecoder(bytes.NewReader(body))
+		decoder.DisallowUnknownFields()
+		var extra any
+		if decoder.Decode(&input) != nil || decoder.Decode(&extra) != io.EOF || len(input.OperationID) < 8 || len(input.OperationID) > 128 {
+			writeError(w, r, http.StatusBadRequest, "validation_failed", "Request body must match the documented schema.")
+			return
+		}
+		parts := strings.Fields(r.Header.Get("Authorization"))
+		proof, proofErr := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Helper-Proof"))
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || len(parts[1]) > 16<<10 || proofErr != nil {
+			noStore(w)
+			writeError(w, r, http.StatusUnauthorized, "credential_invalid", "Helper identity renewal is unavailable.")
+			return
+		}
+		identity, err := service.Renew(r.Context(), parts[1], proof, body)
+		if err != nil {
+			status, code := http.StatusUnauthorized, "credential_invalid"
+			if errors.Is(err, controlplane.ErrUsageOperationConflict) {
+				status, code = http.StatusConflict, "operation_id_conflict"
+			}
+			noStore(w)
+			writeError(w, r, status, code, "Helper identity renewal is unavailable.")
+			return
+		}
+		noStore(w)
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: identity})
+	}
+}
 
 func helperEnrollmentIssue(service *controlplane.EnrollmentService) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

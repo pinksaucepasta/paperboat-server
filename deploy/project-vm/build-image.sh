@@ -5,6 +5,8 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 workspace_root="$(cd "$script_dir/../../.." && pwd)"
 image_ref="${1:-${PAPERBOAT_PROJECT_VM_IMAGE_REF:-paperboat/project-vm:dev}}"
 platform="${PAPERBOAT_PROJECT_VM_PLATFORM:-linux/amd64}"
+push="${PAPERBOAT_PROJECT_VM_PUSH:-false}"
+metadata_file="${PAPERBOAT_PROJECT_VM_METADATA_FILE:-}"
 node_base_image="${PAPERBOAT_NODE_BASE_IMAGE:-}"
 go_base_image="${PAPERBOAT_GO_BASE_IMAGE:-}"
 
@@ -30,17 +32,31 @@ source_revision() {
   printf '%s' "$revision"
 }
 
-papercode_revision="$(source_revision "$workspace_root/legacy/papercode")"
-agentunnel_revision="$(source_revision "$workspace_root/legacy/agentunnel")"
+helper_revision="$(source_revision "$workspace_root/paperboat-helper")"
+helper_version="$(git -C "$workspace_root/paperboat-helper" describe --tags --always)"
 server_revision="$(source_revision "$workspace_root/paperboat-server")"
 
-docker build \
+builder=(docker build)
+if [ "$push" = "true" ]; then
+  builder=(docker buildx build --push)
+elif [ "$push" != "false" ]; then
+  printf 'PAPERBOAT_PROJECT_VM_PUSH must be true or false\n' >&2
+  exit 64
+elif [[ "$platform" == *,* ]]; then
+  printf 'multi-platform builds require PAPERBOAT_PROJECT_VM_PUSH=true\n' >&2
+  exit 64
+fi
+if [ -n "$metadata_file" ]; then
+  builder+=(--metadata-file "$metadata_file")
+fi
+
+"${builder[@]}" \
   -f "$script_dir/Dockerfile" \
   --platform "$platform" \
-  --build-arg "PAPERCODE_REVISION=$papercode_revision" \
+  --build-arg "PAPERBOAT_HELPER_REVISION=$helper_revision" \
+  --build-arg "PAPERBOAT_HELPER_VERSION=$helper_version" \
   --build-arg "NODE_BASE_IMAGE=$node_base_image" \
   --build-arg "GO_BASE_IMAGE=$go_base_image" \
-  --build-arg "AGENTUNNEL_REVISION=$agentunnel_revision" \
   --build-arg "PAPERBOAT_SERVER_REVISION=$server_revision" \
   -t "$image_ref" \
   "$workspace_root"

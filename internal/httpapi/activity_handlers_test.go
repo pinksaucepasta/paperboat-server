@@ -18,6 +18,17 @@ type fakeHeartbeatRepository struct {
 	recorded  *metering.ActivityHeartbeat
 }
 
+type fakeActivityIdentity struct {
+	token, projectID, machineID string
+	proof, body                 []byte
+	err                         error
+}
+
+func (f *fakeActivityIdentity) VerifyActivityHeartbeat(_ context.Context, token string, proof, body []byte, projectID, machineID string) error {
+	f.token, f.proof, f.body, f.projectID, f.machineID = token, append([]byte(nil), proof...), append([]byte(nil), body...), projectID, machineID
+	return f.err
+}
+
 func (f *fakeHeartbeatRepository) VerifyHeartbeatCredential(context.Context, string, string, string) error {
 	return f.verifyErr
 }
@@ -41,7 +52,7 @@ func TestActivityHeartbeatValidatesSanitizesAndBoundsConfigStatus(t *testing.T) 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/machine/activity-heartbeat", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer machine-token")
-	activityHeartbeat(repository, 2).ServeHTTP(recorder, request)
+	activityHeartbeat(repository, nil, 2).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
@@ -54,6 +65,20 @@ func TestActivityHeartbeatValidatesSanitizesAndBoundsConfigStatus(t *testing.T) 
 	}
 }
 
+func TestActivityHeartbeatUsesProofBoundHelperIdentity(t *testing.T) {
+	repository := &fakeHeartbeatRepository{verifyErr: errors.New("legacy verifier must not run")}
+	identity := &fakeActivityIdentity{}
+	body := `{"project_id":"prj_test","machine_id":"machine_test","last_activity_at":"2026-07-14T01:00:00Z","sampled_at":"2026-07-14T01:00:01Z","signals":{}}`
+	request := httptest.NewRequest(http.MethodPost, "/api/machine/activity-heartbeat", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer helper-identity")
+	request.Header.Set("X-Paperboat-Helper-Proof", "cHJvb2Y")
+	recorder := httptest.NewRecorder()
+	activityHeartbeat(repository, identity, 10).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted || identity.token != "helper-identity" || string(identity.proof) != "proof" || string(identity.body) != body || identity.projectID != "prj_test" || identity.machineID != "machine_test" {
+		t.Fatalf("status=%d identity=%#v", recorder.Code, identity)
+	}
+}
+
 func TestActivityHeartbeatRejectsUnsafeSummaryAndWrongCredential(t *testing.T) {
 	validPrefix := `{"project_id":"prj_test","machine_id":"machine_test","last_activity_at":"2026-07-14T01:00:00Z","sampled_at":"2026-07-14T01:00:01Z","config_sync":`
 	missingTimestamp := validPrefix + `{"state":"healthy","pending_path_count":0,"max_file_bytes":10,"max_batch_bytes":20,"policy_revision":"1"}}`
@@ -61,7 +86,7 @@ func TestActivityHeartbeatRejectsUnsafeSummaryAndWrongCredential(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/machine/activity-heartbeat", strings.NewReader(missingTimestamp))
 	request.Header.Set("Authorization", "Bearer machine-token")
-	activityHeartbeat(repository, 10).ServeHTTP(recorder, request)
+	activityHeartbeat(repository, nil, 10).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest || repository.recorded != nil {
 		t.Fatalf("missing status timestamp = %d recorded=%v", recorder.Code, repository.recorded != nil)
 	}
@@ -71,7 +96,7 @@ func TestActivityHeartbeatRejectsUnsafeSummaryAndWrongCredential(t *testing.T) {
 	recorder = httptest.NewRecorder()
 	request = httptest.NewRequest(http.MethodPost, "/api/machine/activity-heartbeat", strings.NewReader(unsafe))
 	request.Header.Set("Authorization", "Bearer machine-token")
-	activityHeartbeat(repository, 10).ServeHTTP(recorder, request)
+	activityHeartbeat(repository, nil, 10).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest || repository.recorded != nil {
 		t.Fatalf("unsafe summary status = %d recorded=%v", recorder.Code, repository.recorded != nil)
 	}
@@ -80,7 +105,7 @@ func TestActivityHeartbeatRejectsUnsafeSummaryAndWrongCredential(t *testing.T) {
 	recorder = httptest.NewRecorder()
 	request = httptest.NewRequest(http.MethodPost, "/api/machine/activity-heartbeat", strings.NewReader(strings.TrimSuffix(validPrefix, `"config_sync":`)+`"signals":{}}`))
 	request.Header.Set("Authorization", "Bearer wrong")
-	activityHeartbeat(repository, 10).ServeHTTP(recorder, request)
+	activityHeartbeat(repository, nil, 10).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("wrong credential status = %d", recorder.Code)
 	}
@@ -92,7 +117,7 @@ func TestActivityHeartbeatRepositoryFailureIsInternalError(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/machine/activity-heartbeat", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer machine-token")
-	activityHeartbeat(repository, 10).ServeHTTP(recorder, request)
+	activityHeartbeat(repository, nil, 10).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("repository failure status = %d", recorder.Code)
 	}
@@ -104,7 +129,7 @@ func TestActivityHeartbeatReportsConfigStatusNewerThanItsSample(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/machine/activity-heartbeat", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer machine-token")
-	activityHeartbeat(repository, 10).ServeHTTP(recorder, request)
+	activityHeartbeat(repository, nil, 10).ServeHTTP(recorder, request)
 	sampledAt := time.Date(2026, 7, 14, 1, 0, 1, 0, time.UTC)
 	if recorder.Code != http.StatusAccepted || repository.recorded == nil || repository.recorded.ConfigSync == nil || repository.recorded.ConfigSync.State != "error" || repository.recorded.ConfigSync.ErrorCode != "status_clock_invalid" || repository.recorded.ConfigSync.UpdatedAt.After(sampledAt) {
 		t.Fatalf("future config status = %d recorded=%#v", recorder.Code, repository.recorded)

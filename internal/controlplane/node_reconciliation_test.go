@@ -7,6 +7,15 @@ import (
 	"time"
 )
 
+func TestControlTunnelNodeStaleAfterAllowsNormalHeartbeatCadence(t *testing.T) {
+	if got := ControlTunnelNodeStaleAfter(); got != 2*time.Minute {
+		t.Fatalf("stale window = %s, want 2m", got)
+	}
+	if 5*time.Second >= ControlTunnelNodeStaleAfter() {
+		t.Fatal("normal five-second heartbeat cadence would be fenced")
+	}
+}
+
 func TestReconcileStaleNodesFencesConnectorAndAdvancesRoute(t *testing.T) {
 	store := openControlPlaneTestDB(t)
 	ctx := context.Background()

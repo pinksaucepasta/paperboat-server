@@ -202,7 +202,7 @@ func (q *Queries) GetProject(ctx context.Context, arg GetProjectParams) (GetProj
 }
 
 const getProjectStateForUpdate = `-- name: GetProjectStateForUpdate :one
-SELECT state FROM projects WHERE id=$1 AND user_id=$2 FOR UPDATE
+SELECT state,version FROM projects WHERE id=$1 AND user_id=$2 FOR UPDATE
 `
 
 type GetProjectStateForUpdateParams struct {
@@ -210,11 +210,16 @@ type GetProjectStateForUpdateParams struct {
 	UserID string
 }
 
-func (q *Queries) GetProjectStateForUpdate(ctx context.Context, arg GetProjectStateForUpdateParams) (string, error) {
+type GetProjectStateForUpdateRow struct {
+	State   string
+	Version int64
+}
+
+func (q *Queries) GetProjectStateForUpdate(ctx context.Context, arg GetProjectStateForUpdateParams) (GetProjectStateForUpdateRow, error) {
 	row := q.db.QueryRowContext(ctx, getProjectStateForUpdate, arg.ID, arg.UserID)
-	var state string
-	err := row.Scan(&state)
-	return state, err
+	var i GetProjectStateForUpdateRow
+	err := row.Scan(&i.State, &i.Version)
+	return i, err
 }
 
 const getProjectStorageAllocationForUpdate = `-- name: GetProjectStorageAllocationForUpdate :one

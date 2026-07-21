@@ -1,17 +1,81 @@
 -- name: ClaimNextOrchestrationJob :one
-SELECT id,job_type,aggregate_id,payload FROM orchestration_jobs
-WHERE state='queued' AND next_run_at<=now()
-AND NOT EXISTS (SELECT 1 FROM projects WHERE projects.id=orchestration_jobs.aggregate_id AND projects.state IN ('deleted','deleting') AND orchestration_jobs.job_type<>'project.delete')
-ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1;
+WITH claim AS (
+  SELECT id FROM orchestration_jobs
+  WHERE ((state='queued' AND next_run_at<=sqlc.arg(now)) OR (state='running' AND lease_expires_at<=sqlc.arg(now)))
+  AND NOT EXISTS (SELECT 1 FROM projects WHERE projects.id=orchestration_jobs.aggregate_id AND projects.state IN ('deleted','deleting') AND orchestration_jobs.job_type<>'project.delete')
+  ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1
+)
+UPDATE orchestration_jobs j
+SET state='running',lease_token=sqlc.arg(lease_token),lease_expires_at=sqlc.arg(lease_expires_at),updated_at=sqlc.arg(now),version=version+1
+FROM claim WHERE j.id=claim.id
+RETURNING j.id,j.job_type,j.aggregate_id,j.payload,j.lease_token;
 
--- name: CompleteOrchestrationJob :exec
-UPDATE orchestration_jobs SET state='succeeded',last_error='',version=version+1,updated_at=now() WHERE id=$1;
+-- name: EnsureHostedControlEnvironment :one
+INSERT INTO control_environments (id,workspace_id,owner_user_id,desired_state)
+VALUES (sqlc.arg(id),sqlc.arg(workspace_id),sqlc.arg(owner_user_id),'active')
+ON CONFLICT (id) DO UPDATE SET updated_at=now()
+WHERE control_environments.workspace_id=EXCLUDED.workspace_id AND control_environments.owner_user_id=EXCLUDED.owner_user_id
+RETURNING *;
 
--- name: RetryOrchestrationJob :exec
-UPDATE orchestration_jobs SET state='queued',attempts=attempts+1,next_run_at=now()+interval '30 seconds',last_error=$2,version=version+1,updated_at=now() WHERE id=$1;
+-- name: DeleteHostedControlEnvironment :exec
+DELETE FROM control_environments WHERE id = $1;
 
--- name: BlockOrchestrationJob :exec
-UPDATE orchestration_jobs SET state='blocked',attempts=attempts+1,last_error=$2,version=version+1,updated_at=now() WHERE id=$1;
+-- name: ReserveHostedProviderOperation :one
+INSERT INTO hosted_provider_operations (id, orchestration_job_id, step, resource_type, request_hash)
+VALUES (sqlc.arg(id), sqlc.arg(orchestration_job_id), sqlc.arg(step), sqlc.arg(resource_type), sqlc.arg(request_hash))
+ON CONFLICT (orchestration_job_id, step) DO UPDATE SET updated_at=now()
+WHERE hosted_provider_operations.request_hash=EXCLUDED.request_hash
+RETURNING *;
+
+-- name: StartHostedProviderOperation :exec
+UPDATE hosted_provider_operations SET state='running',attempts=attempts+1,updated_at=now()
+WHERE id=$1 AND state IN ('pending','uncertain');
+
+-- name: ProviderOperationSucceeded :one
+SELECT EXISTS (
+  SELECT 1 FROM hosted_provider_operations
+  WHERE orchestration_job_id=sqlc.arg(orchestration_job_id)
+    AND step=sqlc.arg(step)
+    AND state='succeeded'
+);
+
+-- name: ResetHostedProviderOperationAfterAbsentObservation :exec
+UPDATE hosted_provider_operations
+SET state='pending',outcome='pending',provider_request_id='',last_error='',uncertain_at=NULL,observed_at=now(),updated_at=now()
+WHERE id=$1 AND state IN ('running','succeeded','uncertain','failed');
+
+-- name: CompleteHostedProviderOperation :exec
+UPDATE hosted_provider_operations
+SET state='succeeded',outcome='success',provider_request_id=CASE WHEN sqlc.arg(provider_request_id)::text='' THEN provider_request_id ELSE sqlc.arg(provider_request_id) END,last_error='',observed_at=now(),updated_at=now()
+WHERE id=sqlc.arg(id) AND state='running';
+
+-- name: ResolveHostedProviderOperationByObservation :exec
+UPDATE hosted_provider_operations
+SET state='succeeded',outcome='success',provider_request_id=CASE WHEN sqlc.arg(provider_request_id)::text='' THEN provider_request_id ELSE sqlc.arg(provider_request_id) END,last_error='',observed_at=now(),updated_at=now()
+WHERE id=sqlc.arg(id) AND state IN ('pending','running','uncertain','succeeded');
+
+-- name: FailHostedProviderOperation :exec
+UPDATE hosted_provider_operations
+SET state=CASE WHEN sqlc.arg(uncertain)::boolean THEN 'uncertain' WHEN sqlc.arg(outcome)::text IN ('retryable','capacity') THEN 'pending' ELSE 'failed' END,
+outcome=sqlc.arg(outcome),provider_request_id=sqlc.arg(provider_request_id),last_error=sqlc.arg(last_error),
+uncertain_at=CASE WHEN sqlc.arg(uncertain)::boolean THEN coalesce(uncertain_at,now()) ELSE uncertain_at END,updated_at=now()
+WHERE id=sqlc.arg(id) AND state='running';
+
+-- name: CompleteOrchestrationJob :execrows
+UPDATE orchestration_jobs SET state='succeeded',last_error='',lease_token='',lease_expires_at=NULL,version=version+1,updated_at=now()
+WHERE id=sqlc.arg(id) AND state='running' AND lease_token=sqlc.arg(lease_token);
+
+-- name: InsertHostedReadinessObservation :exec
+INSERT INTO hosted_readiness_observations (id, project_id, orchestration_job_id, stage, state, reason, evidence, observed_at)
+VALUES (sqlc.arg(id), sqlc.arg(project_id), sqlc.narg(orchestration_job_id), sqlc.arg(stage), sqlc.arg(state), sqlc.arg(reason), sqlc.arg(evidence)::jsonb, sqlc.arg(observed_at));
+
+-- name: RetryOrchestrationJob :execrows
+UPDATE orchestration_jobs SET state='queued',attempts=attempts+1,next_run_at=now()+interval '30 seconds',last_error=sqlc.arg(last_error),lease_token='',lease_expires_at=NULL,version=version+1,updated_at=now()
+WHERE id=sqlc.arg(id) AND state='running' AND lease_token=sqlc.arg(lease_token);
+
+-- name: BlockOrchestrationJob :execrows
+UPDATE orchestration_jobs SET state='blocked',attempts=attempts+1,last_error=sqlc.arg(last_error),lease_token='',lease_expires_at=NULL,version=version+1,updated_at=now()
+WHERE id=sqlc.arg(id) AND state='running' AND lease_token=sqlc.arg(lease_token);
 
 -- name: RestoreRestartingProjectState :exec
 UPDATE projects SET state=$2,version=version+1,updated_at=now() WHERE id=$1 AND state='restarting';

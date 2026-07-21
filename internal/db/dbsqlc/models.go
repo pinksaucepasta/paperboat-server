@@ -757,6 +757,54 @@ type GithubRepoProvisioningAttempt struct {
 	UpdatedAt      time.Time
 }
 
+type HostedHelperIdentityRenewal struct {
+	OperationKey       string
+	HelperID           string
+	EnvironmentID      string
+	RequestHash        []byte
+	IdentityCiphertext []byte
+	ExpiresAt          time.Time
+	CreatedAt          time.Time
+}
+
+type HostedProviderOperation struct {
+	ID                 string
+	OrchestrationJobID string
+	Step               string
+	ResourceType       string
+	RequestHash        []byte
+	State              string
+	Outcome            string
+	ProviderRequestID  string
+	LastError          string
+	Attempts           int32
+	UncertainAt        sql.NullTime
+	ObservedAt         sql.NullTime
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+}
+
+type HostedProviderOperationRecovery struct {
+	OperationKey        string
+	ProviderOperationID string
+	ActorUserID         sql.NullString
+	Action              string
+	EvidenceReference   string
+	CreatedAt           time.Time
+}
+
+type HostedReadinessObservation struct {
+	ID                 string
+	ProjectID          string
+	OrchestrationJobID sql.NullString
+	Stage              string
+	State              string
+	Reason             string
+	Evidence           json.RawMessage
+	ObservedAt         time.Time
+	CreatedAt          time.Time
+}
+
 type IdleTimeoutOption struct {
 	ID              string
 	Code            string
@@ -841,6 +889,8 @@ type OrchestrationJob struct {
 	Version        int64
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	LeaseToken     string
+	LeaseExpiresAt sql.NullTime
 }
 
 type PapercodeRevocationOutbox struct {

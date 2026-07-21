@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"time"
 )
 
 const applyProjectRuntimeConfig = `-- name: ApplyProjectRuntimeConfig :exec
@@ -27,52 +28,105 @@ func (q *Queries) ApplyProjectRuntimeConfig(ctx context.Context, arg ApplyProjec
 	return err
 }
 
-const blockOrchestrationJob = `-- name: BlockOrchestrationJob :exec
-UPDATE orchestration_jobs SET state='blocked',attempts=attempts+1,last_error=$2,version=version+1,updated_at=now() WHERE id=$1
+const blockOrchestrationJob = `-- name: BlockOrchestrationJob :execrows
+UPDATE orchestration_jobs SET state='blocked',attempts=attempts+1,last_error=$1,lease_token='',lease_expires_at=NULL,version=version+1,updated_at=now()
+WHERE id=$2 AND state='running' AND lease_token=$3
 `
 
 type BlockOrchestrationJobParams struct {
-	ID        string
-	LastError string
+	LastError  string
+	ID         string
+	LeaseToken string
 }
 
-func (q *Queries) BlockOrchestrationJob(ctx context.Context, arg BlockOrchestrationJobParams) error {
-	_, err := q.db.ExecContext(ctx, blockOrchestrationJob, arg.ID, arg.LastError)
-	return err
+func (q *Queries) BlockOrchestrationJob(ctx context.Context, arg BlockOrchestrationJobParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, blockOrchestrationJob, arg.LastError, arg.ID, arg.LeaseToken)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const claimNextOrchestrationJob = `-- name: ClaimNextOrchestrationJob :one
-SELECT id,job_type,aggregate_id,payload FROM orchestration_jobs
-WHERE state='queued' AND next_run_at<=now()
-AND NOT EXISTS (SELECT 1 FROM projects WHERE projects.id=orchestration_jobs.aggregate_id AND projects.state IN ('deleted','deleting') AND orchestration_jobs.job_type<>'project.delete')
-ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1
+WITH claim AS (
+  SELECT id FROM orchestration_jobs
+  WHERE ((state='queued' AND next_run_at<=$3) OR (state='running' AND lease_expires_at<=$3))
+  AND NOT EXISTS (SELECT 1 FROM projects WHERE projects.id=orchestration_jobs.aggregate_id AND projects.state IN ('deleted','deleting') AND orchestration_jobs.job_type<>'project.delete')
+  ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1
+)
+UPDATE orchestration_jobs j
+SET state='running',lease_token=$1,lease_expires_at=$2,updated_at=$3,version=version+1
+FROM claim WHERE j.id=claim.id
+RETURNING j.id,j.job_type,j.aggregate_id,j.payload,j.lease_token
 `
+
+type ClaimNextOrchestrationJobParams struct {
+	LeaseToken     string
+	LeaseExpiresAt sql.NullTime
+	Now            time.Time
+}
 
 type ClaimNextOrchestrationJobRow struct {
 	ID          string
 	JobType     string
 	AggregateID string
 	Payload     json.RawMessage
+	LeaseToken  string
 }
 
-func (q *Queries) ClaimNextOrchestrationJob(ctx context.Context) (ClaimNextOrchestrationJobRow, error) {
-	row := q.db.QueryRowContext(ctx, claimNextOrchestrationJob)
+func (q *Queries) ClaimNextOrchestrationJob(ctx context.Context, arg ClaimNextOrchestrationJobParams) (ClaimNextOrchestrationJobRow, error) {
+	row := q.db.QueryRowContext(ctx, claimNextOrchestrationJob, arg.LeaseToken, arg.LeaseExpiresAt, arg.Now)
 	var i ClaimNextOrchestrationJobRow
 	err := row.Scan(
 		&i.ID,
 		&i.JobType,
 		&i.AggregateID,
 		&i.Payload,
+		&i.LeaseToken,
 	)
 	return i, err
 }
 
-const completeOrchestrationJob = `-- name: CompleteOrchestrationJob :exec
-UPDATE orchestration_jobs SET state='succeeded',last_error='',version=version+1,updated_at=now() WHERE id=$1
+const completeHostedProviderOperation = `-- name: CompleteHostedProviderOperation :exec
+UPDATE hosted_provider_operations
+SET state='succeeded',outcome='success',provider_request_id=CASE WHEN $1::text='' THEN provider_request_id ELSE $1 END,last_error='',observed_at=now(),updated_at=now()
+WHERE id=$2 AND state='running'
 `
 
-func (q *Queries) CompleteOrchestrationJob(ctx context.Context, id string) error {
-	_, err := q.db.ExecContext(ctx, completeOrchestrationJob, id)
+type CompleteHostedProviderOperationParams struct {
+	ProviderRequestID string
+	ID                string
+}
+
+func (q *Queries) CompleteHostedProviderOperation(ctx context.Context, arg CompleteHostedProviderOperationParams) error {
+	_, err := q.db.ExecContext(ctx, completeHostedProviderOperation, arg.ProviderRequestID, arg.ID)
+	return err
+}
+
+const completeOrchestrationJob = `-- name: CompleteOrchestrationJob :execrows
+UPDATE orchestration_jobs SET state='succeeded',last_error='',lease_token='',lease_expires_at=NULL,version=version+1,updated_at=now()
+WHERE id=$1 AND state='running' AND lease_token=$2
+`
+
+type CompleteOrchestrationJobParams struct {
+	ID         string
+	LeaseToken string
+}
+
+func (q *Queries) CompleteOrchestrationJob(ctx context.Context, arg CompleteOrchestrationJobParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, completeOrchestrationJob, arg.ID, arg.LeaseToken)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteHostedControlEnvironment = `-- name: DeleteHostedControlEnvironment :exec
+DELETE FROM control_environments WHERE id = $1
+`
+
+func (q *Queries) DeleteHostedControlEnvironment(ctx context.Context, id string) error {
+	_, err := q.db.ExecContext(ctx, deleteHostedControlEnvironment, id)
 	return err
 }
 
@@ -91,6 +145,65 @@ DELETE FROM fly_volumes WHERE project_id=$1
 
 func (q *Queries) DeleteProjectVolumeRecord(ctx context.Context, projectID string) error {
 	_, err := q.db.ExecContext(ctx, deleteProjectVolumeRecord, projectID)
+	return err
+}
+
+const ensureHostedControlEnvironment = `-- name: EnsureHostedControlEnvironment :one
+INSERT INTO control_environments (id,workspace_id,owner_user_id,desired_state)
+VALUES ($1,$2,$3,'active')
+ON CONFLICT (id) DO UPDATE SET updated_at=now()
+WHERE control_environments.workspace_id=EXCLUDED.workspace_id AND control_environments.owner_user_id=EXCLUDED.owner_user_id
+RETURNING id, workspace_id, owner_user_id, desired_state, desired_version, applied_state, applied_version, revoked_at, created_at, updated_at
+`
+
+type EnsureHostedControlEnvironmentParams struct {
+	ID          string
+	WorkspaceID string
+	OwnerUserID sql.NullString
+}
+
+func (q *Queries) EnsureHostedControlEnvironment(ctx context.Context, arg EnsureHostedControlEnvironmentParams) (ControlEnvironment, error) {
+	row := q.db.QueryRowContext(ctx, ensureHostedControlEnvironment, arg.ID, arg.WorkspaceID, arg.OwnerUserID)
+	var i ControlEnvironment
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.OwnerUserID,
+		&i.DesiredState,
+		&i.DesiredVersion,
+		&i.AppliedState,
+		&i.AppliedVersion,
+		&i.RevokedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const failHostedProviderOperation = `-- name: FailHostedProviderOperation :exec
+UPDATE hosted_provider_operations
+SET state=CASE WHEN $1::boolean THEN 'uncertain' WHEN $2::text IN ('retryable','capacity') THEN 'pending' ELSE 'failed' END,
+outcome=$2,provider_request_id=$3,last_error=$4,
+uncertain_at=CASE WHEN $1::boolean THEN coalesce(uncertain_at,now()) ELSE uncertain_at END,updated_at=now()
+WHERE id=$5 AND state='running'
+`
+
+type FailHostedProviderOperationParams struct {
+	Uncertain         bool
+	Outcome           string
+	ProviderRequestID string
+	LastError         string
+	ID                string
+}
+
+func (q *Queries) FailHostedProviderOperation(ctx context.Context, arg FailHostedProviderOperationParams) error {
+	_, err := q.db.ExecContext(ctx, failHostedProviderOperation,
+		arg.Uncertain,
+		arg.Outcome,
+		arg.ProviderRequestID,
+		arg.LastError,
+		arg.ID,
+	)
 	return err
 }
 
@@ -278,6 +391,36 @@ func (q *Queries) InsertFlyVolumeRecord(ctx context.Context, arg InsertFlyVolume
 	return err
 }
 
+const insertHostedReadinessObservation = `-- name: InsertHostedReadinessObservation :exec
+INSERT INTO hosted_readiness_observations (id, project_id, orchestration_job_id, stage, state, reason, evidence, observed_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
+`
+
+type InsertHostedReadinessObservationParams struct {
+	ID                 string
+	ProjectID          string
+	OrchestrationJobID sql.NullString
+	Stage              string
+	State              string
+	Reason             string
+	Evidence           json.RawMessage
+	ObservedAt         time.Time
+}
+
+func (q *Queries) InsertHostedReadinessObservation(ctx context.Context, arg InsertHostedReadinessObservationParams) error {
+	_, err := q.db.ExecContext(ctx, insertHostedReadinessObservation,
+		arg.ID,
+		arg.ProjectID,
+		arg.OrchestrationJobID,
+		arg.Stage,
+		arg.State,
+		arg.Reason,
+		arg.Evidence,
+		arg.ObservedAt,
+	)
+	return err
+}
+
 const insertOrchestrationProjectEvent = `-- name: InsertOrchestrationProjectEvent :exec
 INSERT INTO project_events (id,project_id,event_type,message,metadata) VALUES ($1,$2,$3,$4,$5::jsonb)
 `
@@ -343,6 +486,98 @@ func (q *Queries) MarkProvisionedProjectStopped(ctx context.Context, id string) 
 	return err
 }
 
+const providerOperationSucceeded = `-- name: ProviderOperationSucceeded :one
+SELECT EXISTS (
+  SELECT 1 FROM hosted_provider_operations
+  WHERE orchestration_job_id=$1
+    AND step=$2
+    AND state='succeeded'
+)
+`
+
+type ProviderOperationSucceededParams struct {
+	OrchestrationJobID string
+	Step               string
+}
+
+func (q *Queries) ProviderOperationSucceeded(ctx context.Context, arg ProviderOperationSucceededParams) (bool, error) {
+	row := q.db.QueryRowContext(ctx, providerOperationSucceeded, arg.OrchestrationJobID, arg.Step)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const reserveHostedProviderOperation = `-- name: ReserveHostedProviderOperation :one
+INSERT INTO hosted_provider_operations (id, orchestration_job_id, step, resource_type, request_hash)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (orchestration_job_id, step) DO UPDATE SET updated_at=now()
+WHERE hosted_provider_operations.request_hash=EXCLUDED.request_hash
+RETURNING id, orchestration_job_id, step, resource_type, request_hash, state, outcome, provider_request_id, last_error, attempts, uncertain_at, observed_at, created_at, updated_at
+`
+
+type ReserveHostedProviderOperationParams struct {
+	ID                 string
+	OrchestrationJobID string
+	Step               string
+	ResourceType       string
+	RequestHash        []byte
+}
+
+func (q *Queries) ReserveHostedProviderOperation(ctx context.Context, arg ReserveHostedProviderOperationParams) (HostedProviderOperation, error) {
+	row := q.db.QueryRowContext(ctx, reserveHostedProviderOperation,
+		arg.ID,
+		arg.OrchestrationJobID,
+		arg.Step,
+		arg.ResourceType,
+		arg.RequestHash,
+	)
+	var i HostedProviderOperation
+	err := row.Scan(
+		&i.ID,
+		&i.OrchestrationJobID,
+		&i.Step,
+		&i.ResourceType,
+		&i.RequestHash,
+		&i.State,
+		&i.Outcome,
+		&i.ProviderRequestID,
+		&i.LastError,
+		&i.Attempts,
+		&i.UncertainAt,
+		&i.ObservedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const resetHostedProviderOperationAfterAbsentObservation = `-- name: ResetHostedProviderOperationAfterAbsentObservation :exec
+UPDATE hosted_provider_operations
+SET state='pending',outcome='pending',provider_request_id='',last_error='',uncertain_at=NULL,observed_at=now(),updated_at=now()
+WHERE id=$1 AND state IN ('running','succeeded','uncertain','failed')
+`
+
+func (q *Queries) ResetHostedProviderOperationAfterAbsentObservation(ctx context.Context, id string) error {
+	_, err := q.db.ExecContext(ctx, resetHostedProviderOperationAfterAbsentObservation, id)
+	return err
+}
+
+const resolveHostedProviderOperationByObservation = `-- name: ResolveHostedProviderOperationByObservation :exec
+UPDATE hosted_provider_operations
+SET state='succeeded',outcome='success',provider_request_id=CASE WHEN $1::text='' THEN provider_request_id ELSE $1 END,last_error='',observed_at=now(),updated_at=now()
+WHERE id=$2 AND state IN ('pending','running','uncertain','succeeded')
+`
+
+type ResolveHostedProviderOperationByObservationParams struct {
+	ProviderRequestID string
+	ID                string
+}
+
+func (q *Queries) ResolveHostedProviderOperationByObservation(ctx context.Context, arg ResolveHostedProviderOperationByObservationParams) error {
+	_, err := q.db.ExecContext(ctx, resolveHostedProviderOperationByObservation, arg.ProviderRequestID, arg.ID)
+	return err
+}
+
 const restoreRestartingProjectState = `-- name: RestoreRestartingProjectState :exec
 UPDATE projects SET state=$2,version=version+1,updated_at=now() WHERE id=$1 AND state='restarting'
 `
@@ -357,18 +592,23 @@ func (q *Queries) RestoreRestartingProjectState(ctx context.Context, arg Restore
 	return err
 }
 
-const retryOrchestrationJob = `-- name: RetryOrchestrationJob :exec
-UPDATE orchestration_jobs SET state='queued',attempts=attempts+1,next_run_at=now()+interval '30 seconds',last_error=$2,version=version+1,updated_at=now() WHERE id=$1
+const retryOrchestrationJob = `-- name: RetryOrchestrationJob :execrows
+UPDATE orchestration_jobs SET state='queued',attempts=attempts+1,next_run_at=now()+interval '30 seconds',last_error=$1,lease_token='',lease_expires_at=NULL,version=version+1,updated_at=now()
+WHERE id=$2 AND state='running' AND lease_token=$3
 `
 
 type RetryOrchestrationJobParams struct {
-	ID        string
-	LastError string
+	LastError  string
+	ID         string
+	LeaseToken string
 }
 
-func (q *Queries) RetryOrchestrationJob(ctx context.Context, arg RetryOrchestrationJobParams) error {
-	_, err := q.db.ExecContext(ctx, retryOrchestrationJob, arg.ID, arg.LastError)
-	return err
+func (q *Queries) RetryOrchestrationJob(ctx context.Context, arg RetryOrchestrationJobParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, retryOrchestrationJob, arg.LastError, arg.ID, arg.LeaseToken)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const setProjectFlyVolumeID = `-- name: SetProjectFlyVolumeID :exec
@@ -382,6 +622,16 @@ type SetProjectFlyVolumeIDParams struct {
 
 func (q *Queries) SetProjectFlyVolumeID(ctx context.Context, arg SetProjectFlyVolumeIDParams) error {
 	_, err := q.db.ExecContext(ctx, setProjectFlyVolumeID, arg.ProjectID, arg.FlyVolumeID)
+	return err
+}
+
+const startHostedProviderOperation = `-- name: StartHostedProviderOperation :exec
+UPDATE hosted_provider_operations SET state='running',attempts=attempts+1,updated_at=now()
+WHERE id=$1 AND state IN ('pending','uncertain')
+`
+
+func (q *Queries) StartHostedProviderOperation(ctx context.Context, id string) error {
+	_, err := q.db.ExecContext(ctx, startHostedProviderOperation, id)
 	return err
 }
 

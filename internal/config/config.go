@@ -180,17 +180,22 @@ type GitHub struct {
 }
 
 type Fly struct {
-	AppName           string   `json:"app_name"`
-	OrgSlug           string   `json:"org_slug"`
-	ImageRef          string   `json:"image_ref"`
-	VolumeNamePrefix  string   `json:"volume_name_prefix"`
-	MachineNamePrefix string   `json:"machine_name_prefix"`
-	Hostname          string   `json:"hostname"`
-	MountPath         string   `json:"mount_path"`
-	BootCommand       []string `json:"boot_command"`
-	AgentunnelSecret  string   `json:"agentunnel_secret"`
-	GitHubSecret      string   `json:"github_secret"`
-	SetupScriptSecret string   `json:"setup_script_secret"`
+	AppName                string        `json:"app_name"`
+	OrgSlug                string        `json:"org_slug"`
+	ImageRef               string        `json:"image_ref"`
+	VolumeNamePrefix       string        `json:"volume_name_prefix"`
+	MachineNamePrefix      string        `json:"machine_name_prefix"`
+	Hostname               string        `json:"hostname"`
+	MountPath              string        `json:"mount_path"`
+	BootCommand            []string      `json:"boot_command"`
+	AgentunnelSecret       string        `json:"agentunnel_secret"`
+	GitHubSecret           string        `json:"github_secret"`
+	SetupScriptSecret      string        `json:"setup_script_secret"`
+	EnrollmentSecret       string        `json:"enrollment_secret"`
+	HostedRouteSuffix      string        `json:"hosted_route_suffix"`
+	HostedReadinessBaseURL string        `json:"hosted_readiness_base_url,omitempty"`
+	OperationTimeout       time.Duration `json:"operation_timeout"`
+	OrchestrationLease     time.Duration `json:"orchestration_lease"`
 }
 
 type Providers struct {
@@ -353,17 +358,21 @@ func Default() Config {
 			ConfigRepoBranch:  "main",
 		},
 		Fly: Fly{
-			AppName:           "paperboat-projects-dev",
-			OrgSlug:           "personal",
-			ImageRef:          "registry.example.invalid/paperboat/project-vm:dev",
-			VolumeNamePrefix:  "pbvol",
-			MachineNamePrefix: "pbvm",
-			Hostname:          "paperboat",
-			MountPath:         "/workspace",
-			BootCommand:       []string{"/usr/local/bin/paperboat-entrypoint"},
-			AgentunnelSecret:  "AGENTUNNEL_MACHINE_TOKEN",
-			GitHubSecret:      "PAPERBOAT_GITHUB_CONFIG_TOKEN",
-			SetupScriptSecret: "PAPERBOAT_SETUP_SCRIPT",
+			AppName:            "paperboat-projects-dev",
+			OrgSlug:            "personal",
+			ImageRef:           "registry.example.invalid/paperboat/project-vm:dev",
+			VolumeNamePrefix:   "pbvol",
+			MachineNamePrefix:  "pbvm",
+			Hostname:           "paperboat",
+			MountPath:          "/workspace",
+			BootCommand:        []string{"/usr/local/bin/paperboat-helper", "run"},
+			AgentunnelSecret:   "AGENTUNNEL_MACHINE_TOKEN",
+			GitHubSecret:       "PAPERBOAT_GITHUB_CONFIG_TOKEN",
+			SetupScriptSecret:  "PAPERBOAT_SETUP_SCRIPT",
+			EnrollmentSecret:   "PAPERBOAT_ENROLLMENT_CREDENTIAL",
+			HostedRouteSuffix:  "hosted.paperboat.local",
+			OperationTimeout:   30 * time.Second,
+			OrchestrationLease: 5 * time.Minute,
 		},
 		Secrets: Secrets{
 			SessionKeys:   []string{"development-session-key-change-me"},
@@ -521,8 +530,23 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.GitHub.ConfigRepoName) == "" || strings.TrimSpace(c.GitHub.ConfigRepoBranch) == "" {
 		errs = append(errs, fmt.Errorf("github config repo name and branch are required"))
 	}
-	if strings.TrimSpace(c.Fly.AppName) == "" || strings.TrimSpace(c.Fly.ImageRef) == "" || strings.TrimSpace(c.Fly.VolumeNamePrefix) == "" || strings.TrimSpace(c.Fly.MachineNamePrefix) == "" || strings.TrimSpace(c.Fly.MountPath) == "" || strings.TrimSpace(c.Fly.AgentunnelSecret) == "" || strings.TrimSpace(c.Fly.GitHubSecret) == "" || strings.TrimSpace(c.Fly.SetupScriptSecret) == "" {
+	if strings.TrimSpace(c.Fly.AppName) == "" || strings.TrimSpace(c.Fly.ImageRef) == "" || strings.TrimSpace(c.Fly.VolumeNamePrefix) == "" || strings.TrimSpace(c.Fly.MachineNamePrefix) == "" || strings.TrimSpace(c.Fly.MountPath) == "" || strings.TrimSpace(c.Fly.AgentunnelSecret) == "" || strings.TrimSpace(c.Fly.GitHubSecret) == "" || strings.TrimSpace(c.Fly.SetupScriptSecret) == "" || strings.TrimSpace(c.Fly.EnrollmentSecret) == "" || strings.TrimSpace(c.Fly.HostedRouteSuffix) == "" {
 		errs = append(errs, fmt.Errorf("fly app, image, naming prefixes, mount path, and secret env names are required"))
+	}
+	if c.Fly.OperationTimeout <= 0 {
+		errs = append(errs, fmt.Errorf("fly.operation_timeout must be positive"))
+	}
+	if c.Fly.OrchestrationLease <= c.Fly.OperationTimeout {
+		errs = append(errs, fmt.Errorf("fly.orchestration_lease must exceed operation_timeout"))
+	}
+	if hostedRoute, err := url.Parse("https://" + strings.TrimSpace(c.Fly.HostedRouteSuffix)); err != nil || hostedRoute.Hostname() != strings.TrimSpace(c.Fly.HostedRouteSuffix) || hostedRoute.Port() != "" {
+		errs = append(errs, fmt.Errorf("fly.hosted_route_suffix must be a DNS hostname"))
+	}
+	if value := strings.TrimSpace(c.Fly.HostedReadinessBaseURL); value != "" {
+		readinessURL, err := url.Parse(value)
+		if err != nil || readinessURL.Host == "" || readinessURL.User != nil || readinessURL.RawQuery != "" || readinessURL.Fragment != "" || readinessURL.Path != "" || readinessURL.Scheme != "http" && readinessURL.Scheme != "https" {
+			errs = append(errs, fmt.Errorf("fly.hosted_readiness_base_url must be an HTTP(S) origin"))
+		}
 	}
 	if c.Environment == EnvironmentProduction && strings.TrimSpace(c.Fly.OrgSlug) == "" {
 		errs = append(errs, fmt.Errorf("fly.org_slug is required in production"))
@@ -540,6 +564,9 @@ func (c Config) Validate() error {
 		errs = append(errs, fmt.Errorf("edge control credential must be at least 32 characters"))
 	}
 	if c.Environment == EnvironmentProduction {
+		if !immutableImageReference(c.Fly.ImageRef) {
+			errs = append(errs, fmt.Errorf("fly.image_ref must use an immutable sha256 digest in production"))
+		}
 		if c.Providers.FakeMode {
 			errs = append(errs, fmt.Errorf("providers.fake_mode cannot be enabled in production"))
 		}
@@ -566,6 +593,19 @@ func (c Config) Validate() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func immutableImageReference(value string) bool {
+	_, digest, ok := strings.Cut(strings.TrimSpace(value), "@sha256:")
+	if !ok || len(digest) != 64 {
+		return false
+	}
+	for _, character := range digest {
+		if !(character >= '0' && character <= '9' || character >= 'a' && character <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(string) ([]byte, error)) error {
@@ -618,6 +658,9 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_FLY_AGENTUNNEL_SECRET", &c.Fly.AgentunnelSecret)
 	setString("PAPERBOAT_FLY_GITHUB_SECRET", &c.Fly.GitHubSecret)
 	setString("PAPERBOAT_FLY_SETUP_SCRIPT_SECRET", &c.Fly.SetupScriptSecret)
+	setString("PAPERBOAT_FLY_ENROLLMENT_SECRET", &c.Fly.EnrollmentSecret)
+	setString("PAPERBOAT_FLY_HOSTED_ROUTE_SUFFIX", &c.Fly.HostedRouteSuffix)
+	setString("PAPERBOAT_FLY_HOSTED_READINESS_BASE_URL", &c.Fly.HostedReadinessBaseURL)
 	setString("PAPERBOAT_WORKOS_BASE_URL", &c.Providers.WorkOS.BaseURL)
 	setString("PAPERBOAT_POLAR_BASE_URL", &c.Providers.Polar.BaseURL)
 	setString("PAPERBOAT_GITHUB_BASE_URL", &c.Providers.GitHub.BaseURL)
@@ -720,6 +763,8 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 		}
 	}
 	for name, target := range map[string]*time.Duration{
+		"PAPERBOAT_FLY_OPERATION_TIMEOUT":               &c.Fly.OperationTimeout,
+		"PAPERBOAT_FLY_ORCHESTRATION_LEASE":             &c.Fly.OrchestrationLease,
 		"PAPERBOAT_CLASSIFIER_TIMEOUT":                  &c.Classifier.Timeout,
 		"PAPERBOAT_CLASSIFIER_RETRY_BACKOFF":            &c.Classifier.RetryBackoff,
 		"PAPERBOAT_CLASSIFIER_CACHE_TTL":                &c.Classifier.CacheTTL,

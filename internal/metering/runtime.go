@@ -506,11 +506,9 @@ func (r *RuntimeRepository) CloseOpenInterval(ctx context.Context, projectID str
 
 func (r *RuntimeRepository) RecordObservedProjectState(ctx context.Context, projectID, providerState, projectState string) error {
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		q := tx.Queries()
-		if err := q.UpdateObservedFlyMachineState(ctx, dbsqlc.UpdateObservedFlyMachineStateParams{ProjectID: projectID, State: providerState}); err != nil {
-			return err
-		}
-		return q.UpdateObservedProjectState(ctx, dbsqlc.UpdateObservedProjectStateParams{ID: projectID, State: projectState})
+		// Provider state is an observation only. Lifecycle jobs own product state,
+		// including readiness-gated starts and deliberate stops.
+		return tx.Queries().UpdateObservedFlyMachineState(ctx, dbsqlc.UpdateObservedFlyMachineStateParams{ProjectID: projectID, State: providerState})
 	})
 }
 

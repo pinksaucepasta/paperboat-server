@@ -12,6 +12,10 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/observability"
 )
 
+func ControlTunnelNodeStaleAfter() time.Duration {
+	return controlTunnelNodeStaleAfter
+}
+
 // ReconcileStaleNodes fences nodes that missed their heartbeat deadline. All
 // connector and route mutations happen in the same transaction as the stale
 // observation, so a newer heartbeat/reassignment cannot be deleted by this run.

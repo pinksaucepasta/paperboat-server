@@ -47,6 +47,33 @@ func TestMigrateRequiresPostgresIntegrationDSN(t *testing.T) {
 			t.Fatalf("Goose billing operation migration %d was not recorded", version)
 		}
 	}
+	var orchestrationIdempotencyApplied, hasOrchestrationIdempotency bool
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (SELECT 1 FROM paperboat.goose_db_version WHERE version_id=38 AND is_applied)`).Scan(&orchestrationIdempotencyApplied); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT to_regclass('paperboat.orchestration_jobs_idempotency') IS NOT NULL`).Scan(&hasOrchestrationIdempotency); err != nil {
+		t.Fatal(err)
+	}
+	if !orchestrationIdempotencyApplied || !hasOrchestrationIdempotency {
+		t.Fatal("orchestration job idempotency migration was not applied")
+	}
+	for _, index := range []string{"terminal_session_operations_one_pending", "connected_machine_terminal_session_operations_one_pending"} {
+		var applied bool
+		if err := store.SQL().QueryRowContext(context.Background(), `SELECT to_regclass('paperboat.' || $1) IS NOT NULL`, index).Scan(&applied); err != nil {
+			t.Fatal(err)
+		}
+		if !applied {
+			t.Fatalf("terminal operation repair index %s was not applied", index)
+		}
+	}
+	if _, err := store.SQL().ExecContext(context.Background(), `
+INSERT INTO paperboat.users (id, workos_subject, primary_email, status)
+VALUES ('usr_migration_revocation_probe', 'workos_migration_revocation_probe', 'migration-revocation@example.test', 'active')
+ON CONFLICT (id) DO UPDATE SET status='active';
+UPDATE paperboat.users SET status='suspended' WHERE id='usr_migration_revocation_probe';
+DELETE FROM paperboat.users WHERE id='usr_migration_revocation_probe'`); err != nil {
+		t.Fatalf("account revocation trigger execution failed: %v", err)
+	}
 	var hasRole bool
 	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (
 		SELECT 1 FROM information_schema.columns

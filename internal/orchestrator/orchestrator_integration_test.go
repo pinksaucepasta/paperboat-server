@@ -69,11 +69,16 @@ func TestProvisionProjectIsIdempotentAndLeavesMachineStopped(t *testing.T) {
 	for _, value := range fakeFly.MachineSpecs {
 		spec = value
 	}
-	if !hasSecret(spec.Secrets, orchestratorTestConfig().Fly.AgentunnelSecret, "fake-agentunnel-token-"+project.ID) {
-		t.Fatalf("initial provision did not inject project-scoped agentunnel token: %#v", spec.Secrets)
+	if hasSecretEnv(spec.Secrets, orchestratorTestConfig().Fly.AgentunnelSecret) || hasSecretEnv(spec.Secrets, "PAPERBOAT_MACHINE_ACTIVITY_TOKEN") {
+		t.Fatalf("hosted provision injected legacy agentunnel secrets: %#v", spec.Secrets)
 	}
-	if spec.Env["PAPERBOAT_AGENTUNNEL_CLIENT_ID"] != "cli_"+project.ID || spec.Env["PAPERBOAT_AGENTUNNEL_TUNNEL_ID"] != "tun_"+project.ID {
-		t.Fatalf("initial provision did not inject agentunnel route env: %#v", spec.Env)
+	for key := range spec.Env {
+		if strings.Contains(key, "AGENTUNNEL") || strings.Contains(key, "PAPERCODE") {
+			t.Fatalf("hosted provision injected legacy environment %q", key)
+		}
+	}
+	if !hasSecretEnv(spec.Secrets, orchestratorTestConfig().Fly.EnrollmentSecret) {
+		t.Fatalf("hosted provision omitted enrollment secret reference: %#v", spec.Secrets)
 	}
 	cfg := orchestratorTestConfig()
 	wantStopTimeout := cfg.ConfigSync.ShutdownFlushTimeout + cfg.ConfigSync.ShutdownGracePeriod + cfg.ConfigSync.ShutdownReportTimeout
@@ -84,17 +89,197 @@ func TestProvisionProjectIsIdempotentAndLeavesMachineStopped(t *testing.T) {
 		t.Fatalf("shutdown lifecycle env = %#v", spec.Env)
 	}
 	var resources int
-	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.agentunnel_resources WHERE project_id = $1 AND client_id = $2 AND tunnel_id = $3 AND metadata ? 'machine_token_ciphertext'`, project.ID, "cli_"+project.ID, "tun_"+project.ID).Scan(&resources); err != nil {
+	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.agentunnel_resources WHERE project_id = $1`, project.ID).Scan(&resources); err != nil {
 		t.Fatal(err)
 	}
-	if resources != 1 {
-		t.Fatalf("agentunnel resources = %d, want 1", resources)
+	if resources != 0 {
+		t.Fatalf("hosted provision created %d legacy agentunnel resources", resources)
 	}
 	if err := service.provisionProject(ctx, project.ID); err != nil {
 		t.Fatal(err)
 	}
 	if len(fakeFly.Volumes) != 1 || len(fakeFly.Machines) != 1 {
 		t.Fatalf("idempotent reprovision duplicated resources: %d volumes, %d machines", len(fakeFly.Volumes), len(fakeFly.Machines))
+	}
+}
+
+func TestProviderOperationPersistsReplayConflictAndUncertainOutcome(t *testing.T) {
+	store := newOrchestratorTestDB(t)
+	ctx := context.Background()
+	seedOrchestratorCatalogs(t, store)
+	insertOrchestratorUser(t, store, "usr_provider_operation", 20)
+
+	project, _, err := projects.NewService(store, audit.NewWriter(store), orchestratorTestConfig()).Create(ctx, projects.CreateInput{
+		UserID: "usr_provider_operation", IdempotencyKey: "provider-operation-project",
+		RepositoryURL: "https://github.com/paperboat/example.git", StorageGB: 10,
+		MachineTypeCode: "standard-1x", RegionCode: "iad", IdleTimeoutCode: "15m",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var jobID string
+	if err := store.SQL().QueryRowContext(ctx, `SELECT id FROM paperboat.orchestration_jobs WHERE aggregate_id=$1 AND job_type='project.create'`, project.ID).Scan(&jobID); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewRepository(store, orchestratorTestConfig().Secrets.EncryptionKey)
+	hash := []byte("stable-request-hash")
+	operation, err := repo.ReserveProviderOperation(ctx, jobID, "create_volume", "volume", hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := repo.ReserveProviderOperation(ctx, jobID, "create_volume", "volume", hash)
+	if err != nil || replayed.ID != operation.ID {
+		t.Fatalf("replay = %#v, %v; want operation %s", replayed, err, operation.ID)
+	}
+	if _, err := repo.ReserveProviderOperation(ctx, jobID, "create_volume", "volume", []byte("different")); !errors.Is(err, ErrProviderOperationConflict) {
+		t.Fatalf("conflicting request error = %v", err)
+	}
+	if err := repo.StartProviderOperation(ctx, operation.ID); err != nil {
+		t.Fatal(err)
+	}
+	providerErr := &fly.ProviderError{Outcome: fly.OutcomeUncertain, Operation: "create_volume", RequestID: "fly-request-1", Cause: errors.New("request timed out")}
+	if err := repo.FailProviderOperation(ctx, operation.ID, providerErr); err != nil {
+		t.Fatal(err)
+	}
+	var state, outcome, requestID string
+	var attempts int
+	var uncertainAt *time.Time
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state,outcome,provider_request_id,attempts,uncertain_at FROM paperboat.hosted_provider_operations WHERE id=$1`, operation.ID).Scan(&state, &outcome, &requestID, &attempts, &uncertainAt); err != nil {
+		t.Fatal(err)
+	}
+	if state != "uncertain" || outcome != "uncertain" || requestID != "fly-request-1" || attempts != 1 || uncertainAt == nil {
+		t.Fatalf("persisted operation = state %q outcome %q request %q attempts %d uncertain_at %v", state, outcome, requestID, attempts, uncertainAt)
+	}
+	retryable, err := repo.ReserveProviderOperation(ctx, jobID, "delete_secret:test", "secret", []byte("retryable-request"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.StartProviderOperation(ctx, retryable.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.FailProviderOperation(ctx, retryable.ID, &fly.ProviderError{Outcome: fly.OutcomeRetryable, Operation: "delete_secret", Cause: errors.New("provider unavailable")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state,outcome FROM paperboat.hosted_provider_operations WHERE id=$1`, retryable.ID).Scan(&state, &outcome); err != nil {
+		t.Fatal(err)
+	}
+	if state != "pending" || outcome != "retryable" {
+		t.Fatalf("retryable operation = state %q outcome %q", state, outcome)
+	}
+}
+
+type uncertainAfterVolumeCreateFly struct {
+	*fly.FakeClient
+	failed bool
+}
+
+type uncertainAfterMachineStartFly struct {
+	*fly.FakeClient
+	failed bool
+}
+
+func (c *uncertainAfterMachineStartFly) StartMachine(ctx context.Context, machineID string) (fly.Machine, error) {
+	machine, err := c.FakeClient.StartMachine(ctx, machineID)
+	if err != nil || c.failed {
+		return machine, err
+	}
+	c.failed = true
+	return fly.Machine{}, &fly.ProviderError{Outcome: fly.OutcomeUncertain, Operation: "start_machine", RequestID: "fly-start-timeout", Cause: context.DeadlineExceeded}
+}
+
+func (c *uncertainAfterVolumeCreateFly) CreateVolume(ctx context.Context, name, region string, sizeGB int, tags map[string]string) (fly.Volume, error) {
+	volume, err := c.FakeClient.CreateVolume(ctx, name, region, sizeGB, tags)
+	if err != nil || c.failed {
+		return volume, err
+	}
+	c.failed = true
+	return fly.Volume{}, &fly.ProviderError{Outcome: fly.OutcomeUncertain, Operation: "create_volume", RequestID: "fly-timeout-request", Cause: context.DeadlineExceeded}
+}
+
+func TestProvisionRecoversUncertainVolumeCreateByTaggedObservation(t *testing.T) {
+	store := newOrchestratorTestDB(t)
+	ctx := context.Background()
+	seedOrchestratorCatalogs(t, store)
+	insertOrchestratorUser(t, store, "usr_uncertain_volume", 20)
+	projectService := projects.NewService(store, audit.NewWriter(store), orchestratorTestConfig())
+	project, _, err := projectService.Create(ctx, projects.CreateInput{
+		UserID: "usr_uncertain_volume", IdempotencyKey: "uncertain-volume-project",
+		RepositoryURL: "https://github.com/paperboat/example.git", StorageGB: 10,
+		MachineTypeCode: "standard-1x", RegionCode: "iad", IdleTimeoutCode: "15m",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &uncertainAfterVolumeCreateFly{FakeClient: fly.NewFakeClient()}
+	service := NewService(store, provider, orchestratorTestConfig())
+	if err := service.RunOnce(ctx); err == nil {
+		t.Fatal("first create succeeded despite uncertain provider result")
+	}
+	if len(provider.Volumes) != 1 {
+		t.Fatalf("provider volumes = %d, want mutation to have created one", len(provider.Volumes))
+	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.orchestration_jobs SET next_run_at=now() WHERE aggregate_id=$1`, project.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.Volumes) != 1 || countCalls(provider.Calls, "CreateVolume:") != 1 {
+		t.Fatalf("uncertain retry duplicated volume: volumes=%d calls=%v", len(provider.Volumes), provider.Calls)
+	}
+	var state, outcome, requestID string
+	var attempts int
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state,outcome,provider_request_id,attempts FROM paperboat.hosted_provider_operations WHERE orchestration_job_id=(SELECT id FROM paperboat.orchestration_jobs WHERE aggregate_id=$1 AND job_type='project.create') AND step='create_volume'`, project.ID).Scan(&state, &outcome, &requestID, &attempts); err != nil {
+		t.Fatal(err)
+	}
+	if state != "succeeded" || outcome != "success" || requestID != "fly-timeout-request" || attempts != 1 {
+		t.Fatalf("recovered operation = state %q outcome %q request %q attempts %d", state, outcome, requestID, attempts)
+	}
+}
+
+func TestStartRecoversUncertainMutationByMachineStateObservation(t *testing.T) {
+	store := newOrchestratorTestDB(t)
+	ctx := context.Background()
+	seedOrchestratorCatalogs(t, store)
+	insertOrchestratorUser(t, store, "usr_uncertain_start", 200)
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.credit_accounts (id, user_id, balance) VALUES ('cred_uncertain_start', 'usr_uncertain_start', 100)`); err != nil {
+		t.Fatal(err)
+	}
+	projectService := projects.NewService(store, audit.NewWriter(store), orchestratorTestConfig())
+	project, _, err := projectService.Create(ctx, projects.CreateInput{
+		UserID: "usr_uncertain_start", IdempotencyKey: "uncertain-start-project",
+		RepositoryURL: "https://github.com/paperboat/example.git", StorageGB: 10,
+		MachineTypeCode: "standard-1x", RegionCode: "iad", IdleTimeoutCode: "15m",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &uncertainAfterMachineStartFly{FakeClient: fly.NewFakeClient()}
+	service := NewService(store, provider, orchestratorTestConfig())
+	if err := service.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := projectService.Start(ctx, "usr_uncertain_start", project.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RunOnce(ctx); err == nil {
+		t.Fatal("first start succeeded despite uncertain provider result")
+	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.orchestration_jobs SET next_run_at=now() WHERE aggregate_id=$1 AND job_type='project.start'`, project.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if calls := countCalls(provider.Calls, "StartMachine:"); calls != 1 {
+		t.Fatalf("uncertain retry called StartMachine %d times, want 1", calls)
+	}
+	var state, outcome, requestID string
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state,outcome,provider_request_id FROM paperboat.hosted_provider_operations WHERE orchestration_job_id=(SELECT id FROM paperboat.orchestration_jobs WHERE aggregate_id=$1 AND job_type='project.start') AND step LIKE 'start_machine:%'`, project.ID).Scan(&state, &outcome, &requestID); err != nil {
+		t.Fatal(err)
+	}
+	if state != "succeeded" || outcome != "success" || requestID != "fly-start-timeout" {
+		t.Fatalf("recovered start operation = state %q outcome %q request %q", state, outcome, requestID)
 	}
 }
 
@@ -145,7 +330,7 @@ func TestProvisionAdoptsExistingProviderResourcesBeforeCreate(t *testing.T) {
 	}
 }
 
-func TestProvisionDoesNotCreateMachineWhenAgentunnelUnavailable(t *testing.T) {
+func TestHostedProvisionDoesNotDependOnAgentunnel(t *testing.T) {
 	store := newOrchestratorTestDB(t)
 	ctx := context.Background()
 	seedOrchestratorCatalogs(t, store)
@@ -171,11 +356,11 @@ func TestProvisionDoesNotCreateMachineWhenAgentunnelUnavailable(t *testing.T) {
 	service := NewServiceWithAgentunnel(store, fakeFly, cfg, agentunnel.DisabledClient{})
 
 	err = service.RunOnce(ctx)
-	if !errors.Is(err, agentunnel.ErrTunnelUnavailable) {
-		t.Fatalf("RunOnce error = %v, want ErrTunnelUnavailable", err)
+	if err != nil {
+		t.Fatalf("RunOnce failed through disabled legacy agentunnel: %v", err)
 	}
-	if len(fakeFly.Volumes) != 1 || len(fakeFly.Machines) != 0 {
-		t.Fatalf("fake Fly resources = %d volumes, %d machines; want one volume and no incomplete machine", len(fakeFly.Volumes), len(fakeFly.Machines))
+	if len(fakeFly.Volumes) != 1 || len(fakeFly.Machines) != 1 {
+		t.Fatalf("fake Fly resources = %d volumes, %d machines; want one of each", len(fakeFly.Volumes), len(fakeFly.Machines))
 	}
 	var volumeID string
 	if err := store.SQL().QueryRowContext(ctx, `SELECT fly_volume_id FROM paperboat.fly_volumes WHERE project_id = $1`, project.ID).Scan(&volumeID); err != nil {
@@ -188,8 +373,8 @@ func TestProvisionDoesNotCreateMachineWhenAgentunnelUnavailable(t *testing.T) {
 	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.fly_machines WHERE project_id = $1`, project.ID).Scan(&machineCount); err != nil {
 		t.Fatal(err)
 	}
-	if machineCount != 0 {
-		t.Fatalf("recorded machine count = %d, want 0", machineCount)
+	if machineCount != 1 {
+		t.Fatalf("recorded machine count = %d, want 1", machineCount)
 	}
 	for _, volume := range fakeFly.Volumes {
 		if !validFlyVolumeName(volume.Name) {
@@ -242,6 +427,33 @@ func TestClaimNextJobSkipsStaleCreateForDeletedProject(t *testing.T) {
 	}
 	if !ok || job.Type != "project.create" || job.AggregateID != active.ID {
 		t.Fatalf("claimed job = %#v ok=%v, want active project.create for %s", job, ok, active.ID)
+	}
+}
+
+func TestClaimUsesLeaseAndReclaimsExpiredWorkerJob(t *testing.T) {
+	store := newOrchestratorTestDB(t)
+	ctx := context.Background()
+	jobID := "job_lease_recovery"
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.orchestration_jobs (id, job_type, aggregate_type, aggregate_id, idempotency_key, state, payload) VALUES ($1, 'project.start', 'project', 'prj_lease_recovery', $2, 'queued', '{}'::jsonb)`, jobID, jobID); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewRepository(store, orchestratorTestConfig().Secrets.EncryptionKey)
+	first, ok, err := repo.ClaimNextJob(ctx)
+	if err != nil || !ok || first.LeaseToken == "" {
+		t.Fatalf("first claim = %#v ok=%v err=%v", first, ok, err)
+	}
+	if _, ok, err := repo.ClaimNextJob(ctx); err != nil || ok {
+		t.Fatalf("second claim = ok=%v err=%v, want no immediate duplicate", ok, err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.orchestration_jobs SET lease_expires_at=now()-interval '1 second' WHERE id=$1`, jobID); err != nil {
+		t.Fatal(err)
+	}
+	reclaimed, ok, err := repo.ClaimNextJob(ctx)
+	if err != nil || !ok || reclaimed.ID != first.ID || reclaimed.LeaseToken == first.LeaseToken {
+		t.Fatalf("reclaimed = %#v ok=%v err=%v", reclaimed, ok, err)
+	}
+	if err := repo.CompleteJob(ctx, first.ID, first.LeaseToken); !errors.Is(err, ErrOrchestrationLeaseLost) {
+		t.Fatalf("stale completion error = %v", err)
 	}
 }
 
@@ -299,6 +511,58 @@ func TestRestartAppliesPendingConfigExactlyOnce(t *testing.T) {
 	}
 	if calls := countCalls(fakeFly.Calls, "UpdateMachine:"); calls != 1 {
 		t.Fatalf("second restart re-applied unchanged config, update calls = %d", calls)
+	}
+}
+
+func TestRestartDoesNotAdvanceAppliedConfigBeforeReadiness(t *testing.T) {
+	store := newOrchestratorTestDB(t)
+	ctx := context.Background()
+	seedOrchestratorCatalogs(t, store)
+	insertOrchestratorUser(t, store, "usr_orch_restart_readiness", 20)
+
+	cfg := orchestratorTestConfig()
+	projectService := projects.NewService(store, audit.NewWriter(store), cfg)
+	project, _, err := projectService.Create(ctx, projects.CreateInput{
+		UserID: "usr_orch_restart_readiness", IdempotencyKey: "orch-restart-readiness",
+		RepositoryURL: "https://github.com/paperboat/example.git", StorageGB: 8,
+		MachineTypeCode: "standard-1x", RegionCode: "iad", IdleTimeoutCode: "15m",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fakeFly := fly.NewFakeClient()
+	service := NewService(store, fakeFly, cfg)
+	if err := service.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	machineType := "standard-2x"
+	if _, err := projectService.Update(ctx, projects.UpdateInput{UserID: "usr_orch_restart_readiness", ProjectID: project.ID, MachineTypeCode: &machineType}); err != nil {
+		t.Fatal(err)
+	}
+	service.SetHostedReadinessVerifier(func(context.Context, string) error {
+		return &HostedReadinessError{Stage: "helper_health", Reason: "injected readiness failure"}
+	})
+	if err := service.restartProject(ctx, project.ID); err == nil {
+		t.Fatal("restart unexpectedly succeeded with failed readiness")
+	}
+	afterFailure, err := projectService.Get(ctx, "usr_orch_restart_readiness", project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !afterFailure.PendingRestartApply || afterFailure.CurrentConfig.MachineTypeCode != "standard-1x" || afterFailure.DesiredConfig.MachineTypeCode != "standard-2x" {
+		t.Fatalf("failed readiness advanced applied config: %#v", afterFailure)
+	}
+
+	service.SetHostedReadinessVerifier(func(context.Context, string) error { return nil })
+	if err := service.restartProject(ctx, project.ID); err != nil {
+		t.Fatal(err)
+	}
+	afterSuccess, err := projectService.Get(ctx, "usr_orch_restart_readiness", project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterSuccess.PendingRestartApply || afterSuccess.CurrentConfig.MachineTypeCode != "standard-2x" {
+		t.Fatalf("successful readiness did not advance applied config: %#v", afterSuccess)
 	}
 }
 
@@ -629,6 +893,80 @@ func TestDeleteContinuesToVolumeWhenMachineAlreadyGone(t *testing.T) {
 	}
 }
 
+func TestDeleteRetriesEveryProviderCleanupMutationBeforeStorageRelease(t *testing.T) {
+	tests := []struct {
+		name       string
+		failCall   string
+		stepPrefix string
+	}{
+		{name: "stop machine", failCall: "StopMachine", stepPrefix: "stop_machine:"},
+		{name: "destroy machine", failCall: "DestroyMachine", stepPrefix: "destroy_machine:"},
+		{name: "delete secret", failCall: "DeleteSecret", stepPrefix: "delete_secret:"},
+		{name: "destroy volume", failCall: "DestroyVolume", stepPrefix: "destroy_volume:"},
+	}
+	for i, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := newOrchestratorTestDB(t)
+			ctx := context.Background()
+			seedOrchestratorCatalogs(t, store)
+			userID := fmt.Sprintf("usr_orch_delete_failure_%d", i)
+			insertOrchestratorUser(t, store, userID, 20)
+			insertGitHubToken(t, store, userID, "github-delete-failure-token")
+
+			cfg := orchestratorTestConfig()
+			cfg.Secrets.AgentunnelMachineToken = "agentunnel-delete-failure-token"
+			projectService := projects.NewService(store, audit.NewWriter(store), cfg)
+			project, _, err := projectService.Create(ctx, projects.CreateInput{
+				UserID: userID, IdempotencyKey: "orch-delete-failure", RepositoryURL: "https://github.com/paperboat/example.git",
+				StorageGB: 8, MachineTypeCode: "standard-1x", RegionCode: "iad", IdleTimeoutCode: "15m",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			fakeFly := fly.NewFakeClient()
+			service := NewService(store, fakeFly, cfg)
+			if err := service.RunOnce(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := projectService.Delete(ctx, userID, project.ID); err != nil {
+				t.Fatal(err)
+			}
+			fakeFly.FailOnce[test.failCall] = &fly.ProviderError{Outcome: fly.OutcomeRetryable, Operation: test.failCall, Cause: errors.New("injected provider failure")}
+			if err := service.RunOnce(ctx); err == nil {
+				t.Fatal("delete unexpectedly succeeded after injected provider failure")
+			}
+
+			var allocated int
+			if err := store.SQL().QueryRowContext(ctx, `SELECT allocated_gb FROM paperboat.storage_accounts WHERE user_id=$1`, userID).Scan(&allocated); err != nil {
+				t.Fatal(err)
+			}
+			if allocated != 8 {
+				t.Fatalf("allocated storage after failed cleanup = %d, want 8", allocated)
+			}
+			var pending int
+			if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.hosted_provider_operations WHERE step LIKE $1 AND state='pending'`, test.stepPrefix+"%").Scan(&pending); err != nil {
+				t.Fatal(err)
+			}
+			if pending < 1 {
+				t.Fatalf("pending journal operations for %q = %d, want at least 1", test.stepPrefix, pending)
+			}
+
+			if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.orchestration_jobs SET next_run_at=now() WHERE aggregate_id=$1 AND state='queued'`, project.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := service.RunOnce(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.SQL().QueryRowContext(ctx, `SELECT allocated_gb FROM paperboat.storage_accounts WHERE user_id=$1`, userID).Scan(&allocated); err != nil {
+				t.Fatal(err)
+			}
+			if allocated != 0 || len(fakeFly.Machines) != 0 || len(fakeFly.Volumes) != 0 {
+				t.Fatalf("cleanup did not converge: allocated=%d machines=%d volumes=%d", allocated, len(fakeFly.Machines), len(fakeFly.Volumes))
+			}
+		})
+	}
+}
+
 func TestProvisionInjectsConfiguredMachineSecrets(t *testing.T) {
 	store := newOrchestratorTestDB(t)
 	ctx := context.Background()
@@ -822,7 +1160,8 @@ func TestMachineSpecHashChangesWhenSecretValueRotates(t *testing.T) {
 	rotated := base
 	rotated.Secrets = append([]fly.MachineSecret(nil), base.Secrets...)
 	rotated.Secrets[0].Value = "rotated-agentunnel-machine-token"
-	if machineSpecHash(base) == machineSpecHash(rotated) {
+	service := NewService(nil, fly.NewFakeClient(), orchestratorTestConfig())
+	if service.machineSpecHash(base) == service.machineSpecHash(rotated) {
 		t.Fatal("machine spec hash did not detect rotated secret value")
 	}
 }
@@ -831,7 +1170,8 @@ func TestMachineSpecHashIncludesStopTimeout(t *testing.T) {
 	base := fly.MachineSpec{Name: "paperboat-project", StopTimeout: 30 * time.Second}
 	changed := base
 	changed.StopTimeout = 45 * time.Second
-	if machineSpecHash(base) == machineSpecHash(changed) {
+	service := NewService(nil, fly.NewFakeClient(), orchestratorTestConfig())
+	if service.machineSpecHash(base) == service.machineSpecHash(changed) {
 		t.Fatal("machine spec hash did not detect stop timeout change")
 	}
 }
@@ -962,6 +1302,15 @@ func countCalls(calls []string, prefix string) int {
 func hasSecret(secrets []fly.MachineSecret, envVar, value string) bool {
 	for _, secret := range secrets {
 		if secret.EnvVar == envVar && secret.Value == value && secret.Name != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasSecretEnv(secrets []fly.MachineSecret, envVar string) bool {
+	for _, secret := range secrets {
+		if secret.EnvVar == envVar {
 			return true
 		}
 	}

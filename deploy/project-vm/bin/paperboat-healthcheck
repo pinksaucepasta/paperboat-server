@@ -1,13 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-readiness_file="${PAPERBOAT_READINESS_FILE:-${PAPERBOAT_RUNTIME_DIR:-/var/lib/paperboat}/readiness.json}"
-agentunnel_status_file="${PAPERBOAT_AGENTUNNEL_STATUS_FILE:-${PAPERBOAT_RUNTIME_DIR:-/var/lib/paperboat}/agentunnel-status.json}"
-
-if [ ! -f "$readiness_file" ]; then
-  exit 1
-fi
-
-grep -q '"state":"ready"' "$readiness_file"
-test -f "$agentunnel_status_file"
-grep -q '"status":"connected"' "$agentunnel_status_file"
+health_url="${PAPERBOAT_HELPER_HEALTH_URL:-http://127.0.0.1:8080/healthz}"
+body="$(curl --fail --silent --show-error --max-time 2 "$health_url")"
+grep -q '"live":true' <<<"$body"
+grep -Eq '"hosted_lifecycle":\{"state":"ready"' <<<"$body"
+grep -Eq '"edge":\{"state":"ready"' <<<"$body"

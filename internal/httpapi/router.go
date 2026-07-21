@@ -37,34 +37,36 @@ type ReadinessChecker interface {
 }
 
 type Options struct {
-	Config             config.Config
-	Logger             *slog.Logger
-	ReadinessChecker   ReadinessChecker
-	Auth               *auth.Service
-	DeviceAuth         *auth.DeviceService
-	Billing            *billing.Service
-	BillingRecovery    *billing.RecoveryService
-	Catalog            catalog.Reader
-	CatalogWriter      catalog.RegionWriter
-	Fly                fly.Client
-	GitHub             *pbgithub.Service
-	Projects           *projects.Service
-	TerminalSessions   *terminalsessions.Service
-	Agentunnel         *agentunnel.Service
-	MeteringRepo       *metering.RuntimeRepository
-	ConfigSync         *configsync.Repository
-	Classifier         *classifier.Controller
-	ConnectedMachines  *connectedmachines.Service
-	MintKeys           *mint.Provider
-	EdgeControl        http.Handler
-	EdgeControlAdmin   *controlplane.EdgeService
-	Enrollment         *controlplane.EnrollmentService
-	ConfigAssignments  *controlplane.ConfigAssignmentService
-	ConfigCredentials  *controlplane.ConfigCredentialService
-	Routes             *controlplane.RouteService
-	ControlDiagnostics *controlplane.DiagnosticsService
-	OperationRecovery  *controlplane.OperationRecoveryService
-	OverrideHandler    http.Handler
+	Config                 config.Config
+	Logger                 *slog.Logger
+	ReadinessChecker       ReadinessChecker
+	Auth                   *auth.Service
+	DeviceAuth             *auth.DeviceService
+	Billing                *billing.Service
+	BillingRecovery        *billing.RecoveryService
+	Catalog                catalog.Reader
+	CatalogWriter          catalog.RegionWriter
+	Fly                    fly.Client
+	GitHub                 *pbgithub.Service
+	Projects               *projects.Service
+	TerminalSessions       *terminalsessions.Service
+	Agentunnel             *agentunnel.Service
+	MeteringRepo           *metering.RuntimeRepository
+	ActivityIdentity       *controlplane.EnrollmentService
+	ConfigSync             *configsync.Repository
+	Classifier             *classifier.Controller
+	ConnectedMachines      *connectedmachines.Service
+	MintKeys               *mint.Provider
+	EdgeControl            http.Handler
+	EdgeControlAdmin       *controlplane.EdgeService
+	Enrollment             *controlplane.EnrollmentService
+	ConfigAssignments      *controlplane.ConfigAssignmentService
+	ConfigCredentials      *controlplane.ConfigCredentialService
+	Routes                 *controlplane.RouteService
+	ControlDiagnostics     *controlplane.DiagnosticsService
+	OperationRecovery      *controlplane.OperationRecoveryService
+	HostedProviderRecovery *controlplane.HostedProviderRecoveryService
+	OverrideHandler        http.Handler
 }
 
 func NewRouter(opts Options) http.Handler {
@@ -87,6 +89,7 @@ func NewRouter(opts Options) http.Handler {
 		}
 		if opts.Enrollment != nil {
 			mux.HandleFunc("POST /v1/helpers/enroll", helperEnrollmentExchange(opts.Enrollment))
+			mux.HandleFunc("POST /v1/helpers/renew", helperIdentityRenew(opts.Enrollment))
 			if opts.Auth != nil {
 				mux.Handle("POST /api/environments/{environment_id}/helper-enrollments", requireAuth(opts.Auth, requireCSRF(opts.Auth, helperEnrollmentIssue(opts.Enrollment))))
 				mux.Handle("POST /api/environments/{environment_id}/helpers/{helper_id}/replace", requireAuth(opts.Auth, requireCSRF(opts.Auth, helperReplacement(opts.Enrollment))))
@@ -143,7 +146,7 @@ func NewRouter(opts Options) http.Handler {
 			mux.HandleFunc("POST /api/webhooks/polar", polarWebhook(opts.Billing, opts.Config.Secrets.PolarWebhookSecret, opts.Config.Billing.PolarWebhookTolerance))
 		}
 		if opts.MeteringRepo != nil {
-			mux.HandleFunc("POST /api/machine/activity-heartbeat", activityHeartbeat(opts.MeteringRepo, opts.Config.ConfigSync.SummaryLimit))
+			mux.HandleFunc("POST /api/machine/activity-heartbeat", activityHeartbeat(opts.MeteringRepo, opts.ActivityIdentity, opts.Config.ConfigSync.SummaryLimit))
 			if opts.Classifier != nil {
 				mux.HandleFunc("POST /api/machine/config-sync/classify", machineConfigClassify(opts.MeteringRepo, opts.Classifier))
 			}
@@ -280,6 +283,9 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 	}
 	if opts.OperationRecovery != nil {
 		mux.Handle("POST /api/admin/control-operations/{operation_id}/recover", requireAuth(opts.Auth, requireCSRF(opts.Auth, requireAdmin(adminRecoverControlOperation(opts.OperationRecovery)))))
+	}
+	if opts.HostedProviderRecovery != nil {
+		mux.Handle("POST /api/admin/hosted-provider-operations/{operation_id}/recover", requireAuth(opts.Auth, requireCSRF(opts.Auth, requireAdmin(adminRecoverHostedProviderOperation(opts.HostedProviderRecovery)))))
 	}
 	if opts.BillingRecovery != nil {
 		mux.Handle("POST /api/admin/billing/uncertain/{kind}/{operation_id}/recover", requireAuth(opts.Auth, requireCSRF(opts.Auth, requireAdmin(adminRecoverBillingOperation(opts.BillingRecovery)))))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -216,6 +217,9 @@ func (f *FakeClient) SetSecret(ctx context.Context, name, value string) error {
 }
 
 func (f *FakeClient) DeleteSecret(ctx context.Context, name string) error {
+	if err := f.fail("DeleteSecret"); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.Calls = append(f.Calls, "DeleteSecret:"+name)
@@ -282,6 +286,55 @@ func (f *FakeClient) fail(call string) error {
 }
 
 var ErrNotFound = errors.New("fly resource not found")
+
+// Outcome is the provider-facing classification used by lifecycle workers. An
+// uncertain result means the request may have mutated Fly and must be resolved
+// by observation before it is retried.
+type Outcome string
+
+const (
+	OutcomeRetryable Outcome = "retryable"
+	OutcomeCapacity  Outcome = "capacity"
+	OutcomeNotFound  Outcome = "not_found"
+	OutcomeConflict  Outcome = "conflict"
+	OutcomeUncertain Outcome = "uncertain"
+	OutcomePermanent Outcome = "permanent"
+)
+
+type ProviderError struct {
+	Outcome   Outcome
+	Operation string
+	RequestID string
+	Cause     error
+}
+
+func (e *ProviderError) Error() string {
+	if e.Cause == nil {
+		return string(e.Outcome)
+	}
+	if e.Operation == "" {
+		return fmt.Sprintf("fly provider (%s): %v", e.Outcome, e.Cause)
+	}
+	return fmt.Sprintf("fly %s (%s): %v", e.Operation, e.Outcome, e.Cause)
+}
+
+func (e *ProviderError) Unwrap() error { return e.Cause }
+
+func classifyHTTPStatus(status int) Outcome {
+	switch status {
+	case http.StatusNotFound:
+		return OutcomeNotFound
+	case http.StatusConflict, http.StatusPreconditionFailed:
+		return OutcomeConflict
+	case http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return OutcomeRetryable
+	default:
+		if status >= 500 {
+			return OutcomeRetryable
+		}
+		return OutcomePermanent
+	}
+}
 
 func cloneMap(in map[string]string) map[string]string {
 	if in == nil {

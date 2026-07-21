@@ -7,6 +7,7 @@ services:
     environment:
       PAPERBOAT_ENV: production
       PAPERBOAT_FAKE_PROVIDERS: "false"
+      PAPERBOAT_EDGE_CONTROL_CREDENTIAL: ${PAPERBOAT_EDGE_CONTROL_CREDENTIAL:?set PAPERBOAT_EDGE_CONTROL_CREDENTIAL}
       PAPERBOAT_HTTP_ADDRESS: 0.0.0.0:8080
       PAPERBOAT_CATALOG_SEED_FILE: /app/config/catalogs.local.json
       PAPERBOAT_PUBLIC_BASE_URL: https://pb.hexwagon.com
@@ -62,6 +63,7 @@ services:
     environment:
       PAPERBOAT_ENV: production
       PAPERBOAT_FAKE_PROVIDERS: "false"
+      PAPERBOAT_EDGE_CONTROL_CREDENTIAL: ${PAPERBOAT_EDGE_CONTROL_CREDENTIAL:?set PAPERBOAT_EDGE_CONTROL_CREDENTIAL}
       PAPERBOAT_HTTP_ADDRESS: 0.0.0.0:8080
       PAPERBOAT_CATALOG_SEED_FILE: /app/config/catalogs.local.json
       PAPERBOAT_PUBLIC_BASE_URL: https://pb.hexwagon.com
@@ -118,6 +120,7 @@ services:
     environment:
       PAPERBOAT_ENV: production
       PAPERBOAT_FAKE_PROVIDERS: "false"
+      PAPERBOAT_EDGE_CONTROL_CREDENTIAL: ${PAPERBOAT_EDGE_CONTROL_CREDENTIAL:?set PAPERBOAT_EDGE_CONTROL_CREDENTIAL}
       PAPERBOAT_HTTP_ADDRESS: 0.0.0.0:8080
       PAPERBOAT_CATALOG_SEED_FILE: /app/config/catalogs.local.json
       PAPERBOAT_PUBLIC_BASE_URL: https://pb.hexwagon.com

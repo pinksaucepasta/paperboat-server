@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -52,7 +53,8 @@ func TestHelperEnrollmentExchangeIsSingleUseAndKeyBound(t *testing.T) {
 	if strings.Contains(string(ciphertext), grant.Credential) {
 		t.Fatal("stored enrollment grant contains plaintext credential")
 	}
-	helperPublic := ed25519.NewKeyFromSeed([]byte(strings.Repeat("h", ed25519.SeedSize))).Public().(ed25519.PublicKey)
+	helperPrivate := ed25519.NewKeyFromSeed([]byte(strings.Repeat("h", ed25519.SeedSize)))
+	helperPublic := helperPrivate.Public().(ed25519.PublicKey)
 	identity, err := service.Exchange(ctx, grant.Credential, helperPublic)
 	if err != nil {
 		t.Fatal(err)
@@ -67,6 +69,28 @@ func TestHelperEnrollmentExchangeIsSingleUseAndKeyBound(t *testing.T) {
 	}
 	if _, err := service.Exchange(ctx, grant.Credential, helperPublic); !errors.Is(err, ErrEnrollmentUsed) {
 		t.Fatalf("replay error = %v", err)
+	}
+	renewNow := now.Add(50 * time.Minute)
+	service.clock = func() time.Time { return renewNow }
+	renewBody := []byte(`{"operation_id":"helper-renew-operation-01"}`)
+	renewHash := sha256.Sum256(renewBody)
+	renewClaims := HelperProofClaims{HelperID: identity.HelperID, EnvironmentID: environmentID, OperationID: "helper-renew-operation-01", Method: "POST", Path: "/v1/helpers/renew", BodySHA256: base64.RawURLEncoding.EncodeToString(renewHash[:]), IssuedAt: renewNow, ExpiresAt: renewNow.Add(time.Minute)}
+	renewPayload, _ := json.Marshal(renewClaims)
+	renewProof, _ := json.Marshal(helperProofEnvelope{Algorithm: "EdDSA", Payload: base64.RawURLEncoding.EncodeToString(renewPayload), Signature: base64.RawURLEncoding.EncodeToString(ed25519.Sign(helperPrivate, renewPayload))})
+	renewed, err := service.Renew(ctx, identity.Credential, renewProof, renewBody)
+	if err != nil || renewed.Credential == identity.Credential || !renewed.ExpiresAt.After(identity.ExpiresAt) {
+		t.Fatalf("renewed identity = %#v, %v", renewed, err)
+	}
+	renewedReplay, err := service.Renew(ctx, identity.Credential, renewProof, renewBody)
+	if err != nil || renewedReplay != renewed {
+		t.Fatalf("renewal replay = %#v, %v", renewedReplay, err)
+	}
+	var renewalCiphertext []byte
+	if err := store.SQL().QueryRowContext(ctx, `SELECT identity_ciphertext FROM paperboat.hosted_helper_identity_renewals WHERE helper_id=$1`, identity.HelperID).Scan(&renewalCiphertext); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(renewalCiphertext, []byte(renewed.Credential)) {
+		t.Fatal("stored renewal contains plaintext credential")
 	}
 	replacement, err := service.ReplaceHelper(ctx, "usr_test", "replace-helper-01", environmentID, grant.HelperID, "default")
 	if err != nil || replacement.ConnectorGeneration != 2 {
@@ -107,6 +131,94 @@ func TestHelperEnrollmentRejectsExpiredCredentialBeforeMutation(t *testing.T) {
 	helperPublic := ed25519.NewKeyFromSeed([]byte(strings.Repeat("h", ed25519.SeedSize))).Public().(ed25519.PublicKey)
 	if _, err := service.Exchange(ctx, grant.Credential, helperPublic); !errors.Is(err, ErrEnrollmentInvalid) {
 		t.Fatalf("expired exchange error = %v", err)
+	}
+}
+
+func TestEnsureBootGrantReplacesExpiredGrantAndStopsAfterEnrollment(t *testing.T) {
+	store := openControlPlaneTestDB(t)
+	ctx := context.Background()
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	environmentID := "env_boot_grant_" + strings.ReplaceAll(t.Name(), "/", "_")
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ('usr_test','workos_boot_grant','boot-grant@example.test','active') ON CONFLICT (id) DO NOTHING`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id) VALUES ($1,$1,'usr_test')`, environmentID); err != nil {
+		t.Fatal(err)
+	}
+	signer, err := mint.New([]mint.Key{{ID: "boot-grant-test", PrivateKey: ed25519.NewKeyFromSeed([]byte(strings.Repeat("b", ed25519.SeedSize)))}}, "boot-grant-test", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewEnrollmentService(store, signer, nil, "https://api.example.test", "boot-grant-encryption-key")
+	service.clock = func() time.Time { return now }
+	first, err := service.EnsureBootGrant(ctx, "usr_test", "hosted-create:"+environmentID, environmentID, time.Minute)
+	if err != nil || first.Credential == "" {
+		t.Fatalf("first grant = %#v, %v", first, err)
+	}
+	service.clock = func() time.Time { return now.Add(2 * time.Minute) }
+	replacement, err := service.EnsureBootGrant(ctx, "usr_test", "hosted-create:"+environmentID, environmentID, time.Minute)
+	if err != nil || replacement.Credential == "" || replacement.EnrollmentID == first.EnrollmentID {
+		t.Fatalf("replacement grant = %#v, %v", replacement, err)
+	}
+	var firstState string
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state FROM paperboat.control_helper_enrollments WHERE id=$1`, first.EnrollmentID).Scan(&firstState); err != nil || firstState != "revoked" {
+		t.Fatalf("first grant state = %q, %v", firstState, err)
+	}
+	helperKey := ed25519.NewKeyFromSeed([]byte(strings.Repeat("h", ed25519.SeedSize)))
+	if _, err := service.Exchange(ctx, replacement.Credential, helperKey.Public().(ed25519.PublicKey)); err != nil {
+		t.Fatal(err)
+	}
+	afterEnrollment, err := service.EnsureBootGrant(ctx, "usr_test", "hosted-create:"+environmentID, environmentID, time.Minute)
+	if err != nil || afterEnrollment.Credential != "" {
+		t.Fatalf("post-enrollment grant = %#v, %v", afterEnrollment, err)
+	}
+}
+
+func TestEnsureBootGrantConcurrentCallsReplayOneGrant(t *testing.T) {
+	store := openControlPlaneTestDB(t)
+	ctx := context.Background()
+	environmentID := "env_boot_concurrent_" + strings.ReplaceAll(t.Name(), "/", "_")
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ('usr_test','workos_boot_concurrent','boot-concurrent@example.test','active') ON CONFLICT (id) DO NOTHING`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id) VALUES ($1,$1,'usr_test')`, environmentID); err != nil {
+		t.Fatal(err)
+	}
+	signer, err := mint.New([]mint.Key{{ID: "boot-concurrent-test", PrivateKey: ed25519.NewKeyFromSeed([]byte(strings.Repeat("c", ed25519.SeedSize)))}}, "boot-concurrent-test", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewEnrollmentService(store, signer, nil, "https://api.example.test", "boot-concurrent-encryption-key")
+	service.clock = func() time.Time { return time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC) }
+	const callers = 8
+	grants := make(chan EnrollmentGrant, callers)
+	errs := make(chan error, callers)
+	var start sync.WaitGroup
+	start.Add(1)
+	for range callers {
+		go func() {
+			start.Wait()
+			grant, err := service.EnsureBootGrant(ctx, "usr_test", "hosted-create:"+environmentID, environmentID, time.Minute)
+			grants <- grant
+			errs <- err
+		}()
+	}
+	start.Done()
+	var enrollmentID string
+	for range callers {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+		grant := <-grants
+		if enrollmentID == "" {
+			enrollmentID = grant.EnrollmentID
+		} else if grant.EnrollmentID != enrollmentID {
+			t.Fatalf("grant IDs differ: %q and %q", enrollmentID, grant.EnrollmentID)
+		}
+	}
+	var pending int
+	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.control_helper_enrollments WHERE environment_id=$1 AND state='pending' AND revoked_at IS NULL`, environmentID).Scan(&pending); err != nil || pending != 1 {
+		t.Fatalf("pending enrollments=%d err=%v", pending, err)
 	}
 }
 
@@ -174,5 +286,19 @@ func TestConnectorAdmissionBindsProofGenerationNodeAndReplay(t *testing.T) {
 	replay, err := edge.IssueConnectorAdmission(ctx, identity.Credential, proof, body, "default", "POST", "/v1/connectors/admission")
 	if err != nil || replay.Credential != admission.Credential {
 		t.Fatalf("admission replay = %#v, %v", replay, err)
+	}
+	next := now.Add(time.Minute)
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.control_tunnel_nodes SET last_heartbeat_at=$2 WHERE id=$1`, "node_"+suffix, next); err != nil {
+		t.Fatal(err)
+	}
+	edge.SetClock(func() time.Time { return next })
+	nextBody := []byte(`{"operation_id":"admission-operation-02","environment_id":"` + environmentID + `","helper_id":"` + identity.HelperID + `","edge_pool":"default","protocol_version":"1.0"}`)
+	nextHash := sha256.Sum256(nextBody)
+	nextClaims := HelperProofClaims{HelperID: identity.HelperID, EnvironmentID: environmentID, OperationID: "admission-operation-02", Method: "POST", Path: "/v1/connectors/admission", BodySHA256: base64.RawURLEncoding.EncodeToString(nextHash[:]), IssuedAt: next, ExpiresAt: next.Add(time.Minute)}
+	nextPayload, _ := json.Marshal(nextClaims)
+	nextProof, _ := json.Marshal(helperProofEnvelope{Algorithm: "EdDSA", Payload: base64.RawURLEncoding.EncodeToString(nextPayload), Signature: base64.RawURLEncoding.EncodeToString(ed25519.Sign(helperPrivate, nextPayload))})
+	renewed, err := edge.IssueConnectorAdmission(ctx, identity.Credential, nextProof, nextBody, "default", "POST", "/v1/connectors/admission")
+	if err != nil || renewed.OperationID != "admission-operation-02" || renewed.Credential == admission.Credential {
+		t.Fatalf("admission replacement = %#v, %v", renewed, err)
 	}
 }

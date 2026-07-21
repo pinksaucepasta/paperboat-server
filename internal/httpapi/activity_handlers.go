@@ -1,14 +1,18 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/configsync"
+	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
 )
 
@@ -17,7 +21,11 @@ type activityHeartbeatRepository interface {
 	RecordHeartbeat(context.Context, metering.ActivityHeartbeat) error
 }
 
-func activityHeartbeat(repo activityHeartbeatRepository, summaryLimit int) http.HandlerFunc {
+type activityIdentityVerifier interface {
+	VerifyActivityHeartbeat(context.Context, string, []byte, []byte, string, string) error
+}
+
+func activityHeartbeat(repo activityHeartbeatRepository, identities activityIdentityVerifier, summaryLimit int) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			ProjectID            string             `json:"project_id"`
@@ -29,7 +37,8 @@ func activityHeartbeat(repo activityHeartbeatRepository, summaryLimit int) http.
 			ConfigSync           *configsync.Status `json:"config_sync"`
 			ConfigSyncObservedAt time.Time          `json:"-"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20+1))
+		if err != nil || len(body) > 1<<20 || json.NewDecoder(bytes.NewReader(body)).Decode(&req) != nil {
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "Heartbeat payload is invalid JSON.")
 			return
 		}
@@ -38,8 +47,17 @@ func activityHeartbeat(repo activityHeartbeatRepository, summaryLimit int) http.
 			return
 		}
 		got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
-		if err := repo.VerifyHeartbeatCredential(r.Context(), req.ProjectID, req.MachineID, got); err != nil {
-			if errors.Is(err, metering.ErrInvalidHeartbeatCredential) {
+		authErr := metering.ErrInvalidHeartbeatCredential
+		if identities != nil && r.Header.Get("X-Paperboat-Helper-Proof") != "" {
+			proof, proofErr := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Helper-Proof"))
+			if proofErr == nil {
+				authErr = identities.VerifyActivityHeartbeat(r.Context(), got, proof, body, req.ProjectID, req.MachineID)
+			}
+		} else {
+			authErr = repo.VerifyHeartbeatCredential(r.Context(), req.ProjectID, req.MachineID, got)
+		}
+		if authErr != nil {
+			if errors.Is(authErr, metering.ErrInvalidHeartbeatCredential) || errors.Is(authErr, controlplane.ErrHelperProof) {
 				writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Machine activity credential is invalid.")
 				return
 			}

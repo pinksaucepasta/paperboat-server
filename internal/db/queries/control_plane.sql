@@ -128,6 +128,21 @@ RETURNING *;
 -- name: GetControlHelperEnrollmentByOperationKey :one
 SELECT * FROM control_helper_enrollments WHERE operation_key = $1;
 
+-- name: GetPendingControlHelperEnrollmentForEnvironment :one
+SELECT * FROM control_helper_enrollments
+WHERE environment_id = sqlc.arg(environment_id) AND state = 'pending' AND revoked_at IS NULL
+ORDER BY created_at DESC LIMIT 1;
+
+-- name: GetActiveControlHelperForEnvironment :one
+SELECT * FROM control_helpers
+WHERE environment_id = sqlc.arg(environment_id) AND state = 'active' AND revoked_at IS NULL
+ORDER BY updated_at DESC LIMIT 1;
+
+-- name: RevokeExpiredControlHelperEnrollments :execrows
+UPDATE control_helper_enrollments
+SET state='revoked', revoked_at=sqlc.arg(now)
+WHERE environment_id=sqlc.arg(environment_id) AND state='pending' AND expires_at<=sqlc.arg(now) AND revoked_at IS NULL;
+
 -- name: ConsumeControlHelperEnrollment :one
 UPDATE control_helper_enrollments AS enrollment
 SET state = 'consumed', consumed_at = sqlc.arg(now)
@@ -156,6 +171,14 @@ SELECT * FROM control_helpers WHERE id = sqlc.arg(id) AND environment_id = sqlc.
 SELECT * FROM control_helpers
 WHERE id = sqlc.arg(id) AND environment_id = sqlc.arg(environment_id)
   AND state = 'active' AND revoked_at IS NULL;
+
+-- name: HostedHelperOwnsMachine :one
+SELECT EXISTS (
+  SELECT 1 FROM control_helpers h
+  JOIN fly_machines fm ON fm.project_id=h.environment_id
+  WHERE h.id=sqlc.arg(helper_id) AND h.environment_id=sqlc.arg(environment_id)
+    AND h.state='active' AND h.revoked_at IS NULL AND fm.fly_machine_id=sqlc.arg(machine_id)
+);
 
 -- name: SetControlHelperReplacementGeneration :one
 UPDATE control_helpers SET replacement_connector_generation = sqlc.arg(connector_generation), updated_at = sqlc.arg(updated_at)
@@ -202,6 +225,22 @@ WHERE id = sqlc.arg(id) AND desired_version = sqlc.arg(desired_version)
   AND applied_version < sqlc.arg(desired_version)
 RETURNING *;
 
+-- name: ReserveHostedProviderOperationRecovery :one
+INSERT INTO hosted_provider_operation_recoveries (operation_key, provider_operation_id, actor_user_id, action, evidence_reference)
+VALUES (sqlc.arg(operation_key), sqlc.arg(provider_operation_id), sqlc.narg(actor_user_id), sqlc.arg(action), sqlc.arg(evidence_reference))
+ON CONFLICT (operation_key) DO NOTHING
+RETURNING *;
+
+-- name: GetHostedProviderOperationRecovery :one
+SELECT * FROM hosted_provider_operation_recoveries WHERE operation_key=$1;
+
+-- name: RecoverUncertainHostedProviderOperation :execrows
+UPDATE hosted_provider_operations
+SET state=CASE WHEN sqlc.arg(action)::text='confirm_deleted' THEN 'succeeded' ELSE 'pending' END,
+    outcome=CASE WHEN sqlc.arg(action)::text='confirm_deleted' THEN 'success' ELSE 'pending' END,
+    last_error='',uncertain_at=NULL,observed_at=now(),updated_at=now()
+WHERE id=sqlc.arg(id) AND resource_type='secret' AND state='uncertain';
+
 -- name: SuspendControlEnvironmentForQuota :execrows
 UPDATE control_environments
 SET desired_state = 'suspended', desired_version = desired_version + 1, updated_at = sqlc.arg(now)
@@ -224,6 +263,15 @@ SELECT
   (SELECT count(*) FROM control_reconciliation_attempts WHERE state IN ('started','uncertain'))::bigint AS reconciliation_depth,
   CAST(coalesce((SELECT extract(epoch FROM (now() - min(started_at))) FROM control_reconciliation_attempts WHERE state IN ('started','uncertain')), 0) AS bigint) AS reconciliation_oldest_age_seconds,
   (SELECT count(*) FROM control_tunnel_nodes WHERE state IN ('registered','ready') AND (last_heartbeat_at IS NULL OR last_heartbeat_at <= now() - interval '2 minutes'))::bigint AS stale_node_depth
+  ,(SELECT count(*) FROM orchestration_jobs WHERE state IN ('queued','running'))::bigint AS orchestration_queue_depth
+  ,(SELECT count(*) FROM orchestration_jobs WHERE state='running' AND lease_expires_at <= now())::bigint AS orchestration_expired_lease_depth
+  ,CAST(coalesce((SELECT extract(epoch FROM (now() - min(created_at))) FROM orchestration_jobs WHERE state IN ('queued','running')), 0) AS bigint) AS orchestration_oldest_age_seconds
+  ,(SELECT count(*) FROM hosted_provider_operations WHERE state='uncertain')::bigint AS hosted_provider_uncertain_depth
+  ,(SELECT count(*) FROM hosted_provider_operations WHERE state='pending' OR (state='running' AND updated_at < now() - interval '2 minutes'))::bigint AS hosted_provider_retryable_depth
+  ,CAST(coalesce((SELECT extract(epoch FROM (now() - min(created_at))) FROM hosted_provider_operations WHERE resource_type IN ('machine','volume','secret') AND state IN ('pending','running','uncertain')), 0) AS bigint) AS hosted_provider_oldest_age_seconds
+  ,(SELECT count(*) FROM hosted_readiness_observations WHERE state='failed' AND observed_at >= now() - interval '24 hours')::bigint AS hosted_readiness_failure_depth
+  ,CAST(coalesce((SELECT extract(epoch FROM (now() - max(observed_at))) FROM hosted_readiness_observations WHERE state='failed' AND observed_at >= now() - interval '24 hours'), 0) AS bigint) AS hosted_readiness_recent_failure_age_seconds
+  ,(SELECT count(*) FROM orchestration_jobs WHERE job_type='fly.orphan.remediate' AND state='needs_review')::bigint AS hosted_orphan_review_depth
 FROM control_operations;
 
 -- name: LeaseControlOperations :many
@@ -267,6 +315,15 @@ RETURNING *;
 
 -- name: GetControlOperationRecovery :one
 SELECT * FROM control_operation_recoveries WHERE operation_key = $1;
+
+-- name: GetHostedHelperIdentityRenewal :one
+SELECT * FROM hosted_helper_identity_renewals WHERE operation_key=$1;
+
+-- name: CreateHostedHelperIdentityRenewal :one
+INSERT INTO hosted_helper_identity_renewals (operation_key,helper_id,environment_id,request_hash,identity_ciphertext,expires_at)
+VALUES (sqlc.arg(operation_key),sqlc.arg(helper_id),sqlc.arg(environment_id),sqlc.arg(request_hash),sqlc.arg(identity_ciphertext),sqlc.arg(expires_at))
+ON CONFLICT (operation_key) DO NOTHING
+RETURNING *;
 
 -- name: RecoverDeadLetterControlOperation :execrows
 UPDATE control_operations

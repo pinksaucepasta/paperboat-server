@@ -24,20 +24,36 @@ import (
 )
 
 var ErrVolumeResizeRequiresApproval = errors.New("volume resize requires approved Fly resize or replacement policy")
+var ErrOrchestrationLeaseLost = errors.New("orchestration job lease lost")
 
 type Service struct {
-	repo           *Repository
-	fly            fly.Client
-	cfg            config.Config
-	agentunnel     agentunnel.Client
-	agentunnelRepo *agentunnel.Repository
-	beforeStop     func(context.Context, string) error
+	repo              *Repository
+	fly               fly.Client
+	cfg               config.Config
+	agentunnel        agentunnel.Client
+	agentunnelRepo    *agentunnel.Repository
+	beforeStop        func(context.Context, string) error
+	issueEnrollment   func(context.Context, string, string, string, time.Duration) (string, error)
+	ensureHostedRoute func(context.Context, string, string, string, string) error
+	verifyReadiness   func(context.Context, string) error
 }
 
 // SetBeforeStop configures best-effort work that must happen while a project
 // runtime is still reachable. Failures are recorded but never strand a stop.
 func (s *Service) SetBeforeStop(fn func(context.Context, string) error) {
 	s.beforeStop = fn
+}
+
+func (s *Service) SetHostedEnrollmentIssuer(fn func(context.Context, string, string, string, time.Duration) (string, error)) {
+	s.issueEnrollment = fn
+}
+
+func (s *Service) SetHostedRouteEnsurer(fn func(context.Context, string, string, string, string) error) {
+	s.ensureHostedRoute = fn
+}
+
+func (s *Service) SetHostedReadinessVerifier(fn func(context.Context, string) error) {
+	s.verifyReadiness = fn
 }
 
 func NewService(store *db.DB, flyClient fly.Client, cfg config.Config) *Service {
@@ -49,9 +65,14 @@ func NewService(store *db.DB, flyClient fly.Client, cfg config.Config) *Service 
 }
 
 func NewServiceWithAgentunnel(store *db.DB, flyClient fly.Client, cfg config.Config, agentunnelClient agentunnel.Client) *Service {
+	repo := NewRepository(store, cfg.Secrets.EncryptionKey)
+	repo.lease = cfg.Fly.OrchestrationLease
+	if repo.lease <= cfg.Fly.OperationTimeout {
+		repo.lease = 5 * time.Minute
+	}
 	return &Service{
-		repo:           NewRepository(store, cfg.Secrets.EncryptionKey),
-		fly:            flyClient,
+		repo:           repo,
+		fly:            fly.NewTimeoutClient(flyClient, cfg.Fly.OperationTimeout),
 		cfg:            cfg,
 		agentunnel:     agentunnelClient,
 		agentunnelRepo: agentunnel.NewRepository(store, cfg.Secrets.EncryptionKey),
@@ -63,16 +84,17 @@ func (s *Service) RunOnce(ctx context.Context) error {
 	if err != nil || !ok {
 		return err
 	}
+	ctx = context.WithValue(ctx, orchestrationJobContextKey{}, job.ID)
 	err = s.process(ctx, job)
 	if err != nil {
 		if errors.Is(err, ErrVolumeResizeRequiresApproval) {
-			_ = s.repo.BlockJobAndRestoreProject(ctx, job.ID, job.AggregateID, job.PreviousState, err)
+			_ = s.repo.BlockJobAndRestoreProject(ctx, job.ID, job.LeaseToken, job.AggregateID, job.PreviousState, err)
 			return err
 		}
-		_ = s.repo.FailJob(ctx, job.ID, err)
+		_ = s.repo.FailJob(ctx, job.ID, job.LeaseToken, err)
 		return err
 	}
-	return s.repo.CompleteJob(ctx, job.ID)
+	return s.repo.CompleteJob(ctx, job.ID, job.LeaseToken)
 }
 
 func (s *Service) Worker(interval time.Duration) func(context.Context) error {
@@ -135,11 +157,24 @@ func (s *Service) provisionProject(ctx context.Context, projectID string) error 
 	if err != nil {
 		return err
 	}
+	if s.issueEnrollment != nil {
+		if ensureErr := s.repo.EnsureHostedControlEnvironment(ctx, intent.ID, intent.UserID); ensureErr != nil {
+			return fmt.Errorf("ensure hosted control environment: %w", ensureErr)
+		}
+		credential, issueErr := s.issueEnrollment(ctx, intent.UserID, "hosted-create:"+intent.ID, intent.ID, 10*time.Minute)
+		if issueErr != nil {
+			return fmt.Errorf("issue hosted helper enrollment: %w", issueErr)
+		}
+		intent.EnrollmentCredential = credential
+	}
+	if s.ensureHostedRoute != nil {
+		host := providerName(s.cfg.Providers.Agentunnel.RouteSubdomainPrefix, intent.ID) + "." + strings.Trim(strings.ToLower(s.cfg.Fly.HostedRouteSuffix), ".")
+		if routeErr := s.ensureHostedRoute(ctx, intent.UserID, "hosted-route:"+intent.ID, intent.ID, host); routeErr != nil {
+			return fmt.Errorf("ensure hosted helper route: %w", routeErr)
+		}
+	}
 	volume, err := s.ensureVolume(ctx, intent)
 	if err != nil {
-		return err
-	}
-	if err := s.ensureAgentunnelResource(ctx, &intent); err != nil {
 		return err
 	}
 	if _, err := s.ensureMachine(ctx, intent, volume.FlyVolumeID); err != nil {
@@ -197,15 +232,26 @@ func (s *Service) startProject(ctx context.Context, projectID string) error {
 			return err
 		}
 	}
-	observed, err := s.fly.StartMachine(ctx, machine.FlyMachineID)
+	observed, err := s.startMachine(ctx, machine.FlyMachineID)
 	if errors.Is(err, fly.ErrNotFound) {
 		if machine, err = s.recreateMissingMachine(ctx, projectID); err != nil {
 			return err
 		}
-		observed, err = s.fly.StartMachine(ctx, machine.FlyMachineID)
+		observed, err = s.startMachine(ctx, machine.FlyMachineID)
 	}
 	if err != nil {
 		return err
+	}
+	if s.verifyReadiness != nil {
+		if err := s.verifyReadiness(ctx, projectID); err != nil {
+			if recordErr := s.repo.RecordReadinessFailure(ctx, projectID, err); recordErr != nil {
+				return errors.Join(fmt.Errorf("verify hosted helper readiness: %w", err), recordErr)
+			}
+			return fmt.Errorf("verify hosted helper readiness: %w", err)
+		}
+		if err := s.repo.RecordReadinessSuccess(ctx, projectID); err != nil {
+			return err
+		}
 	}
 	return s.repo.RecordMachineState(ctx, projectID, observed.State, "running")
 }
@@ -216,7 +262,11 @@ func (s *Service) stopProject(ctx context.Context, projectID string) error {
 		return err
 	}
 	s.snapshotBeforeStop(ctx, projectID)
-	observed, err := s.fly.StopMachine(ctx, machine.FlyMachineID)
+	observed, err := s.stopMachine(ctx, machine.FlyMachineID)
+	if err != nil {
+		return err
+	}
+	observed, err = s.waitMachineState(ctx, machine.FlyMachineID, func(machine fly.Machine) bool { return machine.State == "stopped" })
 	if err != nil {
 		return err
 	}
@@ -242,31 +292,83 @@ func (s *Service) restartProject(ctx context.Context, projectID string) error {
 		}
 		return ErrVolumeResizeRequiresApproval
 	}
-	s.snapshotBeforeStop(ctx, projectID)
-	if _, err := s.fly.StopMachine(ctx, machine.FlyMachineID); err != nil {
-		if !errors.Is(err, fly.ErrNotFound) {
-			return err
-		}
-		// The machine vanished at the provider; the replacement is created
-		// stopped with the full desired spec, so skip the update paths below.
-		if machine, err = s.recreateMissingMachine(ctx, projectID); err != nil {
-			return err
-		}
-	} else if intent.PendingRestartApply {
-		if _, err := s.fly.UpdateMachine(ctx, machine.FlyMachineID, s.machineSpec(intent, volume.FlyVolumeID)); err != nil {
-			return err
-		}
-		if err := s.repo.ApplyRuntimeConfig(ctx, intent); err != nil {
-			return err
-		}
-	} else if err := s.applyMachineSpecDrift(ctx, intent, machine.FlyMachineID, volume.FlyVolumeID); err != nil {
-		return err
-	}
-	observed, err := s.fly.StartMachine(ctx, machine.FlyMachineID)
+	stopStep := "stop_machine:" + machine.FlyMachineID
+	stopSucceeded, err := s.repo.ProviderOperationSucceeded(ctx, stopStep)
 	if err != nil {
 		return err
 	}
+	recreated := false
+	if !stopSucceeded {
+		s.snapshotBeforeStop(ctx, projectID)
+		_, err = s.stopMachine(ctx, machine.FlyMachineID)
+		if err != nil {
+			if !errors.Is(err, fly.ErrNotFound) {
+				return err
+			}
+			// The replacement is created stopped with the full desired spec.
+			if machine, err = s.recreateMissingMachine(ctx, projectID); err != nil {
+				return err
+			}
+			recreated = true
+		} else if _, err = s.waitMachineState(ctx, machine.FlyMachineID, func(machine fly.Machine) bool { return machine.State == "stopped" }); err != nil {
+			return err
+		}
+	}
+	if !recreated && intent.PendingRestartApply {
+		if _, err := s.updateMachine(ctx, machine.FlyMachineID, s.machineSpec(intent, volume.FlyVolumeID)); err != nil {
+			return err
+		}
+	} else if !recreated {
+		if err := s.applyMachineSpecDrift(ctx, intent, machine.FlyMachineID, volume.FlyVolumeID); err != nil {
+			return err
+		}
+	}
+	observed, err := s.startMachine(ctx, machine.FlyMachineID)
+	if err != nil {
+		return err
+	}
+	if s.verifyReadiness != nil {
+		if err := s.verifyReadiness(ctx, projectID); err != nil {
+			if recordErr := s.repo.RecordReadinessFailure(ctx, projectID, err); recordErr != nil {
+				return errors.Join(fmt.Errorf("verify hosted helper readiness: %w", err), recordErr)
+			}
+			return fmt.Errorf("verify hosted helper readiness: %w", err)
+		}
+		if err := s.repo.RecordReadinessSuccess(ctx, projectID); err != nil {
+			return err
+		}
+	}
+	if intent.PendingRestartApply {
+		if err := s.repo.ApplyRuntimeConfig(ctx, intent); err != nil {
+			return err
+		}
+	}
 	return s.repo.RecordMachineState(ctx, projectID, observed.State, "running")
+}
+
+func (s *Service) waitMachineState(ctx context.Context, machineID string, ready func(fly.Machine) bool) (fly.Machine, error) {
+	timeout := s.cfg.Fly.OperationTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		machine, err := s.fly.GetMachine(waitCtx, machineID)
+		if err != nil {
+			return fly.Machine{}, err
+		}
+		if ready(machine) {
+			return machine, nil
+		}
+		select {
+		case <-waitCtx.Done():
+			return fly.Machine{}, waitCtx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func (s *Service) snapshotBeforeStop(ctx context.Context, projectID string) {
@@ -279,6 +381,9 @@ func (s *Service) snapshotBeforeStop(ctx context.Context, projectID string) {
 }
 
 func (s *Service) deleteProject(ctx context.Context, projectID string) error {
+	if err := s.repo.BeginHostedEnvironmentDelete(ctx, projectID); err != nil {
+		return err
+	}
 	intent, intentErr := s.repo.ProjectIntent(ctx, projectID)
 	machine, machineErr := s.repo.ProjectMachine(ctx, projectID)
 	if machineErr == nil {
@@ -290,7 +395,7 @@ func (s *Service) deleteProject(ctx context.Context, projectID string) error {
 				return err
 			}
 		} else {
-			if err := s.fly.DestroyMachine(ctx, machine.FlyMachineID); err != nil {
+			if err := s.destroyMachine(ctx, machine.FlyMachineID); err != nil {
 				if !errors.Is(err, fly.ErrNotFound) {
 					return err
 				}
@@ -318,7 +423,7 @@ func (s *Service) deleteProject(ctx context.Context, projectID string) error {
 	}
 	volume, volumeErr := s.repo.ProjectVolume(ctx, projectID)
 	if volumeErr == nil {
-		if err := s.fly.DestroyVolume(ctx, volume.FlyVolumeID); err != nil {
+		if err := s.destroyVolume(ctx, volume.FlyVolumeID); err != nil {
 			if !errors.Is(err, fly.ErrNotFound) {
 				return err
 			}
@@ -329,7 +434,10 @@ func (s *Service) deleteProject(ctx context.Context, projectID string) error {
 	} else if !errors.Is(volumeErr, sql.ErrNoRows) {
 		return volumeErr
 	}
-	return s.repo.MarkDeletedAndReleaseStorage(ctx, projectID)
+	if err := s.repo.MarkDeletedAndReleaseStorage(ctx, projectID); err != nil {
+		return err
+	}
+	return s.repo.CompleteHostedEnvironmentDelete(ctx, projectID)
 }
 
 func (s *Service) ensureVolume(ctx context.Context, intent ProjectIntent) (VolumeRecord, error) {
@@ -339,13 +447,24 @@ func (s *Service) ensureVolume(ctx context.Context, intent ProjectIntent) (Volum
 		return VolumeRecord{}, err
 	}
 	name := providerVolumeName(s.cfg.Fly.VolumeNamePrefix, intent.ID)
+	request := struct {
+		Name   string            `json:"name"`
+		Region string            `json:"region"`
+		SizeGB int               `json:"size_gb"`
+		Tags   map[string]string `json:"tags"`
+	}{Name: name, Region: intent.RegionCode, SizeGB: intent.StorageGB, Tags: resourceTags(intent.ID)}
 	if adopted, ok, err := s.findProviderVolume(ctx, name, intent); err != nil || ok {
 		if err != nil {
 			return VolumeRecord{}, err
 		}
+		if err := resolveProviderMutationByObservation(ctx, s.repo, "create_volume", "volume", request, ""); err != nil {
+			return VolumeRecord{}, err
+		}
 		return s.repo.RecordVolume(ctx, intent.ID, adopted.ID, intent.StorageGB, intent.RegionCode, adopted.State)
 	}
-	created, err := s.fly.CreateVolume(ctx, name, intent.RegionCode, intent.StorageGB, resourceTags(intent.ID))
+	created, err := executeProviderMutation(ctx, s.repo, "create_volume", "volume", request, func() (fly.Volume, error) {
+		return s.fly.CreateVolume(ctx, name, intent.RegionCode, intent.StorageGB, request.Tags)
+	})
 	if err != nil {
 		return VolumeRecord{}, err
 	}
@@ -363,9 +482,14 @@ func (s *Service) ensureMachine(ctx context.Context, intent ProjectIntent, volum
 		if err != nil {
 			return MachineRecord{}, err
 		}
+		if err := resolveProviderMutationByObservation(ctx, s.repo, "create_machine", "machine", spec, ""); err != nil {
+			return MachineRecord{}, err
+		}
 		return s.repo.RecordMachine(ctx, intent.ID, adopted.ID, adopted.State, s.cfg.Fly.ImageRef, intent.RegionCode, intent.DesiredConfigHash)
 	}
-	created, err := s.fly.CreateMachine(ctx, spec)
+	created, err := executeProviderMutation(ctx, s.repo, "create_machine", "machine", spec, func() (fly.Machine, error) {
+		return s.fly.CreateMachine(ctx, spec)
+	})
 	if err != nil {
 		return MachineRecord{}, err
 	}
@@ -404,22 +528,23 @@ func (s *Service) machineSpec(intent ProjectIntent, volumeID string) fly.Machine
 	graceSeconds := durationSecondsCeil(s.cfg.ConfigSync.ShutdownGracePeriod)
 	reportSeconds := durationSecondsCeil(s.cfg.ConfigSync.ShutdownReportTimeout)
 	env := map[string]string{
+		"PAPERBOAT_HELPER_PROFILE":                   "hosted",
+		"PAPERBOAT_HELPER_STATE_ROOT":                "/workspace/.paperboat/helper",
+		"PAPERBOAT_HELPER_LISTEN_ADDRESS":            "127.0.0.1:8080",
+		"PAPERBOAT_CONTROL_URL":                      strings.TrimRight(s.cfg.HTTP.PublicBaseURL, "/"),
+		"PAPERBOAT_CONTROL_ISSUER":                   config.NormalizeIssuer(s.cfg.HTTP.PublicBaseURL),
+		"PAPERBOAT_ENROLLMENT_CREDENTIAL_ENV":        s.cfg.Fly.EnrollmentSecret,
 		"PAPERBOAT_PROJECT_ID":                       intent.ID,
 		"PAPERBOAT_MACHINE_ID":                       machineName,
 		"PAPERBOAT_REPOSITORY_URL":                   intent.RepositoryURL,
 		"PAPERBOAT_DEFAULT_BRANCH":                   intent.DefaultBranch,
 		"PAPERBOAT_PRESET_CODES":                     strings.Join(intent.PresetCodes, ","),
 		"PAPERBOAT_IDLE_TIMEOUT_CODE":                intent.IdleTimeoutCode,
-		"PAPERBOAT_AGENTUNNEL_TOKEN_ENV":             s.cfg.Fly.AgentunnelSecret,
 		"PAPERBOAT_GITHUB_TOKEN_ENV":                 s.cfg.Fly.GitHubSecret,
 		"PAPERBOAT_SETUP_SCRIPT_REF":                 intent.SetupScriptRef,
 		"PAPERBOAT_SETUP_SCRIPT_ENV":                 s.cfg.Fly.SetupScriptSecret,
 		"PAPERBOAT_DESIRED_CONFIG_SHA":               intent.DesiredConfigHash,
 		"PAPERBOAT_ACTIVITY_ENDPOINT":                strings.TrimRight(s.cfg.HTTP.PublicBaseURL, "/") + "/api/machine/activity-heartbeat",
-		"PAPERBOAT_ACTIVITY_TOKEN_ENV":               "PAPERBOAT_MACHINE_ACTIVITY_TOKEN",
-		"PAPERBOAT_PAPERCODE_ENVIRONMENT_ID":         intent.ID,
-		"PAPERBOAT_PAPERCODE_OWNER_ID":               intent.UserID,
-		"PAPERBOAT_PAPERCODE_ISSUER":                 strings.TrimRight(s.cfg.HTTP.PublicBaseURL, "/"),
 		"PAPERBOAT_CONFIG_HOME":                      s.cfg.ConfigSync.HomeOverride,
 		"PAPERBOAT_CONFIG_INCLUDES":                  strings.Join(s.cfg.ConfigSync.Includes, ","),
 		"PAPERBOAT_CONFIG_EXCLUDES":                  strings.Join(s.cfg.ConfigSync.Excludes, ","),
@@ -448,21 +573,6 @@ func (s *Service) machineSpec(intent ProjectIntent, volumeID string) fly.Machine
 	if strings.TrimSpace(intent.GitHubConfigRepoBranch) != "" {
 		env["PAPERBOAT_CONFIG_REPO_BRANCH"] = intent.GitHubConfigRepoBranch
 	}
-	if strings.TrimSpace(s.cfg.Providers.Agentunnel.BaseURL) != "" {
-		env["PAPERBOAT_AGENTUNNEL_SERVER_URL"] = s.cfg.Providers.Agentunnel.BaseURL
-	}
-	if strings.TrimSpace(s.cfg.Providers.Agentunnel.MachineMode) != "" {
-		env["PAPERBOAT_AGENTUNNEL_MODE"] = s.cfg.Providers.Agentunnel.MachineMode
-	}
-	if strings.TrimSpace(s.cfg.Providers.Agentunnel.PapercodeLocalURL) != "" {
-		env["PAPERBOAT_PAPERCODE_LOCAL_URL"] = s.cfg.Providers.Agentunnel.PapercodeLocalURL
-	}
-	if strings.TrimSpace(intent.AgentunnelClientID) != "" {
-		env["PAPERBOAT_AGENTUNNEL_CLIENT_ID"] = intent.AgentunnelClientID
-	}
-	if strings.TrimSpace(intent.AgentunnelTunnelID) != "" {
-		env["PAPERBOAT_AGENTUNNEL_TUNNEL_ID"] = intent.AgentunnelTunnelID
-	}
 	spec := fly.MachineSpec{
 		Name:        machineName,
 		Hostname:    s.cfg.Fly.Hostname,
@@ -478,7 +588,7 @@ func (s *Service) machineSpec(intent ProjectIntent, volumeID string) fly.Machine
 		ConfigHash:  intent.DesiredConfigHash,
 		Tags:        resourceTags(intent.ID),
 	}
-	spec.Tags[specHashTag] = machineSpecHash(spec)
+	spec.Tags[specHashTag] = s.machineSpecHash(spec)
 	return spec
 }
 
@@ -492,11 +602,15 @@ func durationSecondsCeil(value time.Duration) int64 {
 // project's own desired config is unchanged.
 const specHashTag = "paperboat_spec_hash"
 
-func machineSpecHash(spec fly.MachineSpec) string {
+func (s *Service) machineSpecHash(spec fly.MachineSpec) string {
 	secretRefs := make([]string, 0, len(spec.Secrets))
 	for _, secret := range spec.Secrets {
-		valueHash := sha256.Sum256([]byte(secret.Value))
-		secretRefs = append(secretRefs, secret.EnvVar+"="+secret.Name+":"+hex.EncodeToString(valueHash[:]))
+		ref := secret.EnvVar + "=" + secret.Name
+		if secret.EnvVar != s.cfg.Fly.EnrollmentSecret {
+			valueHash := sha256.Sum256([]byte(secret.Value))
+			ref += ":" + hex.EncodeToString(valueHash[:])
+		}
+		secretRefs = append(secretRefs, ref)
 	}
 	sort.Strings(secretRefs)
 	payload, _ := json.Marshal(map[string]any{
@@ -561,13 +675,6 @@ func (s *Service) recreateMissingMachine(ctx context.Context, projectID string) 
 	if err != nil {
 		return MachineRecord{}, err
 	}
-	// The replacement carries the full desired spec, so any change that was
-	// waiting for a restart is now applied.
-	if intent.PendingRestartApply {
-		if err := s.repo.ApplyRuntimeConfig(ctx, intent); err != nil {
-			return MachineRecord{}, err
-		}
-	}
 	if err := s.repo.RecordProjectEvent(ctx, projectID, "project.machine_recreated", "Project machine was missing at the provider and was recreated on the existing volume.", map[string]any{"fly_machine_id": machine.FlyMachineID}); err != nil {
 		return MachineRecord{}, err
 	}
@@ -583,22 +690,64 @@ func (s *Service) applyMachineSpecDrift(ctx context.Context, intent ProjectInten
 	if observed.Tags[specHashTag] == spec.Tags[specHashTag] {
 		return nil
 	}
-	if _, err := s.fly.UpdateMachine(ctx, machineID, spec); err != nil {
+	if _, err := s.updateMachine(ctx, machineID, spec); err != nil {
 		return err
 	}
 	return s.repo.RecordProjectEvent(ctx, intent.ID, "project.machine_spec_drift_applied", "Machine configuration was updated to match the current project settings.", map[string]any{"severity": "info", "spec_hash": spec.Tags[specHashTag]})
 }
 
+func (s *Service) startMachine(ctx context.Context, machineID string) (fly.Machine, error) {
+	request := struct {
+		MachineID string `json:"machine_id"`
+		Target    string `json:"target"`
+	}{MachineID: machineID, Target: "running"}
+	return executeMachineMutation(ctx, s.repo, s.fly, "start_machine:"+machineID, request, machineID, func(machine fly.Machine) bool {
+		return machine.State == "running" || machine.State == "started"
+	}, func() (fly.Machine, error) { return s.fly.StartMachine(ctx, machineID) })
+}
+
+func (s *Service) stopMachine(ctx context.Context, machineID string) (fly.Machine, error) {
+	request := struct {
+		MachineID string `json:"machine_id"`
+		Target    string `json:"target"`
+	}{MachineID: machineID, Target: "stopped"}
+	return executeMachineMutation(ctx, s.repo, s.fly, "stop_machine:"+machineID, request, machineID, func(machine fly.Machine) bool {
+		return machine.State == "stopped"
+	}, func() (fly.Machine, error) { return s.fly.StopMachine(ctx, machineID) })
+}
+
+func (s *Service) updateMachine(ctx context.Context, machineID string, spec fly.MachineSpec) (fly.Machine, error) {
+	request := struct {
+		MachineID string          `json:"machine_id"`
+		Spec      fly.MachineSpec `json:"spec"`
+	}{MachineID: machineID, Spec: spec}
+	return executeMachineMutation(ctx, s.repo, s.fly, "update_machine:"+machineID, request, machineID, func(machine fly.Machine) bool {
+		return machine.ConfigHash == spec.ConfigHash
+	}, func() (fly.Machine, error) { return s.fly.UpdateMachine(ctx, machineID, spec) })
+}
+
+func (s *Service) destroyMachine(ctx context.Context, machineID string) error {
+	request := struct {
+		MachineID string `json:"machine_id"`
+	}{MachineID: machineID}
+	return executeDestroyMutation(ctx, s.repo, "destroy_machine:"+machineID, "machine", request,
+		func() error { _, err := s.fly.GetMachine(ctx, machineID); return err },
+		func() error { return s.fly.DestroyMachine(ctx, machineID) },
+	)
+}
+
+func (s *Service) destroyVolume(ctx context.Context, volumeID string) error {
+	request := struct {
+		VolumeID string `json:"volume_id"`
+	}{VolumeID: volumeID}
+	return executeDestroyMutation(ctx, s.repo, "destroy_volume:"+volumeID, "volume", request,
+		func() error { _, err := s.fly.GetVolume(ctx, volumeID); return err },
+		func() error { return s.fly.DestroyVolume(ctx, volumeID) },
+	)
+}
+
 func (s *Service) projectSecrets(intent ProjectIntent) []fly.MachineSecret {
-	var out []fly.MachineSecret
-	agentunnelToken := firstNonEmpty(intent.AgentunnelToken, s.cfg.Secrets.AgentunnelMachineToken)
-	if strings.TrimSpace(agentunnelToken) != "" {
-		out = append(out, fly.MachineSecret{
-			EnvVar: s.cfg.Fly.AgentunnelSecret,
-			Name:   providerSecretName("PBSECRET_AGENTUNNEL", intent.ID),
-			Value:  agentunnelToken,
-		})
-	}
+	out := []fly.MachineSecret{{EnvVar: s.cfg.Fly.EnrollmentSecret, Name: providerSecretName("PBSECRET_ENROLLMENT", intent.ID), Value: intent.EnrollmentCredential}}
 	if strings.TrimSpace(intent.ConfigAgeIdentity) != "" {
 		out = append(out, fly.MachineSecret{EnvVar: "PAPERBOAT_CONFIG_AGE_IDENTITY", Name: providerSecretName("PBSECRET_CONFIG_AGE", intent.ID), Value: intent.ConfigAgeIdentity})
 	}
@@ -616,13 +765,6 @@ func (s *Service) projectSecrets(intent ProjectIntent) []fly.MachineSecret {
 			Value:  intent.SetupScript,
 		})
 	}
-	if strings.TrimSpace(agentunnelToken) != "" {
-		out = append(out, fly.MachineSecret{
-			EnvVar: "PAPERBOAT_MACHINE_ACTIVITY_TOKEN",
-			Name:   providerSecretName("PBSECRET_ACTIVITY", intent.ID),
-			Value:  agentunnelToken,
-		})
-	}
 	return out
 }
 
@@ -631,7 +773,12 @@ func (s *Service) deleteProviderSecrets(ctx context.Context, intent ProjectInten
 		if secret.Name == "" {
 			continue
 		}
-		if err := s.fly.DeleteSecret(ctx, secret.Name); err != nil && !errors.Is(err, fly.ErrNotFound) {
+		request := struct {
+			Name string `json:"name"`
+		}{Name: secret.Name}
+		if err := executeNonObservableMutation(ctx, s.repo, "delete_secret:"+secret.Name, "secret", request, func() error {
+			return s.fly.DeleteSecret(ctx, secret.Name)
+		}); err != nil && !errors.Is(err, fly.ErrNotFound) {
 			return err
 		}
 	}
@@ -685,10 +832,11 @@ func resourceTags(projectID string) map[string]string {
 type Repository struct {
 	db            *db.DB
 	encryptionKey string
+	lease         time.Duration
 }
 
 func NewRepository(store *db.DB, encryptionKey string) *Repository {
-	return &Repository{db: store, encryptionKey: encryptionKey}
+	return &Repository{db: store, encryptionKey: encryptionKey, lease: 5 * time.Minute}
 }
 
 type Job struct {
@@ -696,6 +844,7 @@ type Job struct {
 	Type          string
 	AggregateID   string
 	PreviousState string
+	LeaseToken    string
 }
 
 type ProjectIntent struct {
@@ -720,6 +869,7 @@ type ProjectIntent struct {
 	AgentunnelToken        string
 	AgentunnelClientID     string
 	AgentunnelTunnelID     string
+	EnrollmentCredential   string
 	ConfigAgeIdentity      string
 	ConfigAgeRecipient     string
 	ConfigAgeVersion       int32
@@ -753,11 +903,13 @@ type Finding struct {
 func (r *Repository) ClaimNextJob(ctx context.Context) (Job, bool, error) {
 	var job Job
 	err := r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		row, err := tx.Queries().ClaimNextOrchestrationJob(ctx)
+		now := time.Now().UTC()
+		leaseToken := newID("lease")
+		row, err := tx.Queries().ClaimNextOrchestrationJob(ctx, dbsqlc.ClaimNextOrchestrationJobParams{LeaseToken: leaseToken, LeaseExpiresAt: sql.NullTime{Time: now.Add(r.lease), Valid: true}, Now: now})
 		if err != nil {
 			return err
 		}
-		job = Job{ID: row.ID, Type: row.JobType, AggregateID: row.AggregateID}
+		job = Job{ID: row.ID, Type: row.JobType, AggregateID: row.AggregateID, LeaseToken: row.LeaseToken}
 		var decoded struct {
 			PreviousState string `json:"previous_state"`
 		}
@@ -771,26 +923,72 @@ func (r *Repository) ClaimNextJob(ctx context.Context) (Job, bool, error) {
 	return job, err == nil, err
 }
 
-func (r *Repository) CompleteJob(ctx context.Context, jobID string) error {
+func (r *Repository) CompleteJob(ctx context.Context, jobID, leaseToken string) error {
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		return tx.Queries().CompleteOrchestrationJob(ctx, jobID)
+		rows, err := tx.Queries().CompleteOrchestrationJob(ctx, dbsqlc.CompleteOrchestrationJobParams{ID: jobID, LeaseToken: leaseToken})
+		if err == nil && rows != 1 {
+			err = ErrOrchestrationLeaseLost
+		}
+		return err
 	})
 }
 
-func (r *Repository) FailJob(ctx context.Context, jobID string, cause error) error {
+func (r *Repository) EnsureHostedControlEnvironment(ctx context.Context, projectID, ownerID string) error {
+	_, err := r.db.Queries().EnsureHostedControlEnvironment(ctx, dbsqlc.EnsureHostedControlEnvironmentParams{ID: projectID, WorkspaceID: projectID, OwnerUserID: sql.NullString{String: ownerID, Valid: ownerID != ""}})
+	return err
+}
+
+func (r *Repository) BeginHostedEnvironmentDelete(ctx context.Context, projectID string) error {
+	environment, err := r.db.Queries().GetControlEnvironment(ctx, projectID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil || environment.DesiredState == "deleting" || environment.DesiredState == "revoked" {
+		return err
+	}
+	_, err = r.db.Queries().UpdateControlEnvironmentDesiredState(ctx, dbsqlc.UpdateControlEnvironmentDesiredStateParams{ID: projectID, DesiredState: "deleting", Now: time.Now().UTC(), ExpectedVersion: environment.DesiredVersion})
+	return err
+}
+
+func (r *Repository) CompleteHostedEnvironmentDelete(ctx context.Context, projectID string) error {
+	environment, err := r.db.Queries().GetControlEnvironment(ctx, projectID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if environment.AppliedState == "deleted" && environment.AppliedVersion == environment.DesiredVersion {
+		return nil
+	}
+	if _, err = r.db.Queries().ApplyControlEnvironmentState(ctx, dbsqlc.ApplyControlEnvironmentStateParams{ID: projectID, AppliedState: "deleted", DesiredVersion: environment.DesiredVersion}); err != nil {
+		return err
+	}
+	return r.db.Queries().DeleteHostedControlEnvironment(ctx, projectID)
+}
+
+func (r *Repository) FailJob(ctx context.Context, jobID, leaseToken string, cause error) error {
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		return tx.Queries().RetryOrchestrationJob(ctx, dbsqlc.RetryOrchestrationJobParams{ID: jobID, LastError: cause.Error()})
+		rows, err := tx.Queries().RetryOrchestrationJob(ctx, dbsqlc.RetryOrchestrationJobParams{ID: jobID, LeaseToken: leaseToken, LastError: cause.Error()})
+		if err == nil && rows != 1 {
+			err = ErrOrchestrationLeaseLost
+		}
+		return err
 	})
 }
 
-func (r *Repository) BlockJobAndRestoreProject(ctx context.Context, jobID, projectID, previousState string, cause error) error {
+func (r *Repository) BlockJobAndRestoreProject(ctx context.Context, jobID, leaseToken, projectID, previousState string, cause error) error {
 	if previousState == "" || previousState == "restarting" {
 		previousState = "ready"
 	}
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		q := tx.Queries()
-		if err := q.BlockOrchestrationJob(ctx, dbsqlc.BlockOrchestrationJobParams{ID: jobID, LastError: cause.Error()}); err != nil {
+		rows, err := q.BlockOrchestrationJob(ctx, dbsqlc.BlockOrchestrationJobParams{ID: jobID, LeaseToken: leaseToken, LastError: cause.Error()})
+		if err != nil {
 			return err
+		}
+		if rows != 1 {
+			return ErrOrchestrationLeaseLost
 		}
 		return q.RestoreRestartingProjectState(ctx, dbsqlc.RestoreRestartingProjectStateParams{ID: projectID, State: previousState})
 	})
@@ -860,12 +1058,12 @@ func (r *Repository) ensureAccountConfigKey(ctx context.Context, userID string) 
 	}
 	identity, err := secrets.Decrypt(r.encryptionKey, row.EncryptedIdentity)
 	if err != nil {
-		return accountConfigKey{}, err
+		return accountConfigKey{}, fmt.Errorf("decrypt account config identity: %w", err)
 	}
 	if len(row.PreviousEncryptedIdentity) > 0 {
 		previous, previousErr := secrets.Decrypt(r.encryptionKey, row.PreviousEncryptedIdentity)
 		if previousErr != nil {
-			return accountConfigKey{}, previousErr
+			return accountConfigKey{}, fmt.Errorf("decrypt previous account config identity: %w", previousErr)
 		}
 		identity += "\n" + previous
 	}
@@ -877,7 +1075,11 @@ func (r *Repository) githubConfigToken(ctx context.Context, userID string) (stri
 	if err != nil {
 		return "", err
 	}
-	return secrets.Decrypt(r.encryptionKey, ciphertext)
+	plaintext, err := secrets.Decrypt(r.encryptionKey, ciphertext)
+	if err != nil {
+		return "", fmt.Errorf("decrypt GitHub config token: %w", err)
+	}
+	return plaintext, nil
 }
 
 func (r *Repository) githubConfigRepo(ctx context.Context, userID string) (string, string, error) {
@@ -893,7 +1095,11 @@ func (r *Repository) setupScript(ctx context.Context, projectID, setupScriptRef 
 	if err != nil {
 		return "", err
 	}
-	return secrets.Decrypt(r.encryptionKey, ciphertext)
+	plaintext, err := secrets.Decrypt(r.encryptionKey, ciphertext)
+	if err != nil {
+		return "", fmt.Errorf("decrypt project setup script: %w", err)
+	}
+	return plaintext, nil
 }
 
 type agentunnelResource struct {
@@ -916,7 +1122,10 @@ func (r *Repository) agentunnelResource(ctx context.Context, projectID string) (
 		return agentunnelResource{}, err
 	}
 	resource.MachineToken, err = secrets.Decrypt(r.encryptionKey, ciphertext)
-	return resource, err
+	if err != nil {
+		return agentunnelResource{}, fmt.Errorf("decrypt legacy agentunnel token: %w", err)
+	}
+	return resource, nil
 }
 
 func (r *Repository) ProjectMachine(ctx context.Context, projectID string) (MachineRecord, error) {
@@ -989,6 +1198,51 @@ func (r *Repository) RecordMachineState(ctx context.Context, projectID, provider
 			return err
 		}
 		return insertEvent(ctx, tx, projectID, "project."+projectState, "Project machine state changed.", map[string]any{"state": projectState, "provider_state": providerState})
+	})
+}
+
+func (r *Repository) RecordReadinessSuccess(ctx context.Context, projectID string) error {
+	return r.recordReadiness(ctx, projectID, map[string]string{
+		"workspace":            "ready",
+		"config_restore":       "ready",
+		"helper_health":        "ready",
+		"connector_admission":  "ready",
+		"runtime_dependencies": "ready",
+	}, "")
+}
+
+func (r *Repository) RecordReadinessFailure(ctx context.Context, projectID string, cause error) error {
+	stage, reason := "helper_health", "verification failed"
+	var readinessErr *HostedReadinessError
+	if errors.As(cause, &readinessErr) {
+		stage, reason = readinessErr.Stage, readinessErr.Reason
+	}
+	return r.recordReadiness(ctx, projectID, map[string]string{stage: "failed"}, reason)
+}
+
+func (r *Repository) recordReadiness(ctx context.Context, projectID string, stages map[string]string, reason string) error {
+	jobID, hasJob := ctx.Value(orchestrationJobContextKey{}).(string)
+	evidence, err := json.Marshal(map[string]string{"source": "helper_route_health_v1"})
+	if err != nil {
+		return err
+	}
+	observedAt := time.Now().UTC()
+	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		stageNames := make([]string, 0, len(stages))
+		for stage := range stages {
+			stageNames = append(stageNames, stage)
+		}
+		sort.Strings(stageNames)
+		for _, stage := range stageNames {
+			if err := tx.Queries().InsertHostedReadinessObservation(ctx, dbsqlc.InsertHostedReadinessObservationParams{
+				ID: newID("hro"), ProjectID: projectID,
+				OrchestrationJobID: sql.NullString{String: jobID, Valid: hasJob && jobID != ""},
+				Stage:              stage, State: stages[stage], Reason: reason, Evidence: evidence, ObservedAt: observedAt,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
@@ -1074,7 +1328,10 @@ func (r *Repository) ReconcileFly(ctx context.Context, client fly.Client) ([]Fin
 		}
 		if actual.State != row.State {
 			findings = append(findings, Finding{ProjectID: row.ProjectID, Severity: "warning", Message: fmt.Sprintf("machine state drift: stored=%s actual=%s", row.State, actual.State)})
-			_ = r.RecordMachineState(ctx, row.ProjectID, actual.State, mapProviderState(actual.State))
+			// Provider observations must not promote a project to ready/running. Only
+			// the lifecycle operation that proves helper readiness may advance the
+			// product state; reconciliation records the provider observation alone.
+			_ = r.recordObservedMachineState(ctx, row.ProjectID, actual.State)
 		}
 	}
 	machines, err := client.ListMachines(ctx, map[string]string{"managed_by": "paperboat-server"})
@@ -1092,6 +1349,15 @@ func (r *Repository) ReconcileFly(ctx context.Context, client fly.Client) ([]Fin
 		}
 	}
 	return findings, nil
+}
+
+func (r *Repository) recordObservedMachineState(ctx context.Context, projectID, providerState string) error {
+	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		return tx.Queries().UpdateOrchestratedMachineState(ctx, dbsqlc.UpdateOrchestratedMachineStateParams{
+			ProjectID: projectID,
+			State:     providerState,
+		})
+	})
 }
 
 func (r *Repository) QueueOrphanRemediation(ctx context.Context, machine fly.Machine) error {

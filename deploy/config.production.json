@@ -62,10 +62,15 @@
     "machine_name_prefix": "pbvm",
     "hostname": "paperboat",
     "mount_path": "/workspace",
-    "boot_command": ["/usr/local/bin/paperboat-entrypoint"],
+    "boot_command": ["/usr/local/bin/paperboat-helper", "run"],
     "agentunnel_secret": "AGENTUNNEL_MACHINE_TOKEN",
     "github_secret": "PAPERBOAT_GITHUB_CONFIG_TOKEN",
-    "setup_script_secret": "PAPERBOAT_SETUP_SCRIPT"
+    "setup_script_secret": "PAPERBOAT_SETUP_SCRIPT",
+    "operation_timeout": 30000000000,
+    "orchestration_lease": 300000000000,
+    "enrollment_secret": "PAPERBOAT_ENROLLMENT_CREDENTIAL",
+    "hosted_route_suffix": "hosted.example.invalid",
+    "hosted_readiness_base_url": ""
   },
   "providers": {
     "fake_mode": false,

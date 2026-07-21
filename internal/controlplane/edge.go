@@ -53,8 +53,8 @@ type ConnectorAdmission struct {
 	EdgeEndpoint        struct {
 		Host     string `json:"host"`
 		Port     int32  `json:"port"`
-		TCPPort  int32  `json:"-"`
-		QUICPort int32  `json:"-"`
+		TCPPort  int32  `json:"tcp_port"`
+		QUICPort int32  `json:"quic_port"`
 	} `json:"edge_endpoint"`
 	Routes          []ConnectorRouteHandoff `json:"routes"`
 	ProtocolVersion string                  `json:"protocol_version"`
@@ -223,16 +223,18 @@ func (s *EdgeService) IssueConnectorAdmission(ctx context.Context, identityToken
 			return ErrHelperProof
 		}
 		if generation.AdmissionOperationKey.Valid {
-			if generation.AdmissionOperationKey.String != operationKey || !bytes.Equal(generation.AdmissionRequestHash, requestHash[:]) {
-				return ErrUsageOperationConflict
+			if generation.AdmissionOperationKey.String == operationKey {
+				if !bytes.Equal(generation.AdmissionRequestHash, requestHash[:]) {
+					return ErrUsageOperationConflict
+				}
+				plaintext, decryptErr := secrets.Decrypt(s.encryptionKey, generation.AdmissionCredentialCiphertext)
+				if decryptErr != nil || json.Unmarshal([]byte(plaintext), &result) != nil {
+					return ErrHelperProof
+				}
+				return nil
 			}
-			plaintext, decryptErr := secrets.Decrypt(s.encryptionKey, generation.AdmissionCredentialCiphertext)
-			if decryptErr != nil || json.Unmarshal([]byte(plaintext), &result) != nil {
-				return ErrHelperProof
-			}
-			return nil
 		}
-		node, err := tx.Queries().SelectReadyControlTunnelNodeForUpdate(ctx, dbsqlc.SelectReadyControlTunnelNodeForUpdateParams{EdgePool: edgePool, StaleAfter: sql.NullTime{Time: now.Add(-2 * time.Minute), Valid: true}})
+		node, err := tx.Queries().SelectReadyControlTunnelNodeForUpdate(ctx, dbsqlc.SelectReadyControlTunnelNodeForUpdateParams{EdgePool: edgePool, StaleAfter: sql.NullTime{Time: now.Add(-controlTunnelNodeStaleAfter), Valid: true}})
 		if err != nil || !node.EndpointHost.Valid || !node.EndpointTcpPort.Valid || !node.EndpointQuicPort.Valid {
 			return ErrHelperProof
 		}
@@ -348,6 +350,8 @@ type edgeUsageRequest struct {
 	End         time.Time       `json:"interval_end"`
 	Payload     json.RawMessage `json:"signed_payload,omitempty"`
 }
+
+const controlTunnelNodeStaleAfter = 2 * time.Minute
 
 func (s *EdgeService) RegisterNode(ctx context.Context, r edgeNodeRegistration) error {
 	if r.NodeID == "" || r.EdgePool == "" || r.Protocol == "" || r.ProcessEpoch == "" || r.Capacity == 0 || r.Endpoint.Host == "" || r.Endpoint.TCPPort == 0 || r.Endpoint.QUICPort == 0 || r.Endpoint.TCPPort == r.Endpoint.QUICPort {

@@ -12,9 +12,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
@@ -54,6 +56,44 @@ type HelperReplacement struct {
 	EnvironmentID       string `json:"environment_id"`
 	HelperID            string `json:"helper_id"`
 	ConnectorGeneration int64  `json:"connector_generation"`
+}
+
+// EnsureBootGrant returns no credential after the environment has an active
+// helper. Before first enrollment it replays only an unexpired pending grant;
+// expired grants are revoked and replaced under a fresh operation key.
+func (s *EnrollmentService) EnsureBootGrant(ctx context.Context, actorID, operationPrefix, environmentID string, lifetime time.Duration) (EnrollmentGrant, error) {
+	now := s.clock().UTC()
+	if _, err := s.store.Queries().GetActiveControlHelperForEnvironment(ctx, environmentID); err == nil {
+		return EnrollmentGrant{}, nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return EnrollmentGrant{}, err
+	}
+	if pending, err := s.store.Queries().GetPendingControlHelperEnrollmentForEnvironment(ctx, environmentID); err == nil && pending.ExpiresAt.After(now) {
+		var requestHash [sha256.Size]byte
+		if len(pending.RequestHash) != len(requestHash) {
+			return EnrollmentGrant{}, ErrEnrollmentInvalid
+		}
+		copy(requestHash[:], pending.RequestHash)
+		return s.replayGrant(pending, requestHash)
+	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return EnrollmentGrant{}, err
+	}
+	if _, err := s.store.Queries().RevokeExpiredControlHelperEnrollments(ctx, dbsqlc.RevokeExpiredControlHelperEnrollmentsParams{EnvironmentID: environmentID, Now: sql.NullTime{Time: now, Valid: true}}); err != nil {
+		return EnrollmentGrant{}, err
+	}
+	return s.Issue(ctx, actorID, fmt.Sprintf("%s:%d", operationPrefix, now.Unix()), environmentID, lifetime)
+}
+
+func (s *EnrollmentService) VerifyActivityHeartbeat(ctx context.Context, identityToken string, proof, body []byte, environmentID, machineID string) error {
+	claims, err := s.VerifyHelperRequest(ctx, identityToken, proof, http.MethodPost, "/api/machine/activity-heartbeat", body)
+	if err != nil || claims.EnvironmentID != environmentID {
+		return ErrHelperProof
+	}
+	owned, err := s.store.Queries().HostedHelperOwnsMachine(ctx, dbsqlc.HostedHelperOwnsMachineParams{HelperID: claims.HelperID, EnvironmentID: environmentID, MachineID: machineID})
+	if err != nil || !owned {
+		return ErrHelperProof
+	}
+	return nil
 }
 
 func NewEnrollmentService(store *db.DB, signer *mint.Provider, writer *audit.Writer, issuer, encryptionKey string) *EnrollmentService {
@@ -119,6 +159,14 @@ func (s *EnrollmentService) Issue(ctx context.Context, actorID, operationKey, en
 		return s.replayGrant(existing, requestHash)
 	}
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.ConstraintName == "control_helper_enrollments_one_pending_per_environment" {
+			pending, getErr := s.store.Queries().GetPendingControlHelperEnrollmentForEnvironment(ctx, environmentID)
+			if getErr != nil {
+				return EnrollmentGrant{}, getErr
+			}
+			return s.replayGrant(pending, requestHash)
+		}
 		return EnrollmentGrant{}, fmt.Errorf("persist enrollment: %w", err)
 	}
 	return grant, nil
@@ -192,6 +240,73 @@ func (s *EnrollmentService) Exchange(ctx context.Context, credential string, pub
 		return nil
 	})
 	return result, err
+}
+
+func (s *EnrollmentService) Renew(ctx context.Context, identityToken string, proof, body []byte) (HelperIdentity, error) {
+	claims, err := s.VerifyHelperRequest(ctx, identityToken, proof, "POST", "/v1/helpers/renew", body)
+	if err != nil {
+		return HelperIdentity{}, ErrHelperProof
+	}
+	var request struct {
+		OperationID string `json:"operation_id"`
+	}
+	if json.Unmarshal(body, &request) != nil || request.OperationID != claims.OperationID {
+		return HelperIdentity{}, ErrHelperProof
+	}
+	requestHash := sha256.Sum256(body)
+	operationKey := "helper-renew:" + claims.HelperID + ":" + claims.OperationID
+	if existing, err := s.store.Queries().GetHostedHelperIdentityRenewal(ctx, operationKey); err == nil {
+		return s.replayIdentityRenewal(existing.RequestHash, existing.IdentityCiphertext, requestHash)
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return HelperIdentity{}, err
+	}
+	helper, err := s.store.Queries().GetActiveControlHelper(ctx, dbsqlc.GetActiveControlHelperParams{ID: claims.HelperID, EnvironmentID: claims.EnvironmentID})
+	if err != nil || !helper.KeyThumbprint.Valid {
+		return HelperIdentity{}, ErrHelperProof
+	}
+	now := s.clock().UTC()
+	jti, err := randomHex("jti_", 24)
+	if err != nil {
+		return HelperIdentity{}, err
+	}
+	expiresAt := now.Add(time.Hour)
+	token, err := s.signer.SignCredential(mint.CredentialInput{Issuer: s.issuer, Audience: "paperboat-control", Subject: helper.ID, JTI: jti, IssuedAt: now, ExpiresAt: expiresAt, CredentialClass: "helper_identity", Scopes: []string{"helper:connect", "helper:renew"}, EnvironmentID: helper.EnvironmentID, HelperID: helper.ID, KeyThumbprint: helper.KeyThumbprint.String})
+	if err != nil {
+		return HelperIdentity{}, err
+	}
+	result := HelperIdentity{HelperID: helper.ID, EnvironmentID: helper.EnvironmentID, Credential: token, ExpiresAt: expiresAt}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return HelperIdentity{}, err
+	}
+	ciphertext, err := secrets.Encrypt(s.encryptionKey, string(encoded))
+	if err != nil {
+		return HelperIdentity{}, err
+	}
+	_, err = s.store.Queries().CreateHostedHelperIdentityRenewal(ctx, dbsqlc.CreateHostedHelperIdentityRenewalParams{OperationKey: operationKey, HelperID: helper.ID, EnvironmentID: helper.EnvironmentID, RequestHash: requestHash[:], IdentityCiphertext: ciphertext, ExpiresAt: expiresAt})
+	if errors.Is(err, sql.ErrNoRows) {
+		existing, getErr := s.store.Queries().GetHostedHelperIdentityRenewal(ctx, operationKey)
+		if getErr != nil {
+			return HelperIdentity{}, getErr
+		}
+		return s.replayIdentityRenewal(existing.RequestHash, existing.IdentityCiphertext, requestHash)
+	}
+	return result, err
+}
+
+func (s *EnrollmentService) replayIdentityRenewal(storedHash, ciphertext []byte, requestHash [32]byte) (HelperIdentity, error) {
+	if !bytes.Equal(storedHash, requestHash[:]) {
+		return HelperIdentity{}, ErrUsageOperationConflict
+	}
+	plaintext, err := secrets.Decrypt(s.encryptionKey, ciphertext)
+	if err != nil {
+		return HelperIdentity{}, ErrEnrollmentInvalid
+	}
+	var result HelperIdentity
+	if json.Unmarshal([]byte(plaintext), &result) != nil || result.HelperID == "" || result.EnvironmentID == "" || result.Credential == "" || result.ExpiresAt.IsZero() {
+		return HelperIdentity{}, ErrEnrollmentInvalid
+	}
+	return result, nil
 }
 
 // ReplaceHelper fences the active helper and advances connector generation in

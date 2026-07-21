@@ -188,6 +188,7 @@ func TestProductionValidationDoesNotRequireMachineActivityToken(t *testing.T) {
 	cfg.Secrets.EdgeControlCredential = "edge-control-credential-0123456789"
 	cfg.Secrets.ClassifierAPIKey = "classifier-api-key"
 	cfg.Secrets.MachineActivityToken = ""
+	cfg.Fly.ImageRef = "registry.example.test/paperboat/project-vm@sha256:" + strings.Repeat("a", 64)
 	cfg.CLIAuth.MintActiveKeyID = "current"
 	cfg.Secrets.MintSigningKeys = []string{"current:" + base64.RawURLEncoding.EncodeToString(make([]byte, 32))}
 

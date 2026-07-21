@@ -117,7 +117,7 @@ SELECT amount_gb FROM storage_ledger_entries WHERE idempotency_key=$1;
 UPDATE projects SET state='deleted',version=version+1,updated_at=now() WHERE id=$1;
 
 -- name: GetProjectStateForUpdate :one
-SELECT state FROM projects WHERE id=$1 AND user_id=$2 FOR UPDATE;
+SELECT state,version FROM projects WHERE id=$1 AND user_id=$2 FOR UPDATE;
 
 -- name: UpdateProjectLifecycleState :exec
 UPDATE projects SET state=$3,version=version+1,updated_at=now() WHERE id=$1 AND user_id=$2;
