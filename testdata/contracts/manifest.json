@@ -166,7 +166,7 @@
       "id": "helper.protocol",
       "path": "helper/protocol.md",
       "type": "specification",
-      "sha256": "ecf8727bb240286f729b8bb6f28fb36adb8357c9f52c3f302df02aabcaf56d5f",
+      "sha256": "f8ef9aed40965f866e9d779cca0ec95f5a83323332529d0fce5071f48d654965",
       "owner": "helper",
       "review": "phase-1-draft",
       "consumers": [
@@ -230,7 +230,7 @@
       "id": "session.stream",
       "path": "session/stream.md",
       "type": "specification",
-      "sha256": "87b0044cd1d1056caf61b5af0702271862ba3005197c3a190228549c199ac02c",
+      "sha256": "501602e168bf3088d912988972ac263b978b3557a0420deecf036321ce1f14cf",
       "owner": "helper",
       "review": "phase-1-draft",
       "consumers": [

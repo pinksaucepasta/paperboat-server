@@ -2,7 +2,7 @@
   "repository": "paperboat-server",
   "contract_version": "1.0.0",
   "canonical_source": "contracts/manifest.json",
-  "copied_manifest_sha256": "8cfaeb3a1aae6c5e7800d6cb4b526b08536fa48d8704f23a806b463126940d01",
+  "copied_manifest_sha256": "c5cbede35559ece037ede4592f3a59037cd8e167c2410a1bba3eac95e29c4c19",
   "supported": {
     "fixture_manifest": "1",
     "helper_protocol": "1.0-1.0",
