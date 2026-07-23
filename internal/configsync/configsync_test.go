@@ -2,6 +2,7 @@ package configsync
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,22 @@ import (
 	"testing"
 	"time"
 )
+
+func TestGitEnvUsesEphemeralGitHubAuthorization(t *testing.T) {
+	const token = "github-token-value"
+	env := gitEnv(token)
+	joined := strings.Join(env, "\n")
+	if strings.Contains(joined, token) {
+		t.Fatal("git environment contains the plaintext token")
+	}
+	want := "GIT_CONFIG_VALUE_0=Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+token))
+	for _, entry := range env {
+		if entry == want {
+			return
+		}
+	}
+	t.Fatalf("git environment omitted scoped GitHub authorization: %q", env)
+}
 
 func TestSnapshotCoversDotfilesAndRejectsSensitiveUnsafeAndOversizedFiles(t *testing.T) {
 	home := t.TempDir()

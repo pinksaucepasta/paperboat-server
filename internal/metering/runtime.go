@@ -634,6 +634,14 @@ func (r *RuntimeRepository) RecordHeartbeat(ctx context.Context, heartbeat Activ
 		return err
 	}
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		updated, err := tx.Queries().MarkConnectedMachineOnlineFromHelper(ctx, dbsqlc.MarkConnectedMachineOnlineFromHelperParams{ID: heartbeat.MachineID, EnvironmentID: heartbeat.ProjectID})
+		if err != nil {
+			return err
+		}
+		if updated == 1 {
+			_, err = tx.Queries().MarkConnectedMachineEnrollmentReady(ctx, sql.NullString{String: heartbeat.MachineID, Valid: true})
+			return err
+		}
 		if err := tx.Queries().UpsertActivityHeartbeat(ctx, dbsqlc.UpsertActivityHeartbeatParams{ProjectID: heartbeat.ProjectID, MachineID: heartbeat.MachineID, LastActivityAt: heartbeat.LastActivityAt, LastHeartbeatAt: sql.NullTime{Time: heartbeat.LastHeartbeatAt, Valid: true}, ReporterVersion: heartbeat.ReporterVersion, Signals: b}); err != nil {
 			return err
 		}

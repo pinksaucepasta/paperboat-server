@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
+	"github.com/pinksaucepasta/paperboat-server/internal/mint"
 )
 
 var ErrHelperProof = errors.New("helper proof is invalid")
@@ -48,6 +49,13 @@ func (s *EnrollmentService) VerifyHelperRequest(ctx context.Context, identityTok
 		return HelperProofClaims{}, ErrHelperProof
 	}
 	return verifyHelperProof(ed25519.PublicKey(helper.PublicKey), proof, identity.HelperID, identity.EnvironmentID, method, path, body, now)
+}
+
+func (s *EnrollmentService) VerifyEnrollmentCredential(token string) (mint.CredentialClaims, error) {
+	if s.signer == nil {
+		return mint.CredentialClaims{}, ErrEnrollmentInvalid
+	}
+	return s.signer.VerifyCredential(token, s.issuer, "helper_enrollment", s.clock().UTC())
 }
 
 func verifyHelperProof(publicKey ed25519.PublicKey, encoded []byte, helperID, environmentID, method, path string, body []byte, now time.Time) (HelperProofClaims, error) {

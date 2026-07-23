@@ -18,6 +18,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/auth"
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
+	"github.com/pinksaucepasta/paperboat-server/internal/connectedmachines"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 )
 
@@ -303,6 +304,7 @@ func newAuthIntegrationRouter(t *testing.T) (*db.DB, http.Handler) {
 	service := auth.NewService(store, auditWriter, auth.FakeWorkOSVerifier{}, []string{"test-session-key"}, false)
 	deviceService := auth.NewDeviceService(store, auditWriter, config.Default().CLIAuth, []string{"test-device-hash-key"})
 	billingService := billing.NewService(billing.NewRepository(store), billing.FakePolarClient{}, auditWriter)
+	connectedMachineService := connectedmachines.New(store, auditWriter, connectedmachines.Policy{}, billingService)
 	cfg := config.Default()
 	return store, NewRouter(Options{
 		Config: cfg,
@@ -310,9 +312,10 @@ func newAuthIntegrationRouter(t *testing.T) (*db.DB, http.Handler) {
 		ReadinessChecker: readinessFunc(func(context.Context) error {
 			return nil
 		}),
-		Auth:       service,
-		DeviceAuth: deviceService,
-		Billing:    billingService,
+		Auth:              service,
+		DeviceAuth:        deviceService,
+		Billing:           billingService,
+		ConnectedMachines: connectedMachineService,
 	})
 }
 

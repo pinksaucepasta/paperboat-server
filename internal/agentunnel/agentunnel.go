@@ -17,10 +17,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pinksaucepasta/paperboat-server/internal/accessdescriptor"
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
+	"github.com/pinksaucepasta/paperboat-server/internal/mint"
 	"github.com/pinksaucepasta/paperboat-server/internal/observability"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 	"github.com/pinksaucepasta/paperboat-server/internal/secrets"
@@ -559,6 +561,8 @@ type Service struct {
 	uploadAllowedMIMEs       []string
 	uploadRetentionSeconds   int64
 	beforeConnect            func(context.Context, string, string) error
+	controlSigner            *mint.Provider
+	now                      func() time.Time
 }
 
 // PapercodeHTTPBaseURL returns the canonical agentunnel route for an already
@@ -609,7 +613,14 @@ func NewServiceWithCredentials(store *db.DB, projectService *projects.Service, c
 		uploadMaxBytes:           cfg.Providers.Agentunnel.UploadMaxBytes,
 		uploadAllowedMIMEs:       slices.Clone(cfg.Providers.Agentunnel.UploadAllowedMIMEs),
 		uploadRetentionSeconds:   int64(cfg.Providers.Agentunnel.UploadRetention / time.Second),
+		now:                      time.Now,
 	}
+}
+
+// ConfigureCanonicalAccess enables direct hosted helper descriptors. Services
+// without it retain the legacy adapter solely for rollback and characterization.
+func (s *Service) ConfigureCanonicalAccess(signer *mint.Provider) {
+	s.controlSigner = signer
 }
 
 type ConnectKind string
@@ -629,6 +640,8 @@ type ConnectInput struct {
 }
 
 type ConnectResponse struct {
+	Schema            string         `json:"schema,omitempty"`
+	Capabilities      []string       `json:"capabilities,omitempty"`
 	Issuer            string         `json:"issuer,omitempty"`
 	ProjectID         string         `json:"project_id"`
 	ProjectState      string         `json:"project_state"`
@@ -642,6 +655,98 @@ type ConnectResponse struct {
 	Status            string         `json:"status,omitempty"`
 	Reason            string         `json:"reason,omitempty"`
 	RetryAfterSeconds int            `json:"retry_after_seconds"`
+}
+
+// MarshalJSON keeps legacy fields available to internal persistence and
+// rollback code while making the v1 HTTP writer canonical-only.
+func (r ConnectResponse) MarshalJSON() ([]byte, error) {
+	if r.Schema != accessdescriptor.SchemaV1 {
+		type legacy ConnectResponse
+		return json.Marshal(legacy(r))
+	}
+	descriptor, err := r.canonicalDescriptor()
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(descriptor)
+}
+
+func (r ConnectResponse) canonicalDescriptor() (accessdescriptor.Descriptor, error) {
+	environment, err := canonicalEnvironment(r.Environment)
+	if err != nil {
+		return accessdescriptor.Descriptor{}, err
+	}
+	out := accessdescriptor.Descriptor{
+		Schema: r.Schema, Issuer: r.Issuer, Connectable: r.Connectable, ExpiresAt: r.ExpiresAt,
+		Environment: environment, Capabilities: slices.Clone(r.Capabilities), Status: r.Status,
+		Reason: r.Reason, RetryAfterSeconds: r.RetryAfterSeconds,
+	}
+	if r.Terminal != nil && r.Terminal["auth"] != nil {
+		terminal, err := decodeCanonical[accessdescriptor.Terminal](r.Terminal)
+		if err != nil {
+			return accessdescriptor.Descriptor{}, fmt.Errorf("canonical terminal descriptor: %w", err)
+		}
+		out.Terminal = &terminal
+	}
+	if r.PapercodeUpload != nil && r.PapercodeUpload["auth"] != nil {
+		upload, err := decodeCanonical[accessdescriptor.Upload](r.PapercodeUpload)
+		if err != nil {
+			return accessdescriptor.Descriptor{}, fmt.Errorf("canonical upload descriptor: %w", err)
+		}
+		out.Upload = &upload
+	}
+	return out, nil
+}
+
+func canonicalEnvironment(value map[string]any) (accessdescriptor.Environment, error) {
+	out := accessdescriptor.Environment{
+		ID: stringValue(value, "id"), Kind: stringValue(value, "kind"), ResourceID: stringValue(value, "resource_id"),
+		DisplayName: stringValue(value, "display_name"), State: stringValue(value, "state"), Root: stringValue(value, "root"),
+	}
+	if out.ID == "" || out.Kind == "" || out.ResourceID == "" || out.DisplayName == "" || out.State == "" {
+		return accessdescriptor.Environment{}, errors.New("canonical environment descriptor is incomplete")
+	}
+	return out, nil
+}
+
+func decodeCanonical[T any](value any) (T, error) {
+	var out T
+	b, err := json.Marshal(value)
+	if err != nil {
+		return out, err
+	}
+	err = json.Unmarshal(b, &out)
+	return out, err
+}
+
+func stringValue(value map[string]any, key string) string {
+	result, _ := value[key].(string)
+	return result
+}
+
+func connectionState(connectable bool, status, state string) string {
+	if connectable || status == "ready" {
+		return "ready"
+	}
+	switch state {
+	case "deleted", "deleting":
+		return "deleted"
+	case "revoked", "suspended":
+		return "revoked"
+	case "starting", "restarting", "creating", "provisioning_storage", "provisioning_machine":
+		return "starting"
+	default:
+		return "offline"
+	}
+}
+
+func setCanonicalCLIIdentity(response *ConnectResponse, project projects.Project) {
+	response.Schema = accessdescriptor.SchemaV1
+	response.Capabilities = []string{accessdescriptor.CapabilityTerminal, accessdescriptor.CapabilityHerdr, accessdescriptor.CapabilityUpload, accessdescriptor.CapabilityPreview, accessdescriptor.CapabilityActivity}
+	response.Environment = map[string]any{
+		"id": project.ID, "kind": accessdescriptor.EnvironmentHosted, "resource_id": project.ID,
+		"display_name": project.Name, "state": connectionState(response.Connectable, response.Status, project.State), "root": "/workspace",
+	}
 }
 
 func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectResponse, error) {
@@ -702,7 +807,14 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 		s.recordConnectDenied(ctx, input.UserID, input.ProjectID, "credits_exhausted", nil)
 		return ConnectResponse{}, err
 	}
-	expires := time.Now().UTC().Add(s.ttl)
+	now := time.Now
+	if s.now != nil {
+		now = s.now
+	}
+	expires := now().UTC().Add(s.ttl)
+	if s.controlSigner != nil && expires.After(now().UTC().Add(5*time.Minute)) {
+		expires = now().UTC().Add(5 * time.Minute)
+	}
 	var credentials CLICredentials
 	if input.Kind == ConnectCLI {
 		if err := s.repo.EnsureGitHubConfigReady(ctx, input.UserID); err != nil {
@@ -710,10 +822,15 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 			return ConnectResponse{}, err
 		}
 		credentialInput := CredentialInput{UserID: input.UserID, ProjectID: input.ProjectID, EnvironmentID: input.ProjectID, ClientSessionID: input.ClientSessionID, ExpiresAt: expires}
-		if err := s.credentials.CheckCLI(ctx, credentialInput); err != nil {
-			s.recordConnectDenied(ctx, input.UserID, input.ProjectID, "credential_issuer_unavailable", nil)
-			return ConnectResponse{}, fmt.Errorf("%w: %v", ErrCredentialIssuerUnavailable, err)
+		if s.controlSigner == nil {
+			if err := s.credentials.CheckCLI(ctx, credentialInput); err != nil {
+				s.recordConnectDenied(ctx, input.UserID, input.ProjectID, "credential_issuer_unavailable", nil)
+				return ConnectResponse{}, fmt.Errorf("%w: %v", ErrCredentialIssuerUnavailable, err)
+			}
 		}
+	}
+	if input.Kind == ConnectCLI && s.controlSigner != nil {
+		return s.connectCanonicalHosted(ctx, input, project, terminalSession, expires)
 	}
 	resource, ok, err := s.repo.Resource(ctx, input.ProjectID)
 	if err != nil {
@@ -808,6 +925,9 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 			response.Status = "tunnel_connecting"
 			response.Reason = "tunnel_offline"
 		}
+		if input.Kind == ConnectCLI {
+			setCanonicalCLIIdentity(&response, project)
+		}
 		s.recordConnectDenied(ctx, input.UserID, input.ProjectID, "tunnel_not_ready", map[string]any{
 			"status": response.Status, "reason": response.Reason, "environment_id": project.ID,
 			"agentunnel_tunnel_id": resource.TunnelID, "agentunnel_client_id": resource.ClientID,
@@ -830,6 +950,9 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 		response := ConnectResponse{
 			Issuer: s.issuer, ProjectID: project.ID, ProjectState: project.State, Connectable: false, ExpiresAt: expires,
 			Status: "papercode_starting", Reason: "papercode_unhealthy", RetryAfterSeconds: s.retryAfterSeconds(),
+		}
+		if input.Kind == ConnectCLI {
+			setCanonicalCLIIdentity(&response, project)
 		}
 		s.recordConnectDenied(ctx, input.UserID, input.ProjectID, "papercode_unhealthy", map[string]any{
 			"environment_id": project.ID, "agentunnel_tunnel_id": resource.TunnelID,
@@ -901,6 +1024,83 @@ func (s *Service) Connect(ctx context.Context, input ConnectInput) (ConnectRespo
 	_ = s.repo.RecordActivity(ctx, input.ProjectID, "connect_session", correlation)
 	_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, session.ID, "approved", "", correlation)
 	_ = s.audit.Write(ctx, audit.Event{ActorUserID: input.UserID, ActorType: audit.ActorUser, EventType: "access.connect_approved", ResourceType: "project", ResourceID: input.ProjectID, IdempotencyKey: "access.connect_approved:" + session.ID, Metadata: correlation})
+	observability.ConnectApproved()
+	return response, nil
+}
+
+func (s *Service) connectCanonicalHosted(ctx context.Context, input ConnectInput, project projects.Project, terminalSession dbsqlc.ProjectTerminalSession, expires time.Time) (ConnectResponse, error) {
+	if strings.TrimSpace(input.ClientSessionID) == "" {
+		return ConnectResponse{}, ErrCredentialIssuerUnavailable
+	}
+	if project.State == "stopped" || project.State == "ready" {
+		started, err := s.projects.Start(ctx, input.UserID, input.ProjectID)
+		if err != nil {
+			return ConnectResponse{}, err
+		}
+		project = started
+	}
+	response := ConnectResponse{
+		Issuer: s.issuer, ProjectID: project.ID, ProjectState: project.State, ExpiresAt: expires,
+		Status: "connector_connecting", Reason: "helper_route_not_ready", RetryAfterSeconds: s.retryAfterSeconds(),
+	}
+	setCanonicalCLIIdentity(&response, project)
+	route, err := s.repo.db.Queries().GetActiveHelperRouteForEnvironment(ctx, project.ID)
+	if errors.Is(err, sql.ErrNoRows) {
+		if project.State == "starting" || project.State == "restarting" {
+			response.Status, response.Reason = "machine_starting", "machine_not_running"
+		}
+		return response, nil
+	}
+	if err != nil {
+		return ConnectResponse{}, err
+	}
+	if s.beforeConnect != nil {
+		if err := s.beforeConnect(ctx, input.UserID, input.ProjectID); err != nil {
+			return ConnectResponse{}, fmt.Errorf("%w: %v", ErrTerminalRuntimeUnavailable, err)
+		}
+	}
+	issuedAt := time.Now().UTC()
+	if s.now != nil {
+		issuedAt = s.now().UTC()
+	}
+	terminalJTI, uploadJTI := newID("jti_helper_terminal"), newID("jti_helper_upload")
+	sign := func(class string, scopes []string, jti string) (string, error) {
+		return s.controlSigner.SignCredential(mint.CredentialInput{
+			Issuer: s.issuer, Audience: "paperboat-helper", Subject: input.UserID, JTI: jti,
+			IssuedAt: issuedAt, ExpiresAt: expires, CredentialClass: class, Scopes: scopes,
+			EnvironmentID: project.ID, UserID: input.UserID, ClientSessionID: input.ClientSessionID, SessionID: terminalSession.ID,
+		})
+	}
+	terminalToken, err := sign("terminal_operation", []string{"terminal:operate"}, terminalJTI)
+	if err != nil {
+		return ConnectResponse{}, err
+	}
+	uploadToken, err := sign("image_stage", []string{"file:stage"}, uploadJTI)
+	if err != nil {
+		return ConnectResponse{}, err
+	}
+	httpBaseURL := "https://" + route.PublicHost
+	response.Connectable, response.Status, response.Reason, response.RetryAfterSeconds = true, "ready", "ready", 0
+	setCanonicalCLIIdentity(&response, project)
+	response.Terminal = map[string]any{
+		"endpoint": "wss://" + route.PublicHost + "/v1/runtime", "session_id": terminalSession.ID,
+		"thread_id": terminalSession.ThreadID, "terminal_id": terminalSession.TerminalID, "cwd": terminalSession.LaunchCwd,
+		"auth": map[string]any{"method": "bearer", "token": terminalToken, "expires_at": expires, "scopes": []string{"terminal:operate"}},
+	}
+	response.PapercodeUpload = map[string]any{
+		"endpoint": httpBaseURL + "/v1/uploads", "max_bytes": s.uploadMaxBytes,
+		"allowed_mime_types": s.uploadAllowedMIMEs, "retention_seconds": s.uploadRetentionSeconds,
+		"auth": map[string]any{"method": "bearer", "token": uploadToken, "expires_at": expires, "scopes": []string{"file:stage"}},
+	}
+	session, err := s.repo.CreateAccessSession(ctx, input.UserID, input.ProjectID, input.ClientSessionID, terminalJTI, uploadJTI, string(input.Kind), response, expires)
+	if err != nil {
+		return ConnectResponse{}, err
+	}
+	metadata := map[string]any{"kind": input.Kind, "environment_id": project.ID, "access_session_id": session.ID, "route_id": route.ID}
+	_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, session.ID, "approved", "", metadata)
+	_ = s.audit.Write(ctx, audit.Event{ActorUserID: input.UserID, ActorType: audit.ActorUser, EventType: "access.connect_approved", ResourceType: "project", ResourceID: input.ProjectID, IdempotencyKey: "access.connect_approved:" + session.ID, Metadata: metadata})
+	observability.RouteReady()
+	observability.CredentialsMinted()
 	observability.ConnectApproved()
 	return response, nil
 }
@@ -1041,11 +1241,36 @@ func (s *Service) Status(ctx context.Context, userID, projectID, terminalSession
 	if pending {
 		return ConnectResponse{}, ErrTerminalSessionOperationPending
 	}
+	if s.controlSigner != nil {
+		expires := time.Now().UTC().Add(s.ttl)
+		if expires.After(time.Now().UTC().Add(5 * time.Minute)) {
+			expires = time.Now().UTC().Add(5 * time.Minute)
+		}
+		response := ConnectResponse{Issuer: s.issuer, ProjectID: project.ID, ProjectState: project.State, Connectable: false, ExpiresAt: expires, Status: "connector_connecting", Reason: "helper_route_not_ready", RetryAfterSeconds: s.retryAfterSeconds()}
+		setCanonicalCLIIdentity(&response, project)
+		_, routeErr := s.repo.db.Queries().GetActiveHelperRouteForEnvironment(ctx, projectID)
+		if routeErr == nil {
+			response.Connectable, response.Status, response.Reason, response.RetryAfterSeconds = true, "ready", "ready", 0
+		} else if !errors.Is(routeErr, sql.ErrNoRows) {
+			return ConnectResponse{}, routeErr
+		}
+		if terminalProjectState(project.State) {
+			response.Connectable = false
+			response.Status, response.Reason = "offline", "project_state_"+project.State
+		}
+		if err := s.repo.EnsureConnectCredits(ctx, userID, projectID, s.minimumStartCreditWindow); err != nil {
+			response.Connectable = false
+			response.Reason = "credits_exhausted"
+		}
+		response.Environment["state"] = connectionState(response.Connectable, response.Status, project.State)
+		return response, nil
+	}
 	resource, ok, err := s.repo.Resource(ctx, projectID)
 	if err != nil {
 		return ConnectResponse{}, err
 	}
 	response := ConnectResponse{Issuer: s.issuer, ProjectID: project.ID, ProjectState: project.State, Connectable: false, ExpiresAt: time.Now().UTC().Add(s.ttl), RetryAfterSeconds: s.retryAfterSeconds()}
+	setCanonicalCLIIdentity(&response, project)
 	if !ok {
 		response.Status = "missing"
 		response.Reason = "agentunnel resources have not been provisioned"
@@ -1099,12 +1324,17 @@ func (s *Service) Status(ctx context.Context, userID, projectID, terminalSession
 		response.Connectable = false
 		response.Reason = "credits_exhausted"
 	}
+	response.Environment["state"] = connectionState(response.Connectable, response.Status, project.State)
 	return response, nil
 }
 
 func (s *Service) RevokeUserSessions(ctx context.Context, userID, reason string) error {
 	if err := s.repo.RevokeUserAccessSessions(ctx, userID, reason); err != nil {
 		return err
+	}
+	if s.controlSigner != nil {
+		s.recordRevocationPropagated(ctx, "user", userID, reason, "control_plane", map[string]any{"user_id": userID})
+		return nil
 	}
 	rows, err := s.repo.UserPapercodeSessions(ctx, userID)
 	if err != nil {
@@ -1124,6 +1354,10 @@ func (s *Service) RevokeClientSessions(ctx context.Context, clientSessionID, rea
 	if err := s.repo.RevokeClientAccessSessions(ctx, clientSessionID, reason); err != nil {
 		return err
 	}
+	if s.controlSigner != nil {
+		s.recordRevocationPropagated(ctx, "client_session", clientSessionID, reason, "control_plane", map[string]any{"client_session_id": clientSessionID})
+		return nil
+	}
 	rows, err := s.repo.ClientPapercodeSessions(ctx, clientSessionID)
 	if err != nil {
 		return err
@@ -1141,6 +1375,10 @@ func (s *Service) RevokeClientSessions(ctx context.Context, clientSessionID, rea
 func (s *Service) RevokeProjectSessions(ctx context.Context, projectID, reason string) error {
 	if err := s.repo.RevokeProjectAccessSessions(ctx, projectID, reason); err != nil {
 		return err
+	}
+	if s.controlSigner != nil {
+		s.recordRevocationPropagated(ctx, "project", projectID, reason, "control_plane", map[string]any{"project_id": projectID})
+		return nil
 	}
 	var revokeErrors []error
 	papercodePropagated := false
@@ -1314,6 +1552,7 @@ func buildResponse(kind ConnectKind, project projects.Project, resource Resource
 			"expires_at": expires,
 		}
 	case ConnectCLI:
+		setCanonicalCLIIdentity(&base, project)
 		if threadID == "" {
 			threadID = "paperboat-cli"
 		}
@@ -1324,6 +1563,9 @@ func buildResponse(kind ConnectKind, project projects.Project, resource Resource
 			cwd = "/workspace"
 		}
 		base.Terminal = map[string]any{
+			"endpoint":           resource.WebSocketBaseURL,
+			"http_endpoint":      resource.HTTPBaseURL,
+			"session_id":         threadID,
 			"kind":               "papercode_websocket",
 			"http_base_url":      resource.HTTPBaseURL,
 			"websocket_base_url": resource.WebSocketBaseURL,
@@ -1334,13 +1576,15 @@ func buildResponse(kind ConnectKind, project projects.Project, resource Resource
 		if credentials.TerminalAuth != nil {
 			base.Terminal["auth"] = credentials.TerminalAuth
 		}
-		base.Environment = map[string]any{
-			"environment_id": project.ID,
-			"project_id":     project.ID,
-			"display_name":   project.Name,
-			"project_root":   "/workspace",
+		base.Environment["environment_id"] = project.ID
+		base.Environment["project_id"] = project.ID
+		base.Environment["project_root"] = "/workspace"
+		base.Environment["repository_identity"] = map[string]any{
+			"provider": project.Repository.Provider,
+			"url":      project.Repository.SourceURL,
 		}
 		base.PapercodeUpload = map[string]any{
+			"endpoint":           uploadEndpoint(resource.HTTPBaseURL),
 			"kind":               "papercode_staged_image",
 			"http_base_url":      resource.HTTPBaseURL,
 			"path":               uploadPath(resource.HTTPBaseURL),
@@ -1369,6 +1613,16 @@ func uploadPath(httpBaseURL string) string {
 	u.Path = strings.TrimRight(u.Path, "/") + "/api/files/staged-images"
 	u.RawPath = ""
 	return u.Path
+}
+
+func uploadEndpoint(httpBaseURL string) string {
+	u, err := url.Parse(httpBaseURL)
+	if err != nil {
+		return ""
+	}
+	u.Path = uploadPath(httpBaseURL)
+	u.RawPath, u.RawQuery, u.Fragment = "", "", ""
+	return u.String()
 }
 
 func (s *Service) retryAfterSeconds() int {

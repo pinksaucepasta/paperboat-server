@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"reflect"
 	"testing"
@@ -36,87 +37,99 @@ func TestOpenAPIDocumentCoversPublicAndFrozenTargetPaths(t *testing.T) {
 		"/v1/connectors/admission": {"post"},
 		"/v1/helpers/enroll":       {"post"},
 		"/v1/helpers/renew":        {"post"},
-		"/v1/routes/observed":      {"post"},
-		"/v1/trust/revocations":    {"get"},
-		"/api/me":                  {"get"},
-		"/api/config-repositories": {"get", "post"},
-		"/api/environments/{environment_id}/config-assignment":                                {"get", "put", "delete"},
-		"/api/environments/{environment_id}/config-assignment/consent":                        {"post"},
-		"/api/environments/{environment_id}/routes":                                           {"post"},
-		"/api/routes/{route_id}":                                                              {"patch"},
-		"/api/admin/mint/signing-keys/{key_id}/revoke":                                        {"post"},
-		"/api/admin/edge/usage-keys":                                                          {"post"},
-		"/api/admin/edge/usage-keys/{key_id}/revoke":                                          {"post"},
-		"/api/admin/control-operations/{operation_id}/recover":                                {"post"},
-		"/api/admin/hosted-provider-operations/{operation_id}/recover":                        {"post"},
-		"/api/admin/billing/uncertain/{kind}/{operation_id}/recover":                          {"post"},
-		"/api/environments/{environment_id}/helper-enrollments":                               {"post"},
-		"/api/environments/{environment_id}/helpers/{helper_id}/replace":                      {"post"},
-		"/api/config-sync/status":                                                             {"get"},
-		"/api/config-sync/overrides":                                                          {"get", "put", "delete"},
-		"/api/config-sync/recovery-key/export":                                                {"post"},
-		"/api/config-sync/recovery-key/rotate":                                                {"post"},
-		"/api/machine/config-sync/classify":                                                   {"post"},
-		"/api/auth/workos/state":                                                              {"get"},
-		"/api/auth/workos/callback":                                                           {"post"},
-		"/api/auth/workos/reauth/state":                                                       {"get"},
-		"/api/auth/workos/reauth/callback":                                                    {"post"},
-		"/api/auth/logout":                                                                    {"post"},
-		"/api/auth/csrf":                                                                      {"get"},
-		"/api/auth/device/authorize":                                                          {"post"},
-		"/api/auth/device/token":                                                              {"post"},
-		"/api/auth/device/requests/{user_code}":                                               {"get"},
-		"/api/auth/device/requests/{user_code}/approve":                                       {"post"},
-		"/api/auth/device/requests/{user_code}/deny":                                          {"post"},
-		"/api/auth/token/refresh":                                                             {"post"},
-		"/api/auth/token/revoke":                                                              {"post"},
-		"/api/auth/clients":                                                                   {"get"},
-		"/api/auth/clients/{client_session_id}":                                               {"delete"},
-		"/api/billing/entitlement":                                                            {"get"},
-		"/api/billing/usage":                                                                  {"get"},
-		"/api/billing/plan-products":                                                          {"get"},
-		"/api/billing/checkout":                                                               {"post"},
-		"/api/billing/customer-portal":                                                        {"post"},
-		"/api/webhooks/polar":                                                                 {"post"},
-		"/api/catalog/plans":                                                                  {"get"},
-		"/api/catalog/machine-types":                                                          {"get"},
-		"/api/catalog/presets":                                                                {"get"},
-		"/api/catalog/idle-timeouts":                                                          {"get"},
-		"/api/catalog/regions":                                                                {"get"},
-		"/api/github/status":                                                                  {"get"},
-		"/api/github/oauth/start":                                                             {"post"},
-		"/api/github/oauth/callback":                                                          {"get", "post"},
-		"/api/github/config-repo/provision":                                                   {"post"},
-		"/api/dashboard/usage-summary":                                                        {"get"},
-		"/api/projects":                                                                       {"get", "post"},
-		"/api/projects/{project_id}":                                                          {"get", "patch", "delete"},
-		"/api/projects/{project_id}/start":                                                    {"post"},
-		"/api/projects/{project_id}/stop":                                                     {"post"},
-		"/api/projects/{project_id}/restart":                                                  {"post"},
-		"/api/projects/{project_id}/keep-alive":                                               {"post"},
-		"/api/projects/{project_id}/activity":                                                 {"post"},
-		"/api/projects/{project_id}/events":                                                   {"get"},
-		"/api/projects/{project_id}/connect":                                                  {"post"},
-		"/api/projects/{project_id}/cli-connect":                                              {"post"},
-		"/api/projects/{project_id}/papercode-connect":                                        {"post"},
-		"/api/projects/{project_id}/connection-status":                                        {"get"},
-		"/api/projects/{project_id}/terminal-sessions":                                        {"get", "post"},
-		"/api/projects/{project_id}/terminal-sessions/{session_id}":                           {"patch", "delete"},
-		"/api/projects/{project_id}/terminal-sessions/{session_id}/close":                     {"post"},
-		"/api/connected-machines":                                                             {"get"},
-		"/api/connected-machines/overview":                                                    {"get"},
-		"/api/connected-machines/{connected_machine_id}":                                      {"get", "delete"},
-		"/api/connected-machines/{connected_machine_id}/connect":                              {"post"},
-		"/api/connected-machines/{connected_machine_id}/connection-status":                    {"get"},
-		"/api/connected-machines/{connected_machine_id}/disconnect":                           {"post"},
-		"/api/connected-machines/{connected_machine_id}/terminal-sessions":                    {"get", "post"},
-		"/api/connected-machines/{connected_machine_id}/terminal-sessions/{session_id}":       {"patch", "delete"},
+		"/v1/connected-machines/installations/failure":         {"post"},
+		"/v1/previews/credentials":                             {"post"},
+		"/v1/previews/tls/ask":                                 {"get"},
+		"/v1/routes/tls/ask":                                   {"get"},
+		"/v1/routes/observed":                                  {"post"},
+		"/v1/previews/operations":                              {"post"},
+		"/v1/previews/observations":                            {"post"},
+		"/v1/trust/revocations":                                {"get"},
+		"/api/me":                                              {"get"},
+		"/api/config-repositories":                             {"get", "post"},
+		"/api/environments/{environment_id}/config-assignment": {"get", "put", "delete"},
+		"/api/environments/{environment_id}/config-assignment/consent": {"post"},
+		"/api/previews":                                                                 {"get"},
+		"/api/previews/{preview_id}":                                                    {"delete"},
+		"/api/environments/{environment_id}/routes":                                     {"post"},
+		"/api/routes/{route_id}":                                                        {"patch"},
+		"/api/admin/mint/signing-keys/{key_id}/revoke":                                  {"post"},
+		"/api/admin/edge/usage-keys":                                                    {"post"},
+		"/api/admin/edge/usage-keys/{key_id}/revoke":                                    {"post"},
+		"/api/admin/control-operations/{operation_id}/recover":                          {"post"},
+		"/api/admin/hosted-provider-operations/{operation_id}/recover":                  {"post"},
+		"/api/admin/billing/uncertain/{kind}/{operation_id}/recover":                    {"post"},
+		"/api/environments/{environment_id}/helper-enrollments":                         {"post"},
+		"/api/environments/{environment_id}/helpers/{helper_id}/replace":                {"post"},
+		"/api/config-sync/status":                                                       {"get"},
+		"/api/config-sync/overrides":                                                    {"get", "put", "delete"},
+		"/api/config-sync/recovery-key/export":                                          {"post"},
+		"/api/config-sync/recovery-key/rotate":                                          {"post"},
+		"/api/machine/config-sync/classify":                                             {"post"},
+		"/api/auth/workos/state":                                                        {"get"},
+		"/api/auth/workos/callback":                                                     {"post"},
+		"/api/auth/workos/reauth/state":                                                 {"get"},
+		"/api/auth/workos/reauth/callback":                                              {"post"},
+		"/api/auth/logout":                                                              {"post"},
+		"/api/auth/csrf":                                                                {"get"},
+		"/api/auth/device/authorize":                                                    {"post"},
+		"/api/auth/device/token":                                                        {"post"},
+		"/api/auth/device/requests/{user_code}":                                         {"get"},
+		"/api/auth/device/requests/{user_code}/approve":                                 {"post"},
+		"/api/auth/device/requests/{user_code}/deny":                                    {"post"},
+		"/api/auth/token/refresh":                                                       {"post"},
+		"/api/auth/token/revoke":                                                        {"post"},
+		"/api/auth/clients":                                                             {"get"},
+		"/api/auth/clients/{client_session_id}":                                         {"delete"},
+		"/api/billing/entitlement":                                                      {"get"},
+		"/api/billing/usage":                                                            {"get"},
+		"/api/billing/plan-products":                                                    {"get"},
+		"/api/billing/checkout":                                                         {"post"},
+		"/api/billing/customer-portal":                                                  {"post"},
+		"/api/webhooks/polar":                                                           {"post"},
+		"/api/catalog/plans":                                                            {"get"},
+		"/api/catalog/machine-types":                                                    {"get"},
+		"/api/catalog/presets":                                                          {"get"},
+		"/api/catalog/idle-timeouts":                                                    {"get"},
+		"/api/catalog/regions":                                                          {"get"},
+		"/api/github/status":                                                            {"get"},
+		"/api/github/repositories":                                                      {"get"},
+		"/api/github/oauth/start":                                                       {"post"},
+		"/api/github/oauth/callback":                                                    {"get", "post"},
+		"/api/github/config-repo/provision":                                             {"post"},
+		"/api/dashboard/usage-summary":                                                  {"get"},
+		"/api/projects":                                                                 {"get", "post"},
+		"/api/projects/{project_id}":                                                    {"get", "patch", "delete"},
+		"/api/projects/{project_id}/start":                                              {"post"},
+		"/api/projects/{project_id}/stop":                                               {"post"},
+		"/api/projects/{project_id}/restart":                                            {"post"},
+		"/api/projects/{project_id}/keep-alive":                                         {"post"},
+		"/api/projects/{project_id}/activity":                                           {"post"},
+		"/api/projects/{project_id}/events":                                             {"get"},
+		"/api/projects/{project_id}/cli-connect":                                        {"post"},
+		"/api/projects/{project_id}/connection-status":                                  {"get"},
+		"/api/projects/{project_id}/terminal-sessions":                                  {"get", "post"},
+		"/api/projects/{project_id}/terminal-sessions/{session_id}":                     {"patch", "delete"},
+		"/api/projects/{project_id}/terminal-sessions/{session_id}/close":               {"post"},
+		"/api/connected-machines":                                                       {"get"},
+		"/api/connected-machine-enrollments":                                            {"post"},
+		"/api/connected-machine-enrollments/{enrollment_id}":                            {"get"},
+		"/api/connected-machine-enrollments/{enrollment_id}/cancel":                     {"post"},
+		"/api/connected-machine-enrollments/{enrollment_id}/retry":                      {"post"},
+		"/api/connected-machines/overview":                                              {"get"},
+		"/api/connected-machines/{connected_machine_id}":                                {"get", "delete"},
+		"/api/connected-machines/{connected_machine_id}/connect":                        {"post"},
+		"/api/connected-machines/{connected_machine_id}/connection-status":              {"get"},
+		"/api/connected-machines/{connected_machine_id}/disconnect":                     {"post"},
+		"/api/connected-machines/{connected_machine_id}/terminal-sessions":              {"get", "post"},
+		"/api/connected-machines/{connected_machine_id}/terminal-sessions/{session_id}": {"patch", "delete"},
 		"/api/connected-machines/{connected_machine_id}/terminal-sessions/{session_id}/close": {"post"},
-		"/api/connected-machines/pairings":                                                    {"post"},
-		"/api/connected-machines/pairings/{user_code}/approve":                                {"post"},
-		"/api/machine/activity-heartbeat":                                                     {"post"},
-		"/api/admin/users/{user_id}/adjust-credits":                                           {"post"},
-		"/api/admin/users/{user_id}/adjust-storage":                                           {"post"},
+		"/api/connected-machines/pairings":                     {"post"},
+		"/api/connected-machines/pairings/{user_code}/approve": {"post"},
+		"/api/connected-machines/pairings/{user_code}/deny":    {"post"},
+		"/api/machine/activity-heartbeat":                      {"post"},
+		"/api/admin/users/{user_id}/adjust-credits":            {"post"},
+		"/api/admin/users/{user_id}/adjust-storage":            {"post"},
 	}
 	for path, methods := range required {
 		operations, ok := doc.Paths[path]
@@ -196,20 +209,67 @@ func TestOpenAPIFreezesCLIContractSchemas(t *testing.T) {
 	}
 	descriptor := doc.Components.Schemas["CLIConnectDescriptor"]
 	descriptorRequired := stringSet(t, descriptor["required"], "CLIConnectDescriptor.required")
-	for _, field := range []string{"status", "reason", "retry_after_seconds"} {
+	for _, field := range []string{"schema", "issuer", "connectable", "expires_at", "environment", "status", "reason", "retry_after_seconds"} {
 		if !descriptorRequired[field] {
 			t.Fatalf("CLIConnectDescriptor does not require %q", field)
 		}
 	}
 	descriptorProperties := objectValue(t, descriptor["properties"], "CLIConnectDescriptor.properties")
-	for field, expected := range map[string]any{"status": "ready", "reason": "ready", "retry_after_seconds": float64(0)} {
-		property := objectValue(t, descriptorProperties[field], "CLIConnectDescriptor."+field)
-		if property["const"] != expected {
-			t.Fatalf("CLIConnectDescriptor.%s const = %v", field, property["const"])
+	schema := objectValue(t, descriptorProperties["schema"], "CLIConnectDescriptor.schema")
+	if schema["const"] != "paperboat.environment-connection/v1" {
+		t.Fatalf("CLIConnectDescriptor.schema is not canonical v1")
+	}
+	for _, field := range []string{"project_id", "project_state"} {
+		if _, present := descriptorProperties[field]; present {
+			t.Fatalf("CLIConnectDescriptor retains legacy field %q", field)
 		}
 	}
-	terminalAuthProperties := objectValue(t, doc.Components.Schemas["TerminalAuth"]["properties"], "TerminalAuth.properties")
-	assertSingletonConstScope(t, terminalAuthProperties["scopes"], "terminal:operate", "TerminalAuth.scopes")
+	environment := objectValue(t, descriptorProperties["environment"], "CLIConnectDescriptor.environment")
+	environmentProperties := objectValue(t, environment["properties"], "CLIConnectDescriptor.environment.properties")
+	for _, field := range []string{"id", "kind", "resource_id", "display_name", "state"} {
+		if _, present := environmentProperties[field]; !present {
+			t.Fatalf("CLIConnectDescriptor.environment lacks canonical field %q", field)
+		}
+	}
+	for _, field := range []string{"environment_id", "project_id", "connected_machine_id", "project_root"} {
+		if _, present := environmentProperties[field]; present {
+			t.Fatalf("CLIConnectDescriptor.environment retains legacy field %q", field)
+		}
+	}
+	terminal := objectValue(t, descriptorProperties["terminal"], "CLIConnectDescriptor.terminal")
+	terminalProperties := objectValue(t, terminal["properties"], "CLIConnectDescriptor.terminal.properties")
+	for _, field := range []string{"endpoint", "auth", "session_id", "thread_id", "terminal_id", "cwd"} {
+		if _, present := terminalProperties[field]; !present {
+			t.Fatalf("CLIConnectDescriptor.terminal lacks canonical field %q", field)
+		}
+	}
+	for _, field := range []string{"kind", "websocket_base_url", "http_base_url"} {
+		if _, present := terminalProperties[field]; present {
+			t.Fatalf("CLIConnectDescriptor.terminal retains legacy field %q", field)
+		}
+	}
+	terminalAuthVariants, ok := doc.Components.Schemas["TerminalAuth"]["oneOf"].([]any)
+	if !ok || len(terminalAuthVariants) != 2 {
+		t.Fatalf("TerminalAuth.oneOf = %#v, want ticket and bearer variants", doc.Components.Schemas["TerminalAuth"]["oneOf"])
+	}
+	wantTerminalMethods := map[string]bool{"websocket_ticket": false, "bearer": false}
+	for index, raw := range terminalAuthVariants {
+		variant := objectValue(t, raw, fmt.Sprintf("TerminalAuth.oneOf[%d]", index))
+		properties := objectValue(t, variant["properties"], fmt.Sprintf("TerminalAuth.oneOf[%d].properties", index))
+		method := objectValue(t, properties["method"], "TerminalAuth.method")["const"]
+		methodString, valid := method.(string)
+		_, expected := wantTerminalMethods[methodString]
+		if !valid || !expected {
+			t.Fatalf("TerminalAuth method = %#v", method)
+		}
+		wantTerminalMethods[methodString] = true
+		assertSingletonConstScope(t, properties["scopes"], "terminal:operate", "TerminalAuth.scopes")
+	}
+	for method, present := range wantTerminalMethods {
+		if !present {
+			t.Fatalf("TerminalAuth lacks %q variant", method)
+		}
+	}
 	stagedUploadProperties := objectValue(t, doc.Components.Schemas["StagedImageUpload"]["properties"], "StagedImageUpload.properties")
 	uploadAuth := objectValue(t, stagedUploadProperties["auth"], "StagedImageUpload.auth")
 	uploadAuthProperties := objectValue(t, uploadAuth["properties"], "StagedImageUpload.auth.properties")
@@ -260,8 +320,26 @@ func TestOpenAPIFreezesCLIContractSchemas(t *testing.T) {
 	assertRequiredBearerScope(t, deleteClient, "clients:revoke", "DELETE /api/auth/clients/{client_session_id}")
 	listProjects := objectValue(t, doc.Paths["/api/projects"]["get"], "GET /api/projects")
 	assertRequiredBearerScope(t, listProjects, "projects:read", "GET /api/projects")
+	createProject := objectValue(t, doc.Paths["/api/projects"]["post"], "POST /api/projects")
+	assertRequiredBearerScope(t, createProject, "projects:connect", "POST /api/projects")
+	githubRepositories := objectValue(t, doc.Paths["/api/github/repositories"]["get"], "GET /api/github/repositories")
+	assertRequiredBearerScope(t, githubRepositories, "projects:read", "GET /api/github/repositories")
+	configRepositories := objectValue(t, doc.Paths["/api/config-repositories"]["get"], "GET /api/config-repositories")
+	assertRequiredBearerScope(t, configRepositories, "projects:read", "GET /api/config-repositories")
+	configAssignment := doc.Paths["/api/environments/{environment_id}/config-assignment"]
+	assertRequiredBearerScope(t, objectValue(t, configAssignment["get"], "GET config assignment"), "projects:read", "GET config assignment")
+	assertRequiredBearerScope(t, objectValue(t, configAssignment["put"], "PUT config assignment"), "projects:connect", "PUT config assignment")
+	assertRequiredBearerScope(t, objectValue(t, configAssignment["delete"], "DELETE config assignment"), "projects:connect", "DELETE config assignment")
+	for _, path := range []string{"/api/catalog/machine-types", "/api/catalog/presets", "/api/catalog/idle-timeouts", "/api/catalog/regions"} {
+		operation := objectValue(t, doc.Paths[path]["get"], "GET "+path)
+		assertRequiredBearerScope(t, operation, "projects:read", "GET "+path)
+	}
 	cliConnect := objectValue(t, doc.Paths["/api/projects/{project_id}/cli-connect"]["post"], "POST /api/projects/{project_id}/cli-connect")
 	assertRequiredBearerScope(t, cliConnect, "projects:connect", "POST /api/projects/{project_id}/cli-connect")
+	disconnectMachine := objectValue(t, doc.Paths["/api/connected-machines/{connected_machine_id}/disconnect"]["post"], "POST connected-machine disconnect")
+	assertRequiredBearerScope(t, disconnectMachine, "projects:connect", "POST connected-machine disconnect")
+	deleteMachine := objectValue(t, doc.Paths["/api/connected-machines/{connected_machine_id}"]["delete"], "DELETE connected machine")
+	assertRequiredBearerScope(t, deleteMachine, "projects:connect", "DELETE connected machine")
 	cliConnectResponses := objectValue(t, cliConnect["responses"], "CLI connect responses")
 	if _, ok := cliConnectResponses["503"]; !ok {
 		t.Fatal("CLI connect must document terminal runtime unavailability")

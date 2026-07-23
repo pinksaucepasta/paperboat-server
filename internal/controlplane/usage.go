@@ -140,5 +140,5 @@ func sameUsageReport(existing dbsqlc.ControlUsageReceipt, r UsageReport) bool {
 	return existing.EdgeNodeID == r.EdgeNodeID && existing.CounterEpoch == r.CounterEpoch &&
 		existing.EnvironmentID == r.EnvironmentID && existing.RouteID == r.RouteID &&
 		existing.RouteRevision == r.RouteRevision && existing.Direction == r.Direction &&
-		existing.ObservedBytes == r.Bytes && existing.IntervalStart.Equal(r.IntervalStart) && existing.IntervalEnd.Equal(r.IntervalEnd)
+		existing.ObservedBytes == r.Bytes
 }

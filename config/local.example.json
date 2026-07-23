@@ -1,5 +1,6 @@
 {
   "environment": "development",
+  "helper_base_domain": "helper.paperboat.local",
   "http": {
     "address": "127.0.0.1:8080",
     "public_base_url": "http://127.0.0.1:8080",
@@ -68,8 +69,7 @@
     "github_secret": "PAPERBOAT_GITHUB_CONFIG_TOKEN",
     "operation_timeout": 30000000000,
     "orchestration_lease": 300000000000,
-    "enrollment_secret": "PAPERBOAT_ENROLLMENT_CREDENTIAL",
-    "hosted_route_suffix": "hosted.paperboat.local"
+    "enrollment_secret": "PAPERBOAT_ENROLLMENT_CREDENTIAL"
   },
   "providers": {
     "fake_mode": true,

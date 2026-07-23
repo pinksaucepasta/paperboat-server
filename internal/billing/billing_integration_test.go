@@ -696,7 +696,7 @@ VALUES ($1, $2, 'polar', $3, $4, 'connected_machine_subscription', '{"allowance_
 	if err := store.SQL().QueryRowContext(ctx, `SELECT state, seat_state FROM paperboat.connected_machines WHERE id = $1`, machineID).Scan(&machineState, &seatState); err != nil {
 		t.Fatal(err)
 	}
-	if entitlementState != "canceled" || machineState != "revoked" || seatState != "occupied" {
+	if entitlementState != "canceled" || machineState != "revoked" || seatState != "released" {
 		t.Fatalf("states entitlement/machine/seat = %q/%q/%q", entitlementState, machineState, seatState)
 	}
 }

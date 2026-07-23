@@ -61,8 +61,7 @@ func (s *Service) ReserveConnectedMachineSeat(ctx context.Context, tx *db.Tx, us
 	if err != nil {
 		return err
 	}
-	now := time.Now().UTC()
-	if (entitlement.State != "active" && entitlement.State != "trialing") || !now.Before(entitlement.CurrentPeriodEnd) {
+	if !ConnectedMachineEntitlementActive(entitlement.State, entitlement.CurrentPeriodEnd, time.Now().UTC()) {
 		return ErrConnectedMachineSeatUnavailable
 	}
 	occupied, err := tx.Queries().CountOccupiedConnectedMachineSeats(ctx, userID)
@@ -73,6 +72,12 @@ func (s *Service) ReserveConnectedMachineSeat(ctx context.Context, tx *db.Tx, us
 		return ErrConnectedMachineSeatUnavailable
 	}
 	return nil
+}
+
+// ConnectedMachineEntitlementActive is the shared availability rule used by
+// both mutations and dashboard accounting.
+func ConnectedMachineEntitlementActive(state string, periodEnd, now time.Time) bool {
+	return (state == "active" || state == "trialing") && now.Before(periodEnd)
 }
 
 func polarFailureCode(err error) string {
@@ -543,7 +548,7 @@ type Service struct {
 // trigger post-commit revocation without taking a dependency on the connected
 // machine service package.
 type ConnectedMachineSessionRevoker interface {
-	RevokeEntitlementLostUserSessions(context.Context, string) error
+	ReconcileConnectedMachineEntitlement(context.Context, string) error
 }
 
 func NewService(repo *Repository, client PolarClient, auditWriter *audit.Writer) *Service {
@@ -1080,7 +1085,7 @@ func (s *Service) HandleWebhookWithID(ctx context.Context, providerEventID strin
 	if userID == "" {
 		return inserted, nil
 	}
-	return inserted, s.connectedMachineRevoker.RevokeEntitlementLostUserSessions(ctx, userID)
+	return inserted, s.connectedMachineRevoker.ReconcileConnectedMachineEntitlement(ctx, userID)
 }
 
 func (s *Service) processWebhookEvent(ctx context.Context, tx *db.Tx, event WebhookEvent) error {

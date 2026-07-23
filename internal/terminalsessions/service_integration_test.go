@@ -1,10 +1,8 @@
 package terminalsessions
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,9 +16,16 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
+	"github.com/pinksaucepasta/paperboat-server/internal/helperruntime"
 	"github.com/pinksaucepasta/paperboat-server/internal/mint"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 )
+
+type helperRuntimeFunc func(context.Context, string, string, string, string, string) (helperruntime.Snapshot, error)
+
+func (f helperRuntimeFunc) Terminal(ctx context.Context, route, credential, action, sessionID, operationID string) (helperruntime.Snapshot, error) {
+	return f(ctx, route, credential, action, sessionID, operationID)
+}
 
 func TestCatalogCreatesDefaultAndAllocatesMonotonicNames(t *testing.T) {
 	store := newTerminalSessionTestDB(t)
@@ -103,7 +108,7 @@ func TestCatalogSerializesConcurrentAutomaticCreationAndEnforcesLimit(t *testing
 	}
 }
 
-func TestProjectDeletionTombstonesSessionsAndQueuesHistoryPurges(t *testing.T) {
+func TestProjectDeletionTombstonesSessionsWithoutOrphanOperations(t *testing.T) {
 	store := newTerminalSessionTestDB(t)
 	projectService, project := createTerminalSessionTestProject(t, store, "usr_terminal_project_delete")
 	service := New(store, projectService, 8, 1, 3)
@@ -114,15 +119,15 @@ func TestProjectDeletionTombstonesSessionsAndQueuesHistoryPurges(t *testing.T) {
 	if _, err := projectService.Delete(ctx, "usr_terminal_project_delete", project.ID); err != nil {
 		t.Fatal(err)
 	}
-	var active, purges int
+	var active, pending int
 	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.project_terminal_sessions WHERE project_id=$1 AND deleted_at IS NULL`, project.ID).Scan(&active); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.terminal_session_operations WHERE project_id=$1 AND operation='delete_history' AND state='pending'`, project.ID).Scan(&purges); err != nil {
+	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.terminal_session_operations WHERE project_id=$1 AND state='pending'`, project.ID).Scan(&pending); err != nil {
 		t.Fatal(err)
 	}
-	if active != 0 || purges != 2 {
-		t.Fatalf("project deletion retained %d active sessions and queued %d purges", active, purges)
+	if active != 0 || pending != 0 {
+		t.Fatalf("project deletion retained %d active sessions and %d pending operations", active, pending)
 	}
 }
 
@@ -136,14 +141,13 @@ func TestSnapshotProjectPersistsRuntimeStateAndWorkingDirectory(t *testing.T) {
 	service := New(store, projectService, 8, time.Second, 3)
 	service.ConfigureControl(func(context.Context, string) (string, error) {
 		return "https://terminal-control.example.test", nil
-	}, signer, "https://paperboat.example.test", &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Status:     "200 OK",
-			Header:     make(http.Header),
-			Body:       io.NopCloser(bytes.NewBufferString(`{"operation":"snapshot","terminals":[{"terminalId":"term-1","state":"running","attachmentCount":1,"lastActivityAt":"2026-07-15T12:00:00Z","cwd":"/workspace/api","exitCode":null,"exitSignal":null,"sequence":42}]}`)),
-		}, nil
-	})})
+	}, signer, "https://paperboat.example.test", &http.Client{})
+	service.runtime = helperRuntimeFunc(func(_ context.Context, route, credential, action, sessionID, operationID string) (helperruntime.Snapshot, error) {
+		if route != "https://terminal-control.example.test" || credential == "" || action != "snapshot" || operationID == "" {
+			t.Fatalf("runtime operation route=%q credential=%t action=%q operation=%q", route, credential != "", action, operationID)
+		}
+		return helperruntime.Snapshot{ID: sessionID, State: "running", CWD: "/workspace/api", LatestSequence: 42}, nil
+	})
 
 	if err := service.SnapshotProject(context.Background(), project.ID); err != nil {
 		t.Fatal(err)
@@ -173,14 +177,20 @@ func TestCloseSnapshotsWorkingDirectoryBeforeTerminalShutdown(t *testing.T) {
 	service := New(store, projectService, 8, time.Second, 3)
 	service.ConfigureControl(func(context.Context, string) (string, error) {
 		return "https://terminal-control.example.test", nil
-	}, signer, "https://paperboat.example.test", &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+	}, signer, "https://paperboat.example.test", &http.Client{})
+	service.runtime = helperRuntimeFunc(func(_ context.Context, _ string, credential, action, sessionID, operationID string) (helperruntime.Snapshot, error) {
 		calls++
-		body := `{"operation":"close","terminals":[]}`
-		if calls == 1 {
-			body = `{"operation":"snapshot","terminals":[{"terminalId":"term-1","state":"running","attachmentCount":0,"lastActivityAt":"2026-07-15T12:00:00Z","cwd":"/workspace/api","exitCode":null,"exitSignal":null,"sequence":42}]}`
+		if credential == "" || operationID == "" {
+			t.Fatal("runtime operation was not signed and identified")
 		}
-		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(bytes.NewBufferString(body))}, nil
-	})})
+		if action == "snapshot" {
+			return helperruntime.Snapshot{ID: sessionID, State: "running", CWD: "/workspace/api", LatestSequence: 42}, nil
+		}
+		if action == "close" {
+			return helperruntime.Snapshot{ID: sessionID, State: "closed", CWD: "/workspace/api", LatestSequence: 42}, nil
+		}
+		return helperruntime.Snapshot{}, errors.New("unexpected runtime action")
+	})
 
 	sessions, err := service.List(context.Background(), "usr_terminal_close_snapshot", project.ID)
 	if err != nil || len(sessions) != 1 {

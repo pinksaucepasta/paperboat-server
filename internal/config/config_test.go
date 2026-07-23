@@ -14,6 +14,7 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 	}
 	env := map[string]string{
 		"PAPERBOAT_ENV":                                         "test",
+		"PAPERBOAT_HELPER_BASE_DOMAIN":                          "helper.example.test",
 		"PAPERBOAT_HTTP_ADDRESS":                                "127.0.0.1:9090",
 		"PAPERBOAT_CATALOG_SEED_FILE":                           "/etc/paperboat/catalogs.json",
 		"PAPERBOAT_POLAR_WEBHOOK_TOLERANCE_SECONDS":             "120",
@@ -25,8 +26,9 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 		"PAPERBOAT_AGENTUNNEL_CONNECT_READY_TIMEOUT":            "7s",
 		"PAPERBOAT_AGENTUNNEL_CONNECT_POLL_INTERVAL":            "250ms",
 		"PAPERBOAT_AGENTUNNEL_ACCESS_POLICY_ID":                 "apol_test",
-		"PAPERBOAT_AGENTUNNEL_UPLOAD_MAX_BYTES":                 "7340032",
-		"PAPERBOAT_AGENTUNNEL_UPLOAD_ALLOWED_MIME_TYPES":        "image/png,image/webp",
+		"PAPERBOAT_UPLOAD_MAX_BYTES":                            "7340032",
+		"PAPERBOAT_UPLOAD_ALLOWED_MIME_TYPES":                   "image/png,image/webp",
+		"PAPERBOAT_UPLOAD_RETENTION":                            "24h",
 		"PAPERBOAT_TERMINAL_SESSIONS_MAX_ACTIVE_PER_PROJECT":    "16",
 		"PAPERBOAT_TERMINAL_SESSIONS_OPERATION_TIMEOUT":         "20s",
 		"PAPERBOAT_TERMINAL_SESSIONS_RETRY_BACKOFF":             "3s",
@@ -50,6 +52,9 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 	if cfg.Environment != EnvironmentTest {
 		t.Fatalf("environment = %q", cfg.Environment)
 	}
+	if cfg.HelperBaseDomain != "helper.example.test" {
+		t.Fatalf("helper base domain = %q", cfg.HelperBaseDomain)
+	}
 	if cfg.HTTP.Address != "127.0.0.1:9090" {
 		t.Fatalf("address = %q", cfg.HTTP.Address)
 	}
@@ -71,7 +76,7 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 		cfg.Providers.Agentunnel.ConnectReadyTimeout.String() != "7s" ||
 		cfg.Providers.Agentunnel.ConnectPollInterval.String() != "250ms" ||
 		cfg.Providers.Agentunnel.AccessPolicyID != "apol_test" ||
-		cfg.Providers.Agentunnel.UploadMaxBytes != 7340032 ||
+		cfg.Providers.Agentunnel.UploadMaxBytes != 7340032 || cfg.Providers.Agentunnel.UploadRetention.String() != "24h0m0s" ||
 		!slices.Equal(cfg.Providers.Agentunnel.UploadAllowedMIMEs, []string{"image/png", "image/webp"}) {
 		t.Fatalf("agentunnel route config was not loaded from env: %#v", cfg.Providers.Agentunnel)
 	}
@@ -83,6 +88,14 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 	}
 	if cfg.TerminalSessions.MaxActivePerProject != 16 || cfg.TerminalSessions.OperationTimeout.String() != "20s" || cfg.TerminalSessions.RetryBackoff.String() != "3s" || cfg.TerminalSessions.WorkerInterval.String() != "2s" || cfg.TerminalSessions.MaxAttemptsBeforeAlert != 7 {
 		t.Fatalf("terminal session config was not loaded from env: %#v", cfg.TerminalSessions)
+	}
+}
+
+func TestValidationRejectsInvalidHelperBaseDomain(t *testing.T) {
+	cfg := Default()
+	cfg.HelperBaseDomain = "https://helper.example.test/path"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "helper_base_domain") {
+		t.Fatalf("validation error = %v", err)
 	}
 }
 
@@ -189,6 +202,11 @@ func TestProductionValidationDoesNotRequireMachineActivityToken(t *testing.T) {
 	cfg.Secrets.ClassifierAPIKey = "classifier-api-key"
 	cfg.Secrets.MachineActivityToken = ""
 	cfg.Fly.ImageRef = "registry.example.test/paperboat/project-vm@sha256:" + strings.Repeat("a", 64)
+	cfg.ConnectedMachines.BootstrapCommand = "paperboat-helper bootstrap --server https://pb.example.test"
+	cfg.ConnectedMachines.HelperArtifactsJSON = `[{"schema":"paperboat.helper-artifact/v1"}]`
+	cfg.ConnectedMachines.HelperArtifactPublicKey = "helper-artifact-public-key"
+	cfg.Preview.BaseDomain = "preview.example.test"
+	cfg.Secrets.PreviewIdentityKey = "preview-identity-key-012345678901234567890123456789"
 	cfg.CLIAuth.MintActiveKeyID = "current"
 	cfg.Secrets.MintSigningKeys = []string{"current:" + base64.RawURLEncoding.EncodeToString(make([]byte, 32))}
 
@@ -197,14 +215,14 @@ func TestProductionValidationDoesNotRequireMachineActivityToken(t *testing.T) {
 	}
 }
 
-func TestProductionValidationRequiresFailFastAgentunnel(t *testing.T) {
+func TestProductionValidationDoesNotRequireLegacyAgentunnel(t *testing.T) {
 	cfg := Default()
 	cfg.Environment = EnvironmentProduction
 	cfg.Providers.Agentunnel.MachineMode = "optional"
 
 	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), `agentunnel.machine_mode must be "required" in production`) {
-		t.Fatalf("Validate() error = %v, want production agentunnel mode rejection", err)
+	if err != nil && strings.Contains(err.Error(), "agentunnel.machine_mode") {
+		t.Fatalf("Validate() retained legacy Agentunnel production requirement: %v", err)
 	}
 }
 

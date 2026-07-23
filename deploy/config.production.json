@@ -1,5 +1,6 @@
 {
   "environment": "production",
+  "helper_base_domain": "helper.example.invalid",
   "http": {
     "address": "0.0.0.0:8080",
     "public_base_url": "https://pb.hexwagon.com",
@@ -69,7 +70,6 @@
     "operation_timeout": 30000000000,
     "orchestration_lease": 300000000000,
     "enrollment_secret": "PAPERBOAT_ENROLLMENT_CREDENTIAL",
-    "hosted_route_suffix": "hosted.example.invalid",
     "hosted_readiness_base_url": ""
   },
   "providers": {

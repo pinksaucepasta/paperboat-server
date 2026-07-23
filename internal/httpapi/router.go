@@ -63,6 +63,7 @@ type Options struct {
 	ConfigAssignments      *controlplane.ConfigAssignmentService
 	ConfigCredentials      *controlplane.ConfigCredentialService
 	Routes                 *controlplane.RouteService
+	Previews               *controlplane.PreviewService
 	ControlDiagnostics     *controlplane.DiagnosticsService
 	OperationRecovery      *controlplane.OperationRecoveryService
 	HostedProviderRecovery *controlplane.HostedProviderRecoveryService
@@ -87,9 +88,21 @@ func NewRouter(opts Options) http.Handler {
 		if opts.EdgeControl != nil {
 			mux.Handle("/v1/", opts.EdgeControl)
 		}
+		if opts.Previews != nil {
+			mux.Handle("GET /v1/previews/tls/ask", previewTLSAsk(opts.Previews))
+			mux.Handle("GET /v1/routes/tls/ask", previewTLSAsk(opts.Previews))
+		}
 		if opts.Enrollment != nil {
 			mux.HandleFunc("POST /v1/helpers/enroll", helperEnrollmentExchange(opts.Enrollment))
 			mux.HandleFunc("POST /v1/helpers/renew", helperIdentityRenew(opts.Enrollment))
+			if opts.ConnectedMachines != nil {
+				mux.Handle("POST /v1/connected-machines/installations/failure", helperInstallationFailure(opts.Enrollment, opts.ConnectedMachines))
+			}
+			if opts.Previews != nil {
+				mux.Handle("POST /v1/previews/credentials", helperPreviewCredential(opts.Enrollment))
+				mux.Handle("POST /v1/previews/operations", helperPreviewOperation(opts.Previews, opts.Enrollment))
+				mux.Handle("POST /v1/previews/observations", helperPreviewObservation(opts.Previews, opts.Enrollment))
+			}
 			if opts.Auth != nil {
 				mux.Handle("POST /api/environments/{environment_id}/helper-enrollments", requireAuth(opts.Auth, requireCSRF(opts.Auth, helperEnrollmentIssue(opts.Enrollment))))
 				mux.Handle("POST /api/environments/{environment_id}/helpers/{helper_id}/replace", requireAuth(opts.Auth, requireCSRF(opts.Auth, helperReplacement(opts.Enrollment))))
@@ -100,17 +113,33 @@ func NewRouter(opts Options) http.Handler {
 		}
 		if opts.Auth != nil {
 			registerAuthRoutes(mux, opts)
+			if opts.Previews != nil {
+				previewAuth := func(scope string, next http.Handler) http.Handler {
+					if opts.DeviceAuth != nil {
+						return requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope(scope, next))
+					}
+					return requireAuth(opts.Auth, next)
+				}
+				mux.Handle("GET /api/previews", previewAuth("projects:read", ownedPreviewList(opts.Previews)))
+				mux.Handle("DELETE /api/previews/{preview_id}", previewAuth("projects:connect", requireCSRF(opts.Auth, ownedPreviewRevoke(opts.Previews))))
+			}
 			if opts.Routes != nil {
 				mux.Handle("POST /api/environments/{environment_id}/routes", requireAuth(opts.Auth, requireCSRF(opts.Auth, routeIntentCreate(opts.Routes))))
 				mux.Handle("PATCH /api/routes/{route_id}", requireAuth(opts.Auth, requireCSRF(opts.Auth, routeIntentTransition(opts.Routes))))
 			}
 			if opts.ConfigAssignments != nil {
-				mux.Handle("GET /api/config-repositories", requireAuth(opts.Auth, configRepositories(opts.ConfigAssignments)))
+				configAuth := func(scope string, next http.Handler) http.Handler {
+					if opts.DeviceAuth != nil {
+						return requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope(scope, next))
+					}
+					return requireAuth(opts.Auth, next)
+				}
+				mux.Handle("GET /api/config-repositories", configAuth("projects:read", configRepositories(opts.ConfigAssignments)))
 				mux.Handle("POST /api/config-repositories", requireAuth(opts.Auth, requireCSRF(opts.Auth, configRepositoryConnect(opts.ConfigAssignments))))
-				mux.Handle("GET /api/environments/{environment_id}/config-assignment", requireAuth(opts.Auth, configAssignmentGet(opts.ConfigAssignments)))
-				mux.Handle("PUT /api/environments/{environment_id}/config-assignment", requireAuth(opts.Auth, requireCSRF(opts.Auth, configAssignmentSet(opts.ConfigAssignments))))
+				mux.Handle("GET /api/environments/{environment_id}/config-assignment", configAuth("projects:read", configAssignmentGet(opts.ConfigAssignments)))
+				mux.Handle("PUT /api/environments/{environment_id}/config-assignment", configAuth("projects:connect", requireCSRF(opts.Auth, configAssignmentSet(opts.ConfigAssignments))))
 				mux.Handle("POST /api/environments/{environment_id}/config-assignment/consent", requireAuth(opts.Auth, requireCSRF(opts.Auth, configConsent(opts.ConfigAssignments))))
-				mux.Handle("DELETE /api/environments/{environment_id}/config-assignment", requireAuth(opts.Auth, requireCSRF(opts.Auth, configAssignmentClear(opts.ConfigAssignments))))
+				mux.Handle("DELETE /api/environments/{environment_id}/config-assignment", configAuth("projects:connect", requireCSRF(opts.Auth, configAssignmentClear(opts.ConfigAssignments))))
 			}
 		}
 		if opts.ConnectedMachines != nil {
@@ -121,6 +150,10 @@ func NewRouter(opts Options) http.Handler {
 				return requireAuth(opts.Auth, next)
 			}
 			mux.HandleFunc("POST /api/connected-machines/pairings", connectedMachinePairings(opts.ConnectedMachines))
+			mux.Handle("POST /api/connected-machine-enrollments", requireAuth(opts.Auth, requireCSRF(opts.Auth, connectedMachineEnrollmentStart(opts.ConnectedMachines))))
+			mux.Handle("GET /api/connected-machine-enrollments/{enrollment_id}", requireAuth(opts.Auth, connectedMachineEnrollmentStatus(opts.ConnectedMachines)))
+			mux.Handle("POST /api/connected-machine-enrollments/{enrollment_id}/cancel", requireAuth(opts.Auth, requireCSRF(opts.Auth, connectedMachineEnrollmentCancel(opts.ConnectedMachines))))
+			mux.Handle("POST /api/connected-machine-enrollments/{enrollment_id}/retry", requireAuth(opts.Auth, requireCSRF(opts.Auth, connectedMachineEnrollmentRetry(opts.ConnectedMachines))))
 			mux.Handle("GET /api/connected-machines/overview", connectedMachineAuth("projects:read", connectedMachineOverview(opts.ConnectedMachines)))
 			mux.Handle("GET /api/connected-machines/{connected_machine_id}", requireAuth(opts.Auth, connectedMachineGet(opts.ConnectedMachines)))
 			if opts.DeviceAuth != nil {
@@ -134,8 +167,9 @@ func NewRouter(opts Options) http.Handler {
 			mux.Handle("DELETE /api/connected-machines/{connected_machine_id}/terminal-sessions/{session_id}", connectedMachineAuth("projects:connect", connectedMachineTerminalSessionsDelete(opts.ConnectedMachines)))
 			mux.HandleFunc("POST /api/connected-machines/pairings/installation", connectedMachineInstallationConsume(opts.ConnectedMachines))
 			mux.Handle("POST /api/connected-machines/pairings/{user_code}/approve", requireAuth(opts.Auth, requireCSRF(opts.Auth, connectedMachinePairingApprove(opts.ConnectedMachines))))
-			mux.Handle("POST /api/connected-machines/{connected_machine_id}/disconnect", requireAuth(opts.Auth, requireCSRF(opts.Auth, connectedMachineDisconnect(opts.ConnectedMachines))))
-			mux.Handle("DELETE /api/connected-machines/{connected_machine_id}", requireAuth(opts.Auth, requireCSRF(opts.Auth, connectedMachineDelete(opts.ConnectedMachines))))
+			mux.Handle("POST /api/connected-machines/pairings/{user_code}/deny", requireAuth(opts.Auth, requireCSRF(opts.Auth, connectedMachinePairingDeny(opts.ConnectedMachines))))
+			mux.Handle("POST /api/connected-machines/{connected_machine_id}/disconnect", connectedMachineAuth("projects:connect", requireCSRF(opts.Auth, connectedMachineDisconnect(opts.ConnectedMachines))))
+			mux.Handle("DELETE /api/connected-machines/{connected_machine_id}", connectedMachineAuth("projects:connect", requireCSRF(opts.Auth, connectedMachineDelete(opts.ConnectedMachines))))
 			if opts.DeviceAuth != nil {
 				mux.Handle("GET /api/connected-machines", requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope("projects:read", connectedMachinesList(opts.ConnectedMachines))))
 			} else {
@@ -213,6 +247,12 @@ func notImplemented(w http.ResponseWriter, r *http.Request) {
 }
 
 func registerAuthRoutes(mux *http.ServeMux, opts Options) {
+	userAuth := func(scope string, next http.Handler) http.Handler {
+		if opts.DeviceAuth != nil {
+			return requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope(scope, next))
+		}
+		return requireAuth(opts.Auth, next)
+	}
 	accountRead := func(next http.Handler) http.Handler {
 		if opts.DeviceAuth != nil {
 			return requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope("account:read", next))
@@ -291,11 +331,11 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 		mux.Handle("POST /api/admin/billing/uncertain/{kind}/{operation_id}/recover", requireAuth(opts.Auth, requireCSRF(opts.Auth, requireAdmin(adminRecoverBillingOperation(opts.BillingRecovery)))))
 	}
 	if opts.Catalog != nil {
-		mux.Handle("GET /api/catalog/plans", requireAuth(opts.Auth, catalogPlans(opts.Catalog)))
-		mux.Handle("GET /api/catalog/machine-types", requireAuth(opts.Auth, catalogMachineTypes(opts.Catalog)))
-		mux.Handle("GET /api/catalog/presets", requireAuth(opts.Auth, catalogPresets(opts.Catalog)))
-		mux.Handle("GET /api/catalog/idle-timeouts", requireAuth(opts.Auth, catalogIdleTimeouts(opts.Catalog)))
-		mux.Handle("GET /api/catalog/regions", requireAuth(opts.Auth, catalogRegions(opts.Catalog, opts.Fly, opts.CatalogWriter)))
+		mux.Handle("GET /api/catalog/plans", userAuth("account:read", catalogPlans(opts.Catalog)))
+		mux.Handle("GET /api/catalog/machine-types", userAuth("projects:read", catalogMachineTypes(opts.Catalog)))
+		mux.Handle("GET /api/catalog/presets", userAuth("projects:read", catalogPresets(opts.Catalog)))
+		mux.Handle("GET /api/catalog/idle-timeouts", userAuth("projects:read", catalogIdleTimeouts(opts.Catalog)))
+		mux.Handle("GET /api/catalog/regions", userAuth("projects:read", catalogRegions(opts.Catalog, opts.Fly, opts.CatalogWriter)))
 	} else {
 		mux.Handle("GET /api/catalog/plans", requireAuth(opts.Auth, http.HandlerFunc(notImplemented)))
 		mux.Handle("GET /api/catalog/machine-types", requireAuth(opts.Auth, http.HandlerFunc(notImplemented)))
@@ -305,20 +345,14 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 	}
 	if opts.GitHub != nil {
 		mux.Handle("GET /api/github/status", requireAuth(opts.Auth, githubStatus(opts.GitHub)))
-		mux.Handle("GET /api/github/repositories", requireAuth(opts.Auth, requireEntitlement(opts.Auth, githubRepositories(opts.GitHub))))
+		mux.Handle("GET /api/github/repositories", userAuth("projects:read", requireEntitlement(opts.Auth, githubRepositories(opts.GitHub))))
 		mux.Handle("POST /api/github/oauth/start", requireAuth(opts.Auth, requireCSRF(opts.Auth, githubOAuthStart(opts.Auth, opts.GitHub))))
 		mux.Handle("GET /api/github/oauth/callback", requireAuth(opts.Auth, githubOAuthBrowserCallback(opts.Auth, opts.GitHub)))
 		mux.Handle("POST /api/github/oauth/callback", requireAuth(opts.Auth, requireCSRF(opts.Auth, githubOAuthCallback(opts.Auth, opts.GitHub))))
 		mux.Handle("POST /api/github/config-repo/provision", requireAuth(opts.Auth, requireCSRF(opts.Auth, githubProvisionConfigRepo(opts.GitHub))))
 		if opts.Projects != nil {
-			projectAuth := func(scope string, next http.Handler) http.Handler {
-				if opts.DeviceAuth != nil {
-					return requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope(scope, next))
-				}
-				return requireAuth(opts.Auth, next)
-			}
-			mux.Handle("GET /api/projects", projectAuth("projects:read", requireEntitlement(opts.Auth, projectsList(opts.Projects))))
-			mux.Handle("POST /api/projects", requireAuth(opts.Auth, requireEntitlement(opts.Auth, requireGitHubConnection(opts.GitHub, projectsCreate(opts.Projects)))))
+			mux.Handle("GET /api/projects", userAuth("projects:read", requireEntitlement(opts.Auth, projectsList(opts.Projects))))
+			mux.Handle("POST /api/projects", userAuth("projects:connect", requireEntitlement(opts.Auth, requireGitHubConnection(opts.GitHub, projectsCreate(opts.Projects)))))
 			mux.Handle("GET /api/projects/{project_id}", requireAuth(opts.Auth, requireEntitlement(opts.Auth, projectsGet(opts.Projects))))
 			mux.Handle("PATCH /api/projects/{project_id}", requireAuth(opts.Auth, requireEntitlement(opts.Auth, projectsUpdate(opts.Projects))))
 			mux.Handle("DELETE /api/projects/{project_id}", requireAuth(opts.Auth, requireEntitlement(opts.Auth, projectsDelete(opts.Projects, opts.Agentunnel))))
@@ -326,18 +360,16 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 			mux.Handle("POST /api/projects/{project_id}/stop", requireAuth(opts.Auth, requireEntitlement(opts.Auth, requireCSRF(opts.Auth, projectsStop(opts.Projects, opts.Agentunnel)))))
 			mux.Handle("POST /api/projects/{project_id}/restart", requireAuth(opts.Auth, requireEntitlement(opts.Auth, requireCSRF(opts.Auth, projectsRestart(opts.Projects)))))
 			mux.Handle("POST /api/projects/{project_id}/keep-alive", requireAuth(opts.Auth, requireEntitlement(opts.Auth, requireCSRF(opts.Auth, projectsKeepAlive(opts.Projects)))))
-			mux.Handle("POST /api/projects/{project_id}/activity", projectAuth("projects:connect", requireEntitlement(opts.Auth, projectsActivity(opts.Projects))))
+			mux.Handle("POST /api/projects/{project_id}/activity", userAuth("projects:connect", requireEntitlement(opts.Auth, projectsActivity(opts.Projects))))
 			mux.Handle("GET /api/projects/{project_id}/events", requireAuth(opts.Auth, requireEntitlement(opts.Auth, projectsEvents(opts.Projects))))
 			if opts.Agentunnel != nil {
 				if opts.TerminalSessions != nil {
-					mux.Handle("GET /api/projects/{project_id}/terminal-sessions", projectAuth("projects:read", requireEntitlement(opts.Auth, terminalSessionsList(opts.TerminalSessions))))
-					mux.Handle("POST /api/projects/{project_id}/terminal-sessions", projectAuth("projects:connect", requireEntitlement(opts.Auth, terminalSessionsCreate(opts.TerminalSessions))))
-					mux.Handle("PATCH /api/projects/{project_id}/terminal-sessions/{session_id}", projectAuth("projects:connect", requireEntitlement(opts.Auth, terminalSessionsRename(opts.TerminalSessions))))
-					mux.Handle("POST /api/projects/{project_id}/terminal-sessions/{session_id}/close", projectAuth("projects:connect", requireEntitlement(opts.Auth, terminalSessionsClose(opts.TerminalSessions))))
-					mux.Handle("DELETE /api/projects/{project_id}/terminal-sessions/{session_id}", projectAuth("projects:connect", requireEntitlement(opts.Auth, terminalSessionsDelete(opts.TerminalSessions))))
+					mux.Handle("GET /api/projects/{project_id}/terminal-sessions", userAuth("projects:read", requireEntitlement(opts.Auth, terminalSessionsList(opts.TerminalSessions))))
+					mux.Handle("POST /api/projects/{project_id}/terminal-sessions", userAuth("projects:connect", requireEntitlement(opts.Auth, terminalSessionsCreate(opts.TerminalSessions))))
+					mux.Handle("PATCH /api/projects/{project_id}/terminal-sessions/{session_id}", userAuth("projects:connect", requireEntitlement(opts.Auth, terminalSessionsRename(opts.TerminalSessions))))
+					mux.Handle("POST /api/projects/{project_id}/terminal-sessions/{session_id}/close", userAuth("projects:connect", requireEntitlement(opts.Auth, terminalSessionsClose(opts.TerminalSessions))))
+					mux.Handle("DELETE /api/projects/{project_id}/terminal-sessions/{session_id}", userAuth("projects:connect", requireEntitlement(opts.Auth, terminalSessionsDelete(opts.TerminalSessions))))
 				}
-				mux.Handle("POST /api/projects/{project_id}/connect", requireAuth(opts.Auth, requireEntitlement(opts.Auth, projectsConnect(opts.Agentunnel, agentunnel.ConnectGeneric))))
-				mux.Handle("POST /api/projects/{project_id}/papercode-connect", requireAuth(opts.Auth, requireEntitlement(opts.Auth, projectsConnect(opts.Agentunnel, agentunnel.ConnectPapercode))))
 				mux.Handle("POST /api/projects/{project_id}/cli-connect", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", requireEntitlement(opts.Auth, projectsConnect(opts.Agentunnel, agentunnel.ConnectCLI)))))
 				mux.Handle("GET /api/projects/{project_id}/connection-status", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", requireEntitlement(opts.Auth, projectsConnectionStatus(opts.Agentunnel)))))
 			}

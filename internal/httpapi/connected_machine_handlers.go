@@ -14,6 +14,7 @@ import (
 func connectedMachinePairings(service *connectedmachines.Service) http.HandlerFunc {
 	type request struct {
 		Verifier        string          `json:"verifier"`
+		EnrollmentToken string          `json:"enrollment_token"`
 		DisplayName     string          `json:"display_name"`
 		Platform        string          `json:"platform"`
 		Architecture    string          `json:"architecture"`
@@ -26,12 +27,79 @@ func connectedMachinePairings(service *connectedmachines.Service) http.HandlerFu
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON.")
 			return
 		}
-		pairing, err := service.CreatePairing(r.Context(), connectedmachines.PairingInput{Verifier: body.Verifier, DisplayName: body.DisplayName, Platform: body.Platform, Architecture: body.Architecture, WorkspaceRoot: body.WorkspaceRoot, RuntimeVersions: body.RuntimeVersions})
+		pairing, err := service.CreatePairing(r.Context(), connectedmachines.PairingInput{Verifier: body.Verifier, EnrollmentToken: body.EnrollmentToken, DisplayName: body.DisplayName, Platform: body.Platform, Architecture: body.Architecture, WorkspaceRoot: body.WorkspaceRoot, RuntimeVersions: body.RuntimeVersions})
 		if err != nil {
 			writeError(w, r, http.StatusBadRequest, "invalid_connected_machine_pairing", "Pairing details are invalid or unsupported.")
 			return
 		}
 		writeJSON(w, http.StatusCreated, SuccessResponse{Data: pairing})
+	}
+}
+
+func connectedMachineEnrollmentStart(service *connectedmachines.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		result, err := service.StartEnrollment(r.Context(), p.User.ID, r.Header.Get("Idempotency-Key"))
+		if err != nil {
+			if errors.Is(err, connectedmachines.ErrIdempotencyKeyRequired) {
+				writeError(w, r, http.StatusBadRequest, "idempotency_key_required", "A valid Idempotency-Key header is required.")
+				return
+			}
+			writeError(w, r, http.StatusInternalServerError, "connected_machine_enrollment_start_failed", "Unable to start connected-machine enrollment.")
+			return
+		}
+		writeJSON(w, http.StatusCreated, SuccessResponse{Data: result})
+	}
+}
+
+func connectedMachineEnrollmentStatus(service *connectedmachines.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		result, err := service.Enrollment(r.Context(), p.User.ID, r.PathValue("enrollment_id"))
+		if err != nil {
+			writeError(w, r, http.StatusNotFound, "connected_machine_enrollment_not_found", "Connected-machine enrollment was not found.")
+			return
+		}
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: result})
+	}
+}
+
+func connectedMachineEnrollmentCancel(service *connectedmachines.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		if err := service.CancelEnrollment(r.Context(), p.User.ID, r.PathValue("enrollment_id")); err != nil {
+			writeError(w, r, http.StatusConflict, "connected_machine_enrollment_not_cancellable", "Connected-machine enrollment cannot be cancelled in its current state.")
+			return
+		}
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]bool{"cancelled": true}})
+	}
+}
+
+func connectedMachineEnrollmentRetry(service *connectedmachines.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		result, err := service.RetryEnrollment(r.Context(), p.User.ID, r.PathValue("enrollment_id"))
+		if err != nil {
+			writeError(w, r, http.StatusConflict, "connected_machine_enrollment_not_retryable", "Connected-machine enrollment cannot be retried in its current state.")
+			return
+		}
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: result})
 	}
 }
 
@@ -46,7 +114,16 @@ func connectedMachineInstallationConsume(service *connectedmachines.Service) htt
 		}
 		material, err := service.ConsumeInstallation(r.Context(), body.Verifier)
 		if err != nil {
-			writeError(w, r, http.StatusGone, "connected_machine_installation_unavailable", "Installation material is unavailable or has already been used.")
+			switch {
+			case errors.Is(err, connectedmachines.ErrInstallationPending):
+				writeError(w, r, http.StatusConflict, "connected_machine_approval_pending", "Machine approval is pending.")
+			case errors.Is(err, connectedmachines.ErrInstallationDenied):
+				writeError(w, r, http.StatusForbidden, "connected_machine_pairing_denied", "Machine pairing was denied.")
+			case errors.Is(err, connectedmachines.ErrInstallationExpired):
+				writeError(w, r, http.StatusGone, "connected_machine_pairing_expired", "Machine pairing expired.")
+			default:
+				writeError(w, r, http.StatusGone, "connected_machine_installation_unavailable", "Installation material is unavailable or has already been used.")
+			}
 			return
 		}
 		var data any
@@ -325,6 +402,28 @@ func connectedMachinePairingApprove(service *connectedmachines.Service) http.Han
 			return
 		}
 		writeJSON(w, http.StatusCreated, SuccessResponse{Data: machine})
+	}
+}
+
+func connectedMachinePairingDeny(service *connectedmachines.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		if err := service.Deny(r.Context(), p.User.ID, r.PathValue("user_code")); err != nil {
+			switch {
+			case errors.Is(err, connectedmachines.ErrPairingExpired):
+				writeError(w, r, http.StatusGone, "connected_machine_pairing_expired", "This pairing request has expired.")
+			case errors.Is(err, connectedmachines.ErrPairingUsed):
+				writeError(w, r, http.StatusConflict, "connected_machine_pairing_used", "This pairing request has already been decided.")
+			default:
+				writeError(w, r, http.StatusNotFound, "connected_machine_pairing_not_found", "Pairing request was not found.")
+			}
+			return
+		}
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]bool{"denied": true}})
 	}
 }
 

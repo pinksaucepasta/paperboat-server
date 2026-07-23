@@ -156,9 +156,7 @@ CLI project reads and connects use scoped Paperboat bearer access tokens.
 
 ### Access
 
-- `POST /api/projects/{project_id}/connect`
 - `POST /api/projects/{project_id}/cli-connect`
-- `POST /api/projects/{project_id}/papercode-connect`
 - `GET /api/projects/{project_id}/connection-status?terminal_session_id=pts_...`
 
 `GET /api/projects` supports `limit`, `offset`, `state`, and `sort`. Sort fields are
@@ -235,6 +233,20 @@ CLI APIs:
   body, and `X-Paperboat-Helper-Proof`; it returns a short-lived `config_sync` credential
   bound to the active environment/helper assignment and warning revision. Exact operation
   replays return the original credential; conflicting replays return `operation_conflict`.
+- `POST /v1/previews/credentials` accepts the helper identity bearer, a bounded `{}` JSON
+  body, and `X-Paperboat-Helper-Proof`; it returns a five-minute
+  `preview_registration` credential with exact `preview:register` scope and helper/
+  environment binding. Preview operations and observations use that credential as the
+  bearer, carry the durable identity separately in `X-Paperboat-Helper-Identity`, and
+  remain signed by the enrolled helper key. The preview credential is held only in
+  helper memory.
+- `POST /v1/connected-machines/installations/failure` accepts an active helper identity,
+  its exact Ed25519 request proof, and only `enrollment_id` plus the bounded stage
+  `service_install|service_readiness`. It transitions the matching `installing|connecting`
+  enrollment to `failed_retryable`; its stage is `artifact_verification`, `service_install`,
+  or `service_readiness`; it carries no local paths, error output, credentials,
+  artifact URLs, or process data. Retry preserves the existing machine, environment,
+  helper identity, and seat while rotating bootstrap generation and material.
 - `GET /v1/trust/revocations` requires the edge-control bearer credential and returns the
   bounded revocation document consumed by tunnel trust snapshots (`jtis`, `environments`,
   `helper_generations`, and `key_ids`).
@@ -269,5 +281,4 @@ Initial contract:
 
 - Dashboard approves endpoint list, response shapes, error codes, and project states.
 - CLI approves `cli-connect`, connection status, and structured error behavior.
-- papercode approves `papercode-connect` descriptor shape in [access-handoff.md](access-handoff.md).
 - agentunnel boundary remains adapter-only; no agentunnel contract changes from this repo.

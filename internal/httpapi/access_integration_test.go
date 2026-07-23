@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lib/pq"
 	"github.com/pinksaucepasta/paperboat-server/internal/agentunnel"
@@ -20,99 +22,14 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	pbsync "github.com/pinksaucepasta/paperboat-server/internal/configsync"
+	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
+	"github.com/pinksaucepasta/paperboat-server/internal/mint"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 	"github.com/pinksaucepasta/paperboat-server/internal/secrets"
 )
-
-func TestAccessConnectIssuesPapercodeDescriptorAndRecordsSession(t *testing.T) {
-	store, router, projectID := newAccessIntegrationRouter(t, "access@example.com")
-	cookies := loginCookies(t, router, "workos_seed_access@example.com:access@example.com:Access User")
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/papercode-connect", nil)
-	addCookies(req, cookies)
-	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("connect status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), `"access_endpoint"`) || strings.Contains(rec.Body.String(), "agentunnel-machine-token") {
-		t.Fatalf("unexpected descriptor body: %s", rec.Body.String())
-	}
-	var sessions int
-	if err := store.SQL().QueryRowContext(context.Background(), `SELECT count(*) FROM paperboat.access_sessions WHERE project_id = $1 AND session_type = 'papercode'`, projectID).Scan(&sessions); err != nil {
-		t.Fatal(err)
-	}
-	if sessions != 1 {
-		t.Fatalf("access sessions = %d, want 1", sessions)
-	}
-	var previewURL string
-	if err := store.SQL().QueryRowContext(context.Background(), `SELECT public_url FROM paperboat.preview_url_records WHERE project_id = $1 AND preview_key = 'papercode'`, projectID).Scan(&previewURL); err != nil {
-		t.Fatal(err)
-	}
-	if previewURL == "" {
-		t.Fatal("preview URL record was not persisted")
-	}
-	retry := httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/papercode-connect", nil)
-	addCookies(req, cookies)
-	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
-	router.ServeHTTP(retry, req)
-	if retry.Code != http.StatusOK {
-		t.Fatalf("second connect status = %d, body = %s", retry.Code, retry.Body.String())
-	}
-	if err := store.SQL().QueryRowContext(context.Background(), `SELECT count(*) FROM paperboat.access_sessions WHERE project_id = $1 AND session_type = 'papercode'`, projectID).Scan(&sessions); err != nil {
-		t.Fatal(err)
-	}
-	if sessions != 2 {
-		t.Fatalf("access sessions after rapid reconnect = %d, want 2", sessions)
-	}
-	var events int
-	if err := store.SQL().QueryRowContext(context.Background(), `SELECT count(*) FROM paperboat.connection_events WHERE project_id = $1 AND result = 'approved'`, projectID).Scan(&events); err != nil {
-		t.Fatal(err)
-	}
-	if events != 2 {
-		t.Fatalf("approved events = %d, want 2", events)
-	}
-	var eventSessionID, eventMetadata string
-	if err := store.SQL().QueryRowContext(context.Background(), `
-		SELECT access_session_id, metadata::text FROM paperboat.connection_events
-		WHERE project_id = $1 AND result = 'approved' ORDER BY created_at DESC LIMIT 1`, projectID).Scan(&eventSessionID, &eventMetadata); err != nil {
-		t.Fatal(err)
-	}
-	for _, value := range []string{projectID, eventSessionID, "agentunnel_tunnel_id", "agentunnel_client_id", "environment_id"} {
-		if !strings.Contains(eventMetadata, value) {
-			t.Fatalf("connection event lacks correlation %q: %s", value, eventMetadata)
-		}
-	}
-	if strings.Contains(eventMetadata, "token") || strings.Contains(eventMetadata, previewURL) {
-		t.Fatalf("connection event contains credential or route URL: %s", eventMetadata)
-	}
-}
-
-func TestPapercodeConnectDoesNotRequireConfigRepoReadiness(t *testing.T) {
-	store, router, projectID := newAccessIntegrationRouter(t, "papercode-no-config@example.com")
-	cookies := loginCookies(t, router, "workos_seed_papercode-no-config@example.com:papercode-no-config@example.com:Papercode No Config")
-	userID := userIDByEmail(t, store, "papercode-no-config@example.com")
-	if _, err := store.SQL().ExecContext(context.Background(), `DELETE FROM paperboat.github_config_repositories WHERE user_id = $1`, userID); err != nil {
-		t.Fatal(err)
-	}
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/papercode-connect", nil)
-	addCookies(req, cookies)
-	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("connect status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), `"access_endpoint"`) {
-		t.Fatalf("unexpected descriptor body: %s", rec.Body.String())
-	}
-}
 
 func TestConnectionStatusDoesNotRequireConfigRepoReadiness(t *testing.T) {
 	store, router, projectID := newAccessIntegrationRouter(t, "status-no-config@example.com")
@@ -139,7 +56,7 @@ func TestConnectionStatusDoesNotRequireConfigRepoReadiness(t *testing.T) {
 }
 
 func TestConnectionStatusRetainsSelectedTerminalSession(t *testing.T) {
-	store, router, projectID := newAccessIntegrationRouter(t, "status-selected-session@example.com")
+	store, router, accessService, projectID := newAccessIntegrationRouterWithService(t, "status-selected-session@example.com", agentunnel.FakeClient{BaseURL: "https://agentunnel.example"}, nil)
 	insertAccessResource(t, store, projectID)
 	cookies := loginCookies(t, router, "workos_seed_status-selected-session@example.com:status-selected-session@example.com:Status Selected")
 	const sessionID = "pts_status_selected"
@@ -157,8 +74,9 @@ VALUES ($1, $2, $3, 'api')`, sessionID, projectID, terminalID); err != nil {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status code = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"terminal_id":"`+terminalID+`"`) || strings.Contains(rec.Body.String(), `"terminal_id":"term-1"`) {
-		t.Fatalf("connection status did not retain selected terminal: %s", rec.Body.String())
+	status, err := accessService.Status(context.Background(), userIDByEmail(t, store, "status-selected-session@example.com"), projectID, sessionID)
+	if err != nil || status.Terminal["terminal_id"] != terminalID {
+		t.Fatalf("selected terminal status = %#v, err = %v", status.Terminal, err)
 	}
 }
 
@@ -637,7 +555,7 @@ func TestCLIConnectIssuesPapercodeDescriptorWithScopedAuth(t *testing.T) {
 		t.Fatalf("connect status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), `"terminal"`) ||
-		!strings.Contains(rec.Body.String(), `"papercode_websocket"`) ||
+		!strings.Contains(rec.Body.String(), `"endpoint":"wss://`) ||
 		!strings.Contains(rec.Body.String(), `"websocket_ticket"`) ||
 		!strings.Contains(rec.Body.String(), `"upload"`) ||
 		strings.Contains(rec.Body.String(), "agentunnel-machine-token") {
@@ -649,6 +567,72 @@ func TestCLIConnectIssuesPapercodeDescriptorWithScopedAuth(t *testing.T) {
 	}
 	if sessions != 1 {
 		t.Fatalf("cli access sessions = %d, want 1", sessions)
+	}
+}
+
+func TestCLIConnectUsesCanonicalHostedHelperRoute(t *testing.T) {
+	store, router, accessService, projectID := newAccessIntegrationRouterWithService(t, "cli-canonical@example.com", agentunnel.FakeClient{BaseURL: "https://legacy.invalid"}, nil)
+	cookies := loginCookies(t, router, "workos_seed_cli-canonical@example.com:cli-canonical@example.com:CLI Canonical")
+	userID := userIDByEmail(t, store, "cli-canonical@example.com")
+	signer, err := mint.NewEphemeral(5 * time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accessService.ConfigureCanonicalAccess(signer)
+	seedHostedHelperRoute(t, store, projectID, userID, "hosted-canonical.example.test")
+	tokens := authorizeCLI(t, router, cookies)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/cli-connect", nil)
+	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("connect status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var envelope struct {
+		Data struct {
+			Terminal map[string]any `json:"terminal"`
+			Upload   map[string]any `json:"upload"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Data.Terminal["endpoint"] != "wss://hosted-canonical.example.test/v1/runtime" || envelope.Data.Upload["endpoint"] != "https://hosted-canonical.example.test/v1/uploads" {
+		t.Fatalf("canonical endpoints missing: %s", rec.Body.String())
+	}
+	terminalSessionID, _ := envelope.Data.Terminal["session_id"].(string)
+	var revokedJTIs []string
+	for class, descriptor := range map[string]map[string]any{"terminal_operation": envelope.Data.Terminal, "image_stage": envelope.Data.Upload} {
+		authValue, _ := descriptor["auth"].(map[string]any)
+		token, _ := authValue["token"].(string)
+		claims, verifyErr := signer.VerifyCredential(token, config.NormalizeIssuer(config.Default().HTTP.PublicBaseURL), class, time.Now().UTC())
+		if verifyErr != nil {
+			t.Fatalf("verify %s: %v", class, verifyErr)
+		}
+		if claims.EnvironmentID != projectID || claims.UserID != userID || claims.ClientSessionID != tokens.ClientSessionID || claims.SessionID != terminalSessionID {
+			t.Fatalf("%s bindings=%#v", class, claims)
+		}
+		revokedJTIs = append(revokedJTIs, claims.JTI)
+	}
+	var legacyResources int
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT count(*) FROM paperboat.agentunnel_resources WHERE project_id=$1`, projectID).Scan(&legacyResources); err != nil {
+		t.Fatal(err)
+	}
+	if legacyResources != 0 {
+		t.Fatalf("legacy Agentunnel resources=%d, want 0", legacyResources)
+	}
+	if err := accessService.RevokeClientSessions(context.Background(), tokens.ClientSessionID, "test_revoked"); err != nil {
+		t.Fatal(err)
+	}
+	document, err := controlplane.NewEdgeService(store, "test-edge-credential").Revocations(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range revokedJTIs {
+		if !slices.Contains(document.JTIs, want) {
+			t.Fatalf("revocation document omitted %q: %#v", want, document.JTIs)
+		}
 	}
 }
 
@@ -876,9 +860,8 @@ func TestLogoutRevokesActiveAccessSessions(t *testing.T) {
 	cookies := loginCookies(t, router, "workos_seed_logout-revokes@example.com:logout-revokes@example.com:Logout Revokes")
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/papercode-connect", nil)
-	addCookies(req, cookies)
-	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/cli-connect", nil)
+	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("connect status = %d, body = %s", rec.Code, rec.Body.String())
@@ -901,9 +884,8 @@ func TestProjectStopRevokesActiveAccessSessions(t *testing.T) {
 	cookies := loginCookies(t, router, "workos_seed_stop-revokes@example.com:stop-revokes@example.com:Stop Revokes")
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/papercode-connect", nil)
-	addCookies(req, cookies)
-	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/cli-connect", nil)
+	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("connect status = %d, body = %s", rec.Code, rec.Body.String())
@@ -958,9 +940,8 @@ func TestProjectStopRevokesLocalSessionWhenProviderCleanupFails(t *testing.T) {
 	cookies := loginCookies(t, router, "workos_seed_stop-cleanup-fails@example.com:stop-cleanup-fails@example.com:Stop Cleanup Fails")
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/papercode-connect", nil)
-	addCookies(req, cookies)
-	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/cli-connect", nil)
+	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("connect status = %d, body = %s", rec.Code, rec.Body.String())
@@ -995,9 +976,8 @@ func TestProjectStopRetriesFailedProviderCleanup(t *testing.T) {
 	cookies := loginCookies(t, router, "workos_seed_stop-cleanup-retry@example.com:stop-cleanup-retry@example.com:Stop Cleanup Retry")
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/papercode-connect", nil)
-	addCookies(req, cookies)
-	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/cli-connect", nil)
+	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("connect status=%d body=%s", rec.Code, rec.Body.String())
@@ -1042,9 +1022,8 @@ func TestProjectDeleteRevokesActiveAccessSessions(t *testing.T) {
 	cookies := loginCookies(t, router, "workos_seed_delete-revokes@example.com:delete-revokes@example.com:Delete Revokes")
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/papercode-connect", nil)
-	addCookies(req, cookies)
-	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/cli-connect", nil)
+	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("connect status = %d, body = %s", rec.Code, rec.Body.String())
@@ -1200,9 +1179,8 @@ func TestAccessConnectDeniesWrongOwnerAndRecordsDenial(t *testing.T) {
 	grantActiveSubscription(t, store, otherID)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/connect", nil)
-	addCookies(req, otherCookies)
-	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, otherCookies))
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/cli-connect", nil)
+	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, otherCookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("connect status = %d, body = %s", rec.Code, rec.Body.String())
@@ -1227,9 +1205,8 @@ func TestAccessConnectDoesNotStartWhenTunnelUnavailable(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/papercode-connect", nil)
-	addCookies(req, cookies)
-	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/cli-connect", nil)
+	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("connect status = %d, body = %s", rec.Code, rec.Body.String())
@@ -1259,9 +1236,8 @@ func TestAccessConnectQueuesStartWhenStoppedTunnelIsOffline(t *testing.T) {
 	insertAccessResource(t, store, projectID)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/papercode-connect", nil)
-	addCookies(req, cookies)
-	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/cli-connect", nil)
+	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("connect status = %d, body = %s", rec.Code, rec.Body.String())
@@ -1443,6 +1419,27 @@ INSERT INTO paperboat.agentunnel_resources (id, project_id, tunnel_id, client_id
 VALUES ($1, $2, $3, $4, $5, '{"http_base_url":"https://agentunnel.example/projects/test","websocket_base_url":"wss://agentunnel.example/projects/test"}'::jsonb)
 ON CONFLICT (project_id) DO NOTHING`, "agr_"+projectID, projectID, "tun_"+projectID, "cli_"+projectID, "res_"+projectID); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func seedHostedHelperRoute(t *testing.T, store *db.DB, projectID, userID, publicHost string) {
+	t.Helper()
+	ctx := context.Background()
+	helperID, edgeID := "helper_"+projectID, "edge_"+projectID
+	statements := []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id,desired_state) VALUES ($1,$1,$2,'active') ON CONFLICT (id) DO UPDATE SET desired_state='active',owner_user_id=EXCLUDED.owner_user_id`, []any{projectID, userID}},
+		{`INSERT INTO paperboat.control_helpers (id,environment_id,state) VALUES ($1,$2,'active')`, []any{helperID, projectID}},
+		{`INSERT INTO paperboat.control_tunnel_nodes (id,edge_pool,protocol_version,process_epoch,state,ready,last_heartbeat_at) VALUES ($1,'development','1.0',$2,'ready',true,now())`, []any{edgeID, "epoch_" + projectID}},
+		{`INSERT INTO paperboat.control_connector_generations (environment_id,helper_id,generation,edge_pool,edge_node_id,state) VALUES ($1,$2,1,'development',$3,'admitted')`, []any{projectID, helperID, edgeID}},
+		{`INSERT INTO paperboat.control_routes (id,environment_id,kind,public_host,target_host,target_port,desired_revision,applied_revision,applied_node_id,applied_generation) VALUES ($1,$2,'helper_https_wss',$3,'127.0.0.1',8080,1,1,$4,1)`, []any{"route_" + projectID, projectID, publicHost, edgeID}},
+	}
+	for _, statement := range statements {
+		if _, err := store.SQL().ExecContext(ctx, statement.query, statement.args...); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

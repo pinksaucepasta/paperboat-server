@@ -7,7 +7,41 @@ import (
 	"strings"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
+	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
 )
+
+type configRepositoryResponse struct {
+	ID          string `json:"id"`
+	Provider    string `json:"provider"`
+	ExternalRef string `json:"external_ref"`
+	DisplayName string `json:"display_name"`
+	State       string `json:"state"`
+}
+
+type configAssignmentResponse struct {
+	ID              string  `json:"id"`
+	EnvironmentID   string  `json:"environment_id"`
+	RepositoryID    *string `json:"repository_id,omitempty"`
+	ConsentState    string  `json:"consent_state"`
+	WarningRevision *string `json:"warning_revision,omitempty"`
+	Version         int64   `json:"version"`
+}
+
+func repositoryResponse(item dbsqlc.ControlConfigRepository) configRepositoryResponse {
+	return configRepositoryResponse{ID: item.ID, Provider: item.Provider, ExternalRef: item.ExternalRef, DisplayName: item.DisplayName, State: item.State}
+}
+func assignmentResponse(item dbsqlc.ControlConfigAssignment) configAssignmentResponse {
+	var repo, warning *string
+	if item.RepositoryID.Valid {
+		value := item.RepositoryID.String
+		repo = &value
+	}
+	if item.WarningRevision.Valid {
+		value := item.WarningRevision.String
+		warning = &value
+	}
+	return configAssignmentResponse{ID: item.ID, EnvironmentID: item.EnvironmentID, RepositoryID: repo, ConsentState: item.ConsentState, WarningRevision: warning, Version: item.Version}
+}
 
 func configRepositories(service *controlplane.ConfigAssignmentService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -21,7 +55,11 @@ func configRepositories(service *controlplane.ConfigAssignmentService) http.Hand
 			writeError(w, r, 400, "validation_failed", "Repositories could not be listed.")
 			return
 		}
-		writeJSON(w, 200, SuccessResponse{Data: map[string]any{"items": items}})
+		out := make([]configRepositoryResponse, 0, len(items))
+		for _, item := range items {
+			out = append(out, repositoryResponse(item))
+		}
+		writeJSON(w, 200, SuccessResponse{Data: map[string]any{"items": out}})
 	}
 }
 
@@ -45,7 +83,7 @@ func configRepositoryConnect(service *controlplane.ConfigAssignmentService) http
 			writeError(w, r, 400, "validation_failed", "Repository is invalid.")
 			return
 		}
-		writeJSON(w, 201, SuccessResponse{Data: item})
+		writeJSON(w, 201, SuccessResponse{Data: repositoryResponse(item)})
 	}
 }
 
@@ -61,7 +99,7 @@ func configAssignmentGet(service *controlplane.ConfigAssignmentService) http.Han
 			writeError(w, r, 404, "not_found_or_forbidden", "Environment was not found or is unavailable.")
 			return
 		}
-		writeJSON(w, 200, SuccessResponse{Data: item})
+		writeJSON(w, 200, SuccessResponse{Data: assignmentResponse(item)})
 	}
 }
 
@@ -92,7 +130,7 @@ func configAssignmentSet(service *controlplane.ConfigAssignmentService) http.Han
 			writeError(w, r, status, code, "Config assignment could not be changed.")
 			return
 		}
-		writeJSON(w, 200, SuccessResponse{Data: item})
+		writeJSON(w, 200, SuccessResponse{Data: assignmentResponse(item)})
 	}
 }
 
@@ -119,7 +157,7 @@ func configConsent(service *controlplane.ConfigAssignmentService) http.HandlerFu
 			writeError(w, r, status, code, "Config consent could not be accepted.")
 			return
 		}
-		writeJSON(w, 200, SuccessResponse{Data: item})
+		writeJSON(w, 200, SuccessResponse{Data: assignmentResponse(item)})
 	}
 }
 

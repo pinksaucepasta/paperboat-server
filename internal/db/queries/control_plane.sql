@@ -59,9 +59,23 @@ ON CONFLICT (operation_key) DO NOTHING
 RETURNING *;
 
 -- name: ListRevokedControlCredentialJTIs :many
-SELECT jti FROM control_config_credentials
-WHERE revoked_at IS NOT NULL AND expires_at > sqlc.arg(now)
-ORDER BY revoked_at, jti
+SELECT revoked.jti FROM (
+  SELECT c.jti, c.revoked_at FROM control_config_credentials c
+  WHERE c.revoked_at IS NOT NULL AND c.expires_at > sqlc.arg(now)
+  UNION ALL
+  SELECT a.papercode_terminal_session_id AS jti, a.revoked_at FROM access_sessions a
+  WHERE a.revoked_at IS NOT NULL AND a.expires_at > sqlc.arg(now) AND a.papercode_terminal_session_id IS NOT NULL
+  UNION ALL
+  SELECT a.papercode_file_session_id AS jti, a.revoked_at FROM access_sessions a
+  WHERE a.revoked_at IS NOT NULL AND a.expires_at > sqlc.arg(now) AND a.papercode_file_session_id IS NOT NULL
+  UNION ALL
+  SELECT m.papercode_terminal_session_id AS jti, m.revoked_at FROM connected_machine_access_sessions m
+  WHERE m.revoked_at IS NOT NULL AND m.expires_at > sqlc.arg(now) AND m.papercode_terminal_session_id IS NOT NULL
+  UNION ALL
+  SELECT m.papercode_file_session_id AS jti, m.revoked_at FROM connected_machine_access_sessions m
+  WHERE m.revoked_at IS NOT NULL AND m.expires_at > sqlc.arg(now) AND m.papercode_file_session_id IS NOT NULL
+) revoked
+ORDER BY revoked.revoked_at, revoked.jti
 LIMIT sqlc.arg(row_limit);
 
 -- name: ListRevokedConnectorGenerations :many
@@ -138,6 +152,11 @@ SELECT * FROM control_helpers
 WHERE environment_id = sqlc.arg(environment_id) AND state = 'active' AND revoked_at IS NULL
 ORDER BY updated_at DESC LIMIT 1;
 
+-- name: GetPendingControlHelperForEnvironment :one
+SELECT * FROM control_helpers
+WHERE environment_id = sqlc.arg(environment_id) AND state = 'pending' AND revoked_at IS NULL
+ORDER BY updated_at DESC LIMIT 1;
+
 -- name: RevokeExpiredControlHelperEnrollments :execrows
 UPDATE control_helper_enrollments
 SET state='revoked', revoked_at=sqlc.arg(now)
@@ -180,6 +199,15 @@ SELECT EXISTS (
     AND h.state='active' AND h.revoked_at IS NULL AND fm.fly_machine_id=sqlc.arg(machine_id)
 );
 
+-- name: BYODHelperOwnsMachine :one
+SELECT EXISTS (
+  SELECT 1 FROM control_helpers h
+  JOIN connected_machines m ON m.environment_id = h.environment_id
+  WHERE h.id = sqlc.arg(helper_id) AND h.environment_id = sqlc.arg(environment_id)
+    AND h.state = 'active' AND h.revoked_at IS NULL
+    AND m.id = sqlc.arg(machine_id) AND m.deleted_at IS NULL
+);
+
 -- name: SetControlHelperReplacementGeneration :one
 UPDATE control_helpers SET replacement_connector_generation = sqlc.arg(connector_generation), updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id) AND replacement_operation_key = sqlc.arg(operation_key)
@@ -189,6 +217,26 @@ RETURNING *;
 UPDATE control_helper_enrollments
 SET state = 'revoked', revoked_at = sqlc.arg(revoked_at)
 WHERE helper_id = sqlc.arg(helper_id) AND state = 'pending';
+
+-- name: RevokeControlHelpersForEnvironment :execrows
+UPDATE control_helpers
+SET state = 'revoked', revoked_at = coalesce(revoked_at, sqlc.arg(revoked_at)),
+    updated_at = sqlc.arg(revoked_at)
+WHERE environment_id = sqlc.arg(environment_id)
+  AND state IN ('pending','active') AND revoked_at IS NULL;
+
+-- name: RevokeControlHelperEnrollmentsForEnvironment :execrows
+UPDATE control_helper_enrollments
+SET state = 'revoked', revoked_at = coalesce(revoked_at, sqlc.arg(revoked_at))
+WHERE environment_id = sqlc.arg(environment_id)
+  AND state = 'pending' AND revoked_at IS NULL;
+
+-- name: RevokeControlConnectorForEnvironment :execrows
+UPDATE control_connector_generations
+SET state = 'revoked', revoked_at = coalesce(revoked_at, sqlc.arg(revoked_at)),
+    version = version + 1, updated_at = sqlc.arg(revoked_at)
+WHERE environment_id = sqlc.arg(environment_id)
+  AND state IN ('pending','admitted','draining') AND revoked_at IS NULL;
 
 -- name: AdvanceControlConnectorGeneration :one
 INSERT INTO control_connector_generations (environment_id, helper_id, generation, edge_pool, state)
@@ -209,6 +257,164 @@ RETURNING *;
 
 -- name: GetControlEnvironment :one
 SELECT * FROM control_environments WHERE id = $1;
+
+-- name: GetControlPreviewForUpdate :one
+SELECT * FROM control_previews
+WHERE environment_id = sqlc.arg(environment_id) AND logical_name = sqlc.arg(logical_name)
+FOR UPDATE;
+
+-- name: GetControlPreviewByKey :one
+SELECT * FROM control_previews WHERE preview_key = sqlc.arg(preview_key);
+
+-- name: CanIssueControlRouteCertificate :one
+SELECT EXISTS (
+  SELECT 1
+  FROM control_routes r
+  JOIN control_environments e ON e.id = r.environment_id
+  LEFT JOIN control_previews p ON p.route_id = r.id
+  WHERE r.public_host = sqlc.arg(public_host)
+    AND e.desired_state = 'active'
+    AND e.revoked_at IS NULL
+    AND r.desired_state = 'attached'
+    AND (
+      r.kind = 'helper_https_wss'
+      OR (
+        r.kind = 'preview_public_https_wss'
+        AND p.state <> 'removed'
+        AND p.public_acknowledged_at IS NOT NULL
+        AND (p.expires_at IS NULL OR p.expires_at > sqlc.arg(now))
+      )
+    )
+);
+
+-- name: ListControlPreviews :many
+SELECT * FROM control_previews
+WHERE environment_id = sqlc.arg(environment_id) AND state <> 'removed'
+ORDER BY logical_name, id;
+
+-- name: ListOwnedControlPreviews :many
+SELECT p.*, e.owner_user_id, e.workspace_id,
+       cm.id AS machine_id,
+       COALESCE(cm.display_name, pr.name, e.id) AS environment_name,
+       CASE WHEN cm.id IS NULL THEN 'hosted' ELSE 'byod' END AS environment_kind,
+       COALESCE(u.primary_email, '') AS owner_email
+FROM control_previews p
+JOIN control_environments e ON e.id = p.environment_id
+LEFT JOIN connected_machines cm ON cm.environment_id = e.id AND cm.deleted_at IS NULL
+LEFT JOIN projects pr ON pr.id = e.workspace_id
+LEFT JOIN users u ON u.id = e.owner_user_id
+WHERE e.owner_user_id = sqlc.arg(owner_user_id)
+  AND e.desired_state = 'active'
+  AND e.revoked_at IS NULL
+  AND p.state <> 'removed'
+ORDER BY p.updated_at DESC, p.id;
+
+-- name: GetOwnedControlPreview :one
+SELECT p.* FROM control_previews p
+JOIN control_environments e ON e.id = p.environment_id
+WHERE p.id = sqlc.arg(id) AND e.owner_user_id = sqlc.arg(owner_user_id)
+FOR UPDATE;
+
+-- name: CreateControlPreview :one
+INSERT INTO control_previews
+  (id, environment_id, logical_name, preview_key, collision_counter, public_host,
+   target_host, target_port, public_acknowledged_at)
+VALUES
+  (sqlc.arg(id), sqlc.arg(environment_id), sqlc.arg(logical_name), sqlc.arg(preview_key),
+   sqlc.arg(collision_counter), sqlc.arg(public_host), sqlc.arg(target_host), sqlc.arg(target_port),
+   sqlc.narg(public_acknowledged_at))
+ON CONFLICT (preview_key) DO NOTHING
+RETURNING *;
+
+-- name: UpdateControlPreview :one
+UPDATE control_previews
+SET target_host = sqlc.arg(target_host), target_port = sqlc.arg(target_port),
+    state = CASE WHEN state = 'removed' THEN state ELSE 'registering' END,
+    public_acknowledged_at = coalesce(public_acknowledged_at, sqlc.narg(public_acknowledged_at)),
+    version = version + 1, updated_at = sqlc.arg(now)
+WHERE id = sqlc.arg(id) AND version = sqlc.arg(expected_version)
+RETURNING *;
+
+-- name: SetControlPreviewRoute :one
+UPDATE control_previews SET route_id = sqlc.arg(route_id), updated_at = sqlc.arg(now)
+WHERE id = sqlc.arg(id) AND route_id IS NULL
+RETURNING *;
+
+-- name: UpdateControlPreviewRouteTarget :one
+UPDATE control_routes
+SET target_host = sqlc.arg(target_host), target_port = sqlc.arg(target_port),
+    desired_state = 'attached', desired_revision = desired_revision + 1,
+    version = version + 1, updated_at = sqlc.arg(now)
+WHERE id = sqlc.arg(id) AND environment_id = sqlc.arg(environment_id)
+RETURNING *;
+
+-- name: RemoveControlPreview :one
+UPDATE control_previews
+SET state = 'removed', removed_at = coalesce(removed_at, sqlc.arg(now)),
+    retained_until = greatest(coalesce(retained_until, sqlc.arg(now)), sqlc.arg(retained_until)),
+    version = version + 1, updated_at = sqlc.arg(now)
+WHERE id = sqlc.arg(id) AND version = sqlc.arg(expected_version)
+RETURNING *;
+
+-- name: RemoveControlPreviewRoute :execrows
+UPDATE control_routes
+SET desired_state = CASE WHEN applied_node_id IS NULL THEN 'detached' ELSE 'detaching' END,
+    desired_revision = desired_revision + 1, version = version + 1, updated_at = sqlc.arg(now)
+WHERE id = sqlc.arg(id) AND environment_id = sqlc.arg(environment_id)
+  AND desired_state NOT IN ('detaching','detached');
+
+-- name: RevokeControlRoutesForEnvironment :execrows
+UPDATE control_routes
+SET desired_state = CASE WHEN applied_node_id IS NULL THEN 'detached' ELSE 'detaching' END,
+    desired_revision = desired_revision + 1, version = version + 1, updated_at = sqlc.arg(now)
+WHERE environment_id = sqlc.arg(environment_id)
+  AND desired_state NOT IN ('detaching','detached');
+
+-- name: ApplyControlPreviewHelperObservation :one
+UPDATE control_previews
+SET helper_ready = sqlc.arg(helper_ready), target_ready = sqlc.arg(target_ready),
+    helper_observation_revision = sqlc.arg(observation_revision), helper_observed_at = sqlc.arg(observed_at),
+    state = CASE
+      WHEN state = 'removed' THEN state
+      WHEN expires_at IS NOT NULL AND expires_at <= sqlc.arg(observed_at) THEN 'expired'
+      WHEN NOT sqlc.arg(helper_ready) THEN 'offline'
+      WHEN sqlc.arg(target_ready) AND edge_ready THEN 'ready'
+      ELSE 'degraded'
+    END,
+    version = version + 1, updated_at = sqlc.arg(observed_at)
+WHERE environment_id = sqlc.arg(environment_id) AND preview_key = sqlc.arg(preview_key)
+  AND logical_name = sqlc.arg(logical_name) AND target_host = sqlc.arg(target_host)
+  AND target_port = sqlc.arg(target_port)
+  AND state <> 'removed' AND sqlc.arg(observation_revision) > helper_observation_revision
+RETURNING *;
+
+-- name: RefreshControlPreviewEdgeReadiness :exec
+UPDATE control_previews p
+SET helper_ready = (p.helper_ready AND p.helper_observed_at >= sqlc.arg(now)::timestamptz - interval '1 minute'),
+    target_ready = (p.target_ready AND p.helper_observed_at >= sqlc.arg(now)::timestamptz - interval '1 minute'),
+    edge_ready = (r.desired_state = 'attached' AND r.applied_revision = r.desired_revision AND r.applied_node_id IS NOT NULL),
+    state = CASE
+      WHEN p.state IN ('removed','expired') THEN p.state
+      WHEN NOT p.helper_ready OR p.helper_observed_at IS NULL OR p.helper_observed_at < sqlc.arg(now)::timestamptz - interval '1 minute' THEN 'offline'
+      WHEN p.target_ready AND r.desired_state = 'attached' AND r.applied_revision = r.desired_revision AND r.applied_node_id IS NOT NULL THEN 'ready'
+      ELSE 'degraded'
+    END,
+    version = p.version + 1, updated_at = sqlc.arg(now)
+FROM control_routes r
+WHERE p.route_id = r.id AND p.state <> 'removed';
+
+-- name: GetControlPreviewOperation :one
+SELECT * FROM control_preview_operations WHERE operation_key = $1;
+
+-- name: ReserveControlPreviewOperation :one
+INSERT INTO control_preview_operations(operation_key, operation_type, request_hash, preview_id)
+VALUES (sqlc.arg(operation_key), sqlc.arg(operation_type), sqlc.arg(request_hash), sqlc.arg(preview_id))
+ON CONFLICT (operation_key) DO UPDATE SET operation_key = EXCLUDED.operation_key
+RETURNING *;
+
+-- name: SetControlPreviewOperationResult :exec
+UPDATE control_preview_operations SET result = sqlc.arg(result), preview_id = sqlc.arg(preview_id)
+WHERE operation_key = sqlc.arg(operation_key);
 
 -- name: UpdateControlEnvironmentDesiredState :one
 UPDATE control_environments
@@ -373,10 +579,12 @@ RETURNING *;
 -- name: ListControlRoutesForNode :many
 SELECT r.id AS route_id, r.desired_revision AS route_revision, r.environment_id,
        c.generation AS connector_generation, c.edge_node_id, r.kind, r.public_host,
-       r.target_host, r.target_port
+       r.target_host, r.target_port, COALESCE(p.state, 'ready') AS preview_state,
+       CASE WHEN p.state = 'degraded' AND NOT p.target_ready THEN 'target_unhealthy' ELSE '' END AS preview_reason
 FROM control_routes r
 JOIN control_connector_generations c ON c.environment_id = r.environment_id
 JOIN control_helpers h ON h.id = c.helper_id AND h.environment_id = c.environment_id
+LEFT JOIN control_previews p ON p.route_id = r.id
 WHERE c.edge_node_id = sqlc.arg(edge_node_id)
   AND r.desired_state IN ('attached','replacing')
   AND c.state IN ('pending','admitted') AND h.state = 'active'
@@ -449,6 +657,30 @@ WHERE applied_node_id = sqlc.arg(edge_node_id) AND desired_state IN ('attached',
 
 -- name: GetControlRouteForUpdate :one
 SELECT * FROM control_routes WHERE id = $1 FOR UPDATE;
+
+-- name: GetActiveHelperRouteForEnvironment :one
+SELECT r.* FROM control_routes r
+JOIN control_environments e ON e.id = r.environment_id
+JOIN control_connector_generations c ON c.environment_id = r.environment_id
+JOIN control_helpers h ON h.id = c.helper_id AND h.environment_id = r.environment_id
+JOIN control_tunnel_nodes n ON n.id = c.edge_node_id AND n.id = r.applied_node_id
+WHERE r.environment_id = sqlc.arg(environment_id)
+  AND r.kind = 'helper_https_wss'
+  AND r.desired_state IN ('attached','replacing')
+  AND r.applied_revision >= r.desired_revision
+  AND r.applied_generation = c.generation
+  AND e.desired_state = 'active' AND h.state = 'active' AND c.state = 'admitted'
+  AND n.state = 'ready' AND n.ready = true
+ORDER BY r.id
+LIMIT 1;
+
+-- name: GetHelperRouteForEnvironment :one
+SELECT * FROM control_routes
+WHERE environment_id = sqlc.arg(environment_id)
+  AND kind = 'helper_https_wss'
+  AND desired_state IN ('attached','replacing')
+ORDER BY id
+LIMIT 1;
 
 -- name: CreateControlRoute :one
 INSERT INTO control_routes (id, environment_id, kind, public_host, target_host, target_port)

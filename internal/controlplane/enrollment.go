@@ -90,6 +90,9 @@ func (s *EnrollmentService) VerifyActivityHeartbeat(ctx context.Context, identit
 		return ErrHelperProof
 	}
 	owned, err := s.store.Queries().HostedHelperOwnsMachine(ctx, dbsqlc.HostedHelperOwnsMachineParams{HelperID: claims.HelperID, EnvironmentID: environmentID, MachineID: machineID})
+	if err == nil && !owned {
+		owned, err = s.store.Queries().BYODHelperOwnsMachine(ctx, dbsqlc.BYODHelperOwnsMachineParams{HelperID: claims.HelperID, EnvironmentID: environmentID, MachineID: machineID})
+	}
 	if err != nil || !owned {
 		return ErrHelperProof
 	}
@@ -110,15 +113,24 @@ func (s *EnrollmentService) Issue(ctx context.Context, actorID, operationKey, en
 	}
 	requestHash := enrollmentRequestHash(actorID, environmentID, lifetime)
 	storedOperationKey := "helper-enrollment:" + actorID + ":" + operationKey
+	now := s.clock().UTC()
+	if _, err := s.store.Queries().RevokeExpiredControlHelperEnrollments(ctx, dbsqlc.RevokeExpiredControlHelperEnrollmentsParams{Now: sql.NullTime{Time: now, Valid: true}, EnvironmentID: environmentID}); err != nil {
+		return EnrollmentGrant{}, err
+	}
 	if existing, err := s.store.Queries().GetControlHelperEnrollmentByOperationKey(ctx, storedOperationKey); err == nil {
 		return s.replayGrant(existing, requestHash)
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return EnrollmentGrant{}, err
 	}
-	now := s.clock().UTC()
 	helperID, enrollmentID, jti, err := randomEnrollmentValues()
 	if err != nil {
 		return EnrollmentGrant{}, err
+	}
+	reusePendingHelper := false
+	if pending, pendingErr := s.store.Queries().GetPendingControlHelperForEnvironment(ctx, environmentID); pendingErr == nil {
+		helperID, reusePendingHelper = pending.ID, true
+	} else if !errors.Is(pendingErr, sql.ErrNoRows) {
+		return EnrollmentGrant{}, pendingErr
 	}
 	expiresAt := now.Add(lifetime)
 	credential, err := s.signer.SignCredential(mint.CredentialInput{Issuer: s.issuer, Audience: "paperboat-enrollment", Subject: environmentID, JTI: jti, IssuedAt: now, ExpiresAt: expiresAt, CredentialClass: "helper_enrollment", Scopes: []string{"helper:enroll"}, EnvironmentID: environmentID, EnrollmentID: enrollmentID})
@@ -136,8 +148,10 @@ func (s *EnrollmentService) Issue(ctx context.Context, actorID, operationKey, en
 		return EnrollmentGrant{}, err
 	}
 	err = s.store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		if _, err := tx.Queries().CreateControlHelper(ctx, dbsqlc.CreateControlHelperParams{ID: helperID, EnvironmentID: environmentID}); err != nil {
-			return err
+		if !reusePendingHelper {
+			if _, err := tx.Queries().CreateControlHelper(ctx, dbsqlc.CreateControlHelperParams{ID: helperID, EnvironmentID: environmentID}); err != nil {
+				return err
+			}
 		}
 		_, err := tx.Queries().CreateControlHelperEnrollment(ctx, dbsqlc.CreateControlHelperEnrollmentParams{ID: enrollmentID, EnvironmentID: environmentID, HelperID: helperID, JtiHash: jtiHash[:], OperationKey: storedOperationKey, RequestHash: requestHash[:], GrantCiphertext: ciphertext, ExpiresAt: expiresAt})
 		if errors.Is(err, sql.ErrNoRows) {

@@ -11,7 +11,7 @@ import (
 )
 
 const closeTerminalSession = `-- name: CloseTerminalSession :execrows
-UPDATE project_terminal_sessions SET desired_state='closed',runtime_state='closed',version=version+1,updated_at=now()
+UPDATE project_terminal_sessions SET desired_state='closed',version=version+1,updated_at=now()
 WHERE project_id=$1 AND id=$2 AND deleted_at IS NULL AND desired_state<>'closed'
 `
 
@@ -484,6 +484,17 @@ type RetryTerminalSessionOperationParams struct {
 
 func (q *Queries) RetryTerminalSessionOperation(ctx context.Context, arg RetryTerminalSessionOperationParams) error {
 	_, err := q.db.ExecContext(ctx, retryTerminalSessionOperation, arg.RetrySeconds, arg.LastError, arg.ID)
+	return err
+}
+
+const supersedeProjectTerminalSessionOperations = `-- name: SupersedeProjectTerminalSessionOperations :exec
+UPDATE terminal_session_operations
+SET state='superseded',completed_at=now(),last_error='hosted provider resources destroyed',updated_at=now()
+WHERE project_id=$1 AND state='pending'
+`
+
+func (q *Queries) SupersedeProjectTerminalSessionOperations(ctx context.Context, projectID string) error {
+	_, err := q.db.ExecContext(ctx, supersedeProjectTerminalSessionOperations, projectID)
 	return err
 }
 

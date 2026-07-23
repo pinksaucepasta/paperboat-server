@@ -67,8 +67,8 @@ type driverConfig struct {
 }
 
 func main() {
-	if len(os.Args) != 5 && len(os.Args) != 8 {
-		fmt.Fprintln(os.Stderr, "usage: paperboat-control-conformance <postgres-dsn> <absolute-tunnel-driver-path> <absolute-helper-path> <absolute-helper-driver-path> [<absolute-tunnel-service-path> <absolute-frps-path> <absolute-caddy-path>]")
+	if len(os.Args) != 4 && len(os.Args) != 7 {
+		fmt.Fprintln(os.Stderr, "usage: paperboat-control-conformance <postgres-dsn> <absolute-tunnel-driver-path> <absolute-helper-driver-path> [<absolute-tunnel-service-path> <absolute-frps-path> <absolute-caddy-path>]")
 		os.Exit(2)
 	}
 	if err := run(context.Background(), os.Args[1:], os.Stdout); err != nil {
@@ -78,8 +78,8 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, output *os.File) error {
-	dsn, driverPath, helperPath, helperDriverPath := args[0], args[1], args[2], args[3]
-	if !filepath.IsAbs(driverPath) || !filepath.IsAbs(helperPath) || !filepath.IsAbs(helperDriverPath) {
+	dsn, driverPath, helperDriverPath := args[0], args[1], args[2]
+	if !filepath.IsAbs(driverPath) || !filepath.IsAbs(helperDriverPath) {
 		return errors.New("conformance driver paths must be absolute")
 	}
 	store, err := db.Open(config.Database{Driver: "postgres", DSN: dsn})
@@ -184,25 +184,23 @@ func run(ctx context.Context, args []string, output *os.File) error {
 		return err
 	}
 	stateRoot := filepath.Join(root, "helper-state")
-	enrollConfigPath := filepath.Join(root, "helper-enroll.json")
-	enrollConfig, _ := json.Marshal(map[string]any{"control_url": server.URL, "control_ca_file": caPath, "state_root": stateRoot, "enrollment_credential": grant.Credential})
-	if err := os.WriteFile(enrollConfigPath, enrollConfig, 0o600); err != nil {
+	helperDriverConfigPath := filepath.Join(root, "helper-driver.json")
+	runHelperDriver := func(label string, value map[string]any) error {
+		encoded, _ := json.Marshal(value)
+		if err := os.WriteFile(helperDriverConfigPath, encoded, 0o600); err != nil {
+			return err
+		}
+		command := exec.CommandContext(ctx, helperDriverPath, helperDriverConfigPath)
+		result, err := command.CombinedOutput()
+		if err != nil || !json.Valid(result) {
+			return fmt.Errorf("helper %s process: %w: %s", label, errors.Join(errInvalidConformance, err), result)
+		}
+		return nil
+	}
+	if err := runHelperDriver("enrollment", map[string]any{"action": "enroll", "control_url": server.URL, "control_ca_file": caPath, "state_root": stateRoot, "issuer": server.URL, "enrollment_credential": grant.Credential}); err != nil {
 		return err
 	}
-	helperCommand := exec.CommandContext(ctx, helperPath, "enroll", enrollConfigPath)
-	helperCommand.Env = append(os.Environ(), "SSL_CERT_FILE="+caPath)
-	if result, err := helperCommand.CombinedOutput(); err != nil {
-		return fmt.Errorf("helper enrollment process: %w: %s", err, result)
-	}
-	var runtimeIdentity struct {
-		HelperID      string `json:"helper_id"`
-		EnvironmentID string `json:"environment_id"`
-	}
-	identityDocument, err := os.ReadFile(filepath.Join(stateRoot, "runtime-identity.json"))
-	if err != nil || json.Unmarshal(identityDocument, &runtimeIdentity) != nil || runtimeIdentity.HelperID != grant.HelperID || runtimeIdentity.EnvironmentID != environmentID {
-		return errors.Join(errInvalidConformance, err)
-	}
-	value := driverConfig{ControlURL: server.URL, ControlCredential: controlCredential, ControlCAFile: caPath, NodeID: nodeID, EdgePool: "default", ProcessEpoch: "process_control_conformance", EnvironmentID: environmentID, HelperID: runtimeIdentity.HelperID, ConnectorGeneration: 1, RouteID: routeID, RouteRevision: 1, UsageKeyID: usageKeyID, UsageSeed: base64.RawURLEncoding.EncodeToString(private.Seed()), CounterEpoch: "counter_control_conformance", UsageOperationID: "op_conformance_usage_0001", RevokedKeyID: revokedKeyID, Now: now.Format(time.RFC3339Nano)}
+	value := driverConfig{ControlURL: server.URL, ControlCredential: controlCredential, ControlCAFile: caPath, NodeID: nodeID, EdgePool: "default", ProcessEpoch: "process_control_conformance", EnvironmentID: environmentID, HelperID: grant.HelperID, ConnectorGeneration: 1, RouteID: routeID, RouteRevision: 1, UsageKeyID: usageKeyID, UsageSeed: base64.RawURLEncoding.EncodeToString(private.Seed()), CounterEpoch: "counter_control_conformance", UsageOperationID: "op_conformance_usage_0001", RevokedKeyID: revokedKeyID, Now: now.Format(time.RFC3339Nano)}
 	configPath := filepath.Join(root, "driver.json")
 	runDriver := func(label string) error {
 		encoded, _ := json.Marshal(value)
@@ -222,14 +220,8 @@ func run(ctx context.Context, args []string, output *os.File) error {
 	if err := runDriver("initial"); err != nil {
 		return err
 	}
-	helperDriverConfigPath := filepath.Join(root, "helper-driver.json")
-	helperDriverConfig, _ := json.Marshal(map[string]any{"control_url": server.URL, "control_ca_file": caPath, "state_root": stateRoot, "issuer": server.URL})
-	if err := os.WriteFile(helperDriverConfigPath, helperDriverConfig, 0o600); err != nil {
+	if err := runHelperDriver("admission", map[string]any{"action": "admission", "control_url": server.URL, "control_ca_file": caPath, "state_root": stateRoot, "issuer": server.URL}); err != nil {
 		return err
-	}
-	helperAdmissionCommand := exec.CommandContext(ctx, helperDriverPath, helperDriverConfigPath)
-	if result, err := helperAdmissionCommand.CombinedOutput(); err != nil || !json.Valid(result) {
-		return fmt.Errorf("helper admission process: %w: %s", errors.Join(errInvalidConformance, err), result)
 	}
 	if err := runDriver("restart"); err != nil {
 		return err
@@ -260,14 +252,14 @@ func run(ctx context.Context, args []string, output *os.File) error {
 		return fmt.Errorf("reassigned usage was not persisted exactly once: count=%d: %w", receiptCount, err)
 	}
 	fullServiceRuns := 0
-	if len(args) == 7 {
-		for _, path := range args[4:] {
+	if len(args) == 6 {
+		for _, path := range args[3:] {
 			if !filepath.IsAbs(path) {
 				return errors.New("full tunnel paths must be absolute")
 			}
 		}
 		expectedNode.Store(fullNodeID)
-		if err := runFullTunnelConformance(ctx, store, rootHandler, root, caPath, server.URL, args[4], args[5], args[6], fullPrivate); err != nil {
+		if err := runFullTunnelConformance(ctx, store, rootHandler, root, caPath, server.URL, args[3], args[4], args[5], fullPrivate); err != nil {
 			return err
 		}
 		fullServiceRuns = 2
@@ -289,7 +281,7 @@ func run(ctx context.Context, args []string, output *os.File) error {
 	if err := conformanceScan(ctx, store, `SELECT desired_state,applied_node_id FROM paperboat.control_routes WHERE id=$1`, []any{routeID}, &state, &node); err != nil || state != "detached" || node != nil {
 		return fmt.Errorf("route detach was not persisted: state=%q node=%v: %w", state, node, err)
 	}
-	return json.NewEncoder(output).Encode(map[string]any{"status": "passed", "helper_process_runs": 2, "helper_id": runtimeIdentity.HelperID, "tunnel_process_runs": 3, "full_tunnel_service_runs": fullServiceRuns, "usage_receipts": receiptCount, "route_state": state, "reassigned_node_id": nodeID2, "revoked_key_id": revokedKeyID})
+	return json.NewEncoder(output).Encode(map[string]any{"status": "passed", "helper_process_runs": 2, "helper_id": grant.HelperID, "tunnel_process_runs": 3, "full_tunnel_service_runs": fullServiceRuns, "usage_receipts": receiptCount, "route_state": state, "reassigned_node_id": nodeID2, "revoked_key_id": revokedKeyID})
 }
 
 func waitForDatabase(ctx context.Context, store *db.DB, timeout time.Duration) error {
@@ -334,9 +326,11 @@ type fullTunnelDeployment struct {
 	ConnectorTCPPort       int           `json:"connector_tcp_port"`
 	ConnectorQUICPort      int           `json:"connector_quic_port"`
 	PrivateVhostAddress    string        `json:"private_vhost_address"`
+	EdgeGatewayAddress     string        `json:"edge_gateway_address"`
 	CaddyListenAddress     string        `json:"caddy_listen_address"`
 	CaddyAdminAddress      string        `json:"caddy_admin_address"`
-	WildcardHost           string        `json:"wildcard_host"`
+	PreviewBaseDomain      string        `json:"preview_base_domain"`
+	HelperBaseDomain       string        `json:"helper_base_domain"`
 	TrustedProxyCIDRs      []string      `json:"trusted_proxy_cidrs"`
 	CertificateIssuer      string        `json:"certificate_issuer"`
 	NodeCapacity           uint32        `json:"node_capacity"`
@@ -384,7 +378,7 @@ func runFullTunnelConformance(ctx context.Context, store *db.DB, handler http.Ha
 	if err := os.WriteFile(usagePath, usageDocument, 0o600); err != nil {
 		return err
 	}
-	ports := make([]int, 7)
+	ports := make([]int, 8)
 	seenPorts := make(map[int]struct{}, len(ports))
 	for index := range ports {
 		for {
@@ -404,7 +398,7 @@ func runFullTunnelConformance(ctx context.Context, store *db.DB, handler http.Ha
 		ControlURL: controlURL, CredentialIssuer: controlURL, ControlCredentialFile: credentialPath, ControlCAFile: caPath, JWKSFile: jwksPath, RevocationsFile: revocationsPath, UsageSigningKeyFile: usagePath,
 		FRPSBinary: frpsPath, FRPSSHA256: fileSHA256(frpsPath), CaddyBinary: caddyPath, CaddySHA256: fileSHA256(caddyPath), RuntimeDirectory: runtimeRoot,
 		HookAddress: "127.0.0.1:" + fmt.Sprint(ports[0]), HookPath: "/private/control-conformance-hook", ConnectorBindAddress: "127.0.0.1", ConnectorAdvertiseHost: "edge.example.test", ConnectorTCPPort: ports[1], ConnectorQUICPort: ports[2],
-		PrivateVhostAddress: "127.0.0.1:" + fmt.Sprint(ports[3]), CaddyListenAddress: "127.0.0.1:" + fmt.Sprint(ports[4]), CaddyAdminAddress: "127.0.0.1:" + fmt.Sprint(ports[5]), WildcardHost: "*.example.test", TrustedProxyCIDRs: []string{"127.0.0.0/8"}, CertificateIssuer: "internal",
+		PrivateVhostAddress: "127.0.0.1:" + fmt.Sprint(ports[3]), EdgeGatewayAddress: "127.0.0.1:" + fmt.Sprint(ports[4]), CaddyListenAddress: "127.0.0.1:" + fmt.Sprint(ports[5]), CaddyAdminAddress: "127.0.0.1:" + fmt.Sprint(ports[6]), PreviewBaseDomain: "preview.example.test", HelperBaseDomain: "helper.example.test", TrustedProxyCIDRs: []string{"127.0.0.0/8"}, CertificateIssuer: "internal",
 		NodeCapacity: 8, ControlInterval: 250 * time.Millisecond, UsageInterval: 250 * time.Millisecond, ControlTimeout: 2 * time.Second,
 	}
 	if deployment.FRPSSHA256 == "" || deployment.CaddySHA256 == "" {
@@ -416,7 +410,7 @@ func runFullTunnelConformance(ctx context.Context, store *db.DB, handler http.Ha
 		return err
 	}
 	statePath := filepath.Join(trustRoot, "edge-state.json")
-	healthAddress := "127.0.0.1:" + fmt.Sprint(ports[6])
+	healthAddress := "127.0.0.1:" + fmt.Sprint(ports[7])
 	var firstEpoch string
 	for run := 1; run <= 2; run++ {
 		command := exec.CommandContext(ctx, tunnelPath, "-node-id", fullNodeID, "-edge-pool", "default", "-health-address", healthAddress, "-state-path", statePath, "-deployment-config", deploymentPath, "-shutdown-timeout", "5s")
@@ -553,7 +547,7 @@ func resetAndSeed(ctx context.Context, store *db.DB) error {
 		`DELETE FROM paperboat.users WHERE id='usr_control_conformance'`,
 		`INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ('usr_control_conformance','workos_control_conformance','control-conformance@example.test','active')`,
 		`INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id) VALUES ('env_control_conformance','workspace_control_conformance','usr_control_conformance')`,
-		`INSERT INTO paperboat.control_routes (id,environment_id,kind,public_host,target_host,target_port) VALUES ('route_control_conformance','env_control_conformance','helper_https_wss','control-conformance.example.test','127.0.0.1',8080)`,
+		`INSERT INTO paperboat.control_routes (id,environment_id,kind,public_host,target_host,target_port) VALUES ('route_control_conformance','env_control_conformance','helper_https_wss','control-conformance.helper.example.test','127.0.0.1',8080)`,
 	}
 	return store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		for _, statement := range statements {

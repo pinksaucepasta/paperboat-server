@@ -52,6 +52,21 @@ func TestHealthDoesNotRequireReadiness(t *testing.T) {
 	}
 }
 
+func TestRetiredHostedAccessRoutesAreNotRegistered(t *testing.T) {
+	router := NewRouter(Options{Config: config.Default(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	for _, path := range []string{
+		"/api/projects/prj_retired/connect",
+		"/api/projects/prj_retired/papercode-connect",
+	} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotImplemented {
+			t.Fatalf("POST %s status = %d, want unregistered-route 501", path, rec.Code)
+		}
+	}
+}
+
 func TestRequestIDRejectsUnsafeClientValue(t *testing.T) {
 	router := NewRouter(Options{Config: config.Default(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	rec := httptest.NewRecorder()

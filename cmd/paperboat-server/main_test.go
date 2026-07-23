@@ -1,31 +1,45 @@
 package main
 
 import (
+	"bytes"
+	"strings"
 	"testing"
-	"time"
-
-	"github.com/pinksaucepasta/paperboat-server/internal/agentunnel"
-	"github.com/pinksaucepasta/paperboat-server/internal/config"
 )
 
-func TestCommandAgentunnelClientUsesHTTPAdapterOutsideFakeMode(t *testing.T) {
-	cfg := config.Default()
-	cfg.Providers.FakeMode = false
-	cfg.Providers.Agentunnel.BaseURL = "https://agentunnel.example"
-	cfg.Providers.Agentunnel.PapercodeLocalURL = "http://127.0.0.1:4099"
-	cfg.Providers.Agentunnel.RouteExpiresIn = time.Hour
-	cfg.Providers.Agentunnel.RouteSubdomainPrefix = "pb"
-	cfg.Secrets.AgentunnelAPIKey = "agentunnel-api-key"
-
-	client, ok := commandAgentunnelClient(cfg).(agentunnel.HTTPClient)
-	if !ok {
-		t.Fatalf("client type = %T, want agentunnel.HTTPClient", commandAgentunnelClient(cfg))
+func TestRunAdminRejectsUnknownOperation(t *testing.T) {
+	err := runAdmin([]string{"usage-key", "revoke"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "project delete") {
+		t.Fatalf("error = %v", err)
 	}
-	if client.BaseURL != cfg.Providers.Agentunnel.BaseURL ||
-		client.APIKey != cfg.Secrets.AgentunnelAPIKey ||
-		client.PapercodeLocalURL != cfg.Providers.Agentunnel.PapercodeLocalURL ||
-		client.RouteExpiresIn != cfg.Providers.Agentunnel.RouteExpiresIn ||
-		client.RouteSubdomainPrefix != cfg.Providers.Agentunnel.RouteSubdomainPrefix {
-		t.Fatalf("client config = %#v", client)
+}
+
+func TestRunAdminDeleteProjectRequiresExplicitOwnerAndProject(t *testing.T) {
+	err := runAdmin([]string{"project", "delete", "--user-id", "usr_1"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || err.Error() != "admin project delete requires --user-id and --project-id" {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestRunAdminProvisionUsageKeyValidatesPublicKeyBeforeConfiguration(t *testing.T) {
+	err := runAdmin([]string{
+		"usage-key", "provision",
+		"-public-key", "not-base64url!",
+		"-not-before", "2026-07-22T00:00:00Z",
+		"-expires-at", "2026-07-23T00:00:00Z",
+	}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || err.Error() != "public-key must be unpadded base64url" {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestRunAdminProvisionUsageKeyValidatesTimestampsBeforeConfiguration(t *testing.T) {
+	err := runAdmin([]string{
+		"usage-key", "provision",
+		"-public-key", strings.Repeat("A", 43),
+		"-not-before", "yesterday",
+		"-expires-at", "2026-07-23T00:00:00Z",
+	}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || err.Error() != "not-before must be RFC3339" {
+		t.Fatalf("error = %v", err)
 	}
 }

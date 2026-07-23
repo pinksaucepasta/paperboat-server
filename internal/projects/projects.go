@@ -893,14 +893,8 @@ func markDeletedAndReleaseStorageTx(ctx context.Context, tx *db.Tx, projectID st
 	} else if err != nil {
 		return err
 	}
-	terminalSessions, err := q.ListActiveTerminalSessions(ctx, projectID)
-	if err != nil {
+	if err := q.SupersedeProjectTerminalSessionOperations(ctx, projectID); err != nil {
 		return err
-	}
-	for _, terminalSession := range terminalSessions {
-		if err := q.QueueTerminalSessionOperation(ctx, dbsqlc.QueueTerminalSessionOperationParams{ID: newID("tso"), ProjectID: projectID, TerminalSessionID: terminalSession.ID, Operation: "delete_history"}); err != nil {
-			return err
-		}
 	}
 	if err := q.TombstoneProjectTerminalSessions(ctx, projectID); err != nil {
 		return err

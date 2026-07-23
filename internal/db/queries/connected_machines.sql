@@ -8,6 +8,90 @@ INSERT INTO connected_machine_pairings (
   sqlc.arg(expires_at)
 ) RETURNING *;
 
+-- name: CreateConnectedMachineEnrollment :one
+INSERT INTO connected_machine_enrollments (
+  id, user_id, operation_id, idempotency_key, bootstrap_token_hash, bootstrap_token_ciphertext, expires_at
+) VALUES (
+  sqlc.arg(id), sqlc.arg(user_id), sqlc.arg(operation_id), sqlc.arg(idempotency_key),
+  sqlc.arg(bootstrap_token_hash), sqlc.arg(bootstrap_token_ciphertext), sqlc.arg(expires_at)
+)
+ON CONFLICT (user_id, idempotency_key) DO UPDATE
+SET idempotency_key = excluded.idempotency_key
+RETURNING *;
+
+-- name: GetConnectedMachineEnrollmentForUser :one
+SELECT * FROM connected_machine_enrollments
+WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id);
+
+-- name: GetConnectedMachineEnrollmentForTokenUpdate :one
+SELECT * FROM connected_machine_enrollments
+WHERE bootstrap_token_hash = sqlc.arg(bootstrap_token_hash) FOR UPDATE;
+
+-- name: GetConnectedMachineEnrollmentForPairingUpdate :one
+SELECT * FROM connected_machine_enrollments
+WHERE pairing_id = sqlc.arg(pairing_id) FOR UPDATE;
+
+-- name: ClaimConnectedMachineEnrollment :execrows
+UPDATE connected_machine_enrollments
+SET state = 'awaiting_approval', pairing_id = sqlc.arg(pairing_id),
+    requested_display_name = sqlc.arg(requested_display_name), platform = sqlc.arg(platform),
+    architecture = sqlc.arg(architecture), workspace_root = sqlc.arg(workspace_root), updated_at = now()
+WHERE id = sqlc.arg(id) AND state = 'awaiting_bootstrap' AND expires_at > now();
+
+-- name: ApproveConnectedMachineEnrollment :execrows
+UPDATE connected_machine_enrollments
+SET state = 'approved', connected_machine_id = sqlc.arg(connected_machine_id), updated_at = now()
+WHERE pairing_id = sqlc.arg(pairing_id) AND user_id = sqlc.arg(user_id) AND state = 'awaiting_approval';
+
+-- name: DenyConnectedMachineEnrollment :execrows
+UPDATE connected_machine_enrollments
+SET state = 'denied', updated_at = now()
+WHERE pairing_id = sqlc.arg(pairing_id) AND user_id = sqlc.arg(user_id) AND state = 'awaiting_approval';
+
+-- name: MarkConnectedMachineEnrollmentMaterialIssued :execrows
+UPDATE connected_machine_enrollments SET state = 'material_issued', updated_at = now()
+WHERE pairing_id = sqlc.arg(pairing_id) AND state = 'approved';
+
+-- name: CancelConnectedMachineEnrollment :execrows
+UPDATE connected_machine_enrollments
+SET state = 'cancelled', cancelled_at = now(), updated_at = now()
+WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id)
+  AND state IN ('awaiting_bootstrap','awaiting_approval','failed_retryable');
+
+-- name: ExpireConnectedMachineEnrollment :execrows
+UPDATE connected_machine_enrollments
+SET state = 'expired', updated_at = now()
+WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id)
+  AND state IN ('awaiting_bootstrap','awaiting_approval') AND expires_at <= now();
+
+-- name: RetryConnectedMachineEnrollment :one
+UPDATE connected_machine_enrollments
+SET state = 'awaiting_bootstrap', generation = generation + 1,
+    bootstrap_token_hash = sqlc.arg(bootstrap_token_hash), bootstrap_token_ciphertext = sqlc.arg(bootstrap_token_ciphertext), pairing_id = NULL,
+    requested_display_name = NULL, platform = NULL, architecture = NULL, workspace_root = NULL,
+    expires_at = sqlc.arg(expires_at), cancelled_at = NULL, updated_at = now()
+WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id)
+  AND state IN ('cancelled','expired','denied','failed_retryable')
+RETURNING *;
+
+-- name: FailConnectedMachineEnrollmentForHelper :execrows
+UPDATE connected_machine_enrollments e
+SET state = 'failed_retryable', updated_at = now()
+FROM connected_machines m, control_helpers h
+WHERE e.id = sqlc.arg(id)
+  AND e.connected_machine_id = m.id
+  AND m.environment_id = sqlc.arg(environment_id)
+  AND h.id = sqlc.arg(helper_id)
+  AND h.environment_id = m.environment_id
+  AND (sqlc.arg(helper_enrollment_id) = '' OR EXISTS (
+    SELECT 1 FROM control_helper_enrollments he
+    WHERE he.id = sqlc.arg(helper_enrollment_id)
+      AND he.helper_id = h.id
+      AND he.environment_id = h.environment_id
+  ))
+  AND h.state IN ('pending','active') AND h.revoked_at IS NULL
+  AND e.state IN ('installing','connecting');
+
 -- name: GetConnectedMachineEntitlementForUpdate :one
 SELECT * FROM connected_machine_entitlements
 WHERE user_id = sqlc.arg(user_id) FOR UPDATE;
@@ -40,6 +124,13 @@ SELECT EXISTS (
     AND current_period_end > now()
 );
 
+-- name: GetActiveConnectedMachineSeatQuantity :one
+SELECT seat_quantity FROM connected_machine_entitlements
+WHERE user_id = sqlc.arg(user_id)
+  AND state IN ('active', 'trialing')
+  AND current_period_start <= now()
+  AND current_period_end > now();
+
 -- name: UpsertConnectedMachineEntitlement :exec
 INSERT INTO connected_machine_entitlements (id,user_id,provider_subscription_id,product_code,state,seat_quantity,allowance_bytes,current_period_start,current_period_end)
 VALUES (sqlc.arg(id),sqlc.arg(user_id),sqlc.arg(provider_subscription_id),sqlc.arg(product_code),sqlc.arg(state),sqlc.arg(seat_quantity),sqlc.arg(allowance_bytes),sqlc.arg(current_period_start),sqlc.arg(current_period_end))
@@ -64,12 +155,34 @@ WHERE user_id = sqlc.arg(user_id)
 
 -- name: RevokeConnectedMachinesForEntitlement :many
 UPDATE connected_machines
-SET state = 'revoked', online = false, revoked_at = now(), updated_at = now(), version = version + 1
+SET state = 'revoked', online = false, seat_state = 'released', revoked_at = now(), updated_at = now(), version = version + 1
 WHERE user_id = sqlc.arg(user_id)
   AND seat_state = 'occupied'
   AND deleted_at IS NULL
   AND state IN ('pending', 'online', 'offline')
 RETURNING id;
+
+-- name: RevokeConnectedMachinesOverSeatLimit :many
+WITH excess AS (
+  SELECT candidate.id
+  FROM connected_machines AS candidate
+  WHERE candidate.user_id = sqlc.arg(user_id)
+    AND seat_state = 'occupied'
+    AND deleted_at IS NULL
+    AND state IN ('pending', 'online', 'offline')
+  ORDER BY coalesce(enrolled_at, created_at) ASC, created_at ASC, id ASC
+  OFFSET sqlc.arg(seat_quantity)
+)
+UPDATE connected_machines AS machine
+SET state = 'revoked', online = false, seat_state = 'released', revoked_at = now(), updated_at = now(), version = version + 1
+FROM excess
+WHERE machine.id = excess.id
+RETURNING machine.id, machine.environment_id;
+
+-- name: ListRevokedConnectedMachineEnvironmentsForUser :many
+SELECT id, environment_id FROM connected_machines
+WHERE user_id = sqlc.arg(user_id) AND state = 'revoked' AND deleted_at IS NULL
+ORDER BY id;
 
 -- name: GetConnectedMachinePairingForVerifier :one
 SELECT * FROM connected_machine_pairings
@@ -78,6 +191,9 @@ WHERE verifier_hash = sqlc.arg(verifier_hash) FOR UPDATE;
 -- name: GetConnectedMachinePairingForCode :one
 SELECT * FROM connected_machine_pairings
 WHERE user_code = sqlc.arg(user_code) FOR UPDATE;
+
+-- name: GetConnectedMachinePairingByID :one
+SELECT * FROM connected_machine_pairings WHERE id = sqlc.arg(id);
 
 -- name: ExpireConnectedMachinePairing :execrows
 UPDATE connected_machine_pairings SET state = 'expired', updated_at = now()
@@ -138,6 +254,23 @@ SET state = sqlc.arg(state), online = sqlc.arg(online), last_seen_at = now(),
 WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND deleted_at IS NULL
   AND state NOT IN ('revoked','deleted');
 
+-- name: MarkConnectedMachineOnlineFromHelper :execrows
+UPDATE connected_machines
+SET state = 'online', online = true, last_seen_at = now(), updated_at = now(), version = version + 1
+WHERE id = sqlc.arg(id) AND environment_id = sqlc.arg(environment_id)
+  AND seat_state = 'occupied' AND deleted_at IS NULL AND state IN ('pending','offline','online');
+
+-- name: MarkStaleConnectedMachinesOffline :execrows
+UPDATE connected_machines
+SET state = 'offline', online = false, updated_at = now(), version = version + 1
+WHERE state = 'online' AND online = true AND last_seen_at < sqlc.arg(cutoff);
+
+-- name: MarkConnectedMachineEnrollmentReady :execrows
+UPDATE connected_machine_enrollments
+SET state = 'ready', updated_at = now()
+WHERE connected_machine_id = sqlc.arg(connected_machine_id)
+  AND state IN ('approved','material_issued','installing','connecting');
+
 -- name: SetConnectedMachineRoute :execrows
 UPDATE connected_machines
 SET agentunnel_route_id = sqlc.arg(agentunnel_route_id), agentunnel_client_id = sqlc.arg(agentunnel_client_id),
@@ -151,14 +284,21 @@ SET installation_config_ciphertext = sqlc.arg(ciphertext), updated_at = now()
 WHERE id = sqlc.arg(id) AND state = 'approved' AND installation_config_ciphertext IS NULL;
 
 -- name: ConsumeConnectedMachineInstallationConfig :one
-UPDATE connected_machine_pairings
-SET state = 'consumed', installation_config_consumed_at = now(), updated_at = now()
-WHERE verifier_hash = sqlc.arg(verifier_hash)
-  AND state = 'approved'
-  AND installation_config_ciphertext IS NOT NULL
-  AND installation_config_consumed_at IS NULL
-  AND expires_at > now()
-RETURNING installation_config_ciphertext;
+WITH consumed AS (
+  UPDATE connected_machine_pairings
+  SET state = 'consumed', installation_config_consumed_at = now(), updated_at = now()
+  WHERE verifier_hash = sqlc.arg(verifier_hash)
+    AND state = 'approved'
+    AND installation_config_ciphertext IS NOT NULL
+    AND installation_config_consumed_at IS NULL
+    AND expires_at > now()
+  RETURNING id, installation_config_ciphertext
+), advanced AS (
+  UPDATE connected_machine_enrollments e SET state = 'installing', updated_at = now()
+  FROM consumed WHERE e.pairing_id = consumed.id AND e.state = 'material_issued'
+  RETURNING e.id
+)
+SELECT installation_config_ciphertext FROM consumed;
 
 -- name: RevokeConnectedMachine :execrows
 UPDATE connected_machines
@@ -324,7 +464,7 @@ WHERE connected_machine_id=sqlc.arg(connected_machine_id) AND id=sqlc.arg(id)
   AND deleted_at IS NULL AND NOT is_default;
 
 -- name: CloseConnectedMachineTerminalSession :execrows
-UPDATE connected_machine_terminal_sessions SET desired_state='closed',runtime_state='closed',version=version+1,updated_at=now()
+UPDATE connected_machine_terminal_sessions SET desired_state='closed',version=version+1,updated_at=now()
 WHERE connected_machine_id=sqlc.arg(connected_machine_id) AND id=sqlc.arg(id)
   AND deleted_at IS NULL AND desired_state<>'closed';
 
@@ -347,7 +487,17 @@ SELECT EXISTS (
 
 -- name: ListDueConnectedMachineTerminalSessionOperations :many
 SELECT o.id,o.connected_machine_id,o.terminal_session_id,o.operation,o.attempts,
-  m.user_id,m.environment_id,m.agentunnel_http_base_url,s.thread_id,s.terminal_id
+  m.user_id,m.environment_id,coalesce((SELECT 'https://' || r.public_host
+    FROM control_routes r
+    JOIN control_environments e ON e.id = r.environment_id
+    JOIN control_connector_generations c ON c.environment_id = r.environment_id
+    JOIN control_helpers h ON h.id = c.helper_id AND h.environment_id = r.environment_id
+    JOIN control_tunnel_nodes n ON n.id = c.edge_node_id AND n.id = r.applied_node_id
+    WHERE r.environment_id = m.environment_id AND r.kind = 'helper_https_wss'
+      AND r.desired_state IN ('attached','replacing') AND r.applied_revision >= r.desired_revision
+      AND r.applied_generation = c.generation AND e.desired_state = 'active'
+      AND h.state = 'active' AND c.state = 'admitted' AND n.state = 'ready' AND n.ready = true
+    ORDER BY r.id LIMIT 1), '')::text AS agentunnel_http_base_url,s.thread_id,s.terminal_id
 FROM connected_machine_terminal_session_operations o
 JOIN connected_machines m ON m.id=o.connected_machine_id
 JOIN connected_machine_terminal_sessions s ON s.id=o.terminal_session_id
@@ -356,7 +506,17 @@ ORDER BY o.created_at LIMIT sqlc.arg(batch_size);
 
 -- name: ListPendingConnectedMachineTerminalSessionOperations :many
 SELECT o.id,o.connected_machine_id,o.terminal_session_id,o.operation,o.attempts,
-  m.user_id,m.environment_id,m.agentunnel_http_base_url,s.thread_id,s.terminal_id
+  m.user_id,m.environment_id,coalesce((SELECT 'https://' || r.public_host
+    FROM control_routes r
+    JOIN control_environments e ON e.id = r.environment_id
+    JOIN control_connector_generations c ON c.environment_id = r.environment_id
+    JOIN control_helpers h ON h.id = c.helper_id AND h.environment_id = r.environment_id
+    JOIN control_tunnel_nodes n ON n.id = c.edge_node_id AND n.id = r.applied_node_id
+    WHERE r.environment_id = m.environment_id AND r.kind = 'helper_https_wss'
+      AND r.desired_state IN ('attached','replacing') AND r.applied_revision >= r.desired_revision
+      AND r.applied_generation = c.generation AND e.desired_state = 'active'
+      AND h.state = 'active' AND c.state = 'admitted' AND n.state = 'ready' AND n.ready = true
+    ORDER BY r.id LIMIT 1), '')::text AS agentunnel_http_base_url,s.thread_id,s.terminal_id
 FROM connected_machine_terminal_session_operations o
 JOIN connected_machines m ON m.id=o.connected_machine_id
 JOIN connected_machine_terminal_sessions s ON s.id=o.terminal_session_id
@@ -367,6 +527,11 @@ ORDER BY o.created_at LIMIT sqlc.arg(batch_size);
 UPDATE connected_machine_terminal_session_operations
 SET state='applied',completed_at=now(),updated_at=now(),last_error=NULL
 WHERE id=sqlc.arg(id) AND state='pending';
+
+-- name: MarkConnectedMachineTerminalSessionRuntimeClosed :exec
+UPDATE connected_machine_terminal_sessions
+SET runtime_state='closed',updated_at=now(),version=version+1
+WHERE id=sqlc.arg(id) AND deleted_at IS NULL;
 
 -- name: RetryConnectedMachineTerminalSessionOperation :exec
 UPDATE connected_machine_terminal_session_operations

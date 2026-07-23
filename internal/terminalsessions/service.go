@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -17,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
+	"github.com/pinksaucepasta/paperboat-server/internal/helperruntime"
 	"github.com/pinksaucepasta/paperboat-server/internal/mint"
 	"github.com/pinksaucepasta/paperboat-server/internal/observability"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
@@ -39,10 +39,14 @@ type Service struct {
 	controlRoute           func(context.Context, string) (string, error)
 	signer                 *mint.Provider
 	issuer                 string
-	http                   *http.Client
+	runtime                helperRuntime
 	maxActivePerProject    int
 	retryBackoff           time.Duration
 	maxAttemptsBeforeAlert int
+}
+
+type helperRuntime interface {
+	Terminal(context.Context, string, string, string, string, string) (helperruntime.Snapshot, error)
 }
 
 func New(store *db.DB, projectService *projects.Service, maxActivePerProject int, retryBackoff time.Duration, maxAttemptsBeforeAlert int) *Service {
@@ -63,7 +67,7 @@ func (s *Service) ConfigureControl(route func(context.Context, string) (string, 
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 15 * time.Second}
 	}
-	s.http = httpClient
+	s.runtime = helperruntime.Client{HTTPClient: httpClient}
 }
 
 func (s *Service) Worker(interval time.Duration) func(context.Context) error {
@@ -85,7 +89,7 @@ func (s *Service) Worker(interval time.Duration) func(context.Context) error {
 }
 
 func (s *Service) processDue(ctx context.Context) {
-	if s.controlRoute == nil || s.signer == nil || s.http == nil || s.issuer == "" {
+	if s.controlRoute == nil || s.signer == nil || s.runtime == nil || s.issuer == "" {
 		return
 	}
 	items, err := s.db.Queries().ListDueTerminalSessionOperations(ctx, 32)
@@ -106,7 +110,7 @@ func (s *Service) ApplyPending(ctx context.Context, projectID string) error {
 		if len(items) == 0 {
 			return nil
 		}
-		if s.controlRoute == nil || s.signer == nil || s.http == nil || s.issuer == "" {
+		if s.controlRoute == nil || s.signer == nil || s.runtime == nil || s.issuer == "" {
 			return errors.New("terminal session control is unavailable")
 		}
 		operations := make([]dbsqlc.ListDueTerminalSessionOperationsRow, 0, len(items))
@@ -127,8 +131,7 @@ func (s *Service) applyOperations(ctx context.Context, items []dbsqlc.ListDueTer
 	var firstErr error
 	for _, item := range items {
 		if item.Operation == "close" {
-			// Papercode removes the live terminal before answering close. Capture
-			// its CWD first so a later attach restarts the same session directory.
+			// Preserve the launch directory before terminating the helper process.
 			_, _ = s.snapshot(ctx, item.ProjectID, item.UserID, []dbsqlc.ProjectTerminalSession{{
 				ID: item.TerminalSessionID, ThreadID: item.ThreadID, TerminalID: item.TerminalID,
 			}})
@@ -136,29 +139,27 @@ func (s *Service) applyOperations(ctx context.Context, items []dbsqlc.ListDueTer
 		route, err := s.controlRoute(ctx, item.ProjectID)
 		if err == nil {
 			jti, jtiErr := randomID("jti")
-			nonce, nonceErr := randomID("nonce")
-			if jtiErr == nil && nonceErr == nil {
+			if jtiErr == nil {
 				now := time.Now().UTC()
-				proof, signErr := s.signer.SignTerminalControl(mint.TerminalControlInput{Issuer: s.issuer, EnvironmentID: item.ProjectID, UserID: item.UserID, JTI: jti, Nonce: nonce, IssuedAt: now, ExpiresAt: now.Add(mint.MaxProofTTL), Operation: item.Operation, ThreadID: item.ThreadID, TerminalIDs: []string{item.TerminalID}})
+				credential, signErr := s.signer.SignCredential(mint.CredentialInput{Issuer: s.issuer, Audience: "paperboat-helper", Subject: item.UserID, JTI: jti, IssuedAt: now, ExpiresAt: now.Add(mint.MaxProofTTL), CredentialClass: "terminal_operation", Scopes: []string{"terminal:operate"}, EnvironmentID: item.ProjectID, UserID: item.UserID, ClientSessionID: item.ID, SessionID: item.TerminalSessionID})
 				if signErr == nil {
-					var runtime terminalControlResponse
-					runtime, err = s.postControl(ctx, route, proof)
-					if err == nil {
-						err = requireControlOperation(runtime, item.Operation)
+					action := item.Operation
+					if action == "delete_history" {
+						action = "delete"
 					}
-					if err == nil && len(runtime.Terminals) == 1 {
-						err = s.updateRuntime(ctx, item.TerminalSessionID, runtime.Terminals[0])
+					var observed helperruntime.Snapshot
+					observed, err = s.runtime.Terminal(ctx, route, credential, action, item.TerminalSessionID, item.ID)
+					if err == nil && action == "close" && observed.State != "closed" {
+						err = fmt.Errorf("helper runtime acknowledged close in state %q", observed.State)
 					}
-					if err == nil && item.Operation == "close" {
-						err = s.db.Queries().MarkTerminalSessionRuntimeClosed(ctx, item.TerminalSessionID)
+					if err == nil && action == "close" {
+						err = s.updateRuntime(ctx, item.TerminalSessionID, observed)
 					}
 				} else {
 					err = signErr
 				}
-			} else if jtiErr != nil {
-				err = jtiErr
 			} else {
-				err = nonceErr
+				err = jtiErr
 			}
 		}
 		if err == nil {
@@ -184,53 +185,6 @@ func (s *Service) applyOperations(ctx context.Context, items []dbsqlc.ListDueTer
 		_ = s.db.Queries().RetryTerminalSessionOperation(ctx, dbsqlc.RetryTerminalSessionOperationParams{ID: item.ID, RetrySeconds: backoff, LastError: sql.NullString{String: truncateError(err), Valid: true}})
 	}
 	return firstErr
-}
-
-type terminalRuntime struct {
-	TerminalID      string `json:"terminalId"`
-	State           string `json:"state"`
-	AttachmentCount int    `json:"attachmentCount"`
-	LastActivityAt  string `json:"lastActivityAt"`
-	Cwd             string `json:"cwd"`
-	ExitCode        *int   `json:"exitCode"`
-	ExitSignal      *int   `json:"exitSignal"`
-	Sequence        int    `json:"sequence"`
-}
-type terminalControlResponse struct {
-	Operation string            `json:"operation"`
-	Terminals []terminalRuntime `json:"terminals"`
-}
-
-func requireControlOperation(response terminalControlResponse, expected string) error {
-	if response.Operation != expected {
-		return fmt.Errorf("terminal control returned operation %q for %q", response.Operation, expected)
-	}
-	return nil
-}
-
-func (s *Service) postControl(ctx context.Context, route, proof string) (terminalControlResponse, error) {
-	body, err := json.Marshal(map[string]string{"proof": proof})
-	if err != nil {
-		return terminalControlResponse{}, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(route, "/")+"/api/paperboat/terminal-sessions/control", strings.NewReader(string(body)))
-	if err != nil {
-		return terminalControlResponse{}, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := s.http.Do(req)
-	if err != nil {
-		return terminalControlResponse{}, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return terminalControlResponse{}, fmt.Errorf("terminal control returned %s", resp.Status)
-	}
-	var decoded terminalControlResponse
-	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
-		return terminalControlResponse{}, fmt.Errorf("decode terminal control response: %w", err)
-	}
-	return decoded, nil
 }
 
 func randomID(prefix string) (string, error) {
@@ -274,7 +228,7 @@ func (s *Service) List(ctx context.Context, userID, projectID string) ([]Session
 	if err != nil {
 		return nil, err
 	}
-	runtime := map[string]terminalRuntime{}
+	runtime := map[string]helperruntime.Snapshot{}
 	if project.State == "running" {
 		// Listing is best-effort: a transient control-plane failure must not turn
 		// a read-only session list into an outage.
@@ -287,13 +241,8 @@ func (s *Service) List(ctx context.Context, userID, projectID string) ([]Session
 			zero := 0
 			session.State = "stopped"
 			session.AttachedCount = &zero
-		} else if observed, ok := runtime[row.TerminalID]; ok {
-			count := observed.AttachmentCount
+		} else if observed, ok := runtime[row.ID]; ok {
 			session.State = observed.State
-			session.AttachedCount = &count
-			if observedAt, parseErr := time.Parse(time.RFC3339Nano, observed.LastActivityAt); parseErr == nil {
-				session.LastActiveAt = &observedAt
-			}
 		}
 		out = append(out, session)
 	}
@@ -323,50 +272,37 @@ func (s *Service) SnapshotProject(ctx context.Context, projectID string) error {
 	return nil
 }
 
-func (s *Service) snapshot(ctx context.Context, projectID, userID string, rows []dbsqlc.ProjectTerminalSession) (map[string]terminalRuntime, error) {
+func (s *Service) snapshot(ctx context.Context, projectID, userID string, rows []dbsqlc.ProjectTerminalSession) (map[string]helperruntime.Snapshot, error) {
 	if len(rows) == 0 {
-		return map[string]terminalRuntime{}, nil
+		return map[string]helperruntime.Snapshot{}, nil
 	}
-	if s.controlRoute == nil || s.signer == nil || s.http == nil || s.issuer == "" {
+	if s.controlRoute == nil || s.signer == nil || s.runtime == nil || s.issuer == "" {
 		return nil, errors.New("terminal session control is unavailable")
 	}
 	route, err := s.controlRoute(ctx, projectID)
 	if err != nil {
 		return nil, err
 	}
-	jti, err := randomID("jti")
-	if err != nil {
-		return nil, err
-	}
-	nonce, err := randomID("nonce")
-	if err != nil {
-		return nil, err
-	}
-	terminalIDs := make([]string, 0, len(rows))
+	runtime := make(map[string]helperruntime.Snapshot, len(rows))
 	for _, row := range rows {
-		terminalIDs = append(terminalIDs, row.TerminalID)
-	}
-	now := time.Now().UTC()
-	proof, err := s.signer.SignTerminalControl(mint.TerminalControlInput{Issuer: s.issuer, EnvironmentID: projectID, UserID: userID, JTI: jti, Nonce: nonce, IssuedAt: now, ExpiresAt: now.Add(mint.MaxProofTTL), Operation: "snapshot", ThreadID: rows[0].ThreadID, TerminalIDs: terminalIDs})
-	if err != nil {
-		return nil, err
-	}
-	response, err := s.postControl(ctx, route, proof)
-	if err != nil {
-		return nil, err
-	}
-	if err := requireControlOperation(response, "snapshot"); err != nil {
-		return nil, err
-	}
-	runtime := make(map[string]terminalRuntime, len(response.Terminals))
-	for _, terminal := range response.Terminals {
-		runtime[terminal.TerminalID] = terminal
-	}
-	for _, row := range rows {
-		observed, ok := runtime[row.TerminalID]
-		if !ok {
-			continue
+		jti, randomErr := randomID("jti")
+		if randomErr != nil {
+			return nil, randomErr
 		}
+		operationID, randomErr := randomID("tso_snapshot_")
+		if randomErr != nil {
+			return nil, randomErr
+		}
+		now := time.Now().UTC()
+		credential, signErr := s.signer.SignCredential(mint.CredentialInput{Issuer: s.issuer, Audience: "paperboat-helper", Subject: userID, JTI: jti, IssuedAt: now, ExpiresAt: now.Add(mint.MaxProofTTL), CredentialClass: "terminal_operation", Scopes: []string{"terminal:operate"}, EnvironmentID: projectID, UserID: userID, ClientSessionID: operationID, SessionID: row.ID})
+		if signErr != nil {
+			return nil, signErr
+		}
+		observed, operationErr := s.runtime.Terminal(ctx, route, credential, "snapshot", row.ID, operationID)
+		if operationErr != nil {
+			return nil, operationErr
+		}
+		runtime[row.ID] = observed
 		if err := s.updateRuntime(ctx, row.ID, observed); err != nil {
 			return nil, err
 		}
@@ -374,17 +310,13 @@ func (s *Service) snapshot(ctx context.Context, projectID, userID string, rows [
 	return runtime, nil
 }
 
-func (s *Service) updateRuntime(ctx context.Context, sessionID string, observed terminalRuntime) error {
-	lastActivity := sql.NullTime{}
-	if parsed, err := time.Parse(time.RFC3339Nano, observed.LastActivityAt); err == nil {
-		lastActivity = sql.NullTime{Time: parsed, Valid: true}
-	}
+func (s *Service) updateRuntime(ctx context.Context, sessionID string, observed helperruntime.Snapshot) error {
 	return s.db.Queries().UpdateTerminalSessionRuntime(ctx, dbsqlc.UpdateTerminalSessionRuntimeParams{
 		ID:                  sessionID,
 		RuntimeState:        observed.State,
-		LaunchCwd:           observed.Cwd,
-		LastActivityAt:      lastActivity,
-		LastRuntimeSequence: sql.NullInt64{Int64: int64(observed.Sequence), Valid: true},
+		LaunchCwd:           observed.CWD,
+		LastActivityAt:      sql.NullTime{},
+		LastRuntimeSequence: sql.NullInt64{Int64: int64(observed.LatestSequence), Valid: true},
 	})
 }
 

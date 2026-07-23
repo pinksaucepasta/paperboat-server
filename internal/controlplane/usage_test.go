@@ -97,6 +97,24 @@ func TestReconcileUsageRejectsConflictingOperationReplay(t *testing.T) {
 	}
 }
 
+func TestReconcileUsageAcceptsIntervalOnlyRetry(t *testing.T) {
+	store := openControlPlaneTestDB(t)
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	seedUsageScope(t, store, suffix)
+	report := usageReport("op_interval_retry_"+suffix, "epoch_interval_retry_"+suffix, 10, now)
+	report.EdgeNodeID, report.EnvironmentID, report.RouteID = "node_"+suffix, "env_"+suffix, "route_"+suffix
+	if _, err := ReconcileUsage(context.Background(), store, report, now); err != nil {
+		t.Fatal(err)
+	}
+	report.IntervalStart = report.IntervalStart.Add(time.Hour)
+	report.IntervalEnd = report.IntervalEnd.Add(time.Hour)
+	retry, err := ReconcileUsage(context.Background(), store, report, now.Add(time.Hour))
+	if err != nil || !retry.Duplicate || retry.DeltaBytes != 10 {
+		t.Fatalf("retry = %#v, %v", retry, err)
+	}
+}
+
 func TestEdgeUsageRequiresActiveNodeSignature(t *testing.T) {
 	store := openControlPlaneTestDB(t)
 	ctx := context.Background()

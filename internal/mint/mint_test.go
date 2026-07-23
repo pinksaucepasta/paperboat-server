@@ -151,6 +151,36 @@ func TestSignCredentialConfigSyncBindsAssignmentAndWarning(t *testing.T) {
 	}
 }
 
+func TestSignPreviewRegistrationBindsHelperAndEnvironment(t *testing.T) {
+	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	provider, err := New([]Key{{ID: "key-preview", PrivateKey: testKey(12)}}, "key-preview", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := CredentialInput{Issuer: "https://api.example.test", Audience: "paperboat-control", Subject: "helper_1", JTI: "jti_preview_1", IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute), CredentialClass: "preview_registration", Scopes: []string{"preview:register"}, EnvironmentID: "env_1", HelperID: "helper_1"}
+	token, err := provider.SignCredential(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := provider.VerifyCredential(token, "https://api.example.test", "preview_registration", now)
+	if err != nil || claims.EnvironmentID != "env_1" || claims.HelperID != "helper_1" {
+		t.Fatalf("claims = %#v, %v", claims, err)
+	}
+	input.HelperID = ""
+	if _, err := provider.SignCredential(input); err == nil {
+		t.Fatal("preview credential without helper binding was accepted")
+	}
+	input.HelperID = "helper_1"
+	input.Scopes = []string{"helper:renew"}
+	if _, err := provider.SignCredential(input); err == nil {
+		t.Fatal("preview credential with wrong scope was accepted")
+	}
+	input.Scopes = []string{"preview:register", "helper:renew"}
+	if _, err := provider.SignCredential(input); err == nil {
+		t.Fatal("preview credential with broader scope was accepted")
+	}
+}
+
 func TestSignTerminalControlBindsOperationAndTerminalIDs(t *testing.T) {
 	provider, _ := New([]Key{{ID: "key", PrivateKey: testKey(9)}}, "key", time.Minute)
 	now := time.Unix(1_700_000_000, 0)

@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pinksaucepasta/paperboat-server/internal/agentunnel"
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
@@ -353,7 +352,7 @@ func TestHostedProvisionDoesNotDependOnAgentunnel(t *testing.T) {
 		t.Fatal(err)
 	}
 	fakeFly := fly.NewFakeClient()
-	service := NewServiceWithAgentunnel(store, fakeFly, cfg, agentunnel.DisabledClient{})
+	service := NewService(store, fakeFly, cfg)
 
 	err = service.RunOnce(ctx)
 	if err != nil {
@@ -761,11 +760,11 @@ func TestStartAndRestartRecreateMissingMachineOnExistingVolume(t *testing.T) {
 	if spec.Hostname != cfg.Fly.Hostname {
 		t.Fatalf("replacement machine hostname = %q, want %q", spec.Hostname, cfg.Fly.Hostname)
 	}
-	if spec.Env["PAPERBOAT_PROJECT_ID"] != project.ID || spec.Env["PAPERBOAT_PAPERCODE_ENVIRONMENT_ID"] != project.ID {
-		t.Fatalf("replacement identity env = project %q environment %q, want %q", spec.Env["PAPERBOAT_PROJECT_ID"], spec.Env["PAPERBOAT_PAPERCODE_ENVIRONMENT_ID"], project.ID)
+	if spec.Env["PAPERBOAT_PROJECT_ID"] != project.ID || spec.Env["PAPERBOAT_HELPER_PROFILE"] != "hosted" {
+		t.Fatalf("replacement helper identity env = project %q profile %q", spec.Env["PAPERBOAT_PROJECT_ID"], spec.Env["PAPERBOAT_HELPER_PROFILE"])
 	}
-	if spec.Env["PAPERBOAT_AGENTUNNEL_CLIENT_ID"] != "cli_"+project.ID || spec.Env["PAPERBOAT_AGENTUNNEL_TUNNEL_ID"] != "tun_"+project.ID {
-		t.Fatalf("replacement route env = client %q tunnel %q", spec.Env["PAPERBOAT_AGENTUNNEL_CLIENT_ID"], spec.Env["PAPERBOAT_AGENTUNNEL_TUNNEL_ID"])
+	if spec.Env["PAPERBOAT_CONTROL_URL"] != strings.TrimRight(cfg.HTTP.PublicBaseURL, "/") || spec.Env["PAPERBOAT_ENROLLMENT_CREDENTIAL_ENV"] != cfg.Fly.EnrollmentSecret {
+		t.Fatalf("replacement enrollment env = control %q credential env %q", spec.Env["PAPERBOAT_CONTROL_URL"], spec.Env["PAPERBOAT_ENROLLMENT_CREDENTIAL_ENV"])
 	}
 	if len(fakeFly.Volumes) != 1 {
 		t.Fatalf("healing created extra volumes: %d", len(fakeFly.Volumes))
@@ -840,9 +839,9 @@ func TestDeleteReleasesStorageAfterProviderCleanup(t *testing.T) {
 	if len(fakeFly.Volumes) != 0 || len(fakeFly.Machines) != 0 {
 		t.Fatalf("provider resources remain after delete: volumes=%d machines=%d", len(fakeFly.Volumes), len(fakeFly.Machines))
 	}
-	// Agentunnel, config encryption, GitHub, and machine-activity secrets are removed.
-	if calls := countCalls(fakeFly.Calls, "DeleteSecret:"); calls != 4 {
-		t.Fatalf("DeleteSecret calls = %d, want 4; calls=%#v", calls, fakeFly.Calls)
+	// Enrollment, config encryption, and GitHub secrets are removed.
+	if calls := countCalls(fakeFly.Calls, "DeleteSecret:"); calls != 3 {
+		t.Fatalf("DeleteSecret calls = %d, want 3; calls=%#v", calls, fakeFly.Calls)
 	}
 }
 
@@ -1001,10 +1000,8 @@ func TestProvisionInjectsConfiguredMachineSecrets(t *testing.T) {
 	for _, value := range fakeFly.MachineSpecs {
 		spec = value
 	}
-	// Fake mode issues a project-scoped agentunnel token, which takes
-	// precedence over the configured fallback token.
-	if !hasSecret(spec.Secrets, cfg.Fly.AgentunnelSecret, "fake-agentunnel-token-"+project.ID) {
-		t.Fatalf("agentunnel secret was not injected: %#v", spec.Secrets)
+	if !hasSecretEnv(spec.Secrets, cfg.Fly.EnrollmentSecret) {
+		t.Fatalf("enrollment credential was not injected: %#v", spec.Secrets)
 	}
 	if !hasSecret(spec.Secrets, cfg.Fly.GitHubSecret, "github-config-token") {
 		t.Fatalf("github config token was not injected: %#v", spec.Secrets)
@@ -1021,10 +1018,10 @@ func TestProvisionInjectsConfiguredMachineSecrets(t *testing.T) {
 		spec.Env["PAPERBOAT_CONFIG_REPO_BRANCH"] != "main" {
 		t.Fatalf("github config repo env was not injected: %#v", spec.Env)
 	}
-	if spec.Env["PAPERBOAT_PAPERCODE_ENVIRONMENT_ID"] != project.ID ||
-		spec.Env["PAPERBOAT_PAPERCODE_OWNER_ID"] != "usr_orch_secrets" ||
-		spec.Env["PAPERBOAT_PAPERCODE_ISSUER"] != cfg.HTTP.PublicBaseURL {
-		t.Fatalf("papercode trust config was not injected: %#v", spec.Env)
+	if spec.Env["PAPERBOAT_PROJECT_ID"] != project.ID ||
+		spec.Env["PAPERBOAT_CONTROL_URL"] != strings.TrimRight(cfg.HTTP.PublicBaseURL, "/") ||
+		spec.Env["PAPERBOAT_HELPER_PROFILE"] != "hosted" {
+		t.Fatalf("hosted helper trust config was not injected: %#v", spec.Env)
 	}
 	if strings.Contains(fmt.Sprint(spec.Env), "github-config-token") {
 		t.Fatalf("github config token leaked into env: %#v", spec.Env)
@@ -1035,7 +1032,7 @@ func TestProvisionInjectsConfiguredMachineSecrets(t *testing.T) {
 	if spec.Env["PAPERBOAT_SETUP_SCRIPT_ENV"] != cfg.Fly.SetupScriptSecret {
 		t.Fatalf("setup script env name was not injected: %#v", spec.Env)
 	}
-	if spec.Env["PAPERBOAT_AGENTUNNEL_TOKEN_ENV"] != cfg.Fly.AgentunnelSecret ||
+	if spec.Env["PAPERBOAT_ENROLLMENT_CREDENTIAL_ENV"] != cfg.Fly.EnrollmentSecret ||
 		spec.Env["PAPERBOAT_GITHUB_TOKEN_ENV"] != cfg.Fly.GitHubSecret {
 		t.Fatalf("secret env names were not injected: %#v", spec.Env)
 	}
@@ -1050,7 +1047,7 @@ func TestProvisionInjectsConfiguredMachineSecrets(t *testing.T) {
 	}
 }
 
-func TestProvisionPrefersProjectScopedAgentunnelToken(t *testing.T) {
+func TestProvisionExcludesRetiredAgentunnelCredentials(t *testing.T) {
 	store := newOrchestratorTestDB(t)
 	ctx := context.Background()
 	seedOrchestratorCatalogs(t, store)
@@ -1084,67 +1081,16 @@ func TestProvisionPrefersProjectScopedAgentunnelToken(t *testing.T) {
 	for _, value := range fakeFly.MachineSpecs {
 		spec = value
 	}
-	if !hasSecret(spec.Secrets, cfg.Fly.AgentunnelSecret, "project-agentunnel-machine-token") {
-		t.Fatalf("project agentunnel secret was not injected: %#v", spec.Secrets)
+	if hasSecretEnv(spec.Secrets, cfg.Fly.AgentunnelSecret) {
+		t.Fatalf("retired agentunnel secret was injected: %#v", spec.Secrets)
 	}
-	if hasSecret(spec.Secrets, cfg.Fly.AgentunnelSecret, "fallback-agentunnel-machine-token") {
-		t.Fatalf("fallback agentunnel secret was injected despite project token: %#v", spec.Secrets)
-	}
-	if spec.Env["PAPERBOAT_AGENTUNNEL_SERVER_URL"] != "https://agentunnel.example" ||
-		spec.Env["PAPERBOAT_AGENTUNNEL_CLIENT_ID"] != "cli_"+project.ID ||
-		spec.Env["PAPERBOAT_AGENTUNNEL_TUNNEL_ID"] != "tun_"+project.ID ||
-		spec.Env["PAPERBOAT_PAPERCODE_LOCAL_URL"] != cfg.Providers.Agentunnel.PapercodeLocalURL {
-		t.Fatalf("agentunnel env was not injected correctly: %#v", spec.Env)
-	}
-	if strings.Contains(fmt.Sprint(spec.Env), "project-agentunnel-machine-token") {
-		t.Fatalf("agentunnel env leaked machine token: %#v", spec.Env)
-	}
-}
-
-func TestStartAppliesRotatedAgentunnelCredentialBeforeMachineStart(t *testing.T) {
-	store := newOrchestratorTestDB(t)
-	ctx := context.Background()
-	seedOrchestratorCatalogs(t, store)
-	insertOrchestratorUser(t, store, "usr_orch_rotated_tunnel", 20)
-
-	cfg := orchestratorTestConfig()
-	projectService := projects.NewService(store, audit.NewWriter(store), cfg)
-	project, _, err := projectService.Create(ctx, projects.CreateInput{
-		UserID:          "usr_orch_rotated_tunnel",
-		IdempotencyKey:  "orch-rotated-tunnel",
-		RepositoryURL:   "https://github.com/paperboat/example.git",
-		StorageGB:       8,
-		MachineTypeCode: "standard-1x",
-		RegionCode:      "iad",
-		PresetCodes:     []string{"codex"},
-		IdleTimeoutCode: "15m",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	insertAgentunnelToken(t, store, project.ID, "old-agentunnel-machine-token")
-
-	fakeFly := fly.NewFakeClient()
-	service := NewService(store, fakeFly, cfg)
-	if err := service.RunOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	updateAgentunnelToken(t, store, project.ID, "rotated-agentunnel-machine-token")
-	fakeFly.Calls = nil
-
-	if err := service.startProject(ctx, project.ID); err != nil {
-		t.Fatal(err)
-	}
-	if len(fakeFly.Calls) != 2 || !strings.HasPrefix(fakeFly.Calls[0], "UpdateMachine:") || !strings.HasPrefix(fakeFly.Calls[1], "StartMachine:") {
-		t.Fatalf("Fly calls = %v, want UpdateMachine before StartMachine", fakeFly.Calls)
-	}
-	for _, spec := range fakeFly.MachineSpecs {
-		if !hasSecret(spec.Secrets, cfg.Fly.AgentunnelSecret, "rotated-agentunnel-machine-token") {
-			t.Fatalf("rotated credential was not installed before start: %#v", spec.Secrets)
+	for key := range spec.Env {
+		if strings.Contains(key, "AGENTUNNEL") || strings.Contains(key, "PAPERCODE") {
+			t.Fatalf("retired environment %q was injected: %#v", key, spec.Env)
 		}
-		if hasSecret(spec.Secrets, cfg.Fly.AgentunnelSecret, "old-agentunnel-machine-token") {
-			t.Fatalf("old credential remained installed: %#v", spec.Secrets)
-		}
+	}
+	if !hasSecretEnv(spec.Secrets, cfg.Fly.EnrollmentSecret) {
+		t.Fatalf("canonical enrollment credential was not injected: %#v", spec.Secrets)
 	}
 }
 

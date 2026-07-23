@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -66,27 +67,27 @@ func New(opts Options) (*App, error) {
 	githubService := pbgithub.NewService(store, auditWriter, githubClient(opts.Config), opts.Config)
 	projectService := projects.NewService(store, auditWriter, opts.Config)
 	terminalSessionService := terminalsessions.New(store, projectService, opts.Config.TerminalSessions.MaxActivePerProject, opts.Config.TerminalSessions.RetryBackoff, opts.Config.TerminalSessions.MaxAttemptsBeforeAlert)
-	agentunnelProvider := agentunnelClient(opts.Config)
+	legacyAccessProvider := agentunnel.FakeClient{BaseURL: opts.Config.Providers.Agentunnel.BaseURL}
 	mintKeys, err := mintKeyProvider(opts.Config)
 	if err != nil {
 		_ = store.Close()
 		return nil, err
 	}
 	credentialIssuer := agentunnel.CredentialIssuer(agentunnel.FakeCredentialIssuer{})
-	if !opts.Config.Providers.FakeMode {
-		credentialIssuer = &agentunnel.PapercodeCredentialIssuer{
-			Issuer: normalizePapercodeIssuer(opts.Config.HTTP.PublicBaseURL), Signer: mintKeys,
-			HTTPClient: providerHTTPClient("papercode", opts.Config.HTTP.RequestTimeout), RequireHTTPS: true,
-			ProofTTL: opts.Config.CLIAuth.MintProofLifetime,
+	agentunnelService := agentunnel.NewServiceWithCredentials(store, projectService, legacyAccessProvider, credentialIssuer, auditWriter, opts.Config)
+	agentunnelService.ConfigureCanonicalAccess(mintKeys)
+	terminalSessionService.ConfigureControl(func(ctx context.Context, environmentID string) (string, error) {
+		route, routeErr := store.Queries().GetActiveHelperRouteForEnvironment(ctx, environmentID)
+		if routeErr != nil {
+			return "", routeErr
 		}
-	}
-	agentunnelService := agentunnel.NewServiceWithCredentials(store, projectService, agentunnelProvider, credentialIssuer, auditWriter, opts.Config)
-	terminalSessionService.ConfigureControl(agentunnelService.PapercodeHTTPBaseURL, mintKeys, normalizePapercodeIssuer(opts.Config.HTTP.PublicBaseURL), &http.Client{Timeout: opts.Config.TerminalSessions.OperationTimeout})
+		return "https://" + route.PublicHost, nil
+	}, mintKeys, normalizePapercodeIssuer(opts.Config.HTTP.PublicBaseURL), &http.Client{Timeout: opts.Config.TerminalSessions.OperationTimeout})
 	agentunnelService.SetBeforeConnect(func(ctx context.Context, _ string, projectID string) error {
 		return terminalSessionService.ApplyPending(ctx, projectID)
 	})
 	deviceAuthService.SetDownstreamRevoker(agentunnelService)
-	orchestratorService := orchestrator.NewServiceWithAgentunnel(store, flyProvider, opts.Config, agentunnelProvider)
+	orchestratorService := orchestrator.NewService(store, flyProvider, opts.Config)
 	orchestratorService.SetBeforeStop(terminalSessionService.SnapshotProject)
 	meteringService := metering.NewRuntimeService(store, flyProvider, billingRepo)
 	meteringService.SetDownstreamRevoker(agentunnelService)
@@ -102,19 +103,23 @@ func New(opts Options) (*App, error) {
 	}
 	classificationController := classifier.NewController(store, classificationProvider, opts.Config.Classifier, opts.Config.ConfigSync.PolicyRevision, auditWriter)
 	configSyncRepo := configsync.NewRepository(store, opts.Config.ConfigSync, opts.Config.Secrets.EncryptionKey, auditWriter)
-	connectedMachineService := connectedmachines.New(store, auditWriter, connectedmachines.Policy{PairingLifetime: opts.Config.ConnectedMachines.PairingLifetime, AllowedPlatforms: opts.Config.ConnectedMachines.AllowedPlatforms}, billingService)
-	connectedMachineService.ConfigureProvisioning(agentunnelProvider, opts.Config.Secrets.EncryptionKey)
+	connectedMachineService := connectedmachines.New(store, auditWriter, connectedmachines.Policy{PairingLifetime: opts.Config.ConnectedMachines.PairingLifetime, OfflineAfter: opts.Config.ConnectedMachines.OfflineAfter, AllowedPlatforms: opts.Config.ConnectedMachines.AllowedPlatforms}, billingService)
+	connectedMachineService.ConfigureProvisioning(legacyAccessProvider, opts.Config.Secrets.EncryptionKey)
 	connectedMachineService.ConfigureAccess(credentialIssuer, normalizePapercodeIssuer(opts.Config.HTTP.PublicBaseURL), opts.Config.CLIAuth.AccessTokenLifetime, opts.Config.Providers.Agentunnel.UploadMaxBytes, opts.Config.Providers.Agentunnel.UploadAllowedMIMEs, int64(opts.Config.Providers.Agentunnel.UploadRetention/time.Second))
-	mintPublicKey, err := mintKeys.ActivePublicKeyPEM()
-	if err != nil {
-		_ = store.Close()
-		return nil, err
-	}
-	connectedMachineService.ConfigurePapercodeBootstrap(mintPublicKey)
 	connectedMachineService.ConfigureTerminalSessions(opts.Config.TerminalSessions.MaxActivePerProject, mintKeys, &http.Client{Timeout: opts.Config.TerminalSessions.OperationTimeout})
 	connectedMachineService.ConfigureBootstrapCommand(opts.Config.ConnectedMachines.BootstrapCommand)
+	if err := connectedMachineService.ConfigureHelperRoute(opts.Config.HelperBaseDomain, opts.Config.ConnectedMachines.HelperListenPort); err != nil {
+		return nil, err
+	}
+	if err := connectedMachineService.ConfigureHelperArtifacts(opts.Config.ConnectedMachines.HelperArtifactsJSON, opts.Config.ConnectedMachines.HelperArtifactPublicKey); err != nil {
+		return nil, err
+	}
 	billingService.SetConnectedMachineSessionRevoker(connectedMachineService)
 	enrollmentService := controlplane.NewEnrollmentService(store, mintKeys, auditWriter, config.NormalizeIssuer(opts.Config.HTTP.PublicBaseURL), opts.Config.Secrets.EncryptionKey)
+	connectedMachineService.ConfigureHelperEnrollment(func(ctx context.Context, actorID, operationKey, environmentID string, lifetime time.Duration) (connectedmachines.HelperEnrollmentGrant, error) {
+		grant, err := enrollmentService.Issue(ctx, actorID, operationKey, environmentID, lifetime)
+		return connectedmachines.HelperEnrollmentGrant{EnrollmentID: grant.EnrollmentID, HelperID: grant.HelperID, Credential: grant.Credential, ExpiresAt: grant.ExpiresAt}, err
+	})
 	orchestratorService.SetHostedEnrollmentIssuer(func(ctx context.Context, actorID, operationKey, environmentID string, lifetime time.Duration) (string, error) {
 		grant, err := enrollmentService.EnsureBootGrant(ctx, actorID, operationKey, environmentID, lifetime)
 		return grant.Credential, err
@@ -123,6 +128,23 @@ func New(opts Options) (*App, error) {
 	configCredentialService := controlplane.NewConfigCredentialService(store, mintKeys, config.NormalizeIssuer(opts.Config.HTTP.PublicBaseURL), opts.Config.Secrets.EncryptionKey)
 	configCredentialService.SetAuditWriter(auditWriter)
 	routeService := controlplane.NewRouteService(store, auditWriter)
+	var previewService *controlplane.PreviewService
+	if opts.Config.Preview.BaseDomain != "" || opts.Config.Secrets.PreviewIdentityKey != "" {
+		if opts.Config.Preview.BaseDomain == "" || opts.Config.Secrets.PreviewIdentityKey == "" {
+			_ = store.Close()
+			return nil, errors.New("preview base domain and identity key must be configured together")
+		}
+		previewKey, decodeErr := base64.StdEncoding.DecodeString(opts.Config.Secrets.PreviewIdentityKey)
+		if decodeErr != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("decode preview identity key: %w", decodeErr)
+		}
+		previewService, err = controlplane.NewPreviewService(store, auditWriter, previewKey, opts.Config.Preview.BaseDomain)
+		if err != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("configure previews: %w", err)
+		}
+	}
 	orchestratorService.SetHostedRouteEnsurer(func(ctx context.Context, actorID, operationKey, environmentID, publicHost string) error {
 		_, err := routeService.Create(ctx, actorID, operationKey, environmentID, "helper_https_wss", publicHost, "127.0.0.1", 8080)
 		return err
@@ -171,6 +193,7 @@ func New(opts Options) (*App, error) {
 		ConfigAssignments:      configAssignmentService,
 		ConfigCredentials:      configCredentialService,
 		Routes:                 routeService,
+		Previews:               previewService,
 		ControlDiagnostics:     controlDiagnostics,
 		OperationRecovery:      operationRecovery,
 		HostedProviderRecovery: hostedProviderRecovery,
@@ -233,22 +256,6 @@ func githubClient(cfg config.Config) pbgithub.Client {
 		BaseURL:  cfg.Providers.GitHub.BaseURL,
 		TokenURL: cfg.GitHub.OAuthTokenURL,
 		Client:   providerHTTPClient("github", cfg.HTTP.RequestTimeout),
-	}
-}
-
-func agentunnelClient(cfg config.Config) agentunnel.Client {
-	if cfg.Providers.FakeMode {
-		return agentunnel.FakeClient{BaseURL: cfg.Providers.Agentunnel.BaseURL}
-	}
-	return agentunnel.HTTPClient{
-		BaseURL:              cfg.Providers.Agentunnel.BaseURL,
-		APIKey:               cfg.Secrets.AgentunnelAPIKey,
-		PapercodeLocalURL:    cfg.Providers.Agentunnel.PapercodeLocalURL,
-		RouteExpiresIn:       cfg.Providers.Agentunnel.RouteExpiresIn,
-		RouteSubdomainPrefix: cfg.Providers.Agentunnel.RouteSubdomainPrefix,
-		AccessPolicyID:       cfg.Providers.Agentunnel.AccessPolicyID,
-		UploadMaxBytes:       cfg.Providers.Agentunnel.UploadMaxBytes,
-		HTTPClient:           providerHTTPClient("agentunnel", cfg.HTTP.RequestTimeout),
 	}
 }
 
@@ -336,7 +343,6 @@ func (r readinessChecker) Ready(ctx context.Context) error {
 		r.cfg.Providers.Polar,
 		r.cfg.Providers.GitHub,
 		r.cfg.Providers.Fly,
-		r.cfg.Providers.Agentunnel,
 	}
 	for _, provider := range providers {
 		if !provider.Ready {

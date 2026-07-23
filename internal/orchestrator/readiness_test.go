@@ -7,7 +7,22 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/pinksaucepasta/paperboat-server/internal/config"
 )
+
+func TestHostedHelperHostUsesTypedHelperBaseDomain(t *testing.T) {
+	cfg := config.Default()
+	cfg.HelperBaseDomain = "helper.example.test"
+	cfg.Providers.Agentunnel.RouteSubdomainPrefix = "pb"
+
+	if got, want := HostedHelperHealthHost(cfg, "prj_test"), "pb-prj-test.helper.example.test"; got != want {
+		t.Fatalf("host = %q, want %q", got, want)
+	}
+	if got, want := HostedHelperHealthURL(cfg, "prj_test"), "https://pb-prj-test.helper.example.test/healthz"; got != want {
+		t.Fatalf("URL = %q, want %q", got, want)
+	}
+}
 
 func TestHTTPReadinessVerifierRequiresHostedCapabilities(t *testing.T) {
 	tests := []struct {

@@ -404,6 +404,12 @@ func TestBuildCLIResponseDoesNotInventUnvalidatedAuth(t *testing.T) {
 		HTTPBaseURL:      "https://agentunnel.example/projects/prj_1",
 		WebSocketBaseURL: "wss://agentunnel.example/projects/prj_1",
 	}, time.Now().UTC().Add(time.Minute), CLICredentials{}, 7<<20, []string{"image/png"}, 604800, "", "", "")
+	if resp.Schema != "paperboat.environment-connection/v1" || resp.Environment["kind"] != "hosted" || resp.Environment["resource_id"] != "prj_1" {
+		t.Fatalf("canonical descriptor identity is incomplete: %#v", resp)
+	}
+	if resp.Terminal["endpoint"] != "wss://agentunnel.example/projects/prj_1" || resp.PapercodeUpload["endpoint"] != "https://agentunnel.example/projects/prj_1/api/files/staged-images" {
+		t.Fatalf("canonical endpoints are incomplete: terminal=%#v upload=%#v", resp.Terminal, resp.PapercodeUpload)
+	}
 
 	if _, ok := resp.Terminal["auth"]; ok {
 		t.Fatalf("terminal descriptor should not include unvalidated auth: %#v", resp.Terminal)
@@ -419,6 +425,33 @@ func TestBuildCLIResponseDoesNotInventUnvalidatedAuth(t *testing.T) {
 	}
 	if resp.PapercodeUpload["kind"] != "papercode_staged_image" || resp.PapercodeUpload["retention_seconds"] != int64(604800) {
 		t.Fatalf("upload contract metadata is incomplete: %#v", resp.PapercodeUpload)
+	}
+}
+
+func TestBuildCLIResponseSerializesCanonicalPayload(t *testing.T) {
+	expires := time.Now().UTC().Add(time.Minute)
+	resp := buildResponse(ConnectCLI, projects.Project{ID: "prj_1", Name: "Demo"}, ResourceDescriptor{
+		HTTPBaseURL: "https://edge.example/projects/prj_1", WebSocketBaseURL: "wss://edge.example/projects/prj_1",
+	}, expires, CLICredentials{
+		TerminalAuth: map[string]any{"method": "websocket_ticket", "ticket": "t", "expires_at": expires, "scopes": []string{"terminal:operate"}},
+		UploadAuth:   map[string]any{"method": "bearer", "token": "u", "expires_at": expires, "scopes": []string{"file:stage"}},
+	}, 1024, []string{"image/png"}, 60, "thread", "terminal", "/workspace")
+	resp.Issuer = "https://api.example"
+	b, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(b, &payload); err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"project_id", "project_state", "papercode_websocket", "papercode_staged_image", "websocket_base_url", "http_base_url", "connected_machine_id"} {
+		if strings.Contains(string(b), forbidden) {
+			t.Fatalf("canonical payload contains legacy field %q: %s", forbidden, b)
+		}
+	}
+	if payload["schema"] != "paperboat.environment-connection/v1" {
+		t.Fatalf("schema = %v", payload["schema"])
 	}
 }
 

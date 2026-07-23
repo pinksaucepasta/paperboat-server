@@ -12,6 +12,26 @@ import (
 	"time"
 )
 
+const approveConnectedMachineEnrollment = `-- name: ApproveConnectedMachineEnrollment :execrows
+UPDATE connected_machine_enrollments
+SET state = 'approved', connected_machine_id = $1, updated_at = now()
+WHERE pairing_id = $2 AND user_id = $3 AND state = 'awaiting_approval'
+`
+
+type ApproveConnectedMachineEnrollmentParams struct {
+	ConnectedMachineID sql.NullString
+	PairingID          sql.NullString
+	UserID             string
+}
+
+func (q *Queries) ApproveConnectedMachineEnrollment(ctx context.Context, arg ApproveConnectedMachineEnrollmentParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, approveConnectedMachineEnrollment, arg.ConnectedMachineID, arg.PairingID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const approveConnectedMachinePairing = `-- name: ApproveConnectedMachinePairing :execrows
 UPDATE connected_machine_pairings
 SET state = 'approved', approved_by_user_id = $1,
@@ -33,8 +53,60 @@ func (q *Queries) ApproveConnectedMachinePairing(ctx context.Context, arg Approv
 	return result.RowsAffected()
 }
 
+const cancelConnectedMachineEnrollment = `-- name: CancelConnectedMachineEnrollment :execrows
+UPDATE connected_machine_enrollments
+SET state = 'cancelled', cancelled_at = now(), updated_at = now()
+WHERE id = $1 AND user_id = $2
+  AND state IN ('awaiting_bootstrap','awaiting_approval','failed_retryable')
+`
+
+type CancelConnectedMachineEnrollmentParams struct {
+	ID     string
+	UserID string
+}
+
+func (q *Queries) CancelConnectedMachineEnrollment(ctx context.Context, arg CancelConnectedMachineEnrollmentParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, cancelConnectedMachineEnrollment, arg.ID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const claimConnectedMachineEnrollment = `-- name: ClaimConnectedMachineEnrollment :execrows
+UPDATE connected_machine_enrollments
+SET state = 'awaiting_approval', pairing_id = $1,
+    requested_display_name = $2, platform = $3,
+    architecture = $4, workspace_root = $5, updated_at = now()
+WHERE id = $6 AND state = 'awaiting_bootstrap' AND expires_at > now()
+`
+
+type ClaimConnectedMachineEnrollmentParams struct {
+	PairingID            sql.NullString
+	RequestedDisplayName sql.NullString
+	Platform             sql.NullString
+	Architecture         sql.NullString
+	WorkspaceRoot        sql.NullString
+	ID                   string
+}
+
+func (q *Queries) ClaimConnectedMachineEnrollment(ctx context.Context, arg ClaimConnectedMachineEnrollmentParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, claimConnectedMachineEnrollment,
+		arg.PairingID,
+		arg.RequestedDisplayName,
+		arg.Platform,
+		arg.Architecture,
+		arg.WorkspaceRoot,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const closeConnectedMachineTerminalSession = `-- name: CloseConnectedMachineTerminalSession :execrows
-UPDATE connected_machine_terminal_sessions SET desired_state='closed',runtime_state='closed',version=version+1,updated_at=now()
+UPDATE connected_machine_terminal_sessions SET desired_state='closed',version=version+1,updated_at=now()
 WHERE connected_machine_id=$1 AND id=$2
   AND deleted_at IS NULL AND desired_state<>'closed'
 `
@@ -109,14 +181,21 @@ func (q *Queries) ConsumeConnectedMachineIncludedBandwidth(ctx context.Context, 
 }
 
 const consumeConnectedMachineInstallationConfig = `-- name: ConsumeConnectedMachineInstallationConfig :one
-UPDATE connected_machine_pairings
-SET state = 'consumed', installation_config_consumed_at = now(), updated_at = now()
-WHERE verifier_hash = $1
-  AND state = 'approved'
-  AND installation_config_ciphertext IS NOT NULL
-  AND installation_config_consumed_at IS NULL
-  AND expires_at > now()
-RETURNING installation_config_ciphertext
+WITH consumed AS (
+  UPDATE connected_machine_pairings
+  SET state = 'consumed', installation_config_consumed_at = now(), updated_at = now()
+  WHERE verifier_hash = $1
+    AND state = 'approved'
+    AND installation_config_ciphertext IS NOT NULL
+    AND installation_config_consumed_at IS NULL
+    AND expires_at > now()
+  RETURNING id, installation_config_ciphertext
+), advanced AS (
+  UPDATE connected_machine_enrollments e SET state = 'installing', updated_at = now()
+  FROM consumed WHERE e.pairing_id = consumed.id AND e.state = 'material_issued'
+  RETURNING e.id
+)
+SELECT installation_config_ciphertext FROM consumed
 `
 
 func (q *Queries) ConsumeConnectedMachineInstallationConfig(ctx context.Context, verifierHash []byte) ([]byte, error) {
@@ -314,6 +393,62 @@ func (q *Queries) CreateConnectedMachineBandwidthTopup(ctx context.Context, arg 
 	return result.RowsAffected()
 }
 
+const createConnectedMachineEnrollment = `-- name: CreateConnectedMachineEnrollment :one
+INSERT INTO connected_machine_enrollments (
+  id, user_id, operation_id, idempotency_key, bootstrap_token_hash, bootstrap_token_ciphertext, expires_at
+) VALUES (
+  $1, $2, $3, $4,
+  $5, $6, $7
+)
+ON CONFLICT (user_id, idempotency_key) DO UPDATE
+SET idempotency_key = excluded.idempotency_key
+RETURNING id, user_id, operation_id, idempotency_key, bootstrap_token_hash, bootstrap_token_ciphertext, state, generation, pairing_id, connected_machine_id, requested_display_name, platform, architecture, workspace_root, expires_at, cancelled_at, created_at, updated_at
+`
+
+type CreateConnectedMachineEnrollmentParams struct {
+	ID                       string
+	UserID                   string
+	OperationID              string
+	IdempotencyKey           string
+	BootstrapTokenHash       []byte
+	BootstrapTokenCiphertext []byte
+	ExpiresAt                time.Time
+}
+
+func (q *Queries) CreateConnectedMachineEnrollment(ctx context.Context, arg CreateConnectedMachineEnrollmentParams) (ConnectedMachineEnrollment, error) {
+	row := q.db.QueryRowContext(ctx, createConnectedMachineEnrollment,
+		arg.ID,
+		arg.UserID,
+		arg.OperationID,
+		arg.IdempotencyKey,
+		arg.BootstrapTokenHash,
+		arg.BootstrapTokenCiphertext,
+		arg.ExpiresAt,
+	)
+	var i ConnectedMachineEnrollment
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.OperationID,
+		&i.IdempotencyKey,
+		&i.BootstrapTokenHash,
+		&i.BootstrapTokenCiphertext,
+		&i.State,
+		&i.Generation,
+		&i.PairingID,
+		&i.ConnectedMachineID,
+		&i.RequestedDisplayName,
+		&i.Platform,
+		&i.Architecture,
+		&i.WorkspaceRoot,
+		&i.ExpiresAt,
+		&i.CancelledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const createConnectedMachinePairing = `-- name: CreateConnectedMachinePairing :one
 INSERT INTO connected_machine_pairings (
   id, verifier_hash, user_code, requested_display_name, platform, architecture,
@@ -458,6 +593,25 @@ func (q *Queries) DeleteConnectedMachineTerminalSession(ctx context.Context, arg
 	return result.RowsAffected()
 }
 
+const denyConnectedMachineEnrollment = `-- name: DenyConnectedMachineEnrollment :execrows
+UPDATE connected_machine_enrollments
+SET state = 'denied', updated_at = now()
+WHERE pairing_id = $1 AND user_id = $2 AND state = 'awaiting_approval'
+`
+
+type DenyConnectedMachineEnrollmentParams struct {
+	PairingID sql.NullString
+	UserID    string
+}
+
+func (q *Queries) DenyConnectedMachineEnrollment(ctx context.Context, arg DenyConnectedMachineEnrollmentParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, denyConnectedMachineEnrollment, arg.PairingID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const denyConnectedMachinePairing = `-- name: DenyConnectedMachinePairing :execrows
 UPDATE connected_machine_pairings
 SET state = 'denied', approved_by_user_id = $1, denied_at = now(), updated_at = now()
@@ -477,6 +631,26 @@ func (q *Queries) DenyConnectedMachinePairing(ctx context.Context, arg DenyConne
 	return result.RowsAffected()
 }
 
+const expireConnectedMachineEnrollment = `-- name: ExpireConnectedMachineEnrollment :execrows
+UPDATE connected_machine_enrollments
+SET state = 'expired', updated_at = now()
+WHERE id = $1 AND user_id = $2
+  AND state IN ('awaiting_bootstrap','awaiting_approval') AND expires_at <= now()
+`
+
+type ExpireConnectedMachineEnrollmentParams struct {
+	ID     string
+	UserID string
+}
+
+func (q *Queries) ExpireConnectedMachineEnrollment(ctx context.Context, arg ExpireConnectedMachineEnrollmentParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, expireConnectedMachineEnrollment, arg.ID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const expireConnectedMachinePairing = `-- name: ExpireConnectedMachinePairing :execrows
 UPDATE connected_machine_pairings SET state = 'expired', updated_at = now()
 WHERE id = $1 AND state = 'pending' AND expires_at <= now()
@@ -488,6 +662,60 @@ func (q *Queries) ExpireConnectedMachinePairing(ctx context.Context, id string) 
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const failConnectedMachineEnrollmentForHelper = `-- name: FailConnectedMachineEnrollmentForHelper :execrows
+UPDATE connected_machine_enrollments e
+SET state = 'failed_retryable', updated_at = now()
+FROM connected_machines m, control_helpers h
+WHERE e.id = $1
+  AND e.connected_machine_id = m.id
+  AND m.environment_id = $2
+  AND h.id = $3
+  AND h.environment_id = m.environment_id
+  AND ($4 = '' OR EXISTS (
+    SELECT 1 FROM control_helper_enrollments he
+    WHERE he.id = $4
+      AND he.helper_id = h.id
+      AND he.environment_id = h.environment_id
+  ))
+  AND h.state IN ('pending','active') AND h.revoked_at IS NULL
+  AND e.state IN ('installing','connecting')
+`
+
+type FailConnectedMachineEnrollmentForHelperParams struct {
+	ID                 string
+	EnvironmentID      string
+	HelperID           string
+	HelperEnrollmentID interface{}
+}
+
+func (q *Queries) FailConnectedMachineEnrollmentForHelper(ctx context.Context, arg FailConnectedMachineEnrollmentForHelperParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, failConnectedMachineEnrollmentForHelper,
+		arg.ID,
+		arg.EnvironmentID,
+		arg.HelperID,
+		arg.HelperEnrollmentID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const getActiveConnectedMachineSeatQuantity = `-- name: GetActiveConnectedMachineSeatQuantity :one
+SELECT seat_quantity FROM connected_machine_entitlements
+WHERE user_id = $1
+  AND state IN ('active', 'trialing')
+  AND current_period_start <= now()
+  AND current_period_end > now()
+`
+
+func (q *Queries) GetActiveConnectedMachineSeatQuantity(ctx context.Context, userID string) (int32, error) {
+	row := q.db.QueryRowContext(ctx, getActiveConnectedMachineSeatQuantity, userID)
+	var seat_quantity int32
+	err := row.Scan(&seat_quantity)
+	return seat_quantity, err
 }
 
 const getConnectedMachineBandwidthPeriodForUpdate = `-- name: GetConnectedMachineBandwidthPeriodForUpdate :one
@@ -549,6 +777,104 @@ func (q *Queries) GetConnectedMachineBandwidthUsage(ctx context.Context, userID 
 		&i.ConsumedIncludedBytes,
 		&i.ConsumedTopupBytes,
 		&i.PaidTopupRemainingBytes,
+	)
+	return i, err
+}
+
+const getConnectedMachineEnrollmentForPairingUpdate = `-- name: GetConnectedMachineEnrollmentForPairingUpdate :one
+SELECT id, user_id, operation_id, idempotency_key, bootstrap_token_hash, bootstrap_token_ciphertext, state, generation, pairing_id, connected_machine_id, requested_display_name, platform, architecture, workspace_root, expires_at, cancelled_at, created_at, updated_at FROM connected_machine_enrollments
+WHERE pairing_id = $1 FOR UPDATE
+`
+
+func (q *Queries) GetConnectedMachineEnrollmentForPairingUpdate(ctx context.Context, pairingID sql.NullString) (ConnectedMachineEnrollment, error) {
+	row := q.db.QueryRowContext(ctx, getConnectedMachineEnrollmentForPairingUpdate, pairingID)
+	var i ConnectedMachineEnrollment
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.OperationID,
+		&i.IdempotencyKey,
+		&i.BootstrapTokenHash,
+		&i.BootstrapTokenCiphertext,
+		&i.State,
+		&i.Generation,
+		&i.PairingID,
+		&i.ConnectedMachineID,
+		&i.RequestedDisplayName,
+		&i.Platform,
+		&i.Architecture,
+		&i.WorkspaceRoot,
+		&i.ExpiresAt,
+		&i.CancelledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getConnectedMachineEnrollmentForTokenUpdate = `-- name: GetConnectedMachineEnrollmentForTokenUpdate :one
+SELECT id, user_id, operation_id, idempotency_key, bootstrap_token_hash, bootstrap_token_ciphertext, state, generation, pairing_id, connected_machine_id, requested_display_name, platform, architecture, workspace_root, expires_at, cancelled_at, created_at, updated_at FROM connected_machine_enrollments
+WHERE bootstrap_token_hash = $1 FOR UPDATE
+`
+
+func (q *Queries) GetConnectedMachineEnrollmentForTokenUpdate(ctx context.Context, bootstrapTokenHash []byte) (ConnectedMachineEnrollment, error) {
+	row := q.db.QueryRowContext(ctx, getConnectedMachineEnrollmentForTokenUpdate, bootstrapTokenHash)
+	var i ConnectedMachineEnrollment
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.OperationID,
+		&i.IdempotencyKey,
+		&i.BootstrapTokenHash,
+		&i.BootstrapTokenCiphertext,
+		&i.State,
+		&i.Generation,
+		&i.PairingID,
+		&i.ConnectedMachineID,
+		&i.RequestedDisplayName,
+		&i.Platform,
+		&i.Architecture,
+		&i.WorkspaceRoot,
+		&i.ExpiresAt,
+		&i.CancelledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getConnectedMachineEnrollmentForUser = `-- name: GetConnectedMachineEnrollmentForUser :one
+SELECT id, user_id, operation_id, idempotency_key, bootstrap_token_hash, bootstrap_token_ciphertext, state, generation, pairing_id, connected_machine_id, requested_display_name, platform, architecture, workspace_root, expires_at, cancelled_at, created_at, updated_at FROM connected_machine_enrollments
+WHERE id = $1 AND user_id = $2
+`
+
+type GetConnectedMachineEnrollmentForUserParams struct {
+	ID     string
+	UserID string
+}
+
+func (q *Queries) GetConnectedMachineEnrollmentForUser(ctx context.Context, arg GetConnectedMachineEnrollmentForUserParams) (ConnectedMachineEnrollment, error) {
+	row := q.db.QueryRowContext(ctx, getConnectedMachineEnrollmentForUser, arg.ID, arg.UserID)
+	var i ConnectedMachineEnrollment
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.OperationID,
+		&i.IdempotencyKey,
+		&i.BootstrapTokenHash,
+		&i.BootstrapTokenCiphertext,
+		&i.State,
+		&i.Generation,
+		&i.PairingID,
+		&i.ConnectedMachineID,
+		&i.RequestedDisplayName,
+		&i.Platform,
+		&i.Architecture,
+		&i.WorkspaceRoot,
+		&i.ExpiresAt,
+		&i.CancelledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -767,6 +1093,37 @@ func (q *Queries) GetConnectedMachineIDForRoute(ctx context.Context, agentunnelR
 	var id string
 	err := row.Scan(&id)
 	return id, err
+}
+
+const getConnectedMachinePairingByID = `-- name: GetConnectedMachinePairingByID :one
+SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, connected_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at FROM connected_machine_pairings WHERE id = $1
+`
+
+func (q *Queries) GetConnectedMachinePairingByID(ctx context.Context, id string) (ConnectedMachinePairing, error) {
+	row := q.db.QueryRowContext(ctx, getConnectedMachinePairingByID, id)
+	var i ConnectedMachinePairing
+	err := row.Scan(
+		&i.ID,
+		&i.VerifierHash,
+		&i.UserCode,
+		&i.RequestedDisplayName,
+		&i.Platform,
+		&i.Architecture,
+		&i.WorkspaceRoot,
+		&i.RuntimeVersions,
+		&i.State,
+		&i.ApprovedByUserID,
+		&i.ConnectedMachineID,
+		&i.InstallationConfigCiphertext,
+		&i.InstallationConfigNonce,
+		&i.InstallationConfigConsumedAt,
+		&i.ExpiresAt,
+		&i.ApprovedAt,
+		&i.DeniedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const getConnectedMachinePairingForCode = `-- name: GetConnectedMachinePairingForCode :one
@@ -1138,7 +1495,17 @@ func (q *Queries) ListConnectedMachinesForUser(ctx context.Context, arg ListConn
 
 const listDueConnectedMachineTerminalSessionOperations = `-- name: ListDueConnectedMachineTerminalSessionOperations :many
 SELECT o.id,o.connected_machine_id,o.terminal_session_id,o.operation,o.attempts,
-  m.user_id,m.environment_id,m.agentunnel_http_base_url,s.thread_id,s.terminal_id
+  m.user_id,m.environment_id,coalesce((SELECT 'https://' || r.public_host
+    FROM control_routes r
+    JOIN control_environments e ON e.id = r.environment_id
+    JOIN control_connector_generations c ON c.environment_id = r.environment_id
+    JOIN control_helpers h ON h.id = c.helper_id AND h.environment_id = r.environment_id
+    JOIN control_tunnel_nodes n ON n.id = c.edge_node_id AND n.id = r.applied_node_id
+    WHERE r.environment_id = m.environment_id AND r.kind = 'helper_https_wss'
+      AND r.desired_state IN ('attached','replacing') AND r.applied_revision >= r.desired_revision
+      AND r.applied_generation = c.generation AND e.desired_state = 'active'
+      AND h.state = 'active' AND c.state = 'admitted' AND n.state = 'ready' AND n.ready = true
+    ORDER BY r.id LIMIT 1), '')::text AS agentunnel_http_base_url,s.thread_id,s.terminal_id
 FROM connected_machine_terminal_session_operations o
 JOIN connected_machines m ON m.id=o.connected_machine_id
 JOIN connected_machine_terminal_sessions s ON s.id=o.terminal_session_id
@@ -1154,7 +1521,7 @@ type ListDueConnectedMachineTerminalSessionOperationsRow struct {
 	Attempts              int32
 	UserID                string
 	EnvironmentID         string
-	AgentunnelHttpBaseUrl sql.NullString
+	AgentunnelHttpBaseUrl string
 	ThreadID              string
 	TerminalID            string
 }
@@ -1249,7 +1616,17 @@ func (q *Queries) ListPendingConnectedMachineAccessSessionRevocations(ctx contex
 
 const listPendingConnectedMachineTerminalSessionOperations = `-- name: ListPendingConnectedMachineTerminalSessionOperations :many
 SELECT o.id,o.connected_machine_id,o.terminal_session_id,o.operation,o.attempts,
-  m.user_id,m.environment_id,m.agentunnel_http_base_url,s.thread_id,s.terminal_id
+  m.user_id,m.environment_id,coalesce((SELECT 'https://' || r.public_host
+    FROM control_routes r
+    JOIN control_environments e ON e.id = r.environment_id
+    JOIN control_connector_generations c ON c.environment_id = r.environment_id
+    JOIN control_helpers h ON h.id = c.helper_id AND h.environment_id = r.environment_id
+    JOIN control_tunnel_nodes n ON n.id = c.edge_node_id AND n.id = r.applied_node_id
+    WHERE r.environment_id = m.environment_id AND r.kind = 'helper_https_wss'
+      AND r.desired_state IN ('attached','replacing') AND r.applied_revision >= r.desired_revision
+      AND r.applied_generation = c.generation AND e.desired_state = 'active'
+      AND h.state = 'active' AND c.state = 'admitted' AND n.state = 'ready' AND n.ready = true
+    ORDER BY r.id LIMIT 1), '')::text AS agentunnel_http_base_url,s.thread_id,s.terminal_id
 FROM connected_machine_terminal_session_operations o
 JOIN connected_machines m ON m.id=o.connected_machine_id
 JOIN connected_machine_terminal_sessions s ON s.id=o.terminal_session_id
@@ -1270,7 +1647,7 @@ type ListPendingConnectedMachineTerminalSessionOperationsRow struct {
 	Attempts              int32
 	UserID                string
 	EnvironmentID         string
-	AgentunnelHttpBaseUrl sql.NullString
+	AgentunnelHttpBaseUrl string
 	ThreadID              string
 	TerminalID            string
 }
@@ -1296,6 +1673,40 @@ func (q *Queries) ListPendingConnectedMachineTerminalSessionOperations(ctx conte
 			&i.ThreadID,
 			&i.TerminalID,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRevokedConnectedMachineEnvironmentsForUser = `-- name: ListRevokedConnectedMachineEnvironmentsForUser :many
+SELECT id, environment_id FROM connected_machines
+WHERE user_id = $1 AND state = 'revoked' AND deleted_at IS NULL
+ORDER BY id
+`
+
+type ListRevokedConnectedMachineEnvironmentsForUserRow struct {
+	ID            string
+	EnvironmentID string
+}
+
+func (q *Queries) ListRevokedConnectedMachineEnvironmentsForUser(ctx context.Context, userID string) ([]ListRevokedConnectedMachineEnvironmentsForUserRow, error) {
+	rows, err := q.db.QueryContext(ctx, listRevokedConnectedMachineEnvironmentsForUser, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRevokedConnectedMachineEnvironmentsForUserRow
+	for rows.Next() {
+		var i ListRevokedConnectedMachineEnvironmentsForUserRow
+		if err := rows.Scan(&i.ID, &i.EnvironmentID); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -1340,6 +1751,54 @@ func (q *Queries) MarkConnectedMachineAccessSessionRevoked(ctx context.Context, 
 	return result.RowsAffected()
 }
 
+const markConnectedMachineEnrollmentMaterialIssued = `-- name: MarkConnectedMachineEnrollmentMaterialIssued :execrows
+UPDATE connected_machine_enrollments SET state = 'material_issued', updated_at = now()
+WHERE pairing_id = $1 AND state = 'approved'
+`
+
+func (q *Queries) MarkConnectedMachineEnrollmentMaterialIssued(ctx context.Context, pairingID sql.NullString) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markConnectedMachineEnrollmentMaterialIssued, pairingID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const markConnectedMachineEnrollmentReady = `-- name: MarkConnectedMachineEnrollmentReady :execrows
+UPDATE connected_machine_enrollments
+SET state = 'ready', updated_at = now()
+WHERE connected_machine_id = $1
+  AND state IN ('approved','material_issued','installing','connecting')
+`
+
+func (q *Queries) MarkConnectedMachineEnrollmentReady(ctx context.Context, connectedMachineID sql.NullString) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markConnectedMachineEnrollmentReady, connectedMachineID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const markConnectedMachineOnlineFromHelper = `-- name: MarkConnectedMachineOnlineFromHelper :execrows
+UPDATE connected_machines
+SET state = 'online', online = true, last_seen_at = now(), updated_at = now(), version = version + 1
+WHERE id = $1 AND environment_id = $2
+  AND seat_state = 'occupied' AND deleted_at IS NULL AND state IN ('pending','offline','online')
+`
+
+type MarkConnectedMachineOnlineFromHelperParams struct {
+	ID            string
+	EnvironmentID string
+}
+
+func (q *Queries) MarkConnectedMachineOnlineFromHelper(ctx context.Context, arg MarkConnectedMachineOnlineFromHelperParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markConnectedMachineOnlineFromHelper, arg.ID, arg.EnvironmentID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const markConnectedMachineTerminalSessionOperationApplied = `-- name: MarkConnectedMachineTerminalSessionOperationApplied :exec
 UPDATE connected_machine_terminal_session_operations
 SET state='applied',completed_at=now(),updated_at=now(),last_error=NULL
@@ -1349,6 +1808,31 @@ WHERE id=$1 AND state='pending'
 func (q *Queries) MarkConnectedMachineTerminalSessionOperationApplied(ctx context.Context, id string) error {
 	_, err := q.db.ExecContext(ctx, markConnectedMachineTerminalSessionOperationApplied, id)
 	return err
+}
+
+const markConnectedMachineTerminalSessionRuntimeClosed = `-- name: MarkConnectedMachineTerminalSessionRuntimeClosed :exec
+UPDATE connected_machine_terminal_sessions
+SET runtime_state='closed',updated_at=now(),version=version+1
+WHERE id=$1 AND deleted_at IS NULL
+`
+
+func (q *Queries) MarkConnectedMachineTerminalSessionRuntimeClosed(ctx context.Context, id string) error {
+	_, err := q.db.ExecContext(ctx, markConnectedMachineTerminalSessionRuntimeClosed, id)
+	return err
+}
+
+const markStaleConnectedMachinesOffline = `-- name: MarkStaleConnectedMachinesOffline :execrows
+UPDATE connected_machines
+SET state = 'offline', online = false, updated_at = now(), version = version + 1
+WHERE state = 'online' AND online = true AND last_seen_at < $1
+`
+
+func (q *Queries) MarkStaleConnectedMachinesOffline(ctx context.Context, cutoff sql.NullTime) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markStaleConnectedMachinesOffline, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const nextConnectedMachineTerminalSessionOrdinal = `-- name: NextConnectedMachineTerminalSessionOrdinal :one
@@ -1423,6 +1907,57 @@ func (q *Queries) RenameConnectedMachineTerminalSession(ctx context.Context, arg
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const retryConnectedMachineEnrollment = `-- name: RetryConnectedMachineEnrollment :one
+UPDATE connected_machine_enrollments
+SET state = 'awaiting_bootstrap', generation = generation + 1,
+    bootstrap_token_hash = $1, bootstrap_token_ciphertext = $2, pairing_id = NULL,
+    requested_display_name = NULL, platform = NULL, architecture = NULL, workspace_root = NULL,
+    expires_at = $3, cancelled_at = NULL, updated_at = now()
+WHERE id = $4 AND user_id = $5
+  AND state IN ('cancelled','expired','denied','failed_retryable')
+RETURNING id, user_id, operation_id, idempotency_key, bootstrap_token_hash, bootstrap_token_ciphertext, state, generation, pairing_id, connected_machine_id, requested_display_name, platform, architecture, workspace_root, expires_at, cancelled_at, created_at, updated_at
+`
+
+type RetryConnectedMachineEnrollmentParams struct {
+	BootstrapTokenHash       []byte
+	BootstrapTokenCiphertext []byte
+	ExpiresAt                time.Time
+	ID                       string
+	UserID                   string
+}
+
+func (q *Queries) RetryConnectedMachineEnrollment(ctx context.Context, arg RetryConnectedMachineEnrollmentParams) (ConnectedMachineEnrollment, error) {
+	row := q.db.QueryRowContext(ctx, retryConnectedMachineEnrollment,
+		arg.BootstrapTokenHash,
+		arg.BootstrapTokenCiphertext,
+		arg.ExpiresAt,
+		arg.ID,
+		arg.UserID,
+	)
+	var i ConnectedMachineEnrollment
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.OperationID,
+		&i.IdempotencyKey,
+		&i.BootstrapTokenHash,
+		&i.BootstrapTokenCiphertext,
+		&i.State,
+		&i.Generation,
+		&i.PairingID,
+		&i.ConnectedMachineID,
+		&i.RequestedDisplayName,
+		&i.Platform,
+		&i.Architecture,
+		&i.WorkspaceRoot,
+		&i.ExpiresAt,
+		&i.CancelledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const retryConnectedMachineTerminalSessionOperation = `-- name: RetryConnectedMachineTerminalSessionOperation :exec
@@ -1593,7 +2128,7 @@ func (q *Queries) RevokeConnectedMachineAccessSessionsForUser(ctx context.Contex
 
 const revokeConnectedMachinesForEntitlement = `-- name: RevokeConnectedMachinesForEntitlement :many
 UPDATE connected_machines
-SET state = 'revoked', online = false, revoked_at = now(), updated_at = now(), version = version + 1
+SET state = 'revoked', online = false, seat_state = 'released', revoked_at = now(), updated_at = now(), version = version + 1
 WHERE user_id = $1
   AND seat_state = 'occupied'
   AND deleted_at IS NULL
@@ -1614,6 +2149,57 @@ func (q *Queries) RevokeConnectedMachinesForEntitlement(ctx context.Context, use
 			return nil, err
 		}
 		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const revokeConnectedMachinesOverSeatLimit = `-- name: RevokeConnectedMachinesOverSeatLimit :many
+WITH excess AS (
+  SELECT candidate.id
+  FROM connected_machines AS candidate
+  WHERE candidate.user_id = $1
+    AND seat_state = 'occupied'
+    AND deleted_at IS NULL
+    AND state IN ('pending', 'online', 'offline')
+  ORDER BY coalesce(enrolled_at, created_at) ASC, created_at ASC, id ASC
+  OFFSET $2
+)
+UPDATE connected_machines AS machine
+SET state = 'revoked', online = false, seat_state = 'released', revoked_at = now(), updated_at = now(), version = version + 1
+FROM excess
+WHERE machine.id = excess.id
+RETURNING machine.id, machine.environment_id
+`
+
+type RevokeConnectedMachinesOverSeatLimitParams struct {
+	UserID       string
+	SeatQuantity int32
+}
+
+type RevokeConnectedMachinesOverSeatLimitRow struct {
+	ID            string
+	EnvironmentID string
+}
+
+func (q *Queries) RevokeConnectedMachinesOverSeatLimit(ctx context.Context, arg RevokeConnectedMachinesOverSeatLimitParams) ([]RevokeConnectedMachinesOverSeatLimitRow, error) {
+	rows, err := q.db.QueryContext(ctx, revokeConnectedMachinesOverSeatLimit, arg.UserID, arg.SeatQuantity)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []RevokeConnectedMachinesOverSeatLimitRow
+	for rows.Next() {
+		var i RevokeConnectedMachinesOverSeatLimitRow
+		if err := rows.Scan(&i.ID, &i.EnvironmentID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err

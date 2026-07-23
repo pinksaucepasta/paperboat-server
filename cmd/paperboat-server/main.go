@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -10,15 +11,19 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+	"time"
 
-	"github.com/pinksaucepasta/paperboat-server/internal/agentunnel"
 	"github.com/pinksaucepasta/paperboat-server/internal/app"
+	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/catalog"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
+	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
 	"github.com/pinksaucepasta/paperboat-server/internal/orchestrator"
+	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 )
 
 func main() {
@@ -44,13 +49,109 @@ func run(args []string, stdout, stderr io.Writer) error {
 	case "reconcile":
 		return runReconcile(args[2:], stdout, stderr)
 	case "admin":
-		return fmt.Errorf("%s: command is defined for the production CLI surface but blocked until its phase implementation", args[1])
+		return runAdmin(args[2:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return nil
 	default:
 		return fmt.Errorf("unknown command %q", args[1])
 	}
+}
+
+func runAdmin(args []string, stdout, stderr io.Writer) error {
+	if len(args) < 2 {
+		return errors.New("usage: paperboat-server admin <usage-key provision|project delete> [flags]")
+	}
+	switch args[0] + " " + args[1] {
+	case "usage-key provision":
+		return runAdminProvisionUsageKey(args[2:], stdout, stderr)
+	case "project delete":
+		return runAdminDeleteProject(args[2:], stdout, stderr)
+	default:
+		return errors.New("usage: paperboat-server admin <usage-key provision|project delete> [flags]")
+	}
+}
+
+func runAdminDeleteProject(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("admin project delete", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	configPath := fs.String("config", "", "path to JSON config file")
+	userID := fs.String("user-id", "", "owning user ID")
+	projectID := fs.String("project-id", "", "project ID")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 || strings.TrimSpace(*userID) == "" || strings.TrimSpace(*projectID) == "" {
+		return errors.New("admin project delete requires --user-id and --project-id")
+	}
+	cfg, err := config.Load(context.Background(), config.LoadOptions{Environment: os.Getenv("PAPERBOAT_ENV"), FilePath: *configPath, LookupEnv: os.LookupEnv, ReadFile: os.ReadFile})
+	if err != nil {
+		return err
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	store, err := db.Open(cfg.Database)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	project, err := projects.NewService(store, audit.NewWriter(store), cfg).Delete(context.Background(), strings.TrimSpace(*userID), strings.TrimSpace(*projectID))
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(stdout, "project %s deletion state: %s\n", project.ID, project.State)
+	return err
+}
+
+func runAdminProvisionUsageKey(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("admin usage-key provision", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	configPath := fs.String("config", "", "path to JSON config file")
+	actorID := fs.String("actor-user-id", "", "administrator user ID")
+	idempotencyKey := fs.String("idempotency-key", "", "unique operation key")
+	keyID := fs.String("key-id", "", "usage signing key ID")
+	nodeID := fs.String("edge-node-id", "", "edge node ID")
+	publicKeyValue := fs.String("public-key", "", "base64url Ed25519 public key")
+	notBeforeValue := fs.String("not-before", "", "RFC3339 validity start")
+	expiresAtValue := fs.String("expires-at", "", "RFC3339 validity end")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("admin usage-key provision does not accept positional arguments")
+	}
+	publicKey, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(*publicKeyValue))
+	if err != nil {
+		return errors.New("public-key must be unpadded base64url")
+	}
+	notBefore, err := time.Parse(time.RFC3339, strings.TrimSpace(*notBeforeValue))
+	if err != nil {
+		return errors.New("not-before must be RFC3339")
+	}
+	expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(*expiresAtValue))
+	if err != nil {
+		return errors.New("expires-at must be RFC3339")
+	}
+	cfg, err := config.Load(context.Background(), config.LoadOptions{Environment: os.Getenv("PAPERBOAT_ENV"), FilePath: *configPath, LookupEnv: os.LookupEnv, ReadFile: os.ReadFile})
+	if err != nil {
+		return err
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	store, err := db.Open(cfg.Database)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	service := controlplane.NewEdgeService(store, cfg.Secrets.EdgeControlCredential)
+	service.SetAuditWriter(audit.NewWriter(store))
+	if err := service.ProvisionUsageKey(context.Background(), strings.TrimSpace(*actorID), strings.TrimSpace(*idempotencyKey), strings.TrimSpace(*keyID), strings.TrimSpace(*nodeID), publicKey, notBefore.UTC(), expiresAt.UTC()); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(stdout, "usage verification key %s provisioned for %s\n", strings.TrimSpace(*keyID), strings.TrimSpace(*nodeID))
+	return err
 }
 
 func runReconcile(args []string, stdout, stderr io.Writer) error {
@@ -69,7 +170,7 @@ func runReconcile(args []string, stdout, stderr io.Writer) error {
 	} else {
 		flyClient = &fly.SDKClient{APIToken: cfg.Secrets.FlyAPIToken, AppName: cfg.Fly.AppName, OrgSlug: cfg.Fly.OrgSlug, BaseURL: cfg.Providers.Fly.BaseURL}
 	}
-	run, err := orchestrator.NewServiceWithAgentunnel(store, flyClient, cfg, commandAgentunnelClient(cfg)).Reconcile(context.Background())
+	run, err := orchestrator.NewService(store, flyClient, cfg).Reconcile(context.Background())
 	if err != nil {
 		return err
 	}
@@ -79,21 +180,6 @@ func runReconcile(args []string, stdout, stderr io.Writer) error {
 	}
 	_, err = fmt.Fprintln(stdout, string(b))
 	return err
-}
-
-func commandAgentunnelClient(cfg config.Config) agentunnel.Client {
-	if cfg.Providers.FakeMode {
-		return agentunnel.FakeClient{BaseURL: cfg.Providers.Agentunnel.BaseURL}
-	}
-	return agentunnel.HTTPClient{
-		BaseURL:              cfg.Providers.Agentunnel.BaseURL,
-		APIKey:               cfg.Secrets.AgentunnelAPIKey,
-		PapercodeLocalURL:    cfg.Providers.Agentunnel.PapercodeLocalURL,
-		RouteExpiresIn:       cfg.Providers.Agentunnel.RouteExpiresIn,
-		RouteSubdomainPrefix: cfg.Providers.Agentunnel.RouteSubdomainPrefix,
-		AccessPolicyID:       cfg.Providers.Agentunnel.AccessPolicyID,
-		UploadMaxBytes:       cfg.Providers.Agentunnel.UploadMaxBytes,
-	}
 }
 
 func runMigrate(args []string, stdout, stderr io.Writer) error {
@@ -208,6 +294,7 @@ Usage:
   paperboat-server migrate
   paperboat-server seed-catalogs
   paperboat-server reconcile
-  paperboat-server admin
+  paperboat-server admin usage-key provision [flags]
+  paperboat-server admin project delete --user-id <id> --project-id <id> [flags]
 `)
 }

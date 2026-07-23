@@ -105,6 +105,45 @@ func TestHelperEnrollmentExchangeIsSingleUseAndKeyBound(t *testing.T) {
 	}
 }
 
+func TestHelperEnrollmentReissuesExpiredCredentialForSamePendingHelper(t *testing.T) {
+	store := openControlPlaneTestDB(t)
+	ctx := context.Background()
+	now := time.Date(2026, 7, 22, 8, 0, 0, 0, time.UTC)
+	environmentID := "env_reissue_expired_" + strings.ReplaceAll(t.Name(), "/", "_")
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ('usr_test','workos_reissue','reissue@example.test','active') ON CONFLICT (id) DO NOTHING`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id) VALUES ($1,$2,'usr_test')`, environmentID, "workspace_reissue"); err != nil {
+		t.Fatal(err)
+	}
+	signer, err := mint.NewEphemeral(time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewEnrollmentService(store, signer, nil, "https://api.example.test", "enrollment-test-encryption-key")
+	service.clock = func() time.Time { return now }
+	first, err := service.Issue(ctx, "usr_test", "reissue-first", environmentID, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.clock = func() time.Time { return now.Add(2 * time.Minute) }
+	second, err := service.Issue(ctx, "usr_test", "reissue-second", environmentID, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.HelperID != first.HelperID || second.EnrollmentID == first.EnrollmentID || second.Credential == first.Credential {
+		t.Fatalf("first=%+v second=%+v", first, second)
+	}
+	var firstState string
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state FROM paperboat.control_helper_enrollments WHERE id=$1`, first.EnrollmentID).Scan(&firstState); err != nil || firstState != "revoked" {
+		t.Fatalf("first state=%q err=%v", firstState, err)
+	}
+	var helperCount int
+	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.control_helpers WHERE environment_id=$1`, environmentID).Scan(&helperCount); err != nil || helperCount != 1 {
+		t.Fatalf("helper count=%d err=%v", helperCount, err)
+	}
+}
+
 func TestHelperEnrollmentRejectsExpiredCredentialBeforeMutation(t *testing.T) {
 	store := openControlPlaneTestDB(t)
 	ctx := context.Background()
@@ -277,7 +316,7 @@ func TestConnectorAdmissionBindsProofGenerationNodeAndReplay(t *testing.T) {
 		t.Fatalf("admission = %#v, %v", admission, err)
 	}
 	wire, err := json.Marshal(admission)
-	if err != nil || bytes.Contains(wire, []byte(`"expires_at"`)) || bytes.Contains(wire, []byte(`"tcp_port"`)) || bytes.Contains(wire, []byte(`"quic_port"`)) {
+	if err != nil || bytes.Contains(wire, []byte(`"expires_at"`)) || !bytes.Contains(wire, []byte(`"tcp_port":26022`)) || !bytes.Contains(wire, []byte(`"quic_port":26023`)) {
 		t.Fatalf("admission wire = %s, %v", wire, err)
 	}
 	if _, err := signer.VerifyCredential(admission.Credential, "https://api.example.test", "connector_admission", now); err != nil {

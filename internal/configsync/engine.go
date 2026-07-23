@@ -2,6 +2,7 @@ package configsync
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +36,7 @@ type Config struct {
 	RequireEncryption  bool
 	ClassifierEndpoint string
 	MachineCredential  string
+	GitToken           string
 	PendingJournalPath string
 }
 
@@ -76,6 +78,7 @@ func ConfigFromEnv() (Config, error) {
 		RequireEncryption:  envBool("PAPERBOAT_CONFIG_REQUIRE_ENCRYPTION", false),
 		ClassifierEndpoint: strings.TrimSpace(os.Getenv("PAPERBOAT_CONFIG_CLASSIFY_ENDPOINT")),
 		MachineCredential:  strings.TrimSpace(os.Getenv(activityTokenEnv)),
+		GitToken:           strings.TrimSpace(os.Getenv("PAPERBOAT_GITHUB_CONFIG_TOKEN")),
 		PendingJournalPath: env("PAPERBOAT_CONFIG_PENDING_JOURNAL", filepath.Join(env("PAPERBOAT_WORKSPACE", "/workspace"), ".paperboat", "system", "config-sync-pending.json")),
 		Policy:             PolicyFromEnv(),
 		Now:                func() time.Time { return time.Now().UTC() },
@@ -729,11 +732,11 @@ func (e *Engine) ensureRepository(ctx context.Context) error {
 	if err := os.MkdirAll(filepath.Dir(e.repo), 0o700); err != nil {
 		return err
 	}
-	if err := cloneRepository(ctx, e.cfg.RepoURL, e.cfg.Branch, e.repo, true); err == nil {
+	if err := cloneRepository(ctx, e.cfg.RepoURL, e.cfg.Branch, e.repo, true, e.cfg.GitToken); err == nil {
 		return nil
 	}
 	_ = os.RemoveAll(e.repo)
-	if err := cloneRepository(ctx, e.cfg.RepoURL, e.cfg.Branch, e.repo, false); err != nil {
+	if err := cloneRepository(ctx, e.cfg.RepoURL, e.cfg.Branch, e.repo, false, e.cfg.GitToken); err != nil {
 		return err
 	}
 	return e.ensureLocalBranch(ctx)
@@ -760,14 +763,14 @@ func (e *Engine) resetToRemote(ctx context.Context) error {
 	return e.git(ctx, "clean", "-fdx")
 }
 
-func cloneRepository(ctx context.Context, repoURL, branch, destination string, branchOnly bool) error {
+func cloneRepository(ctx context.Context, repoURL, branch, destination string, branchOnly bool, gitToken string) error {
 	args := []string{"clone"}
 	if branchOnly {
 		args = append(args, "--single-branch", "--branch", branch)
 	}
 	args = append(args, repoURL, destination)
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = gitEnv()
+	cmd.Env = gitEnv(gitToken)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("clone config repository: %s", sanitizeMessage(string(output)))
 	}
@@ -837,7 +840,7 @@ func (e *Engine) git(ctx context.Context, args ...string) error {
 
 func (e *Engine) gitOutput(ctx context.Context, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", e.repo}, args...)...)
-	cmd.Env = gitEnv()
+	cmd.Env = gitEnv(e.cfg.GitToken)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git %s failed: %s", args[0], sanitizeMessage(string(output)))
@@ -845,8 +848,17 @@ func (e *Engine) gitOutput(ctx context.Context, args ...string) (string, error) 
 	return string(output), nil
 }
 
-func gitEnv() []string {
-	return append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+func gitEnv(token string) []string {
+	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	if token == "" {
+		return env
+	}
+	credential := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
+	return append(env,
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=http.https://github.com/.extraheader",
+		"GIT_CONFIG_VALUE_0=Authorization: Basic "+credential,
+	)
 }
 
 func (e *Engine) verifyStagedBlobs(ctx context.Context, maxFile, maxBatch int64) error {

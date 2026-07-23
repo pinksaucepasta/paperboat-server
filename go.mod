@@ -5,6 +5,7 @@ go 1.25.7
 require (
 	filippo.io/age v1.3.1
 	github.com/bmatcuk/doublestar/v4 v4.6.1
+	github.com/coder/websocket v1.8.14
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/lib/pq v1.12.3

@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"filippo.io/age"
-	"github.com/pinksaucepasta/paperboat-server/internal/agentunnel"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
@@ -30,8 +29,6 @@ type Service struct {
 	repo              *Repository
 	fly               fly.Client
 	cfg               config.Config
-	agentunnel        agentunnel.Client
-	agentunnelRepo    *agentunnel.Repository
 	beforeStop        func(context.Context, string) error
 	issueEnrollment   func(context.Context, string, string, string, time.Duration) (string, error)
 	ensureHostedRoute func(context.Context, string, string, string, string) error
@@ -57,25 +54,15 @@ func (s *Service) SetHostedReadinessVerifier(fn func(context.Context, string) er
 }
 
 func NewService(store *db.DB, flyClient fly.Client, cfg config.Config) *Service {
-	var agentunnelClient agentunnel.Client
-	if cfg.Providers.FakeMode {
-		agentunnelClient = agentunnel.FakeClient{BaseURL: cfg.Providers.Agentunnel.BaseURL}
-	}
-	return NewServiceWithAgentunnel(store, flyClient, cfg, agentunnelClient)
-}
-
-func NewServiceWithAgentunnel(store *db.DB, flyClient fly.Client, cfg config.Config, agentunnelClient agentunnel.Client) *Service {
 	repo := NewRepository(store, cfg.Secrets.EncryptionKey)
 	repo.lease = cfg.Fly.OrchestrationLease
 	if repo.lease <= cfg.Fly.OperationTimeout {
 		repo.lease = 5 * time.Minute
 	}
 	return &Service{
-		repo:           repo,
-		fly:            fly.NewTimeoutClient(flyClient, cfg.Fly.OperationTimeout),
-		cfg:            cfg,
-		agentunnel:     agentunnelClient,
-		agentunnelRepo: agentunnel.NewRepository(store, cfg.Secrets.EncryptionKey),
+		repo: repo,
+		fly:  fly.NewTimeoutClient(flyClient, cfg.Fly.OperationTimeout),
+		cfg:  cfg,
 	}
 }
 
@@ -168,7 +155,7 @@ func (s *Service) provisionProject(ctx context.Context, projectID string) error 
 		intent.EnrollmentCredential = credential
 	}
 	if s.ensureHostedRoute != nil {
-		host := providerName(s.cfg.Providers.Agentunnel.RouteSubdomainPrefix, intent.ID) + "." + strings.Trim(strings.ToLower(s.cfg.Fly.HostedRouteSuffix), ".")
+		host := providerName(s.cfg.Providers.Agentunnel.RouteSubdomainPrefix, intent.ID) + "." + strings.Trim(strings.ToLower(s.cfg.HelperBaseDomain), ".")
 		if routeErr := s.ensureHostedRoute(ctx, intent.UserID, "hosted-route:"+intent.ID, intent.ID, host); routeErr != nil {
 			return fmt.Errorf("ensure hosted helper route: %w", routeErr)
 		}
@@ -181,42 +168,6 @@ func (s *Service) provisionProject(ctx context.Context, projectID string) error 
 		return err
 	}
 	return s.repo.MarkProvisionedStopped(ctx, intent)
-}
-
-func (s *Service) ensureAgentunnelResource(ctx context.Context, intent *ProjectIntent) error {
-	if strings.TrimSpace(intent.AgentunnelToken) != "" {
-		return nil
-	}
-	if s.agentunnel == nil {
-		if strings.TrimSpace(s.cfg.Secrets.AgentunnelMachineToken) != "" {
-			return nil
-		}
-		return errors.New("agentunnel project resource is required before machine provisioning")
-	}
-	resource, err := s.agentunnel.EnsureProjectResources(ctx, agentunnel.ProjectRef{ID: intent.ID, Name: intent.ID})
-	if err != nil {
-		return fmt.Errorf("ensure agentunnel project resources: %w", err)
-	}
-	resource, err = s.agentunnelRepo.UpsertResource(ctx, intent.ID, resource)
-	if err != nil {
-		return fmt.Errorf("store agentunnel project resources: %w", err)
-	}
-	intent.AgentunnelToken = resource.MachineToken
-	intent.AgentunnelClientID = resource.ClientID
-	intent.AgentunnelTunnelID = resource.TunnelID
-	if strings.TrimSpace(intent.AgentunnelToken) == "" {
-		reloaded, err := s.repo.agentunnelResource(ctx, intent.ID)
-		if err != nil {
-			return fmt.Errorf("reload agentunnel project resources: %w", err)
-		}
-		intent.AgentunnelToken = reloaded.MachineToken
-		intent.AgentunnelClientID = reloaded.ClientID
-		intent.AgentunnelTunnelID = reloaded.TunnelID
-	}
-	if strings.TrimSpace(intent.AgentunnelToken) == "" {
-		return errors.New("agentunnel project resource did not include a machine token")
-	}
-	return nil
 }
 
 func (s *Service) startProject(ctx context.Context, projectID string) error {
@@ -387,7 +338,7 @@ func (s *Service) deleteProject(ctx context.Context, projectID string) error {
 	intent, intentErr := s.repo.ProjectIntent(ctx, projectID)
 	machine, machineErr := s.repo.ProjectMachine(ctx, projectID)
 	if machineErr == nil {
-		if _, err := s.fly.StopMachine(ctx, machine.FlyMachineID); err != nil {
+		if _, err := s.stopMachine(ctx, machine.FlyMachineID); err != nil {
 			if !errors.Is(err, fly.ErrNotFound) {
 				return err
 			}
@@ -866,9 +817,6 @@ type ProjectIntent struct {
 	GitHubConfigToken      string
 	GitHubConfigRepoURL    string
 	GitHubConfigRepoBranch string
-	AgentunnelToken        string
-	AgentunnelClientID     string
-	AgentunnelTunnelID     string
 	EnrollmentCredential   string
 	ConfigAgeIdentity      string
 	ConfigAgeRecipient     string
@@ -1022,13 +970,6 @@ func (r *Repository) ProjectIntent(ctx context.Context, projectID string) (Proje
 		return ProjectIntent{}, err
 	}
 	intent.SetupScript = setupScript
-	agentunnelResource, err := r.agentunnelResource(ctx, intent.ID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return ProjectIntent{}, err
-	}
-	intent.AgentunnelToken = agentunnelResource.MachineToken
-	intent.AgentunnelClientID = agentunnelResource.ClientID
-	intent.AgentunnelTunnelID = agentunnelResource.TunnelID
 	return intent, nil
 }
 
@@ -1100,32 +1041,6 @@ func (r *Repository) setupScript(ctx context.Context, projectID, setupScriptRef 
 		return "", fmt.Errorf("decrypt project setup script: %w", err)
 	}
 	return plaintext, nil
-}
-
-type agentunnelResource struct {
-	TunnelID     string
-	ClientID     string
-	MachineToken string
-}
-
-func (r *Repository) agentunnelResource(ctx context.Context, projectID string) (agentunnelResource, error) {
-	row, err := r.db.Queries().GetOrchestrationAgentunnelResource(ctx, projectID)
-	if err != nil {
-		return agentunnelResource{}, err
-	}
-	resource := agentunnelResource{TunnelID: row.TunnelID, ClientID: row.ClientID}
-	if strings.TrimSpace(row.MachineTokenCiphertext) == "" {
-		return resource, nil
-	}
-	ciphertext, err := hex.DecodeString(row.MachineTokenCiphertext)
-	if err != nil {
-		return agentunnelResource{}, err
-	}
-	resource.MachineToken, err = secrets.Decrypt(r.encryptionKey, ciphertext)
-	if err != nil {
-		return agentunnelResource{}, fmt.Errorf("decrypt legacy agentunnel token: %w", err)
-	}
-	return resource, nil
 }
 
 func (r *Repository) ProjectMachine(ctx context.Context, projectID string) (MachineRecord, error) {
@@ -1277,14 +1192,8 @@ func (r *Repository) MarkDeletedAndReleaseStorage(ctx context.Context, projectID
 		} else if err != nil {
 			return err
 		}
-		terminalSessions, err := q.ListActiveTerminalSessions(ctx, projectID)
-		if err != nil {
+		if err := q.SupersedeProjectTerminalSessionOperations(ctx, projectID); err != nil {
 			return err
-		}
-		for _, terminalSession := range terminalSessions {
-			if err := q.QueueTerminalSessionOperation(ctx, dbsqlc.QueueTerminalSessionOperationParams{ID: newID("tso"), ProjectID: projectID, TerminalSessionID: terminalSession.ID, Operation: "delete_history"}); err != nil {
-				return err
-			}
 		}
 		if err := q.TombstoneProjectTerminalSessions(ctx, projectID); err != nil {
 			return err

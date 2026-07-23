@@ -74,6 +74,20 @@ UPDATE paperboat.users SET status='suspended' WHERE id='usr_migration_revocation
 DELETE FROM paperboat.users WHERE id='usr_migration_revocation_probe'`); err != nil {
 		t.Fatalf("account revocation trigger execution failed: %v", err)
 	}
+	if _, err := store.SQL().ExecContext(context.Background(), `
+INSERT INTO paperboat.users (id, workos_subject, primary_email, status)
+VALUES ('usr_migration_client_revocation_probe', 'workos_migration_client_revocation_probe', 'migration-client-revocation@example.test', 'active')
+ON CONFLICT (id) DO UPDATE SET status='active';
+INSERT INTO paperboat.client_sessions (id, user_id, client_id, client_label, device_type, os, scopes, state, created_at, approved_at)
+VALUES ('cls_migration_revocation_probe', 'usr_migration_client_revocation_probe', 'migration-probe', 'Migration probe', 'cli', 'linux', ARRAY[]::text[], 'active', now(), now())
+ON CONFLICT (id) DO UPDATE SET state='active', revoked_at=NULL, revocation_reason=NULL;
+UPDATE paperboat.client_sessions
+SET state='revoked', revoked_at=now(), revocation_reason='migration_probe'
+WHERE id='cls_migration_revocation_probe';
+DELETE FROM paperboat.client_sessions WHERE id='cls_migration_revocation_probe';
+DELETE FROM paperboat.users WHERE id='usr_migration_client_revocation_probe'`); err != nil {
+		t.Fatalf("client revocation trigger execution failed: %v", err)
+	}
 	var hasRole bool
 	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (
 		SELECT 1 FROM information_schema.columns

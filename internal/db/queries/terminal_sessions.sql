@@ -42,7 +42,7 @@ UPDATE project_terminal_sessions SET name=sqlc.arg(name),version=version+1,updat
 WHERE project_id=sqlc.arg(project_id) AND id=sqlc.arg(id) AND deleted_at IS NULL AND NOT is_default;
 
 -- name: CloseTerminalSession :execrows
-UPDATE project_terminal_sessions SET desired_state='closed',runtime_state='closed',version=version+1,updated_at=now()
+UPDATE project_terminal_sessions SET desired_state='closed',version=version+1,updated_at=now()
 WHERE project_id=sqlc.arg(project_id) AND id=sqlc.arg(id) AND deleted_at IS NULL AND desired_state<>'closed';
 
 -- name: ReopenTerminalSession :exec
@@ -92,6 +92,11 @@ WHERE id=sqlc.arg(id) AND state='pending';
 -- name: RetryTerminalSessionOperation :exec
 UPDATE terminal_session_operations SET attempts=attempts+1,next_attempt_at=now()+make_interval(secs => sqlc.arg(retry_seconds)),last_error=sqlc.arg(last_error),updated_at=now()
 WHERE id=sqlc.arg(id) AND state='pending';
+
+-- name: SupersedeProjectTerminalSessionOperations :exec
+UPDATE terminal_session_operations
+SET state='superseded',completed_at=now(),last_error='hosted provider resources destroyed',updated_at=now()
+WHERE project_id=sqlc.arg(project_id) AND state='pending';
 
 -- name: UpdateTerminalSessionRuntime :exec
 UPDATE project_terminal_sessions

@@ -18,6 +18,32 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 )
 
+func TestConnectedMachineHeartbeatCommitsServerReceiptTime(t *testing.T) {
+	store := openRuntimeTestDB(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID, machineID, environmentID := "usr_heartbeat_"+suffix, "cm_heartbeat_"+suffix, "env_heartbeat_"+suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_"+suffix, "heartbeat-"+suffix+"@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.connected_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,'Heartbeat','linux','amd64','/home/test','offline','occupied',false)`, machineID, userID, environmentID); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now().UTC().Add(-time.Second)
+	if err := metering.NewRuntimeRepository(store, "").RecordHeartbeat(ctx, metering.ActivityHeartbeat{ProjectID: environmentID, MachineID: machineID, LastActivityAt: time.Unix(1, 0), LastHeartbeatAt: time.Unix(1, 0), ReporterVersion: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	var state string
+	var online bool
+	var lastSeen time.Time
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state,online,last_seen_at FROM paperboat.connected_machines WHERE id=$1`, machineID).Scan(&state, &online, &lastSeen); err != nil {
+		t.Fatal(err)
+	}
+	if state != "online" || !online || lastSeen.Before(started) {
+		t.Fatalf("heartbeat state=%s online=%v last_seen_at=%s", state, online, lastSeen)
+	}
+}
+
 func TestRuntimeMeteringDebitsWeightedConcurrentMachines(t *testing.T) {
 	store := openRuntimeTestDB(t)
 	ctx := context.Background()
@@ -369,6 +395,9 @@ func TestRuntimeMeteringQueuesIdleStop(t *testing.T) {
 	if _, err := projectService.Start(ctx, userID, "prj_idle_"+suffix); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.orchestration_jobs SET state='succeeded', updated_at=now() WHERE state='queued' AND aggregate_id<>$1`, "prj_idle_"+suffix); err != nil {
+		t.Fatal(err)
+	}
 	if err := orchestrator.NewService(store, flyClient, cfg).RunOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -583,6 +612,9 @@ func seedMeteredProjectForUser(t *testing.T, store *db.DB, suffix, userID, label
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.project_storage_allocations (project_id, storage_account_id, assigned_gb) VALUES ($1, $2, 10)`, projectID, storageAccountID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.storage_accounts SET allocated_gb=allocated_gb+10 WHERE id=$1`, storageAccountID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.SQL().ExecContext(ctx, `
 INSERT INTO paperboat.project_runtime_configs
 	(project_id, machine_type_version_id, idle_timeout_option_id, region_id, desired_config_hash, applied_storage_gb, applied_machine_type_version_id, applied_idle_timeout_option_id, applied_region_id, applied_config_hash)
@@ -613,6 +645,9 @@ func assertQueuedStop(t *testing.T, store *db.DB, projectID, key string) {
 
 func processMeteringStop(t *testing.T, store *db.DB, flyClient *fly.FakeClient, projectID string) {
 	t.Helper()
+	if _, err := store.SQL().ExecContext(context.Background(), `UPDATE paperboat.orchestration_jobs SET state='succeeded', updated_at=now() WHERE state='queued' AND aggregate_id<>$1`, projectID); err != nil {
+		t.Fatal(err)
+	}
 	cfg := config.Default()
 	cfg.Secrets.EncryptionKey = "metering-lifecycle-test-key"
 	if err := orchestrator.NewService(store, flyClient, cfg).RunOnce(context.Background()); err != nil {

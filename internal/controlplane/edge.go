@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -134,7 +135,7 @@ func (s *EdgeService) ObserveRoutes(ctx context.Context, nodeID string, observat
 			}
 			detachedCount++
 		}
-		return nil
+		return tx.Queries().RefreshControlPreviewEdgeReadiness(ctx, now)
 	})
 	if err == nil {
 		observability.ControlRouteObserved(int64(len(observations)))
@@ -420,6 +421,7 @@ func (s *EdgeService) handleObservedRoutes(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err := s.ObserveRoutes(r.Context(), input.NodeID, input.Routes); err != nil {
+		slog.ErrorContext(r.Context(), "control route observation failed", "edge_node_id", input.NodeID, "error", err)
 		if errors.Is(err, ErrAssignmentConflict) {
 			writeEdgeError(w, r, http.StatusConflict, "version_conflict", false, 0)
 			return
@@ -545,7 +547,7 @@ func (s *EdgeService) handleRoutes(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, map[string]any{"route_id": row.RouteID, "route_revision": row.RouteRevision, "environment_id": row.EnvironmentID, "connector_generation": row.ConnectorGeneration, "edge_node_id": row.EdgeNodeID.String, "kind": row.Kind, "public_host": row.PublicHost, "target": map[string]any{"host": row.TargetHost, "port": row.TargetPort}})
+		items = append(items, map[string]any{"route_id": row.RouteID, "route_revision": row.RouteRevision, "environment_id": row.EnvironmentID, "connector_generation": row.ConnectorGeneration, "edge_node_id": row.EdgeNodeID.String, "kind": row.Kind, "public_host": row.PublicHost, "preview_state": row.PreviewState, "preview_reason": row.PreviewReason, "target": map[string]any{"host": row.TargetHost, "port": row.TargetPort}})
 	}
 	writeEdgeJSON(w, http.StatusOK, map[string]any{"routes": items})
 }

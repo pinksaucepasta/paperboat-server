@@ -54,81 +54,9 @@ Descriptors:
 - Exclude raw agentunnel client tokens, API keys, SSH keys, provider tokens, and
   VM-injected credentials.
 
-## `POST /api/projects/{project_id}/connect`
-
-Purpose:
-
-- Generic access descriptor for dashboard or future clients.
-
-Ready response data shape (`200`):
-
-```json
-{
-  "project_id": "prj_...",
-  "project_state": "running",
-  "connectable": true,
-  "status": "ready",
-  "reason": "ready",
-  "retry_after_seconds": 0,
-  "expires_at": "2026-07-05T12:00:00Z",
-  "descriptors": []
-}
-```
-
-## `POST /api/projects/{project_id}/papercode-connect`
-
-Purpose:
-
-- Return a papercode environment registration and tunneled WebSocket endpoint.
-
-Frozen response data shape:
-
-```json
-{
-  "project_id": "prj_...",
-  "environment": {
-    "environment_id": "env_...",
-    "display_name": "Project display name from project metadata",
-    "repository_identity": {
-      "provider": "github",
-      "owner": "example",
-      "name": "repo"
-    }
-  },
-  "access_endpoint": {
-    "kind": "tunneled_websocket",
-    "provider": "agentunnel",
-    "http_base_url": "https://...",
-    "websocket_base_url": "wss://...",
-    "compatibility": {
-      "hosted_https_web": true,
-      "desktop": true,
-      "mobile": true
-    },
-    "expires_at": "2026-07-05T12:00:00Z"
-  }
-}
-```
-
-Alignment with papercode docs:
-
-- Environment identity stays one per project and is served by the project's current VM-local
-  T3 server.
-- Access is modeled as an `AccessEndpoint`.
-- Client connection remains HTTP/WebSocket.
-- Endpoint reachability is a hint until client connects successfully.
-
-Approved baseline:
-
-- Papercode receives one stable Paperboat environment per project, served by the current VM.
-- The endpoint is an agentunnel-backed HTTP/WebSocket route to the VM-local T3 server.
-- Field names in this document are versioned contract names until papercode finalizes
-  native `AccessEndpoint` naming.
-- Descriptor expiry requires the client to request a fresh `papercode-connect`
-  descriptor; reconnect never extends a descriptor client-side.
-- Revocation is server-side: entitlement loss, project deletion/suspension, or credential
-  invalidation causes future descriptor requests to fail and active agentunnel/papercode
-  sessions to be closed by provider-side revocation where supported.
+The former generic `connect` and Papercode-specific `papercode-connect` endpoints are
+retired. They are not registered production routes. Hosted terminal clients use the
+canonical bearer-authenticated endpoint below.
 
 ## `POST /api/projects/{project_id}/cli-connect`
 
@@ -242,29 +170,40 @@ Approved baseline:
 ## Connected-machine descriptors
 
 `POST /api/connected-machines/{connected_machine_id}/connect` and
-`GET /api/connected-machines/{connected_machine_id}/connection-status` use the same
-terminal and staged-image descriptor shape as project `cli-connect`. The connect request
-accepts the optional `terminal_session_id` body field; status accepts it as a query field.
+`GET /api/connected-machines/{connected_machine_id}/connection-status` use the canonical
+`paperboat.environment-connection/v1` descriptor. The connect request accepts the optional
+`terminal_session_id` body field; status accepts it as a query field.
 
-Ready responses bind both layers to the connected machine:
+Ready responses bind the environment to the connected machine:
 
 ```json
 {
-  "connected_machine_id": "cm_...",
-  "connected_machine_state": "online",
+  "schema": "paperboat.environment-connection/v1",
+  "connectable": true,
   "environment": {
-    "environment_id": "env_...",
-    "connected_machine_id": "cm_...",
-    "project_root": "/home/user"
-  }
+    "id": "env_...",
+    "kind": "byod",
+    "resource_id": "cm_...",
+    "display_name": "Studio",
+    "state": "ready",
+    "root": "/home/user"
+  },
+  "terminal": {"endpoint": "wss://machine.example/v1/runtime"},
+  "upload": {"endpoint": "https://machine.example/v1/uploads"}
 }
 ```
 
-The descriptor must not contain `project_id`, raw connector addresses, connector tokens,
-or agentunnel control credentials. Terminal and upload endpoints remain the single
-agentunnel HTTPS/WSS route assigned to this connected environment. A descriptor request
-fails closed when the machine is revoked, disconnected, offline, lacks a seat, or has no
-remaining allowance/top-up capacity.
+The descriptor must not contain `project_id`, legacy connected-machine fields, raw
+connector addresses, connector tokens, or Agentunnel/Papercode implementation names.
+Terminal and upload endpoints use the applied `helper_https_wss` route assigned to the
+environment. Readiness requires the active environment and helper, the current admitted
+connector generation, its matching applied route observation, and a ready assigned edge
+node. Terminal and upload auth are separate server-signed `paperboat-credential+jwt`
+bearer credentials, respectively classed `terminal_operation` with exact scope
+`terminal:operate` and `image_stage` with exact scope `file:stage`. Both are bound to the
+environment, user, client session, and selected terminal session and expire within five
+minutes. A descriptor request fails closed when the machine is revoked, disconnected,
+offline, lacks a seat, or has no remaining allowance/top-up capacity.
 - The environment id is allocated with the project and is stable across machine stop/start,
   machine replacement, and route reconciliation. It changes only when the project identity
   is permanently deleted and recreated.

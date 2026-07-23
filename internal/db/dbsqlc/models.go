@@ -297,6 +297,27 @@ type ConnectedMachineBandwidthTopup struct {
 	UpdatedAt       time.Time
 }
 
+type ConnectedMachineEnrollment struct {
+	ID                       string
+	UserID                   string
+	OperationID              string
+	IdempotencyKey           string
+	BootstrapTokenHash       []byte
+	BootstrapTokenCiphertext []byte
+	State                    string
+	Generation               int64
+	PairingID                sql.NullString
+	ConnectedMachineID       sql.NullString
+	RequestedDisplayName     sql.NullString
+	Platform                 sql.NullString
+	Architecture             sql.NullString
+	WorkspaceRoot            sql.NullString
+	ExpiresAt                time.Time
+	CancelledAt              sql.NullTime
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
+}
+
 type ConnectedMachineEntitlement struct {
 	ID                     string
 	UserID                 string
@@ -500,6 +521,40 @@ type ControlOperationRecovery struct {
 	OperationID  string
 	ActorUserID  sql.NullString
 	CreatedAt    time.Time
+}
+
+type ControlPreview struct {
+	ID                        string
+	EnvironmentID             string
+	LogicalName               string
+	PreviewKey                string
+	CollisionCounter          int64
+	PublicHost                string
+	TargetHost                string
+	TargetPort                int32
+	State                     string
+	RouteID                   sql.NullString
+	HelperReady               bool
+	EdgeReady                 bool
+	TargetReady               bool
+	PublicAcknowledgedAt      sql.NullTime
+	ExpiresAt                 sql.NullTime
+	RemovedAt                 sql.NullTime
+	RetainedUntil             sql.NullTime
+	Version                   int64
+	CreatedAt                 time.Time
+	UpdatedAt                 time.Time
+	HelperObservationRevision int64
+	HelperObservedAt          sql.NullTime
+}
+
+type ControlPreviewOperation struct {
+	OperationKey  string
+	OperationType string
+	RequestHash   []byte
+	PreviewID     sql.NullString
+	Result        json.RawMessage
+	CreatedAt     time.Time
 }
 
 type ControlReconciliationAttempt struct {

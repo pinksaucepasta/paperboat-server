@@ -88,6 +88,9 @@ type CredentialInput struct {
 	AssignmentID        string
 	WarningRevision     string
 	HelperID            string
+	UserID              string
+	ClientSessionID     string
+	SessionID           string
 	KeyThumbprint       string
 	ConnectorGeneration int64
 	EdgePool            string
@@ -108,6 +111,9 @@ type CredentialClaims struct {
 	AssignmentID        string   `json:"assignment_id,omitempty"`
 	WarningRevision     string   `json:"warning_revision,omitempty"`
 	HelperID            string   `json:"helper_id,omitempty"`
+	UserID              string   `json:"user_id,omitempty"`
+	ClientSessionID     string   `json:"client_session_id,omitempty"`
+	SessionID           string   `json:"session_id,omitempty"`
 	KeyThumbprint       string   `json:"key_thumbprint,omitempty"`
 	ConnectorGeneration int64    `json:"connector_generation,omitempty"`
 	EdgePool            string   `json:"edge_pool,omitempty"`
@@ -119,10 +125,13 @@ var credentialPolicies = map[string]struct {
 	scopes   []string
 	maxTTL   time.Duration
 }{
-	"helper_enrollment":   {audience: "paperboat-enrollment", scopes: []string{"helper:enroll"}, maxTTL: 10 * time.Minute},
-	"helper_identity":     {audience: "paperboat-control", scopes: []string{"helper:connect", "helper:renew"}, maxTTL: time.Hour},
-	"connector_admission": {audience: "paperboat-edge", scopes: []string{"connector:admit"}, maxTTL: 5 * time.Minute},
-	"config_sync":         {audience: "paperboat-helper", scopes: []string{"config:pull", "config:apply", "config:report"}, maxTTL: 5 * time.Minute},
+	"helper_enrollment":    {audience: "paperboat-enrollment", scopes: []string{"helper:enroll"}, maxTTL: 10 * time.Minute},
+	"helper_identity":      {audience: "paperboat-control", scopes: []string{"helper:connect", "helper:renew"}, maxTTL: time.Hour},
+	"preview_registration": {audience: "paperboat-control", scopes: []string{"preview:register"}, maxTTL: 5 * time.Minute},
+	"connector_admission":  {audience: "paperboat-edge", scopes: []string{"connector:admit"}, maxTTL: 5 * time.Minute},
+	"config_sync":          {audience: "paperboat-helper", scopes: []string{"config:pull", "config:apply", "config:report"}, maxTTL: 5 * time.Minute},
+	"terminal_operation":   {audience: "paperboat-helper", scopes: []string{"terminal:operate"}, maxTTL: 5 * time.Minute},
+	"image_stage":          {audience: "paperboat-helper", scopes: []string{"file:stage"}, maxTTL: 5 * time.Minute},
 }
 
 func New(keys []Key, activeID string, maxAge time.Duration) (*Provider, error) {
@@ -266,6 +275,11 @@ func (p *Provider) SignCredential(input CredentialInput) (string, error) {
 			return "", errors.New("helper identity bindings are required")
 		}
 		claims["helper_id"], claims["key_thumbprint"] = input.HelperID, input.KeyThumbprint
+	case "preview_registration":
+		if input.HelperID == "" {
+			return "", errors.New("preview registration binding is required")
+		}
+		claims["helper_id"] = input.HelperID
 	case "connector_admission":
 		if input.HelperID == "" || input.ConnectorGeneration < 1 || input.EdgePool == "" || input.EdgeNodeID == "" {
 			return "", errors.New("connector admission bindings are required")
@@ -276,6 +290,11 @@ func (p *Provider) SignCredential(input CredentialInput) (string, error) {
 			return "", errors.New("config sync bindings are required")
 		}
 		claims["helper_id"], claims["assignment_id"], claims["warning_revision"] = input.HelperID, input.AssignmentID, input.WarningRevision
+	case "terminal_operation", "image_stage":
+		if input.UserID == "" || input.ClientSessionID == "" || input.SessionID == "" {
+			return "", errors.New("helper access bindings are required")
+		}
+		claims["user_id"], claims["client_session_id"], claims["session_id"] = input.UserID, input.ClientSessionID, input.SessionID
 	}
 	return p.signClaims("paperboat-credential+jwt", claims)
 }
@@ -329,12 +348,20 @@ func (p *Provider) VerifyCredential(token, expectedIssuer, expectedClass string,
 		if claims.HelperID == "" || claims.KeyThumbprint == "" {
 			return CredentialClaims{}, errors.New("credential claims are invalid")
 		}
+	case "preview_registration":
+		if claims.HelperID == "" {
+			return CredentialClaims{}, errors.New("credential claims are invalid")
+		}
 	case "connector_admission":
 		if claims.HelperID == "" || claims.ConnectorGeneration < 1 || claims.EdgePool == "" || claims.EdgeNodeID == "" {
 			return CredentialClaims{}, errors.New("credential claims are invalid")
 		}
 	case "config_sync":
 		if claims.HelperID == "" || claims.AssignmentID == "" || claims.WarningRevision == "" {
+			return CredentialClaims{}, errors.New("credential claims are invalid")
+		}
+	case "terminal_operation", "image_stage":
+		if claims.UserID == "" || claims.ClientSessionID == "" || claims.SessionID == "" {
 			return CredentialClaims{}, errors.New("credential claims are invalid")
 		}
 	}

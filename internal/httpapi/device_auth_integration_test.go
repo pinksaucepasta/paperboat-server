@@ -267,6 +267,76 @@ func TestBrowserLogoutKeepsCLIClientActiveAndDeleteReturnsNoContent(t *testing.T
 	}
 }
 
+func TestConnectedMachineMutationsAcceptScopedBearerAndRequireCookieCSRF(t *testing.T) {
+	store, router := newAuthIntegrationRouter(t)
+	cookies := loginCookies(t, router, "workos_machine_revoke:machine-revoke@example.com:Machine Revoke")
+	tokens := authorizeCLI(t, router, cookies)
+	userID := userIDByEmail(t, store, "machine-revoke@example.com")
+	for _, machineID := range []string{"cm_disconnect", "cm_delete", "cm_cookie"} {
+		if _, err := store.SQL().Exec(`
+INSERT INTO paperboat.connected_machines
+  (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online)
+VALUES ($1,$2,$3,$4,'linux','amd64','/home/paperboat','online','occupied',true)`, machineID, userID, "env_"+machineID, machineID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, mutation := range []struct{ method, path string }{
+		{http.MethodPost, "/api/connected-machines/cm_disconnect/disconnect"},
+		{http.MethodDelete, "/api/connected-machines/cm_delete"},
+	} {
+		req := httptest.NewRequest(mutation.method, mutation.path, nil)
+		req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s %s status=%d body=%s", mutation.method, mutation.path, rec.Code, rec.Body.String())
+		}
+	}
+
+	grantBody, _ := json.Marshal(map[string]any{"client_id": "paperboat-cli", "client_label": "Read-only CLI", "device_type": "desktop", "os": "linux", "scopes": cliScopes})
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/device/authorize", bytes.NewReader(grantBody))
+	req.RemoteAddr = "198.51.100.30:1234"
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("read-only authorize status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var grantEnvelope struct {
+		Data deviceGrant `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &grantEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/auth/device/requests/"+grantEnvelope.Data.UserCode+"/approve", nil)
+	addCookies(req, cookies)
+	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("read-only approve status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	readOnly := pollDevice(t, router, grantEnvelope.Data.DeviceCode, http.StatusOK)
+	if _, err := store.SQL().Exec(`UPDATE paperboat.client_sessions SET scopes=ARRAY['projects:read']::text[] WHERE id=$1`, readOnly.ClientSessionID); err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/connected-machines/cm_cookie/disconnect", nil)
+	req.Header.Set("Authorization", "Bearer "+readOnly.AccessToken)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("insufficient scope status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/connected-machines/cm_cookie/disconnect", nil)
+	addCookies(req, cookies)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "csrf_failed") {
+		t.Fatalf("missing CSRF status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAccountSuspensionPermanentlyRevokesCLIClients(t *testing.T) {
 	store, router := newAuthIntegrationRouter(t)
 	cookies := loginCookies(t, router, "workos_suspension:suspension@example.com:Suspension")
