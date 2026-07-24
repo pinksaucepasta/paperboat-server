@@ -123,9 +123,11 @@ WHERE environment_id = sqlc.arg(environment_id) AND lease_id IS NOT NULL AND rev
 
 -- name: CreateControlConfigLeaseOperation :one
 INSERT INTO control_config_repository_lease_operations
-  (operation_id, operation_type, request_hash, repository_id, lease_id, fencing_token, result_state, expires_at)
+  (operation_id, operation_type, request_hash, repository_id, assignment_id, environment_id,
+   helper_id, base_remote_revision, lease_id, fencing_token, result_state, expires_at)
 VALUES
   (sqlc.arg(operation_id), sqlc.arg(operation_type), sqlc.arg(request_hash), sqlc.arg(repository_id),
+   sqlc.narg(assignment_id), sqlc.narg(environment_id), sqlc.narg(helper_id), sqlc.narg(base_remote_revision),
    sqlc.narg(lease_id), sqlc.narg(fencing_token), sqlc.arg(result_state), sqlc.narg(expires_at))
 ON CONFLICT (operation_id) DO NOTHING
 RETURNING *;

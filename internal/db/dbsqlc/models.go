@@ -504,15 +504,19 @@ type ControlConfigRepositoryLeaseAuthority struct {
 }
 
 type ControlConfigRepositoryLeaseOperation struct {
-	OperationID   string
-	OperationType string
-	RequestHash   []byte
-	RepositoryID  string
-	LeaseID       sql.NullString
-	FencingToken  sql.NullInt64
-	ResultState   string
-	ExpiresAt     sql.NullTime
-	CreatedAt     time.Time
+	OperationID        string
+	OperationType      string
+	RequestHash        []byte
+	RepositoryID       string
+	LeaseID            sql.NullString
+	FencingToken       sql.NullInt64
+	ResultState        string
+	ExpiresAt          sql.NullTime
+	CreatedAt          time.Time
+	AssignmentID       sql.NullString
+	EnvironmentID      sql.NullString
+	HelperID           sql.NullString
+	BaseRemoteRevision sql.NullString
 }
 
 type ControlConfigRepositoryMigrationReview struct {

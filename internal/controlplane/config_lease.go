@@ -176,6 +176,8 @@ func (s *ConfigLeaseService) Acquire(ctx context.Context, operationID string, ho
 		}
 		if _, err = tx.Queries().CreateControlConfigLeaseOperation(ctx, dbsqlc.CreateControlConfigLeaseOperationParams{
 			OperationID: operationID, OperationType: "acquire", RequestHash: requestHash, RepositoryID: holder.RepositoryID,
+			AssignmentID: nullableString(holder.AssignmentID), EnvironmentID: nullableString(holder.EnvironmentID),
+			HelperID: nullableString(holder.HelperID), BaseRemoteRevision: nullableString(holder.BaseRemoteRevision),
 			LeaseID: nullableString(result.LeaseID), FencingToken: nullableInt64(result.FencingToken),
 			ResultState: state, ExpiresAt: nullableTime(result.ExpiresAt),
 		}); err != nil {
@@ -285,8 +287,14 @@ func validateEligibleLeaseHolder(ctx context.Context, tx *db.Tx, holder ConfigLe
 }
 
 func (s *ConfigLeaseService) recordLeaseOperation(ctx context.Context, tx *db.Tx, operationID, operationType string, requestHash []byte, holder ConfigLeaseHolder, lease ConfigLease, state string) error {
+	baseRevision := lease.BaseRevision
+	if baseRevision == "" {
+		baseRevision = holder.BaseRemoteRevision
+	}
 	if _, err := tx.Queries().CreateControlConfigLeaseOperation(ctx, dbsqlc.CreateControlConfigLeaseOperationParams{
 		OperationID: operationID, OperationType: operationType, RequestHash: requestHash, RepositoryID: holder.RepositoryID,
+		AssignmentID: nullableString(holder.AssignmentID), EnvironmentID: nullableString(holder.EnvironmentID),
+		HelperID: nullableString(holder.HelperID), BaseRemoteRevision: nullableString(baseRevision),
 		LeaseID: nullableString(lease.LeaseID), FencingToken: nullableInt64(lease.FencingToken),
 		ResultState: state, ExpiresAt: nullableTime(lease.ExpiresAt),
 	}); err != nil {
@@ -332,8 +340,21 @@ func replayConfigLeaseOperation(ctx context.Context, tx *db.Tx, operationID stri
 		return leaseReplay{err: ErrConfigLeaseBusy}, nil
 	case "lost":
 		return leaseReplay{err: ErrConfigLeaseLost}, nil
+	case "released", "revoked":
+		return leaseReplay{}, nil
+	case "acquired", "renewed":
+		if !row.LeaseID.Valid || !row.FencingToken.Valid || !row.AssignmentID.Valid ||
+			!row.EnvironmentID.Valid || !row.HelperID.Valid || !row.ExpiresAt.Valid {
+			return leaseReplay{}, ErrConfigLeaseReplay
+		}
+		return leaseReplay{lease: ConfigLease{
+			LeaseID: row.LeaseID.String, RepositoryID: row.RepositoryID,
+			AssignmentID: row.AssignmentID.String, EnvironmentID: row.EnvironmentID.String,
+			HelperID: row.HelperID.String, FencingToken: row.FencingToken.Int64,
+			BaseRevision: row.BaseRemoteRevision.String, ExpiresAt: row.ExpiresAt.Time,
+		}}, nil
 	default:
-		return leaseReplay{lease: ConfigLease{LeaseID: row.LeaseID.String, RepositoryID: row.RepositoryID, FencingToken: row.FencingToken.Int64, ExpiresAt: row.ExpiresAt.Time}}, nil
+		return leaseReplay{}, ErrConfigLeaseReplay
 	}
 }
 

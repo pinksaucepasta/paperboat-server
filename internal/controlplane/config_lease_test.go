@@ -53,15 +53,33 @@ func TestConfigRepositoryLeaseSerializesFencesAndRevokes(t *testing.T) {
 		t.Fatalf("first lease = %#v, %v", first, err)
 	}
 	replayed, err := service.Acquire(ctx, "acquire-a", holderA, 30*time.Second)
-	if err != nil || replayed.LeaseID != first.LeaseID || replayed.FencingToken != first.FencingToken {
+	if err != nil || replayed != first {
 		t.Fatalf("acquire replay = %#v, %v", replayed, err)
 	}
 	if _, err := service.Acquire(ctx, "acquire-b-busy", holderB, 30*time.Second); !errors.Is(err, ErrConfigLeaseBusy) {
 		t.Fatalf("competing acquire error = %v", err)
 	}
-	renewed, err := service.Renew(ctx, "renew-a", holderA, first.LeaseID, first.FencingToken, time.Minute)
+	renewHolder := holderA
+	renewHolder.BaseRemoteRevision = ""
+	renewed, err := service.Renew(ctx, "renew-a", renewHolder, first.LeaseID, first.FencingToken, time.Minute)
 	if err != nil || !renewed.ExpiresAt.Equal(now.Add(time.Minute)) {
 		t.Fatalf("renewed lease = %#v, %v", renewed, err)
+	}
+	replayedRenewal, err := service.Renew(ctx, "renew-a", renewHolder, first.LeaseID, first.FencingToken, time.Minute)
+	if err != nil || replayedRenewal != renewed {
+		t.Fatalf("renew replay = %#v, %v", replayedRenewal, err)
+	}
+	legacyOperation := "legacy-incomplete"
+	if _, err := store.SQL().ExecContext(ctx, `
+		INSERT INTO paperboat.control_config_repository_lease_operations
+			(operation_id,operation_type,request_hash,repository_id,lease_id,fencing_token,result_state,expires_at)
+		VALUES ($1,'acquire',$2,$3,$4,$5,'acquired',$6)`,
+		legacyOperation, configLeaseRequestHash("acquire", legacyOperation, holderA, "", 0, 30*time.Second),
+		repositoryID, first.LeaseID, first.FencingToken, first.ExpiresAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Acquire(ctx, legacyOperation, holderA, 30*time.Second); !errors.Is(err, ErrConfigLeaseReplay) {
+		t.Fatalf("incomplete legacy replay error = %v", err)
 	}
 
 	now = now.Add(2 * time.Minute)

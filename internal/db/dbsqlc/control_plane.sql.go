@@ -797,23 +797,29 @@ func (q *Queries) CreateControlConfigCredential(ctx context.Context, arg CreateC
 
 const createControlConfigLeaseOperation = `-- name: CreateControlConfigLeaseOperation :one
 INSERT INTO control_config_repository_lease_operations
-  (operation_id, operation_type, request_hash, repository_id, lease_id, fencing_token, result_state, expires_at)
+  (operation_id, operation_type, request_hash, repository_id, assignment_id, environment_id,
+   helper_id, base_remote_revision, lease_id, fencing_token, result_state, expires_at)
 VALUES
   ($1, $2, $3, $4,
-   $5, $6, $7, $8)
+   $5, $6, $7, $8,
+   $9, $10, $11, $12)
 ON CONFLICT (operation_id) DO NOTHING
-RETURNING operation_id, operation_type, request_hash, repository_id, lease_id, fencing_token, result_state, expires_at, created_at
+RETURNING operation_id, operation_type, request_hash, repository_id, lease_id, fencing_token, result_state, expires_at, created_at, assignment_id, environment_id, helper_id, base_remote_revision
 `
 
 type CreateControlConfigLeaseOperationParams struct {
-	OperationID   string
-	OperationType string
-	RequestHash   []byte
-	RepositoryID  string
-	LeaseID       sql.NullString
-	FencingToken  sql.NullInt64
-	ResultState   string
-	ExpiresAt     sql.NullTime
+	OperationID        string
+	OperationType      string
+	RequestHash        []byte
+	RepositoryID       string
+	AssignmentID       sql.NullString
+	EnvironmentID      sql.NullString
+	HelperID           sql.NullString
+	BaseRemoteRevision sql.NullString
+	LeaseID            sql.NullString
+	FencingToken       sql.NullInt64
+	ResultState        string
+	ExpiresAt          sql.NullTime
 }
 
 func (q *Queries) CreateControlConfigLeaseOperation(ctx context.Context, arg CreateControlConfigLeaseOperationParams) (ControlConfigRepositoryLeaseOperation, error) {
@@ -822,6 +828,10 @@ func (q *Queries) CreateControlConfigLeaseOperation(ctx context.Context, arg Cre
 		arg.OperationType,
 		arg.RequestHash,
 		arg.RepositoryID,
+		arg.AssignmentID,
+		arg.EnvironmentID,
+		arg.HelperID,
+		arg.BaseRemoteRevision,
 		arg.LeaseID,
 		arg.FencingToken,
 		arg.ResultState,
@@ -838,6 +848,10 @@ func (q *Queries) CreateControlConfigLeaseOperation(ctx context.Context, arg Cre
 		&i.ResultState,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.AssignmentID,
+		&i.EnvironmentID,
+		&i.HelperID,
+		&i.BaseRemoteRevision,
 	)
 	return i, err
 }
@@ -1730,7 +1744,7 @@ func (q *Queries) GetControlConfigLeaseAuthorityForUpdate(ctx context.Context, r
 }
 
 const getControlConfigLeaseOperation = `-- name: GetControlConfigLeaseOperation :one
-SELECT operation_id, operation_type, request_hash, repository_id, lease_id, fencing_token, result_state, expires_at, created_at FROM control_config_repository_lease_operations WHERE operation_id = $1
+SELECT operation_id, operation_type, request_hash, repository_id, lease_id, fencing_token, result_state, expires_at, created_at, assignment_id, environment_id, helper_id, base_remote_revision FROM control_config_repository_lease_operations WHERE operation_id = $1
 `
 
 func (q *Queries) GetControlConfigLeaseOperation(ctx context.Context, operationID string) (ControlConfigRepositoryLeaseOperation, error) {
@@ -1746,6 +1760,10 @@ func (q *Queries) GetControlConfigLeaseOperation(ctx context.Context, operationI
 		&i.ResultState,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.AssignmentID,
+		&i.EnvironmentID,
+		&i.HelperID,
+		&i.BaseRemoteRevision,
 	)
 	return i, err
 }
