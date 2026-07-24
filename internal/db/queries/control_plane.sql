@@ -152,10 +152,16 @@ RETURNING *;
 -- name: GetEligibleControlConfigAssignment :one
 SELECT a.* FROM control_config_assignments a
 JOIN control_helpers h ON h.environment_id = a.environment_id
+JOIN control_environments e ON e.id = a.environment_id
+JOIN users u ON u.id = e.owner_user_id
+JOIN control_config_repositories r ON r.id = a.repository_id
 WHERE a.environment_id = sqlc.arg(environment_id) AND h.id = sqlc.arg(helper_id)
   AND h.state = 'active' AND h.revoked_at IS NULL AND a.repository_id IS NOT NULL
   AND a.revoked_at IS NULL AND a.consent_state IN ('not_required','accepted')
-FOR UPDATE OF a, h;
+  AND e.desired_state = 'active' AND e.revoked_at IS NULL
+  AND u.status = 'active'
+  AND r.state = 'active' AND r.disconnected_at IS NULL
+FOR UPDATE OF a, h, e, u, r;
 
 -- name: CreateControlConfigCredential :one
 INSERT INTO control_config_credentials
