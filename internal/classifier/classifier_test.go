@@ -67,6 +67,37 @@ func TestProviderRejectsMalformedAndInvalidEnumOutput(t *testing.T) {
 	}
 }
 
+func TestProviderRejectsIncompleteAndFailedStreams(t *testing.T) {
+	for name, events := range map[string]string{
+		"incomplete": "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"{}\"}\n\n",
+		"failed":     "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{}}\n\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, events+"data: [DONE]\n\n")
+			}))
+			defer server.Close()
+			service, _ := New(Config{BaseURL: server.URL, APIKey: "key", Model: "model", Revision: "1", Timeout: time.Second, MaxCandidates: 1, SchemaMode: "json_object"})
+			if _, err := service.Classify(context.Background(), []Candidate{{Path: ".config/tool", FileType: "file", LocationClass: "xdg_config"}}); err == nil {
+				t.Fatal("non-completed stream was accepted")
+			}
+		})
+	}
+}
+
+func TestProviderRejectsOversizedStream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":"+strconv.Quote(strings.Repeat("x", maxClassifierResponseBytes+1))+"}\n\n")
+	}))
+	defer server.Close()
+	service, _ := New(Config{BaseURL: server.URL, APIKey: "key", Model: "model", Revision: "1", Timeout: time.Second, MaxCandidates: 1, SchemaMode: "json_object"})
+	if _, err := service.Classify(context.Background(), []Candidate{{Path: ".config/tool", FileType: "file", LocationClass: "xdg_config"}}); err == nil {
+		t.Fatal("oversized stream was accepted")
+	}
+}
+
 func TestValidateResponseIsStrict(t *testing.T) {
 	candidates := []Candidate{{Path: ".config/tool/config.json"}}
 	valid := Response{Results: []Result{{Path: candidates[0].Path, Decision: Portable, Confidence: .9, ReasonCode: "tool_config"}}}
