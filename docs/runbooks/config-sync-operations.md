@@ -23,6 +23,17 @@ absolute home paths, provider responses, or conflict ciphertext into tickets or 
   from the configured branch; otherwise retain `sync_uncertain` and reconcile from the
   observed head.
 
+## Stale BYOD consent and offline edits
+
+- A warning-revision change makes prior consent stale immediately. Confirm new
+  credentials, repository access, and leases are refused before investigating helper
+  state. Never extend the old warning revision to restore service.
+- An offline helper keeps only encrypted recovery state. On reconnect it must obtain
+  current eligibility and repository access before scanning or applying files.
+- Reconcile offline edits from the current remote head under a new lease. Independent
+  changes may converge; same-path changes must enter conflict recovery. Never declare the
+  cached baseline current or publish it directly.
+
 ## Conflict recovery
 
 - Verify the environment reports the current assignment version, remote revision, and
@@ -42,6 +53,17 @@ absolute home paths, provider responses, or conflict ciphertext into tickets or 
   retries an unacknowledged landed resolution.
 - A journal with another repository or assignment binding is not reusable. Quarantine
   the state directory for review.
+
+## Malicious or unsupported repository
+
+- Stop before apply or publication when the format manifest is absent/unsupported, any
+  managed object is plaintext or mixed-format, paths escape the source root, Git
+  configuration/hooks alter execution, or an object exceeds policy bounds.
+- Preserve the remote revision and bounded validation reason. Do not execute chezmoi
+  source scripts, follow links, decrypt for diagnostics, normalize the repository in
+  place, or create a replacement baseline.
+- Quarantine the assignment for owner review. Recovery requires a separately verified
+  supported encrypted revision or a newly connected repository.
 
 ## Migration quarantine and key rotation
 
