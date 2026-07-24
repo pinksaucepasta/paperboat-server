@@ -119,15 +119,19 @@ Approved baseline:
 - Config repo name is `github.config_repo_name`.
 - Token material is encrypted, validated before sensitive GitHub operations, and marked
   unusable when provider validation/refresh fails.
-- Clone/config sync credential handoff is VM-scoped secret injection. User-facing APIs do
-  not return GitHub OAuth tokens or clone credentials.
+- Project clone credential handoff may use VM-scoped secret injection. Config-sync
+  repository access is a separate short-lived credential bound to the current repository,
+  assignment, environment, helper generation, and operation. User-facing APIs return
+  neither credential class.
 
 Implementation constraints:
 
 - Token material is encrypted.
 - Private config repo provisioning is idempotent.
-- VM config sync daemon owns ongoing pull/commit/push behavior.
-- Server provisions repo and credential handoff only.
+- `paperboat-helper` owns ongoing config-sync pull/apply/commit/push behavior and obtains
+  scoped repository access through its authenticated control-plane identity.
+- The server owns repository authorization, assignment eligibility, scoped-access
+  issuance/revocation, and writer leases; it never proxies configuration bytes.
 
 ## Catalog Seed Sets
 

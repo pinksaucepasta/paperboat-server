@@ -137,16 +137,19 @@ Decision:
 
 - GitHub OAuth is required before first project creation.
 - Server stores encrypted GitHub token material.
-- Server provisions one private per-user config repository.
-- VM daemon handles ongoing config sync; server provisions repo and credentials only.
+- Server manages multiple private configuration-repository connections per user,
+  separately from the zero-or-one assignment on each environment.
+- `paperboat-helper` handles ongoing pull/apply/commit/push. The server owns repository
+  authorization, assignment eligibility, scoped repository access, and writer leases.
 - OAuth scopes are dynamic config; production default is the minimum GitHub scopes that
   allow cloning authorized project repositories and provisioning/pushing the private
   config repository.
 - Config repo name is dynamic config and defaults to `paperboat-config` in local examples.
 - Token material is encrypted at rest, revalidated before sensitive provider operations,
   and treated as revoked when GitHub rejects validation or refresh.
-- Clone/config sync credentials are VM-scoped secret material injected through provider
-  secret handoff; they are never returned by user-facing APIs.
+- Project clone credentials may use provider secret handoff. Config-sync access is
+  short-lived and bound to the current repository, assignment, environment, helper
+  generation, and operation; neither credential class is returned by user-facing APIs.
 
 ### agentunnel Pre-Connect
 
