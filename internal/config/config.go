@@ -475,6 +475,9 @@ func (c Config) Validate() error {
 	if c.ConfigSync.Mode != "disabled" && c.ConfigSync.Mode != "read_only" && c.ConfigSync.Mode != "leased_writes" {
 		errs = append(errs, fmt.Errorf("config_sync.mode must be disabled, read_only, or leased_writes"))
 	}
+	if (c.ConfigSync.Mode != "disabled" || c.ConfigSync.BYODEnabled) && len(c.ConfigSync.Includes) == 0 {
+		errs = append(errs, fmt.Errorf("config_sync.includes must contain at least one explicit path pattern when config sync is enabled"))
+	}
 	for _, environmentID := range c.ConfigSync.EnvironmentAllowlist {
 		if strings.TrimSpace(environmentID) == "" || len(environmentID) > 128 {
 			errs = append(errs, fmt.Errorf("config_sync.environment_allowlist contains an invalid environment ID"))

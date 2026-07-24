@@ -38,6 +38,7 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 		"PAPERBOAT_SESSION_KEYS":                                "one,two",
 		"PAPERBOAT_CONFIG_SYNC_MODE":                            "read_only",
 		"PAPERBOAT_CONFIG_SYNC_BYOD_ENABLED":                    "true",
+		"PAPERBOAT_CONFIG_SYNC_INCLUDES":                        ".bashrc,.gitconfig",
 		"PAPERBOAT_CONFIG_SYNC_ENVIRONMENT_ALLOWLIST":           "env_one,env_two",
 		"PAPERBOAT_CONNECTED_MACHINES_URL":                      "https://dashboard.example.test/machines",
 	}
@@ -179,6 +180,28 @@ func TestValidationRejectsUnsafeConfigSyncPatterns(t *testing.T) {
 		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "config_sync path pattern") {
 			t.Fatalf("pattern %q validation error = %v", pattern, err)
 		}
+	}
+}
+
+func TestValidationRequiresExplicitConfigSyncIncludes(t *testing.T) {
+	for _, mutate := range []func(*Config){
+		func(cfg *Config) { cfg.ConfigSync.Mode = "read_only" },
+		func(cfg *Config) { cfg.ConfigSync.BYODEnabled = true },
+	} {
+		cfg := Default()
+		mutate(&cfg)
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "config_sync.includes") {
+			t.Fatalf("empty includes validation error = %v", err)
+		}
+		cfg.ConfigSync.Includes = []string{".bashrc"}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("explicit include rejected: %v", err)
+		}
+	}
+
+	cfg := Default()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("disabled config sync rejected empty includes: %v", err)
 	}
 }
 
