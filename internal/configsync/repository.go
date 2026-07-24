@@ -240,8 +240,11 @@ func (r *Repository) RotationWorker(interval time.Duration) func(context.Context
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
-			if err := r.RetireCompletedRotations(ctx); err != nil && ctx.Err() != nil {
-				return ctx.Err()
+			if err := r.RetireCompletedRotations(ctx); err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				return err
 			}
 			select {
 			case <-ctx.Done():

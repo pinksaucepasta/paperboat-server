@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"filippo.io/age"
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
@@ -18,7 +19,7 @@ import (
 func TestKeyRotationWaitsForOfflineCanonicalAssignment(t *testing.T) {
 	store := openConfigSyncTestDB(t)
 	ctx := context.Background()
-	suffix := strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())
+	suffix := strings.NewReplacer("/", "_", " ", "_").Replace(t.Name()) + "_" + time.Now().UTC().Format("150405.000000000")
 	userID := "rotation_user_" + suffix
 	repositoryID := "rotation_repo_" + suffix
 	onlineEnvironment := "rotation_online_" + suffix
@@ -66,10 +67,23 @@ func TestKeyRotationWaitsForOfflineCanonicalAssignment(t *testing.T) {
 	}
 }
 
+func TestRotationWorkerReturnsRepositoryFailure(t *testing.T) {
+	store := openConfigSyncTestDB(t)
+	repository := NewRepository(store, config.ConfigSync{}, "rotation-test-encryption-key-32-bytes", nil)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err := repository.RotationWorker(time.Hour)(context.Background())
+	if err == nil {
+		t.Fatal("rotation worker ignored repository failure")
+	}
+}
+
 func seedRotationScope(t *testing.T, store *db.DB, userID, repositoryID, onlineEnvironment, offlineEnvironment string) {
 	t.Helper()
 	ctx := context.Background()
 	t.Cleanup(func() {
+		_, _ = store.SQL().ExecContext(context.Background(), `DELETE FROM paperboat.account_config_keys WHERE user_id=$1`, userID)
 		_, _ = store.SQL().ExecContext(context.Background(), `DELETE FROM paperboat.users WHERE id=$1`, userID)
 	})
 	if _, err := store.SQL().ExecContext(ctx, `
