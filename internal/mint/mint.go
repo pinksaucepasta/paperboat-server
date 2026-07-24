@@ -336,8 +336,27 @@ func (p *Provider) VerifyCredential(token, expectedIssuer, expectedClass string,
 	}
 	policy, ok := credentialPolicies[expectedClass]
 	current := now.UTC().Unix()
-	if !ok || claims.CredentialClass != expectedClass || claims.Issuer != expectedIssuer || claims.Audience != policy.audience || !slices.Equal(claims.Scopes, policy.scopes) || claims.Subject == "" || claims.JTI == "" || claims.EnvironmentID == "" || claims.ExpiresAt <= current || claims.IssuedAt > current+60 || claims.ExpiresAt <= claims.IssuedAt || time.Duration(claims.ExpiresAt-claims.IssuedAt)*time.Second > policy.maxTTL {
-		return CredentialClaims{}, errors.New("credential claims are invalid")
+	switch {
+	case !ok:
+		return CredentialClaims{}, errors.New("credential policy is invalid")
+	case claims.CredentialClass != expectedClass:
+		return CredentialClaims{}, errors.New("credential class is invalid")
+	case claims.Issuer != expectedIssuer:
+		return CredentialClaims{}, errors.New("credential issuer is invalid")
+	case claims.Audience != policy.audience:
+		return CredentialClaims{}, errors.New("credential audience is invalid")
+	case !slices.Equal(claims.Scopes, policy.scopes):
+		return CredentialClaims{}, errors.New("credential scopes are invalid")
+	case claims.Subject == "" || claims.JTI == "" || claims.EnvironmentID == "":
+		return CredentialClaims{}, errors.New("credential base bindings are invalid")
+	case claims.ExpiresAt <= current:
+		return CredentialClaims{}, errors.New("credential is expired")
+	case claims.IssuedAt > current+60:
+		return CredentialClaims{}, errors.New("credential issued-at is invalid")
+	case claims.ExpiresAt <= claims.IssuedAt:
+		return CredentialClaims{}, errors.New("credential time window is invalid")
+	case time.Duration(claims.ExpiresAt-claims.IssuedAt)*time.Second > policy.maxTTL:
+		return CredentialClaims{}, errors.New("credential ttl is invalid")
 	}
 	switch expectedClass {
 	case "helper_enrollment":

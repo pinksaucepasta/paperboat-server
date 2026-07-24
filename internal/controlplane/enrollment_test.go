@@ -213,6 +213,85 @@ func TestEnsureBootGrantReplacesExpiredGrantAndStopsAfterEnrollment(t *testing.T
 	}
 }
 
+func TestHostedWorkloadIdentityRecoversExpiredIdentityForSameKey(t *testing.T) {
+	store := openControlPlaneTestDB(t)
+	ctx := context.Background()
+	suffix := strings.ReplaceAll(t.Name(), "/", "_")
+	userID := "hosted_recovery_user_" + suffix
+	environmentID := "hosted_recovery_project_" + suffix
+	machineID := "hosted_recovery_machine_" + suffix
+	if _, err := store.SQL().ExecContext(ctx, `
+		INSERT INTO paperboat.users (id,workos_subject,primary_email,status)
+		VALUES ($1,$2,$3,'active')`, userID, "workos_"+userID, userID+"@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.SQL().ExecContext(context.Background(), `DELETE FROM paperboat.users WHERE id=$1`, userID)
+	})
+	if _, err := store.SQL().ExecContext(ctx, `
+		INSERT INTO paperboat.projects (id,user_id,name,state,idempotency_key)
+		VALUES ($1,$2,'hosted recovery','running',$1)`, environmentID, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `
+		INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id)
+		VALUES ($1,$1,$2)`, environmentID, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `
+		INSERT INTO paperboat.fly_machines (id,project_id,fly_machine_id,state,image_ref,region)
+		VALUES ($1,$2,$3,'running','test-image','ams')`, "fly_"+suffix, environmentID, machineID); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+	signer, err := mint.New([]mint.Key{{
+		ID:         "hosted-recovery-test",
+		PrivateKey: ed25519.NewKeyFromSeed([]byte(strings.Repeat("r", ed25519.SeedSize))),
+	}}, "hosted-recovery-test", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewEnrollmentService(store, signer, nil, "https://api.example.test", "hosted-recovery-encryption-key")
+	service.clock = func() time.Time { return now }
+	tokenID := "workload-token-01"
+	service.ConfigureHostedWorkloadIdentity("paperboat-projects", HostedWorkloadIdentityVerifierFunc(
+		func(context.Context, string) (HostedWorkloadIdentity, error) {
+			return HostedWorkloadIdentity{
+				AppName: "paperboat-projects", MachineID: machineID, TokenID: tokenID,
+			}, nil
+		},
+	))
+	publicKey := ed25519.NewKeyFromSeed([]byte(strings.Repeat("k", ed25519.SeedSize))).Public().(ed25519.PublicKey)
+	first, err := service.ExchangeHostedWorkloadIdentity(ctx, "workload-token", publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.clock = func() time.Time { return now.Add(2 * time.Hour) }
+	recovered, err := service.ExchangeHostedWorkloadIdentity(ctx, "workload-token", publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.HelperID != first.HelperID || recovered.EnvironmentID != environmentID ||
+		!recovered.ExpiresAt.After(service.clock()) || recovered.Credential == first.Credential {
+		t.Fatalf("recovered identity = %#v; first = %#v", recovered, first)
+	}
+	tokenID = "workload-token-02"
+	replacementKey := ed25519.NewKeyFromSeed([]byte(strings.Repeat("n", ed25519.SeedSize))).Public().(ed25519.PublicKey)
+	replacement, err := service.ExchangeHostedWorkloadIdentity(ctx, "new-workload-token", replacementKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacement.HelperID == first.HelperID || replacement.EnvironmentID != environmentID {
+		t.Fatalf("replacement identity = %#v; first = %#v", replacement, first)
+	}
+	var oldState string
+	if err := store.SQL().QueryRowContext(ctx,
+		`SELECT state FROM paperboat.control_helpers WHERE id=$1`, first.HelperID,
+	).Scan(&oldState); err != nil || oldState != "replaced" {
+		t.Fatalf("old helper state = %q, %v", oldState, err)
+	}
+}
+
 func TestEnsureBootGrantConcurrentCallsReplayOneGrant(t *testing.T) {
 	store := openControlPlaneTestDB(t)
 	ctx := context.Background()

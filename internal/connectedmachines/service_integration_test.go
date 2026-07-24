@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -456,7 +455,7 @@ func TestInstallationFailureIsHelperBoundAndRetryPreservesMachine(t *testing.T) 
 		t.Fatalf("recovery material=%s", material)
 	}
 	var routeCount int
-	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.control_routes WHERE environment_id=$1 AND kind='helper_https_wss' AND public_host=$2 AND target_host='127.0.0.1' AND target_port=38080`, environmentID, strings.ReplaceAll(machineID, "_", "-")+".example.test").Scan(&routeCount); err != nil || routeCount != 1 {
+	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.control_routes WHERE environment_id=$1 AND kind='helper_https_wss' AND public_host=$2 AND target_host='127.0.0.1' AND target_port=38080`, environmentID, "recovery-"+suffix+".example.test").Scan(&routeCount); err != nil || routeCount != 1 {
 		t.Fatalf("helper route count=%d err=%v", routeCount, err)
 	}
 	var machineCount, occupiedSeats int

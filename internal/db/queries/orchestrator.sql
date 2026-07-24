@@ -132,6 +132,12 @@ applied_region_id=region_id,applied_config_hash=desired_config_hash,pending_rest
 -- name: UpdateOrchestratedMachineState :exec
 UPDATE fly_machines SET state=$2,version=version+1,updated_at=now() WHERE project_id=$1;
 
+-- name: UpdateOrchestratedMachineObservation :exec
+UPDATE fly_machines
+SET state=sqlc.arg(state),image_ref=sqlc.arg(image_ref),observed_config_hash=sqlc.arg(observed_config_hash),
+version=version+1,updated_at=now()
+WHERE project_id=sqlc.arg(project_id);
+
 -- name: UpdateOrchestratedProjectState :exec
 UPDATE projects SET state=$2,version=version+1,updated_at=now() WHERE id=$1 AND state<>'deleted';
 
@@ -148,7 +154,7 @@ INSERT INTO reconciliation_runs (id,scope,state) VALUES ($1,$2,$3);
 UPDATE reconciliation_runs SET state=$2,findings=$3::jsonb,finished_at=now() WHERE id=$1;
 
 -- name: ListRecordedFlyMachines :many
-SELECT project_id,fly_machine_id,state FROM fly_machines;
+SELECT project_id,fly_machine_id,state,image_ref,observed_config_hash FROM fly_machines;
 
 -- name: UpsertOrphanRemediationJob :exec
 INSERT INTO orchestration_jobs (id,job_type,aggregate_type,aggregate_id,idempotency_key,state,payload,last_error)

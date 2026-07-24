@@ -4,64 +4,26 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/auth"
-	"github.com/pinksaucepasta/paperboat-server/internal/classifier"
 	"github.com/pinksaucepasta/paperboat-server/internal/configsync"
-	"github.com/pinksaucepasta/paperboat-server/internal/metering"
+	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
 )
 
-func configSyncStatus(repository *configsync.Repository) http.Handler {
+func configSyncStatus(service *controlplane.ConfigStatusService) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := principalFromContext(r.Context())
 		if !ok {
 			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
 			return
 		}
-		status, err := repository.Account(r.Context(), principal.User.ID)
+		status, err := service.Account(r.Context(), principal.User.ID)
 		if err != nil {
 			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
 			return
 		}
 		writeJSON(w, http.StatusOK, SuccessResponse{Data: status})
 	})
-}
-
-func machineConfigClassify(credentials *metering.RuntimeRepository, controller *classifier.Controller) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			ProjectID  string                 `json:"project_id"`
-			MachineID  string                 `json:"machine_id"`
-			Candidates []classifier.Candidate `json:"candidates"`
-		}
-		decoder := json.NewDecoder(r.Body)
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&body); err != nil || body.ProjectID == "" || body.MachineID == "" {
-			writeError(w, r, http.StatusBadRequest, "invalid_request", "Classification metadata is invalid.")
-			return
-		}
-		token := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
-		if err := credentials.VerifyHeartbeatCredential(r.Context(), body.ProjectID, body.MachineID, token); err != nil {
-			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Machine credential is invalid.")
-			return
-		}
-		userID, err := controller.ProjectOwner(r.Context(), body.ProjectID)
-		if err != nil {
-			writeError(w, r, http.StatusForbidden, "forbidden", "Machine does not own this project.")
-			return
-		}
-		response, err := controller.Classify(r.Context(), userID, body.Candidates)
-		if errors.Is(err, classifier.ErrRateLimited) {
-			writeError(w, r, http.StatusTooManyRequests, "rate_limited", "Classification request budget is exhausted.")
-			return
-		}
-		if err != nil {
-			writeError(w, r, http.StatusBadRequest, "invalid_request", "Classification metadata is invalid.")
-			return
-		}
-		writeJSON(w, http.StatusOK, SuccessResponse{Data: response})
-	}
 }
 
 func configSyncOverrides(repository *configsync.Repository) http.HandlerFunc {

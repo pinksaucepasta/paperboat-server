@@ -413,6 +413,23 @@ type ControlConfigAssignment struct {
 	UpdatedAt       time.Time
 }
 
+type ControlConfigConflictResolution struct {
+	ID                     string
+	EnvironmentID          string
+	RepositoryID           string
+	AssignmentID           string
+	ConflictRevision       string
+	Path                   string
+	Action                 string
+	ExpectedRemoteRevision string
+	RequestedByUserID      string
+	State                  string
+	LandedRevision         sql.NullString
+	RequestedAt            time.Time
+	AppliedAt              sql.NullTime
+	UpdatedAt              time.Time
+}
+
 type ControlConfigCredential struct {
 	JtiHash              []byte
 	Jti                  string
@@ -429,14 +446,133 @@ type ControlConfigCredential struct {
 }
 
 type ControlConfigRepository struct {
-	ID          string
-	OwnerUserID string
-	Provider    string
-	ExternalRef string
-	DisplayName string
-	State       string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID                   string
+	OwnerUserID          string
+	Provider             string
+	ExternalRef          string
+	DisplayName          string
+	State                string
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+	ProviderAccountID    sql.NullString
+	ExternalRepositoryID sql.NullString
+	CloneUrl             sql.NullString
+	PublishUrl           sql.NullString
+	DefaultBranch        sql.NullString
+	AuthorizationRef     sql.NullString
+	CredentialCapability sql.NullString
+	ObservedRevision     sql.NullString
+	DisconnectedAt       sql.NullTime
+	Version              int64
+}
+
+type ControlConfigRepositoryAccessOperation struct {
+	OperationID       string
+	RequestHash       []byte
+	RepositoryID      string
+	AssignmentID      string
+	EnvironmentID     string
+	HelperID          string
+	HelperGeneration  int64
+	WarningRevision   string
+	State             string
+	AccessCiphertext  []byte
+	ExpiresAt         sql.NullTime
+	RevokedAt         sql.NullTime
+	ProviderRevokedAt sql.NullTime
+	RevokeAttempts    int32
+	LastErrorCode     sql.NullString
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+type ControlConfigRepositoryLeaseAuthority struct {
+	RepositoryID       string
+	LastFencingToken   int64
+	LeaseID            sql.NullString
+	AssignmentID       sql.NullString
+	EnvironmentID      sql.NullString
+	HelperID           sql.NullString
+	HelperGeneration   sql.NullInt64
+	BaseRemoteRevision sql.NullString
+	OperationID        sql.NullString
+	AcquiredAt         sql.NullTime
+	ExpiresAt          sql.NullTime
+	RevokedAt          sql.NullTime
+	Version            int64
+	UpdatedAt          time.Time
+}
+
+type ControlConfigRepositoryLeaseOperation struct {
+	OperationID   string
+	OperationType string
+	RequestHash   []byte
+	RepositoryID  string
+	LeaseID       sql.NullString
+	FencingToken  sql.NullInt64
+	ResultState   string
+	ExpiresAt     sql.NullTime
+	CreatedAt     time.Time
+}
+
+type ControlConfigRepositoryMigrationReview struct {
+	Source       string
+	SourceID     string
+	RepositoryID sql.NullString
+	Reason       string
+	Details      json.RawMessage
+	ReviewedAt   sql.NullTime
+	CreatedAt    time.Time
+}
+
+type ControlConfigSyncMigrationReview struct {
+	Source        string
+	ProjectID     string
+	MachineID     string
+	EnvironmentID sql.NullString
+	Reason        string
+	Details       json.RawMessage
+	ReviewedAt    sql.NullTime
+	CreatedAt     time.Time
+}
+
+type ControlConfigSyncStatus struct {
+	EnvironmentID     string
+	RepositoryID      string
+	AssignmentID      string
+	HelperID          string
+	HelperGeneration  int64
+	WarningRevision   string
+	PolicyRevision    string
+	KeyVersion        int64
+	SyncRevision      int64
+	State             string
+	RemoteRevision    sql.NullString
+	LeaseID           sql.NullString
+	FencingToken      sql.NullInt64
+	PendingPathCount  int32
+	ClassifierPending json.RawMessage
+	Skipped           json.RawMessage
+	Conflicts         json.RawMessage
+	ErrorCode         sql.NullString
+	RecoveryActions   json.RawMessage
+	LastAttemptAt     sql.NullTime
+	LastSuccessfulAt  sql.NullTime
+	HelperUpdatedAt   time.Time
+	ObservedAt        time.Time
+}
+
+type ControlConfigSyncStatusHistory struct {
+	EnvironmentID    string
+	SyncRevision     int64
+	RepositoryID     string
+	AssignmentID     string
+	HelperID         string
+	HelperGeneration int64
+	State            string
+	ErrorCode        sql.NullString
+	RemoteRevision   sql.NullString
+	ObservedAt       time.Time
 }
 
 type ControlConnectorGeneration struct {

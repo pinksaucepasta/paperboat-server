@@ -36,6 +36,9 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 		"PAPERBOAT_TERMINAL_SESSIONS_MAX_ATTEMPTS_BEFORE_ALERT": "7",
 		"PAPERBOAT_FLY_SETUP_SCRIPT_SECRET":                     "PAPERBOAT_SETUP_SCRIPT_FROM_ENV",
 		"PAPERBOAT_SESSION_KEYS":                                "one,two",
+		"PAPERBOAT_CONFIG_SYNC_MODE":                            "read_only",
+		"PAPERBOAT_CONFIG_SYNC_BYOD_ENABLED":                    "true",
+		"PAPERBOAT_CONFIG_SYNC_ENVIRONMENT_ALLOWLIST":           "env_one,env_two",
 	}
 	cfg, err := Load(context.Background(), LoadOptions{
 		LookupEnv: func(key string) (string, bool) {
@@ -89,6 +92,10 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 	if cfg.TerminalSessions.MaxActivePerProject != 16 || cfg.TerminalSessions.OperationTimeout.String() != "20s" || cfg.TerminalSessions.RetryBackoff.String() != "3s" || cfg.TerminalSessions.WorkerInterval.String() != "2s" || cfg.TerminalSessions.MaxAttemptsBeforeAlert != 7 {
 		t.Fatalf("terminal session config was not loaded from env: %#v", cfg.TerminalSessions)
 	}
+	if cfg.ConfigSync.Mode != "read_only" || !cfg.ConfigSync.BYODEnabled ||
+		!slices.Equal(cfg.ConfigSync.EnvironmentAllowlist, []string{"env_one", "env_two"}) {
+		t.Fatalf("config sync rollout was not loaded from env: %#v", cfg.ConfigSync)
+	}
 }
 
 func TestValidationRejectsInvalidHelperBaseDomain(t *testing.T) {
@@ -107,6 +114,17 @@ func TestValidationRejectsInvalidTerminalSessionAlertThreshold(t *testing.T) {
 	}
 }
 
+func TestFlySecretNamesAreNotRequired(t *testing.T) {
+	cfg := Default()
+	cfg.Fly.AgentunnelSecret = ""
+	cfg.Fly.GitHubSecret = ""
+	cfg.Fly.SetupScriptSecret = ""
+	cfg.Fly.EnrollmentSecret = ""
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("secret-free Fly configuration rejected: %v", err)
+	}
+}
+
 func TestMandatoryConfigSyncExclusionsCanOnlyBeExtended(t *testing.T) {
 	cfg, err := Load(context.Background(), LoadOptions{
 		LookupEnv: func(key string) (string, bool) {
@@ -120,7 +138,7 @@ func TestMandatoryConfigSyncExclusionsCanOnlyBeExtended(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{".custom-secret", ".config/git/credentials", ".config/hub", ".claude/shell-snapshots", ".codex/log"} {
+	for _, required := range []string{".custom-secret", ".paperboat", "**/.paperboat", ".config/git/credentials", ".config/hub", ".claude/shell-snapshots", ".codex/log"} {
 		if !slices.Contains(cfg.ConfigSync.MandatoryExcludes, required) {
 			t.Fatalf("mandatory exclusion %q was removed: %v", required, cfg.ConfigSync.MandatoryExcludes)
 		}
@@ -184,6 +202,13 @@ func TestProductionValidationRejectsFakeProvidersAndWeakSecrets(t *testing.T) {
 }
 
 func TestProductionValidationDoesNotRequireMachineActivityToken(t *testing.T) {
+	cfg := validProductionConfig()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func validProductionConfig() Config {
 	cfg := Default()
 	cfg.Environment = EnvironmentProduction
 	cfg.Providers.FakeMode = false
@@ -196,6 +221,8 @@ func TestProductionValidationDoesNotRequireMachineActivityToken(t *testing.T) {
 	cfg.Secrets.PolarWebhookSecret = "polar-webhook-secret"
 	cfg.Secrets.GitHubClientID = "github-client-id"
 	cfg.Secrets.GitHubClientSecret = "github-client-secret"
+	cfg.GitHub.AppID = "12345"
+	cfg.Secrets.GitHubAppPrivateKey = "configured-outside-this-validation-test"
 	cfg.Secrets.FlyAPIToken = "fly-api-token"
 	cfg.Secrets.AgentunnelAPIKey = "agentunnel-api-key"
 	cfg.Secrets.EdgeControlCredential = "edge-control-credential-0123456789"
@@ -209,9 +236,20 @@ func TestProductionValidationDoesNotRequireMachineActivityToken(t *testing.T) {
 	cfg.Secrets.PreviewIdentityKey = "preview-identity-key-012345678901234567890123456789"
 	cfg.CLIAuth.MintActiveKeyID = "current"
 	cfg.Secrets.MintSigningKeys = []string{"current:" + base64.RawURLEncoding.EncodeToString(make([]byte, 32))}
+	return cfg
+}
 
+func TestProductionValidationRequiresGitHubAppOnlyWhenConfigSyncEnabled(t *testing.T) {
+	cfg := validProductionConfig()
+	cfg.GitHub.AppID = ""
+	cfg.Secrets.GitHubAppPrivateKey = ""
+	cfg.ConfigSync.Mode = "disabled"
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate() error = %v", err)
+		t.Fatalf("disabled config sync required GitHub App credentials: %v", err)
+	}
+	cfg.ConfigSync.Mode = "read_only"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "GitHub App credentials") {
+		t.Fatalf("enabled config sync error = %v", err)
 	}
 }
 

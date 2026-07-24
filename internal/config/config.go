@@ -128,6 +128,9 @@ type Preview struct {
 }
 
 type ConfigSync struct {
+	Mode                  string        `json:"mode"`
+	BYODEnabled           bool          `json:"byod_enabled"`
+	EnvironmentAllowlist  []string      `json:"environment_allowlist"`
 	HomeOverride          string        `json:"home_override"`
 	Includes              []string      `json:"includes"`
 	Excludes              []string      `json:"excludes"`
@@ -145,6 +148,7 @@ type ConfigSync struct {
 	StaleHeartbeatAfter   time.Duration `json:"stale_heartbeat_after"`
 	SummaryLimit          int           `json:"summary_limit"`
 	PolicyRevision        string        `json:"policy_revision"`
+	WarningRevision       string        `json:"warning_revision"`
 }
 
 type Classifier struct {
@@ -185,19 +189,22 @@ type GitHub struct {
 	OAuthAuthorizeURL string   `json:"oauth_authorize_url"`
 	OAuthTokenURL     string   `json:"oauth_token_url"`
 	OAuthScopes       []string `json:"oauth_scopes"`
+	AppID             string   `json:"app_id"`
 	ConfigRepoName    string   `json:"config_repo_name"`
 	ConfigRepoBranch  string   `json:"config_repo_branch"`
 }
 
 type Fly struct {
-	AppName                string        `json:"app_name"`
-	OrgSlug                string        `json:"org_slug"`
-	ImageRef               string        `json:"image_ref"`
-	VolumeNamePrefix       string        `json:"volume_name_prefix"`
-	MachineNamePrefix      string        `json:"machine_name_prefix"`
-	Hostname               string        `json:"hostname"`
-	MountPath              string        `json:"mount_path"`
-	BootCommand            []string      `json:"boot_command"`
+	AppName           string   `json:"app_name"`
+	OrgSlug           string   `json:"org_slug"`
+	ImageRef          string   `json:"image_ref"`
+	VolumeNamePrefix  string   `json:"volume_name_prefix"`
+	MachineNamePrefix string   `json:"machine_name_prefix"`
+	Hostname          string   `json:"hostname"`
+	MountPath         string   `json:"mount_path"`
+	BootCommand       []string `json:"boot_command"`
+	// Deprecated secret-name fields remain decode-compatible with older
+	// configuration files. Hosted Machines do not consume them.
 	AgentunnelSecret       string        `json:"agentunnel_secret"`
 	GitHubSecret           string        `json:"github_secret"`
 	SetupScriptSecret      string        `json:"setup_script_secret"`
@@ -241,6 +248,7 @@ type Secrets struct {
 	PolarWebhookSecret     string   `json:"polar_webhook_secret"`
 	GitHubClientID         string   `json:"github_client_id"`
 	GitHubClientSecret     string   `json:"github_client_secret"`
+	GitHubAppPrivateKey    string   `json:"github_app_private_key"`
 	FlyAPIToken            string   `json:"fly_api_token"`
 	AgentunnelAPIKey       string   `json:"agentunnel_api_key"`
 	AgentunnelMachineToken string   `json:"agentunnel_machine_token"`
@@ -318,12 +326,13 @@ func Default() Config {
 		ConnectedMachines: ConnectedMachines{PairingLifetime: 10 * time.Minute, OfflineAfter: 2 * time.Minute, AllowedPlatforms: []string{"darwin", "linux"}, HelperListenPort: 38080},
 		TerminalSessions:  TerminalSessions{MaxActivePerProject: 32, OperationTimeout: 15 * time.Second, RetryBackoff: time.Second, WorkerInterval: time.Second, MaxAttemptsBeforeAlert: 10},
 		ConfigSync: ConfigSync{
+			Mode:              "disabled",
 			MandatoryExcludes: configsyncpolicy.MandatoryExcludes(),
 			MaxFileBytes:      5 << 20, MaxBatchBytes: 25 << 20,
 			Debounce: 10 * time.Second, MinPushInterval: 5 * time.Minute, MaxDirtyDelay: 5 * time.Minute,
 			RemotePollInterval: time.Minute, RetryLimit: 5, ShutdownFlushTimeout: 30 * time.Second,
 			ShutdownGracePeriod: 2 * time.Second, ShutdownReportTimeout: 10 * time.Second,
-			StaleHeartbeatAfter: 2 * time.Minute, SummaryLimit: 50, PolicyRevision: "2",
+			StaleHeartbeatAfter: 2 * time.Minute, SummaryLimit: 50, PolicyRevision: "2", WarningRevision: "config-sync-warning-v1",
 		},
 		Classifier: Classifier{BaseURL: "https://api.openai.com/v1", Model: "gpt-5-mini", ModelRevision: "gpt-5-mini", Revision: "1", Timeout: 15 * time.Second, RetryLimit: 2, RetryBackoff: 500 * time.Millisecond, MaxCandidates: 20, CacheTTL: 7 * 24 * time.Hour, SchemaMode: "json_schema", RequestsPerMinute: 60,
 			PortablePatterns:    []string{".claude/.credentials.json", ".claude.json", ".codex/auth.json", ".config/opencode/auth.json", ".local/share/opencode/auth.json", ".npmrc", ".config/npm/npmrc"},
@@ -461,6 +470,14 @@ func (c Config) Validate() error {
 	if c.ConfigSync.MaxFileBytes <= 0 || c.ConfigSync.MaxBatchBytes < c.ConfigSync.MaxFileBytes || !containsAll(c.ConfigSync.MandatoryExcludes, configsyncpolicy.MandatoryExcludes()) {
 		errs = append(errs, fmt.Errorf("config_sync exclusions and size limits are invalid"))
 	}
+	if c.ConfigSync.Mode != "disabled" && c.ConfigSync.Mode != "read_only" && c.ConfigSync.Mode != "leased_writes" {
+		errs = append(errs, fmt.Errorf("config_sync.mode must be disabled, read_only, or leased_writes"))
+	}
+	for _, environmentID := range c.ConfigSync.EnvironmentAllowlist {
+		if strings.TrimSpace(environmentID) == "" || len(environmentID) > 128 {
+			errs = append(errs, fmt.Errorf("config_sync.environment_allowlist contains an invalid environment ID"))
+		}
+	}
 	if strings.TrimSpace(c.ConfigSync.HomeOverride) != "" && !filepath.IsAbs(c.ConfigSync.HomeOverride) {
 		errs = append(errs, fmt.Errorf("config_sync.home_override must be an absolute path"))
 	}
@@ -469,7 +486,7 @@ func (c Config) Validate() error {
 			errs = append(errs, err)
 		}
 	}
-	if c.ConfigSync.Debounce <= 0 || c.ConfigSync.MinPushInterval <= 0 || c.ConfigSync.MaxDirtyDelay <= 0 || c.ConfigSync.RemotePollInterval <= 0 || c.ConfigSync.RetryLimit <= 0 || c.ConfigSync.ShutdownFlushTimeout <= 0 || c.ConfigSync.ShutdownGracePeriod <= 0 || c.ConfigSync.ShutdownReportTimeout <= 0 || c.ConfigSync.StaleHeartbeatAfter <= 0 || c.ConfigSync.SummaryLimit <= 0 || strings.TrimSpace(c.ConfigSync.PolicyRevision) == "" {
+	if c.ConfigSync.Debounce <= 0 || c.ConfigSync.MinPushInterval <= 0 || c.ConfigSync.MaxDirtyDelay <= 0 || c.ConfigSync.RemotePollInterval <= 0 || c.ConfigSync.RetryLimit <= 0 || c.ConfigSync.ShutdownFlushTimeout <= 0 || c.ConfigSync.ShutdownGracePeriod <= 0 || c.ConfigSync.ShutdownReportTimeout <= 0 || c.ConfigSync.StaleHeartbeatAfter <= 0 || c.ConfigSync.SummaryLimit <= 0 || strings.TrimSpace(c.ConfigSync.PolicyRevision) == "" || strings.TrimSpace(c.ConfigSync.WarningRevision) == "" {
 		errs = append(errs, fmt.Errorf("config_sync timing, retention, and policy revision are required"))
 	}
 	if c.ConfigSync.MinPushInterval < 5*time.Minute {
@@ -548,8 +565,8 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.GitHub.ConfigRepoName) == "" || strings.TrimSpace(c.GitHub.ConfigRepoBranch) == "" {
 		errs = append(errs, fmt.Errorf("github config repo name and branch are required"))
 	}
-	if strings.TrimSpace(c.Fly.AppName) == "" || strings.TrimSpace(c.Fly.ImageRef) == "" || strings.TrimSpace(c.Fly.VolumeNamePrefix) == "" || strings.TrimSpace(c.Fly.MachineNamePrefix) == "" || strings.TrimSpace(c.Fly.MountPath) == "" || strings.TrimSpace(c.Fly.GitHubSecret) == "" || strings.TrimSpace(c.Fly.SetupScriptSecret) == "" || strings.TrimSpace(c.Fly.EnrollmentSecret) == "" || strings.TrimSpace(c.HelperBaseDomain) == "" {
-		errs = append(errs, fmt.Errorf("fly app, image, naming prefixes, mount path, and secret env names are required"))
+	if strings.TrimSpace(c.Fly.AppName) == "" || strings.TrimSpace(c.Fly.ImageRef) == "" || strings.TrimSpace(c.Fly.VolumeNamePrefix) == "" || strings.TrimSpace(c.Fly.MachineNamePrefix) == "" || strings.TrimSpace(c.Fly.MountPath) == "" || strings.TrimSpace(c.HelperBaseDomain) == "" {
+		errs = append(errs, fmt.Errorf("fly app, image, naming prefixes, mount path, and helper base domain are required"))
 	}
 	if c.Fly.OperationTimeout <= 0 {
 		errs = append(errs, fmt.Errorf("fly.operation_timeout must be positive"))
@@ -572,9 +589,6 @@ func (c Config) Validate() error {
 	if len(c.Fly.BootCommand) == 0 {
 		errs = append(errs, fmt.Errorf("fly.boot_command is required"))
 	}
-	if strings.TrimSpace(c.Fly.GitHubSecret) == "" {
-		errs = append(errs, fmt.Errorf("fly secret names are required"))
-	}
 	if len(c.Secrets.SessionKeys) == 0 || c.Secrets.EncryptionKey == "" {
 		errs = append(errs, fmt.Errorf("session and encryption secrets are required"))
 	}
@@ -593,6 +607,10 @@ func (c Config) Validate() error {
 		}
 		if c.Secrets.WorkOSAPIKey == "" || c.Secrets.WorkOSClientID == "" || c.Secrets.WorkOSClientSecret == "" || c.Secrets.PolarAPIKey == "" || c.Secrets.PolarWebhookSecret == "" || c.Secrets.GitHubClientID == "" || c.Secrets.GitHubClientSecret == "" || c.Secrets.FlyAPIToken == "" || c.Secrets.ClassifierAPIKey == "" {
 			errs = append(errs, fmt.Errorf("production provider secrets are required"))
+		}
+		if c.ConfigSync.Mode != "disabled" &&
+			(strings.TrimSpace(c.GitHub.AppID) == "" || strings.TrimSpace(c.Secrets.GitHubAppPrivateKey) == "") {
+			errs = append(errs, fmt.Errorf("production GitHub App credentials are required when config sync is enabled"))
 		}
 		if len(c.Secrets.EdgeControlCredential) < 32 {
 			errs = append(errs, fmt.Errorf("production edge control credential is required"))
@@ -657,7 +675,9 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_DATABASE_DSN", &c.Database.DSN)
 	setString("PAPERBOAT_CATALOG_SEED_FILE", &c.Catalogs.SeedFile)
 	setString("PAPERBOAT_CONFIG_SYNC_HOME", &c.ConfigSync.HomeOverride)
+	setString("PAPERBOAT_CONFIG_SYNC_MODE", &c.ConfigSync.Mode)
 	setString("PAPERBOAT_CONFIG_SYNC_POLICY_REVISION", &c.ConfigSync.PolicyRevision)
+	setString("PAPERBOAT_CONFIG_SYNC_WARNING_REVISION", &c.ConfigSync.WarningRevision)
 	setString("PAPERBOAT_CLASSIFIER_BASE_URL", &c.Classifier.BaseURL)
 	setString("PAPERBOAT_CLASSIFIER_MODEL", &c.Classifier.Model)
 	setString("PAPERBOAT_CLASSIFIER_MODEL_REVISION", &c.Classifier.ModelRevision)
@@ -668,6 +688,7 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_MINT_ACTIVE_KEY_ID", &c.CLIAuth.MintActiveKeyID)
 	setString("PAPERBOAT_GITHUB_OAUTH_AUTHORIZE_URL", &c.GitHub.OAuthAuthorizeURL)
 	setString("PAPERBOAT_GITHUB_OAUTH_TOKEN_URL", &c.GitHub.OAuthTokenURL)
+	setString("PAPERBOAT_GITHUB_APP_ID", &c.GitHub.AppID)
 	setString("PAPERBOAT_GITHUB_CONFIG_REPO_NAME", &c.GitHub.ConfigRepoName)
 	setString("PAPERBOAT_GITHUB_CONFIG_REPO_BRANCH", &c.GitHub.ConfigRepoBranch)
 	setString("PAPERBOAT_FLY_APP_NAME", &c.Fly.AppName)
@@ -782,6 +803,9 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	}
 	if v, ok := lookup("PAPERBOAT_CONFIG_SYNC_MANDATORY_EXCLUDES"); ok {
 		c.ConfigSync.MandatoryExcludes = appendUnique(c.ConfigSync.MandatoryExcludes, splitCSV(v)...)
+	}
+	if v, ok := lookup("PAPERBOAT_CONFIG_SYNC_ENVIRONMENT_ALLOWLIST"); ok {
+		c.ConfigSync.EnvironmentAllowlist = splitCSV(v)
 	}
 	if v, ok := lookup("PAPERBOAT_CLASSIFIER_PORTABLE_PATTERNS"); ok {
 		c.Classifier.PortablePatterns = splitCSV(v)
@@ -906,6 +930,13 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 		}
 		c.Providers.FakeMode = parsed
 	}
+	if v, ok := lookup("PAPERBOAT_CONFIG_SYNC_BYOD_ENABLED"); ok {
+		parsed, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("PAPERBOAT_CONFIG_SYNC_BYOD_ENABLED: %w", err)
+		}
+		c.ConfigSync.BYODEnabled = parsed
+	}
 	if v, ok := lookup("PAPERBOAT_MINIMUM_START_CREDIT_WINDOW"); ok {
 		parsed, err := time.ParseDuration(v)
 		if err != nil {
@@ -970,6 +1001,9 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 		return err
 	}
 	if err := setSecret("PAPERBOAT_GITHUB_CLIENT_SECRET", &c.Secrets.GitHubClientSecret); err != nil {
+		return err
+	}
+	if err := setSecret("PAPERBOAT_GITHUB_APP_PRIVATE_KEY", &c.Secrets.GitHubAppPrivateKey); err != nil {
 		return err
 	}
 	if err := setSecret("PAPERBOAT_FLY_API_TOKEN", &c.Secrets.FlyAPIToken); err != nil {

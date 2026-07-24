@@ -17,27 +17,37 @@ Herdr 0.7.4 from architecture-specific release assets whose SHA-256 values are c
 
 ## Boot Contract
 
-The control plane supplies project/repository/branch/preset/setup intent, the control URL,
-the helper profile and state root, config-sync policy, and a one-time helper enrollment as
-a named Fly secret. The helper persists its key and renewable runtime identity below the
-mounted volume, removes one-time enrollment and setup values from its environment, writes
-the age identity to its configured `0600` file, and then performs:
+The control plane supplies only non-secret project/repository/branch/preset intent, the
+control URL, and the helper profile and state root in Machine configuration. The helper
+authenticates with Fly OIDC, persists its key-bound renewable runtime identity below the
+mounted volume, then fetches the selected setup revision and any short-lived private-source
+read credential through its signed helper channel. Config assignment, policy, age key
+versions, and short-lived config-repository access are fetched only after eligibility.
+No enrollment credential, provider token, age identity, or setup script is stored in Fly
+Machine configuration before the helper:
+
+Config-sync rollout is server-gated with
+`PAPERBOAT_CONFIG_SYNC_MODE=disabled|read_only|leased_writes`,
+`PAPERBOAT_CONFIG_SYNC_BYOD_ENABLED`, and the optional
+`PAPERBOAT_CONFIG_SYNC_ENVIRONMENT_ALLOWLIST`. The default is disabled. `read_only`
+permits authorized restore, polling, and conflict observation while writer leases return a
+typed refusal, so helpers retain local pending changes without publishing them.
 
 1. Validate the volume, project identity, repository host/URL, branch, preset catalog, and
    all execution bounds.
 2. Create or verify the durable workspace identity and clone/fetch the exact HTTPS origin.
-3. Restore assigned configuration through `paperboat-config-sync`.
+3. Start the embedded, lease-fenced config engine when the assignment is eligible.
 4. Apply catalog presets and the bounded setup revision.
 5. Fetch control-plane JWKS, verify operation credentials, request connector admission,
    and start the embedded frp route.
 6. Report ready only after the hosted lifecycle and edge connector are both ready.
 
-Shutdown stops admission, drains the connector and sessions, performs the bounded
-config-sync save hook, closes durable state, and exits within the Fly stop timeout. The
+Shutdown stops admission, drains the connector and sessions, performs the embedded
+engine's bounded final flush, closes durable state, and exits within the Fly stop timeout. The
 Docker healthcheck reads the helper `/healthz` response and requires liveness plus ready
 `hosted_lifecycle` and `edge` capabilities.
 
-The image contains Git, CA roots, Node/npm, Python/venv, the helper, Herdr, config-sync,
+The image contains Git, chezmoi, CA roots, Node/npm, Python/venv, the helper, Herdr,
 version-pinned catalog preset definitions, and shell tooling required by supported presets. It exposes no Fly service;
 all terminal/upload/preview traffic traverses the assigned Paperboat edge route.
 

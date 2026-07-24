@@ -197,10 +197,18 @@ func (q *Queries) InsertAccountConfigKey(ctx context.Context, arg InsertAccountC
 const listCompletedAccountConfigKeyRotations = `-- name: ListCompletedAccountConfigKeyRotations :many
 SELECT k.user_id,k.key_version FROM account_config_keys k
 WHERE k.previous_key_version IS NOT NULL AND NOT EXISTS (
-  SELECT 1 FROM projects p
-  LEFT JOIN fly_machines fm ON fm.project_id=p.id
-  LEFT JOIN config_sync_statuses css ON css.project_id=p.id AND css.machine_id=fm.fly_machine_id
-  WHERE p.user_id=k.user_id AND p.state<>'deleted' AND coalesce(css.encryption_key_version,0)<k.key_version
+  SELECT 1
+  FROM control_environments environment
+  JOIN control_config_assignments assignment ON assignment.environment_id=environment.id
+  JOIN control_config_repositories repository ON repository.id=assignment.repository_id
+  LEFT JOIN control_config_sync_statuses status
+    ON status.environment_id=environment.id
+   AND status.assignment_id=assignment.id
+  WHERE environment.owner_user_id=k.user_id
+    AND environment.desired_state='active'
+    AND repository.state='active'
+    AND assignment.consent_state IN ('accepted','not_required')
+    AND (status.key_version IS NULL OR status.key_version<k.key_version)
 )
 `
 

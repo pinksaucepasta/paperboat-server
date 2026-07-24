@@ -63,6 +63,22 @@ func configRepositories(service *controlplane.ConfigAssignmentService) http.Hand
 	}
 }
 
+func configRepositoryCandidates(service *controlplane.ConfigAssignmentService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		items, err := service.RepositoryCandidates(r.Context(), p.User.ID)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "repository_candidates_unavailable", "Repository candidates are unavailable.")
+			return
+		}
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]any{"items": items}})
+	}
+}
+
 func configRepositoryConnect(service *controlplane.ConfigAssignmentService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := principalFromContext(r.Context())
@@ -84,6 +100,21 @@ func configRepositoryConnect(service *controlplane.ConfigAssignmentService) http
 			return
 		}
 		writeJSON(w, 201, SuccessResponse{Data: repositoryResponse(item)})
+	}
+}
+
+func configRepositoryDisconnect(service *controlplane.ConfigAssignmentService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		if err := service.DisconnectRepository(r.Context(), p.User.ID, r.PathValue("repository_id")); err != nil {
+			writeError(w, r, http.StatusNotFound, "not_found_or_forbidden", "Configuration repository was not found or is unavailable.")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
@@ -158,6 +189,46 @@ func configConsent(service *controlplane.ConfigAssignmentService) http.HandlerFu
 			return
 		}
 		writeJSON(w, 200, SuccessResponse{Data: assignmentResponse(item)})
+	}
+}
+
+func configWarning(service *controlplane.ConfigAssignmentService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		facts, err := service.Warning(r.Context(), p.User.ID, r.PathValue("environment_id"))
+		if err != nil {
+			writeError(w, r, http.StatusNotFound, "not_found_or_forbidden", "Configuration warning is unavailable.")
+			return
+		}
+		noStore(w)
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: facts})
+	}
+}
+
+func configConsentRemove(service *controlplane.ConfigAssignmentService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		expectedVersion, _ := strconv.ParseInt(r.URL.Query().Get("expected_version"), 10, 64)
+		item, err := service.RemoveConsent(r.Context(), p.User.ID, r.PathValue("environment_id"), expectedVersion)
+		if err != nil {
+			status, code := http.StatusBadRequest, "consent_remove_failed"
+			if errors.Is(err, controlplane.ErrAssignmentConflict) {
+				status, code = http.StatusConflict, "version_conflict"
+			} else if errors.Is(err, controlplane.ErrAssignmentForbidden) {
+				status, code = http.StatusNotFound, "not_found_or_forbidden"
+			}
+			writeError(w, r, status, code, "Configuration consent could not be removed.")
+			return
+		}
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: assignmentResponse(item)})
 	}
 }
 

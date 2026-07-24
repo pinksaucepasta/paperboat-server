@@ -1179,6 +1179,10 @@
           },
           "reason": {
             "type": "string"
+          },
+          "revision": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
           }
         }
       },
@@ -1361,6 +1365,8 @@
           "policy": {
             "type": "object",
             "required": [
+              "mode",
+              "byod_enabled",
               "revision",
               "max_file_bytes",
               "max_batch_bytes",
@@ -1368,6 +1374,13 @@
               "mandatory_exclusions"
             ],
             "properties": {
+              "mode": {
+                "type": "string",
+                "enum": ["disabled", "read_only", "leased_writes"]
+              },
+              "byod_enabled": {
+                "type": "boolean"
+              },
               "revision": {
                 "type": "string"
               },
@@ -2093,6 +2106,68 @@
         }
       }
     },
+    "/v1/helpers/enroll/hosted": {
+      "post": {
+        "summary": "Enroll a hosted helper with Fly workload identity",
+        "description": "Exchanges a short-lived Fly-signed OIDC workload identity obtained from the Machine-local API. The verified Fly app and machine ID must map to an active canonical hosted environment; no bootstrap secret is stored in the Machine configuration.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "workload_identity",
+                  "public_key"
+                ],
+                "properties": {
+                  "workload_identity": {
+                    "type": "string",
+                    "minLength": 32,
+                    "maxLength": 32768
+                  },
+                  "public_key": {
+                    "type": "string",
+                    "description": "Unpadded base64url Ed25519 public key."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Helper identity credential."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/helpers/hosted-bootstrap": {
+      "post": {
+        "summary": "Fetch memory-only hosted bootstrap material",
+        "description": "Requires a current helper identity and Ed25519 request proof. Returns the selected setup-script revision and, when the project source is private, a short-lived repository-scoped read credential. The response is never stored in Fly Machine configuration and is marked no-store.",
+        "security": [{"bearerHelperIdentity": []}],
+        "parameters": [{
+          "name": "X-Paperboat-Helper-Proof",
+          "in": "header",
+          "required": true,
+          "schema": {"type": "string", "description": "Unpadded base64url helper-proof envelope."}
+        }],
+        "responses": {
+          "200": {"description": "Current memory-only hosted bootstrap material."},
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
     "/v1/helpers/renew": {
       "post": {
         "summary": "Renew a helper identity credential",
@@ -2213,6 +2288,118 @@
         }
       }
     },
+    "/v1/config/leases/acquire": {
+      "post": {
+        "summary": "Acquire an exclusive config-repository writer lease",
+        "description": "Helper-proof authenticated endpoint. Eligibility, assignment, warning revision, helper generation, and repository are revalidated before issuing a monotonic fencing token.",
+        "security": [],
+        "responses": {
+          "200": {"description": "Exclusive writer lease acquired."},
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"},
+          "409": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
+    "/v1/config/leases/renew": {
+      "post": {
+        "summary": "Renew an exclusive config-repository writer lease",
+        "description": "Renews only a current, eligible holder matching the lease ID and fencing token.",
+        "security": [],
+        "responses": {
+          "200": {"description": "Writer lease renewed."},
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"},
+          "409": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
+    "/v1/config/leases/release": {
+      "post": {
+        "summary": "Release an exclusive config-repository writer lease",
+        "description": "Idempotently releases only the current eligible holder matching the lease ID and fencing token.",
+        "security": [],
+        "responses": {
+          "200": {"description": "Writer lease released."},
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"},
+          "409": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
+    "/v1/config/status": {
+      "post": {
+        "summary": "Record canonical helper config-sync status",
+        "description": "Helper-proof authenticated endpoint. Accepts only bounded, monotonic status bound to the current environment, assignment, repository, helper generation, and warning revision.",
+        "security": [],
+        "responses": {
+          "202": {"description": "Status revision recorded."},
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"},
+          "409": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
+    "/v1/config/repository-access": {
+      "post": {
+        "summary": "Issue repository-scoped short-lived config access",
+        "description": "Requires both the helper identity proof and current config-sync credential. Returns one GitHub App installation token restricted to the assigned repository; provider authorization never reaches the helper.",
+        "security": [],
+        "responses": {
+          "200": {"description": "Repository-scoped access issued."},
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"},
+          "409": {"$ref": "#/components/responses/Error"},
+          "503": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
+    "/v1/config/runtime": {
+      "post": {
+        "summary": "Read the assignment-bound config runtime policy and key material",
+        "description": "Requires both helper identity proof and current config-sync credential. Returns the server-owned policy revision, limits, classifier revisions, encrypted-repository format, current/overlap age identities for helper memory only, and the authoritative sync-revision floor needed to preserve monotonic status across restarts.",
+        "security": [],
+        "responses": {
+          "200": {"description": "Current config runtime descriptor."},
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
+    "/v1/config/classify": {
+      "post": {
+        "summary": "Classify bounded config-path metadata",
+        "description": "Requires helper identity proof and a current assignment-bound config-sync credential. Only the allowlisted metadata schema is accepted; file contents, absolute paths, identities, repository coordinates, credentials, and keys are forbidden.",
+        "security": [],
+        "responses": {
+          "200": {"description": "Ordered classification decisions and authoritative revisions."},
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"},
+          "429": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
+    "/v1/config/conflict-resolutions/pending": {
+      "post": {
+        "summary": "List pending conflict resolutions for the current helper binding",
+        "security": [],
+        "responses": {
+          "200": {"description": "Bounded pending resolution actions."},
+          "401": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
+    "/v1/config/conflict-resolutions/acknowledge": {
+      "post": {
+        "summary": "Acknowledge a landed conflict resolution",
+        "security": [],
+        "responses": {
+          "200": {"description": "Resolution marked applied."},
+          "401": {"$ref": "#/components/responses/Error"},
+          "409": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
     "/v1/routes/observed": {
       "post": {
         "summary": "Record applied route snapshot",
@@ -2286,6 +2473,39 @@
             "description": "Repository connected."
           },
           "400": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/config-repositories/candidates": {
+      "get": {
+        "summary": "List private repositories eligible for config connection",
+        "description": "Returns bounded GitHub repository identifiers and display metadata available through the user's current authorization. No provider credential is returned.",
+        "security": [{"bearerAuth": ["projects:read"]}],
+        "responses": {
+          "200": {"description": "Eligible private repositories."},
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
+    "/api/config-repositories/{repository_id}": {
+      "delete": {
+        "summary": "Disconnect a configuration repository without deleting provider data",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "csrfHeader": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Repository disconnected; assignments, credentials, and leases revoked."
+          },
+          "404": {
             "$ref": "#/components/responses/Error"
           }
         }
@@ -2429,6 +2649,49 @@
             "description": "Consent accepted."
           },
           "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Remove config warning consent and immediately revoke sync eligibility",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "csrfHeader": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Consent removed and assignment returned to consent-required state."
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/environments/{environment_id}/config-assignment/warning": {
+      "get": {
+        "summary": "Read the current server-authoritative BYOD config warning",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:read"
+        ],
+        "responses": {
+          "200": {
+            "description": "Structured current warning facts bound to the selected machine and repository."
+          },
+          "404": {
             "$ref": "#/components/responses/Error"
           }
         }
@@ -3129,6 +3392,28 @@
           "402": {
             "$ref": "#/components/responses/Error"
           }
+        }
+      }
+    },
+    "/api/config-sync/environments/{environment_id}/conflict-resolutions": {
+      "post": {
+        "summary": "Request an explicit current-revision conflict resolution",
+        "parameters": [
+          {
+            "name": "environment_id",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string"}
+          }
+        ],
+        "security": [
+          {"cookieSession": []},
+          {"csrfHeader": []}
+        ],
+        "responses": {
+          "202": {"description": "Resolution queued for the bound helper."},
+          "400": {"$ref": "#/components/responses/Error"},
+          "409": {"$ref": "#/components/responses/Error"}
         }
       }
     },
@@ -5593,27 +5878,6 @@
           },
           "202": {
             "description": "Terminal close queued."
-          }
-        }
-      }
-    },
-    "/api/machine/config-sync/classify": {
-      "post": {
-        "summary": "Classify sanitized config path metadata",
-        "description": "Authenticated with the owning project-machine credential. File contents and absolute paths are not accepted.",
-        "security": [],
-        "responses": {
-          "200": {
-            "description": "Bounded classification decisions."
-          },
-          "400": {
-            "$ref": "#/components/responses/Error"
-          },
-          "401": {
-            "$ref": "#/components/responses/Error"
-          },
-          "429": {
-            "$ref": "#/components/responses/Error"
           }
         }
       }

@@ -24,12 +24,16 @@ var (
 )
 
 type ConfigCredentialService struct {
-	store         *db.DB
-	signer        *mint.Provider
-	issuer        string
-	encryptionKey string
-	clock         func() time.Time
-	audit         *audit.Writer
+	store           *db.DB
+	signer          *mint.Provider
+	issuer          string
+	encryptionKey   string
+	clock           func() time.Time
+	audit           *audit.Writer
+	warningRevision string
+	mode            string
+	byodEnabled     bool
+	allowlist       map[string]bool
 }
 
 func NewConfigCredentialService(store *db.DB, signer *mint.Provider, issuer, encryptionKey string) *ConfigCredentialService {
@@ -37,6 +41,16 @@ func NewConfigCredentialService(store *db.DB, signer *mint.Provider, issuer, enc
 }
 
 func (s *ConfigCredentialService) SetAuditWriter(writer *audit.Writer) { s.audit = writer }
+func (s *ConfigCredentialService) SetWarningRevision(revision string) {
+	s.warningRevision = strings.TrimSpace(revision)
+}
+func (s *ConfigCredentialService) SetRollout(mode string, byodEnabled bool, environmentAllowlist []string) {
+	s.mode, s.byodEnabled = strings.TrimSpace(mode), byodEnabled
+	s.allowlist = make(map[string]bool, len(environmentAllowlist))
+	for _, environmentID := range environmentAllowlist {
+		s.allowlist[strings.TrimSpace(environmentID)] = true
+	}
+}
 
 type ConfigCredential struct {
 	Credential      string    `json:"credential"`
@@ -54,6 +68,12 @@ func (s *ConfigCredentialService) Issue(ctx context.Context, identityToken strin
 	claims, err := (&EnrollmentService{store: s.store, signer: s.signer, issuer: s.issuer, clock: s.clock}).VerifyHelperRequest(ctx, identityToken, proof, method, path, body)
 	if err != nil {
 		return ConfigCredential{}, err
+	}
+	byod, err := s.store.Queries().IsControlEnvironmentBYOD(ctx, claims.EnvironmentID)
+	if err != nil || s.mode == "" || s.mode == "disabled" ||
+		(len(s.allowlist) > 0 && !s.allowlist[claims.EnvironmentID]) ||
+		(byod && !s.byodEnabled) {
+		return ConfigCredential{}, ErrConfigCredentialInvalid
 	}
 	requestHash := sha256.Sum256(append([]byte(claims.HelperID+"\x00"+claims.EnvironmentID+"\x00"), body...))
 	operationKey := "config-credential:" + claims.HelperID + ":" + claims.OperationID
@@ -77,6 +97,10 @@ func (s *ConfigCredentialService) Issue(ctx context.Context, identityToken strin
 		}
 		assignment, err := tx.Queries().GetEligibleControlConfigAssignment(ctx, dbsqlc.GetEligibleControlConfigAssignmentParams{EnvironmentID: claims.EnvironmentID, HelperID: claims.HelperID})
 		if err != nil || !assignment.WarningRevision.Valid || assignment.WarningRevision.String == "" {
+			return ErrConfigCredentialInvalid
+		}
+		byod, err := tx.Queries().IsControlEnvironmentBYOD(ctx, claims.EnvironmentID)
+		if err != nil || (byod && (s.warningRevision == "" || assignment.WarningRevision.String != s.warningRevision)) {
 			return ErrConfigCredentialInvalid
 		}
 		jti, err := randomHex("jti_", 24)

@@ -107,17 +107,26 @@ CLI project reads and connects use scoped Paperboat bearer access tokens.
 ### Configuration Sync
 
 - `GET /api/config-sync/status` requires an authenticated account with an active entitlement and
-  returns safe repository metadata,
-  effective policy revision and byte limits, aggregate state, and bounded per-project machine
-  status. Stale active-machine heartbeats are reported as `offline`; stopped machines are
-  reported as `idle` with their last result retained.
+  returns the authoritative policy plus bounded environment, assignment, consent, helper,
+  repository, revision, conflict, and recovery state. Stale helper observations are `offline`;
+  unassigned environments are `disabled`. Policy reports the server rollout mode
+  (`disabled`, `read_only`, or `leased_writes`) and whether BYOD is enabled.
 - `GET|PUT|DELETE /api/config-sync/overrides` lists and changes exact account-path overrides.
   Mandatory exclusions return `mandatory_exclusion` and cannot be weakened.
 - `POST /api/config-sync/recovery-key/export` and `/rotate` require CSRF plus a short-lived,
   purpose-bound WorkOS reauthentication proof. Export responses are non-cacheable and audited.
-- `POST /api/machine/config-sync/classify` uses the existing owning project-machine credential and
-  accepts only bounded relative-path metadata. Provider API keys, contents, absolute paths, and
-  workspace names are never accepted from or returned to a VM.
+- `POST /v1/config/classify` requires helper proof plus a current assignment-bound config
+  credential and accepts only the versioned, bounded relative-path metadata schema. Provider API
+  keys, contents, absolute paths, identities, repository coordinates, and workspace names are
+  never accepted from or returned to a helper.
+- `POST /api/config-sync/environments/{environment_id}/conflict-resolutions` records an
+  explicit `keep_local`, `keep_remote`, or `externally_resolved` action against the current
+  assignment version, remote revision, relative path, and deterministic conflict revision.
+  Stale or ambiguous actions return a conflict.
+- `POST /v1/config/conflict-resolutions/pending` and
+  `/v1/config/conflict-resolutions/acknowledge` require helper proof and the current
+  assignment-bound config credential. A helper sees only its active binding and acknowledges
+  only after the selected result lands.
 - `POST /api/machine/activity-heartbeat` accepts the existing authenticated activity payload
   plus an optional validated `config_sync` object. Its required `updated_at` timestamp tracks the
   freshness of the sync daemon independently from the activity reporter. A status timestamp newer
@@ -229,6 +238,13 @@ CLI APIs:
   connector credential. It contains no provider credential or internal alternate port.
   Exact retries replay the encrypted recorded document; changed body or proof bindings
   fail before a new admission is minted.
+- `POST /v1/helpers/enroll/hosted` accepts only a short-lived Fly OIDC workload identity
+  obtained through the Machine-local `/.fly/api` socket and the helper's Ed25519 public
+  key. The server verifies signature, issuer, audience, expiry, configured Fly app, and
+  exact Fly machine-to-environment ownership before consuming canonical enrollment state.
+  Hosted bootstrap credentials are never stored in Fly secrets or Machine environment.
+- `POST /v1/helpers/enroll` remains the one-time credential exchange for BYOD enrollment;
+  hosted production composition does not use it.
 - `POST /v1/config/credentials` accepts a helper identity credential, a bounded `{}` JSON
   body, and `X-Paperboat-Helper-Proof`; it returns a short-lived `config_sync` credential
   bound to the active environment/helper assignment and warning revision. Exact operation

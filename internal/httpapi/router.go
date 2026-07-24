@@ -60,8 +60,15 @@ type Options struct {
 	EdgeControl            http.Handler
 	EdgeControlAdmin       *controlplane.EdgeService
 	Enrollment             *controlplane.EnrollmentService
+	HostedBootstrap        *controlplane.HostedBootstrapService
 	ConfigAssignments      *controlplane.ConfigAssignmentService
 	ConfigCredentials      *controlplane.ConfigCredentialService
+	ConfigLeases           *controlplane.ConfigLeaseService
+	ConfigStatuses         *controlplane.ConfigStatusService
+	ConfigRepositoryAccess *controlplane.ConfigRepositoryAccessService
+	ConfigRuntime          *controlplane.ConfigRuntimeService
+	ConfigClassification   *controlplane.ConfigClassificationService
+	ConfigConflicts        *controlplane.ConfigConflictService
 	Routes                 *controlplane.RouteService
 	Previews               *controlplane.PreviewService
 	ControlDiagnostics     *controlplane.DiagnosticsService
@@ -93,7 +100,8 @@ func NewRouter(opts Options) http.Handler {
 			mux.Handle("GET /v1/routes/tls/ask", previewTLSAsk(opts.Previews))
 		}
 		if opts.Enrollment != nil {
-			mux.HandleFunc("POST /v1/helpers/enroll", helperEnrollmentExchange(opts.Enrollment))
+			mux.HandleFunc("POST /v1/helpers/enroll", helperEnrollmentExchange(opts.Enrollment, opts.Logger))
+			mux.HandleFunc("POST /v1/helpers/enroll/hosted", hostedHelperEnrollmentExchange(opts.Enrollment, opts.Logger))
 			mux.HandleFunc("POST /v1/helpers/renew", helperIdentityRenew(opts.Enrollment))
 			if opts.ConnectedMachines != nil {
 				mux.Handle("POST /v1/connected-machines/installations/failure", helperInstallationFailure(opts.Enrollment, opts.ConnectedMachines))
@@ -108,8 +116,32 @@ func NewRouter(opts Options) http.Handler {
 				mux.Handle("POST /api/environments/{environment_id}/helpers/{helper_id}/replace", requireAuth(opts.Auth, requireCSRF(opts.Auth, helperReplacement(opts.Enrollment))))
 			}
 		}
+		if opts.HostedBootstrap != nil {
+			mux.HandleFunc("POST /v1/helpers/hosted-bootstrap", hostedBootstrapGet(opts.HostedBootstrap))
+		}
 		if opts.ConfigCredentials != nil {
 			mux.HandleFunc("POST /v1/config/credentials", configCredentialIssue(opts.ConfigCredentials))
+		}
+		if opts.ConfigLeases != nil {
+			mux.HandleFunc("POST /v1/config/leases/acquire", configLeaseAcquire(opts.ConfigLeases))
+			mux.HandleFunc("POST /v1/config/leases/renew", configLeaseRenew(opts.ConfigLeases))
+			mux.HandleFunc("POST /v1/config/leases/release", configLeaseRelease(opts.ConfigLeases))
+		}
+		if opts.ConfigStatuses != nil {
+			mux.HandleFunc("POST /v1/config/status", configStatusRecord(opts.ConfigStatuses, opts.Logger))
+		}
+		if opts.ConfigRepositoryAccess != nil {
+			mux.HandleFunc("POST /v1/config/repository-access", configRepositoryAccessIssue(opts.ConfigRepositoryAccess))
+		}
+		if opts.ConfigRuntime != nil {
+			mux.HandleFunc("POST /v1/config/runtime", configRuntimeGet(opts.ConfigRuntime))
+		}
+		if opts.ConfigClassification != nil {
+			mux.HandleFunc("POST /v1/config/classify", configClassification(opts.ConfigClassification))
+		}
+		if opts.ConfigConflicts != nil {
+			mux.HandleFunc("POST /v1/config/conflict-resolutions/pending", configConflictPending(opts.ConfigConflicts))
+			mux.HandleFunc("POST /v1/config/conflict-resolutions/acknowledge", configConflictAcknowledge(opts.ConfigConflicts))
 		}
 		if opts.Auth != nil {
 			registerAuthRoutes(mux, opts)
@@ -135,10 +167,14 @@ func NewRouter(opts Options) http.Handler {
 					return requireAuth(opts.Auth, next)
 				}
 				mux.Handle("GET /api/config-repositories", configAuth("projects:read", configRepositories(opts.ConfigAssignments)))
+				mux.Handle("GET /api/config-repositories/candidates", configAuth("projects:read", configRepositoryCandidates(opts.ConfigAssignments)))
 				mux.Handle("POST /api/config-repositories", requireAuth(opts.Auth, requireCSRF(opts.Auth, configRepositoryConnect(opts.ConfigAssignments))))
+				mux.Handle("DELETE /api/config-repositories/{repository_id}", requireAuth(opts.Auth, requireCSRF(opts.Auth, configRepositoryDisconnect(opts.ConfigAssignments))))
 				mux.Handle("GET /api/environments/{environment_id}/config-assignment", configAuth("projects:read", configAssignmentGet(opts.ConfigAssignments)))
 				mux.Handle("PUT /api/environments/{environment_id}/config-assignment", configAuth("projects:connect", requireCSRF(opts.Auth, configAssignmentSet(opts.ConfigAssignments))))
+				mux.Handle("GET /api/environments/{environment_id}/config-assignment/warning", configAuth("projects:read", configWarning(opts.ConfigAssignments)))
 				mux.Handle("POST /api/environments/{environment_id}/config-assignment/consent", requireAuth(opts.Auth, requireCSRF(opts.Auth, configConsent(opts.ConfigAssignments))))
+				mux.Handle("DELETE /api/environments/{environment_id}/config-assignment/consent", requireAuth(opts.Auth, requireCSRF(opts.Auth, configConsentRemove(opts.ConfigAssignments))))
 				mux.Handle("DELETE /api/environments/{environment_id}/config-assignment", configAuth("projects:connect", requireCSRF(opts.Auth, configAssignmentClear(opts.ConfigAssignments))))
 			}
 		}
@@ -181,9 +217,6 @@ func NewRouter(opts Options) http.Handler {
 		}
 		if opts.MeteringRepo != nil {
 			mux.HandleFunc("POST /api/machine/activity-heartbeat", activityHeartbeat(opts.MeteringRepo, opts.ActivityIdentity, opts.Config.ConfigSync.SummaryLimit))
-			if opts.Classifier != nil {
-				mux.HandleFunc("POST /api/machine/config-sync/classify", machineConfigClassify(opts.MeteringRepo, opts.Classifier))
-			}
 		}
 		mux.HandleFunc("/", notImplemented)
 		handler = mux
@@ -270,8 +303,13 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 		meHandler = requireAnyAuth(opts.Auth, opts.DeviceAuth, me(opts.Auth))
 	}
 	mux.Handle("GET /api/me", meHandler)
+	if opts.ConfigStatuses != nil {
+		mux.Handle("GET /api/config-sync/status", accountRead(requireEntitlement(opts.Auth, configSyncStatus(opts.ConfigStatuses))))
+	}
+	if opts.ConfigConflicts != nil {
+		mux.Handle("POST /api/config-sync/environments/{environment_id}/conflict-resolutions", requireAuth(opts.Auth, requireCSRF(opts.Auth, configConflictRequest(opts.ConfigConflicts))))
+	}
 	if opts.ConfigSync != nil {
-		mux.Handle("GET /api/config-sync/status", accountRead(requireEntitlement(opts.Auth, configSyncStatus(opts.ConfigSync))))
 		mux.Handle("GET /api/config-sync/overrides", requireAuth(opts.Auth, requireEntitlement(opts.Auth, configSyncOverrides(opts.ConfigSync))))
 		mux.Handle("PUT /api/config-sync/overrides", requireAuth(opts.Auth, requireEntitlement(opts.Auth, configSyncOverridePut(opts.ConfigSync))))
 		mux.Handle("DELETE /api/config-sync/overrides", requireAuth(opts.Auth, requireEntitlement(opts.Auth, configSyncOverrideDelete(opts.ConfigSync))))

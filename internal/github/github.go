@@ -13,10 +13,12 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"filippo.io/age"
+	gh "github.com/google/go-github/v88/github"
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
@@ -119,6 +121,11 @@ type Service struct {
 	client Client
 	cfg    config.Config
 	now    func() time.Time
+	access RepositoryAccessBroker
+}
+
+func (s *Service) SetRepositoryAccessBroker(broker RepositoryAccessBroker) {
+	s.access = broker
 }
 
 func NewService(store *db.DB, auditWriter *audit.Writer, client Client, cfg config.Config) *Service {
@@ -144,7 +151,9 @@ func (s *Service) OAuthAuthorizeURL(state, redirectURI string) (string, error) {
 	q.Set("client_id", s.cfg.Secrets.GitHubClientID)
 	q.Set("redirect_uri", redirectURI)
 	q.Set("state", state)
-	q.Set("scope", strings.Join(s.cfg.GitHub.OAuthScopes, " "))
+	if scopes := s.requiredOAuthScopes(); len(scopes) > 0 {
+		q.Set("scope", strings.Join(scopes, " "))
+	}
 	u.RawQuery = q.Encode()
 	return u.String(), nil
 }
@@ -162,7 +171,7 @@ func (s *Service) CompleteOAuth(ctx context.Context, userID, code, redirectURI s
 	if err != nil {
 		return Status{}, err
 	}
-	missing := missingScopes(token.Scopes, s.cfg.GitHub.OAuthScopes)
+	missing := missingScopes(token.Scopes, s.requiredOAuthScopes())
 	if len(missing) > 0 {
 		return Status{Connected: false, Scopes: token.Scopes, MissingScopes: missing}.normalized(), ErrMissingScopes
 	}
@@ -235,7 +244,7 @@ func (s *Service) Status(ctx context.Context, userID string) (Status, error) {
 	status.Connected = true
 	status.Scopes = connection.Scopes
 	status.LastValidatedAt = connection.LastValidatedAt.Time
-	status.MissingScopes = missingScopes(connection.Scopes, s.cfg.GitHub.OAuthScopes)
+	status.MissingScopes = missingScopes(connection.Scopes, s.requiredOAuthScopes())
 	repo, err := s.db.Queries().GetGitHubConfigRepoStatus(ctx, userID)
 	if err == nil {
 		status.ConfigRepoOwner, status.ConfigRepoName, status.ConfigRepoBranch = repo.Owner, repo.Name, repo.DefaultBranch
@@ -317,7 +326,7 @@ func (s *Service) EnsureConnected(ctx context.Context, userID string) error {
 	if err != nil {
 		return err
 	}
-	if missing := missingScopes(scopes, s.cfg.GitHub.OAuthScopes); len(missing) > 0 {
+	if missing := missingScopes(scopes, s.requiredOAuthScopes()); len(missing) > 0 {
 		return ErrMissingScopes
 	}
 	return nil
@@ -333,6 +342,59 @@ func (s *Service) ListRepos(ctx context.Context, userID string) ([]Repo, error) 
 	return s.client.ListRepos(ctx, token)
 }
 
+// ResolvePrivateRepository resolves an immutable provider repository ID through
+// the user's current authorization. Coordinates supplied by callers are never
+// trusted, and public or no-longer-accessible repositories are rejected.
+func (s *Service) ResolvePrivateRepository(ctx context.Context, userID, externalRepositoryID string) (Repo, string, error) {
+	externalRepositoryID = strings.TrimSpace(externalRepositoryID)
+	if externalRepositoryID == "" {
+		return Repo{}, "", ErrRepoNotFound
+	}
+	token, accountLogin, err := s.githubToken(ctx, userID)
+	if err != nil {
+		return Repo{}, "", err
+	}
+	repositories, err := s.client.ListRepos(ctx, token)
+	if err != nil {
+		return Repo{}, "", err
+	}
+	for _, repository := range repositories {
+		if repository.ID != externalRepositoryID {
+			continue
+		}
+		if !repository.Private || repository.CloneURL == "" || repository.DefaultBranch == "" {
+			return Repo{}, "", ErrRepoNotPrivate
+		}
+		return repository, accountLogin, nil
+	}
+	return Repo{}, "", ErrRepoNotFound
+}
+
+func (s *Service) ResolveRepositoryAuthorization(ctx context.Context, userID, repositoryID string) (string, error) {
+	if s.access == nil {
+		return "", ErrRepositoryAccessUnavailable
+	}
+	token, _, err := s.githubToken(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	return s.access.ResolveInstallation(ctx, token, repositoryID)
+}
+
+func (s *Service) IssueRepositoryAccess(ctx context.Context, authorizationRef, repositoryID, contentsPermission string) (RepositoryAccess, error) {
+	if s.access == nil {
+		return RepositoryAccess{}, ErrRepositoryAccessUnavailable
+	}
+	return s.access.Issue(ctx, authorizationRef, repositoryID, contentsPermission)
+}
+
+func (s *Service) RevokeRepositoryAccess(ctx context.Context, token string) error {
+	if s.access == nil {
+		return ErrRepositoryAccessUnavailable
+	}
+	return s.access.Revoke(ctx, token)
+}
+
 func (s *Service) githubToken(ctx context.Context, userID string) (string, string, error) {
 	row, err := s.db.Queries().GetGitHubToken(ctx, userID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -341,7 +403,7 @@ func (s *Service) githubToken(ctx context.Context, userID string) (string, strin
 	if err != nil {
 		return "", "", err
 	}
-	if missing := missingScopes(row.Scopes, s.cfg.GitHub.OAuthScopes); len(missing) > 0 {
+	if missing := missingScopes(row.Scopes, s.requiredOAuthScopes()); len(missing) > 0 {
 		return "", "", ErrMissingScopes
 	}
 	token, err := secrets.Decrypt(s.cfg.Secrets.EncryptionKey, row.TokenCiphertext)
@@ -354,6 +416,17 @@ func (s *Service) githubToken(ctx context.Context, userID string) (string, strin
 		return "", "", ErrNotConnected
 	}
 	return token, row.ProviderAccountLogin, err
+}
+
+// GitHub App user access tokens are authorized by the App's configured
+// permissions and do not carry classic OAuth scopes. Classic OAuth
+// integrations still require the configured scopes.
+func (s *Service) requiredOAuthScopes() []string {
+	if strings.TrimSpace(s.cfg.GitHub.AppID) != "" &&
+		strings.TrimSpace(s.cfg.Secrets.GitHubAppPrivateKey) != "" {
+		return nil
+	}
+	return s.cfg.GitHub.OAuthScopes
 }
 
 func (s *Service) initializeRepo(ctx context.Context, userID, token string, repo Repo) error {
@@ -481,22 +554,27 @@ func (c HTTPClient) ExchangeOAuthCode(ctx context.Context, input OAuthExchangeIn
 }
 
 func (c HTTPClient) CurrentUser(ctx context.Context, token string) (GitHubUser, error) {
-	var body struct {
-		Login string `json:"login"`
-	}
-	if err := c.doJSON(ctx, token, http.MethodGet, "/user", nil, &body); err != nil {
+	client, err := c.sdkClient(token)
+	if err != nil {
 		return GitHubUser{}, err
 	}
-	return GitHubUser{Login: body.Login}, nil
+	user, _, err := client.Users.Get(ctx, "")
+	if err != nil {
+		return GitHubUser{}, err
+	}
+	return GitHubUser{Login: user.GetLogin()}, nil
 }
 
 func (c HTTPClient) GetRepo(ctx context.Context, token, owner, name string) (Repo, error) {
-	var body githubRepoResponse
-	err := c.doJSON(ctx, token, http.MethodGet, "/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(name), nil, &body)
-	if errors.Is(err, ErrRepoNotFound) {
+	client, err := c.sdkClient(token)
+	if err != nil {
 		return Repo{}, err
 	}
-	return body.repo(), err
+	repository, _, err := client.Repositories.Get(ctx, owner, name)
+	if err != nil {
+		return Repo{}, normalizeGitHubError(err)
+	}
+	return repoFromSDK(repository), nil
 }
 
 // listReposMaxPages bounds how many pages of the authenticated user's
@@ -505,17 +583,24 @@ func (c HTTPClient) GetRepo(ctx context.Context, token, owner, name string) (Rep
 const listReposMaxPages = 10
 
 func (c HTTPClient) ListRepos(ctx context.Context, token string) ([]Repo, error) {
+	client, err := c.sdkClient(token)
+	if err != nil {
+		return nil, err
+	}
 	repos := make([]Repo, 0, 100)
 	for page := 1; page <= listReposMaxPages; page++ {
-		var body []githubRepoResponse
-		path := fmt.Sprintf("/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member&page=%d", page)
-		if err := c.doJSON(ctx, token, http.MethodGet, path, nil, &body); err != nil {
-			return nil, err
+		items, response, err := client.Repositories.ListByAuthenticatedUser(ctx, &gh.RepositoryListByAuthenticatedUserOptions{
+			Affiliation: "owner,collaborator,organization_member",
+			Sort:        "updated",
+			ListOptions: gh.ListOptions{Page: page, PerPage: 100},
+		})
+		if err != nil {
+			return nil, normalizeGitHubError(err)
 		}
-		for _, item := range body {
-			repos = append(repos, item.repo())
+		for _, item := range items {
+			repos = append(repos, repoFromSDK(item))
 		}
-		if len(body) < 100 {
+		if response == nil || response.NextPage == 0 {
 			break
 		}
 	}
@@ -523,12 +608,20 @@ func (c HTTPClient) ListRepos(ctx context.Context, token string) ([]Repo, error)
 }
 
 func (c HTTPClient) CreateRepo(ctx context.Context, token string, input RepoCreateInput) (Repo, error) {
-	payload := map[string]any{"name": input.Name, "private": input.Private, "auto_init": input.AutoInit}
-	var body githubRepoResponse
-	if err := c.doJSON(ctx, token, http.MethodPost, "/user/repos", payload, &body); err != nil {
+	client, err := c.sdkClient(token)
+	if err != nil {
 		return Repo{}, err
 	}
-	repo := body.repo()
+	repository, _, err := client.Repositories.Create(ctx, "", &gh.Repository{
+		Name:          gh.Ptr(input.Name),
+		Private:       gh.Ptr(input.Private),
+		AutoInit:      gh.Ptr(input.AutoInit),
+		DefaultBranch: gh.Ptr(input.DefaultBranch),
+	})
+	if err != nil {
+		return Repo{}, normalizeGitHubError(err)
+	}
+	repo := repoFromSDK(repository)
 	if repo.DefaultBranch == "" {
 		repo.DefaultBranch = input.DefaultBranch
 	}
@@ -536,35 +629,95 @@ func (c HTTPClient) CreateRepo(ctx context.Context, token string, input RepoCrea
 }
 
 func (c HTTPClient) GetFile(ctx context.Context, token, owner, name, path, branch string) (File, error) {
-	requestPath := "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(name) + "/contents/" + escapePath(path)
-	if branch != "" {
-		requestPath += "?ref=" + url.QueryEscape(branch)
-	}
-	var body struct {
-		Path string `json:"path"`
-		SHA  string `json:"sha"`
-		Type string `json:"type"`
-	}
-	err := c.doJSON(ctx, token, http.MethodGet, requestPath, nil, &body)
-	if errors.Is(err, ErrRepoNotFound) {
-		return File{}, ErrFileNotFound
-	}
+	client, err := c.sdkClient(token)
 	if err != nil {
 		return File{}, err
 	}
-	if body.Type != "" && body.Type != "file" {
+	options := &gh.RepositoryContentGetOptions{Ref: branch}
+	content, directory, _, err := client.Repositories.GetContents(ctx, owner, name, path, options)
+	if err != nil {
+		err = normalizeGitHubError(err)
+		if errors.Is(err, ErrRepoNotFound) {
+			return File{}, ErrFileNotFound
+		}
+		return File{}, err
+	}
+	if content == nil || len(directory) != 0 || (content.GetType() != "" && content.GetType() != "file") {
 		return File{}, fmt.Errorf("github path %q exists but is not a file", path)
 	}
-	return File{Path: body.Path, SHA: body.SHA}, nil
+	return File{Path: content.GetPath(), SHA: content.GetSHA()}, nil
 }
 
 func (c HTTPClient) PutFile(ctx context.Context, token, owner, name string, input PutFileInput) error {
-	payload := map[string]any{"message": input.Message, "content": base64Encode(input.Content), "branch": input.Branch}
-	err := c.doJSON(ctx, token, http.MethodPut, "/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(name)+"/contents/"+escapePath(input.Path), payload, nil)
+	client, err := c.sdkClient(token)
+	if err != nil {
+		return err
+	}
+	_, _, err = client.Repositories.CreateFile(ctx, owner, name, input.Path, &gh.RepositoryContentFileOptions{
+		Message: gh.Ptr(input.Message),
+		Content: input.Content,
+		Branch:  gh.Ptr(input.Branch),
+	})
+	err = normalizeGitHubError(err)
 	if isAlreadyExistsValidation(err) {
 		return nil
 	}
 	return err
+}
+
+func (c HTTPClient) sdkClient(token string) (*gh.Client, error) {
+	options := []gh.ClientOptionsFunc{gh.WithHTTPClient(c.httpClient())}
+	if token != "" {
+		options = append(options, gh.WithAuthToken(token))
+	}
+	if strings.TrimSpace(c.BaseURL) != "" && strings.TrimRight(c.BaseURL, "/") != "https://api.github.com" {
+		base, err := url.Parse(strings.TrimRight(c.BaseURL, "/") + "/")
+		if err != nil || base.Scheme == "" || base.Host == "" {
+			return nil, errors.New("github API base URL is invalid")
+		}
+		baseURL := base.String()
+		options = append(options, gh.WithURLs(&baseURL, &baseURL))
+	}
+	client, err := gh.NewClient(options...)
+	if err != nil {
+		return nil, fmt.Errorf("create github client: %w", err)
+	}
+	return client, nil
+}
+
+func repoFromSDK(repository *gh.Repository) Repo {
+	if repository == nil {
+		return Repo{}
+	}
+	id := ""
+	if repository.ID != nil {
+		id = strconv.FormatInt(repository.GetID(), 10)
+	}
+	return Repo{
+		ID: id, Owner: repository.GetOwner().GetLogin(), Name: repository.GetName(),
+		DefaultBranch: repository.GetDefaultBranch(), CloneURL: repository.GetCloneURL(),
+		HTMLURL: repository.GetHTMLURL(), Private: repository.GetPrivate(),
+	}
+}
+
+func normalizeGitHubError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var response *gh.ErrorResponse
+	if !errors.As(err, &response) || response.Response == nil {
+		return err
+	}
+	if response.Response.StatusCode == http.StatusNotFound {
+		return ErrRepoNotFound
+	}
+	details := make([]APIErrorDetail, 0, len(response.Errors))
+	for _, detail := range response.Errors {
+		details = append(details, APIErrorDetail{
+			Resource: detail.Resource, Field: detail.Field, Code: detail.Code, Message: detail.Message,
+		})
+	}
+	return APIError{StatusCode: response.Response.StatusCode, Message: response.Message, Errors: details}
 }
 
 func (c HTTPClient) doJSON(ctx context.Context, token, method, path string, payload any, target any) error {
@@ -597,7 +750,9 @@ func (c HTTPClient) doJSON(ctx context.Context, token, method, path string, payl
 		return parseGitHubAPIError(res)
 	}
 	if target != nil {
-		return json.NewDecoder(res.Body).Decode(target)
+		decoder := json.NewDecoder(res.Body)
+		decoder.UseNumber()
+		return decoder.Decode(target)
 	}
 	return nil
 }
@@ -652,19 +807,19 @@ func (c HTTPClient) httpClient() *http.Client {
 }
 
 type githubRepoResponse struct {
-	ID            any    `json:"id"`
-	Name          string `json:"name"`
-	DefaultBranch string `json:"default_branch"`
-	CloneURL      string `json:"clone_url"`
-	HTMLURL       string `json:"html_url"`
-	Private       bool   `json:"private"`
+	ID            json.Number `json:"id"`
+	Name          string      `json:"name"`
+	DefaultBranch string      `json:"default_branch"`
+	CloneURL      string      `json:"clone_url"`
+	HTMLURL       string      `json:"html_url"`
+	Private       bool        `json:"private"`
 	Owner         struct {
 		Login string `json:"login"`
 	} `json:"owner"`
 }
 
 func (r githubRepoResponse) repo() Repo {
-	return Repo{ID: fmt.Sprint(r.ID), Owner: r.Owner.Login, Name: r.Name, DefaultBranch: r.DefaultBranch, CloneURL: r.CloneURL, HTMLURL: r.HTMLURL, Private: r.Private}
+	return Repo{ID: r.ID.String(), Owner: r.Owner.Login, Name: r.Name, DefaultBranch: r.DefaultBranch, CloneURL: r.CloneURL, HTMLURL: r.HTMLURL, Private: r.Private}
 }
 
 type FakeClient struct {
@@ -845,6 +1000,7 @@ var (
 	ErrMissingScopes               = errors.New("github oauth token is missing required scopes")
 	ErrIdentityLinkedToAnotherUser = errors.New("github identity is already linked to another user")
 	ErrRepoNotFound                = errors.New("github repository not found")
+	ErrRepoNotPrivate              = errors.New("github repository is not private")
 	ErrFileNotFound                = errors.New("github file not found")
 	ErrIdempotencyKeyRequired      = errors.New("idempotency key is required")
 )

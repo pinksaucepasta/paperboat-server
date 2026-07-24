@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/agentunnel"
@@ -65,6 +66,20 @@ func New(opts Options) (*App, error) {
 	billingService.SetCheckoutReservationTTL(opts.Config.Billing.CheckoutReservationTTL)
 	billingService.SetEncryptionKey(opts.Config.Secrets.EncryptionKey)
 	githubService := pbgithub.NewService(store, auditWriter, githubClient(opts.Config), opts.Config)
+	if opts.Config.Providers.FakeMode {
+		githubService.SetRepositoryAccessBroker(pbgithub.FakeRepositoryAccessBroker{})
+	} else if opts.Config.GitHub.AppID != "" && opts.Config.Secrets.GitHubAppPrivateKey != "" {
+		githubAccessBroker, brokerErr := pbgithub.NewGitHubAppBroker(pbgithub.GitHubAppBrokerConfig{
+			BaseURL: opts.Config.Providers.GitHub.BaseURL, AppID: opts.Config.GitHub.AppID,
+			PrivateKeyPEM: opts.Config.Secrets.GitHubAppPrivateKey,
+			Client:        providerHTTPClient("github-app", opts.Config.HTTP.RequestTimeout),
+		})
+		if brokerErr != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("configure GitHub App repository access: %w", brokerErr)
+		}
+		githubService.SetRepositoryAccessBroker(githubAccessBroker)
+	}
 	projectService := projects.NewService(store, auditWriter, opts.Config)
 	terminalSessionService := terminalsessions.New(store, projectService, opts.Config.TerminalSessions.MaxActivePerProject, opts.Config.TerminalSessions.RetryBackoff, opts.Config.TerminalSessions.MaxAttemptsBeforeAlert)
 	legacyAccessProvider := agentunnel.FakeClient{BaseURL: opts.Config.Providers.Agentunnel.BaseURL}
@@ -116,17 +131,119 @@ func New(opts Options) (*App, error) {
 	}
 	billingService.SetConnectedMachineSessionRevoker(connectedMachineService)
 	enrollmentService := controlplane.NewEnrollmentService(store, mintKeys, auditWriter, config.NormalizeIssuer(opts.Config.HTTP.PublicBaseURL), opts.Config.Secrets.EncryptionKey)
+	hostedBootstrapService := controlplane.NewHostedBootstrapService(store, enrollmentService, opts.Config.Secrets.EncryptionKey)
+	hostedBootstrapService.SetSourceCredentialIssuer(controlplane.HostedSourceCredentialIssuerFunc(
+		func(ctx context.Context, userID, sourceURL string) (controlplane.HostedSourceCredential, error) {
+			repositories, listErr := githubService.ListRepos(ctx, userID)
+			if listErr != nil {
+				return controlplane.HostedSourceCredential{}, listErr
+			}
+			for _, repository := range repositories {
+				if !strings.EqualFold(strings.TrimSuffix(repository.CloneURL, "/"), strings.TrimSuffix(sourceURL, "/")) {
+					continue
+				}
+				if !repository.Private {
+					return controlplane.HostedSourceCredential{}, nil
+				}
+				authorizationRef, resolveErr := githubService.ResolveRepositoryAuthorization(ctx, userID, repository.ID)
+				if resolveErr != nil {
+					return controlplane.HostedSourceCredential{}, resolveErr
+				}
+				issued, issueErr := githubService.IssueRepositoryAccess(ctx, authorizationRef, repository.ID, "read")
+				return controlplane.HostedSourceCredential{
+					Username: "x-access-token", Password: issued.Token, ExpiresAt: issued.ExpiresAt,
+				}, issueErr
+			}
+			return controlplane.HostedSourceCredential{}, nil
+		},
+	))
+	if !opts.Config.Providers.FakeMode {
+		hostedEnrollmentAudience := config.NormalizeIssuer(opts.Config.HTTP.PublicBaseURL) + "/v1/helpers/enroll/hosted"
+		workloadVerifier, verifierErr := fly.NewWorkloadIdentityVerifier(
+			opts.Config.Fly.OrgSlug,
+			hostedEnrollmentAudience,
+			providerHTTPClient("fly-oidc", opts.Config.HTTP.RequestTimeout),
+		)
+		if verifierErr != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("configure Fly workload identity: %w", verifierErr)
+		}
+		enrollmentService.ConfigureHostedWorkloadIdentity(opts.Config.Fly.AppName,
+			controlplane.HostedWorkloadIdentityVerifierFunc(func(ctx context.Context, token string) (controlplane.HostedWorkloadIdentity, error) {
+				identity, verifyErr := workloadVerifier.Verify(ctx, token)
+				return controlplane.HostedWorkloadIdentity{
+					AppName: identity.AppName, MachineID: identity.MachineID, TokenID: identity.TokenID,
+				}, verifyErr
+			}))
+	}
 	connectedMachineService.ConfigureHelperEnrollment(func(ctx context.Context, actorID, operationKey, environmentID string, lifetime time.Duration) (connectedmachines.HelperEnrollmentGrant, error) {
 		grant, err := enrollmentService.Issue(ctx, actorID, operationKey, environmentID, lifetime)
 		return connectedmachines.HelperEnrollmentGrant{EnrollmentID: grant.EnrollmentID, HelperID: grant.HelperID, Credential: grant.Credential, ExpiresAt: grant.ExpiresAt}, err
 	})
-	orchestratorService.SetHostedEnrollmentIssuer(func(ctx context.Context, actorID, operationKey, environmentID string, lifetime time.Duration) (string, error) {
-		grant, err := enrollmentService.EnsureBootGrant(ctx, actorID, operationKey, environmentID, lifetime)
-		return grant.Credential, err
-	})
-	configAssignmentService := controlplane.NewConfigAssignmentService(store, auditWriter)
+	configAssignmentService := controlplane.NewConfigAssignmentService(store, auditWriter, opts.Config.ConfigSync.WarningRevision)
+	configAssignmentService.SetRepositoryResolver(controlplane.ConfigRepositoryResolverFunc(func(ctx context.Context, userID, provider, externalID string) (controlplane.ConfigRepositoryConnection, error) {
+		if provider != "github" || githubService == nil {
+			return controlplane.ConfigRepositoryConnection{}, controlplane.ErrAssignmentForbidden
+		}
+		repository, accountID, resolveErr := githubService.ResolvePrivateRepository(ctx, userID, externalID)
+		if resolveErr != nil {
+			return controlplane.ConfigRepositoryConnection{}, resolveErr
+		}
+		authorizationRef, accessErr := githubService.ResolveRepositoryAuthorization(ctx, userID, externalID)
+		if accessErr != nil {
+			return controlplane.ConfigRepositoryConnection{}, accessErr
+		}
+		return controlplane.ConfigRepositoryConnection{
+			ProviderAccountID: accountID, ExternalRepositoryID: repository.ID,
+			DisplayName: repository.Owner + "/" + repository.Name, CloneURL: repository.CloneURL, PublishURL: repository.CloneURL,
+			DefaultBranch: repository.DefaultBranch, AuthorizationRef: authorizationRef,
+			CredentialCapability: "github_app_installation_repository_contents_rw",
+		}, nil
+	}))
+	configAssignmentService.SetRepositoryCatalog(controlplane.ConfigRepositoryCatalogFunc(func(ctx context.Context, userID string) ([]controlplane.ConfigRepositoryCandidate, error) {
+		if githubService == nil {
+			return nil, controlplane.ErrAssignmentForbidden
+		}
+		repositories, listErr := githubService.ListRepos(ctx, userID)
+		if listErr != nil {
+			return nil, listErr
+		}
+		items := make([]controlplane.ConfigRepositoryCandidate, 0, len(repositories))
+		for _, repository := range repositories {
+			if !repository.Private || repository.ID == "" || repository.Owner == "" || repository.Name == "" {
+				continue
+			}
+			items = append(items, controlplane.ConfigRepositoryCandidate{
+				Provider: "github", ExternalID: repository.ID,
+				DisplayName: repository.Owner + "/" + repository.Name, DefaultBranch: repository.DefaultBranch,
+			})
+		}
+		return items, nil
+	}))
 	configCredentialService := controlplane.NewConfigCredentialService(store, mintKeys, config.NormalizeIssuer(opts.Config.HTTP.PublicBaseURL), opts.Config.Secrets.EncryptionKey)
 	configCredentialService.SetAuditWriter(auditWriter)
+	configCredentialService.SetWarningRevision(opts.Config.ConfigSync.WarningRevision)
+	configCredentialService.SetRollout(opts.Config.ConfigSync.Mode, opts.Config.ConfigSync.BYODEnabled, opts.Config.ConfigSync.EnvironmentAllowlist)
+	configLeaseService := controlplane.NewConfigLeaseService(store, auditWriter)
+	configLeaseService.ConfigureAuthentication(enrollmentService, mintKeys, config.NormalizeIssuer(opts.Config.HTTP.PublicBaseURL), opts.Config.ConfigSync.WarningRevision)
+	configLeaseService.ConfigureRollout(opts.Config.ConfigSync.Mode, opts.Config.ConfigSync.BYODEnabled, opts.Config.ConfigSync.EnvironmentAllowlist)
+	configStatusService := controlplane.NewConfigStatusService(store, enrollmentService, auditWriter, opts.Config.ConfigSync.SummaryLimit)
+	configStatusService.SetAccountPolicy(opts.Config.ConfigSync)
+	configRepositoryAccessService := controlplane.NewConfigRepositoryAccessService(store, configLeaseService,
+		controlplane.ConfigRepositoryAccessIssuerFuncs{
+			Issue: func(ctx context.Context, authorizationRef, repositoryID, contentsPermission string) (controlplane.ScopedRepositoryCredential, error) {
+				issued, issueErr := githubService.IssueRepositoryAccess(ctx, authorizationRef, repositoryID, contentsPermission)
+				return controlplane.ScopedRepositoryCredential{Token: issued.Token, ExpiresAt: issued.ExpiresAt}, issueErr
+			},
+			Revoke: githubService.RevokeRepositoryAccess,
+		}, opts.Config.Secrets.EncryptionKey, auditWriter)
+	configRuntimeService := controlplane.NewConfigRuntimeService(store, configLeaseService,
+		controlplane.ConfigKeySourceFunc(func(ctx context.Context, userID string) (controlplane.ConfigKeyMaterial, error) {
+			key, keyErr := configSyncRepo.EnsureAccountKey(ctx, userID)
+			return controlplane.ConfigKeyMaterial{Version: key.Version, Recipient: key.Recipient, Identity: key.Identity}, keyErr
+		}), opts.Config.ConfigSync, opts.Config.Classifier)
+	configClassificationService := controlplane.NewConfigClassificationService(store, configLeaseService, classificationController, opts.Config.ConfigSync)
+	configConflictService := controlplane.NewConfigConflictService(store, configLeaseService, auditWriter)
 	routeService := controlplane.NewRouteService(store, auditWriter)
 	var previewService *controlplane.PreviewService
 	if opts.Config.Preview.BaseDomain != "" || opts.Config.Secrets.PreviewIdentityKey != "" {
@@ -190,8 +307,15 @@ func New(opts Options) (*App, error) {
 		EdgeControl:            edgeControlHandler,
 		EdgeControlAdmin:       edgeControlService,
 		Enrollment:             enrollmentService,
+		HostedBootstrap:        hostedBootstrapService,
 		ConfigAssignments:      configAssignmentService,
 		ConfigCredentials:      configCredentialService,
+		ConfigLeases:           configLeaseService,
+		ConfigStatuses:         configStatusService,
+		ConfigRepositoryAccess: configRepositoryAccessService,
+		ConfigRuntime:          configRuntimeService,
+		ConfigClassification:   configClassificationService,
+		ConfigConflicts:        configConflictService,
 		Routes:                 routeService,
 		Previews:               previewService,
 		ControlDiagnostics:     controlDiagnostics,
@@ -205,6 +329,8 @@ func New(opts Options) (*App, error) {
 		configSyncRepo.RotationWorker(time.Minute),
 		terminalSessionService.Worker(opts.Config.TerminalSessions.WorkerInterval),
 		connectedMachineService.Worker(opts.Config.TerminalSessions.WorkerInterval),
+		configAssignmentService.WarningReconciliationWorker(opts.Config.TerminalSessions.WorkerInterval),
+		configRepositoryAccessService.RevocationWorker(opts.Config.TerminalSessions.WorkerInterval, 25),
 	}
 	if edgeControlService != nil {
 		serverWorkers = append(serverWorkers, edgeControlService.StaleNodeWorker(opts.Config.TerminalSessions.WorkerInterval, controlplane.ControlTunnelNodeStaleAfter()))

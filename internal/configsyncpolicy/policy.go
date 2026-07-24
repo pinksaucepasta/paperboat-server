@@ -2,6 +2,7 @@ package configsyncpolicy
 
 var mandatoryExcludes = []string{
 	".git", "**/.git",
+	".paperboat", "**/.paperboat",
 	".ssh", "**/.ssh", ".gnupg", "**/.gnupg", ".password-store",
 	".aws", "**/.aws", ".azure", ".config/gcloud", ".kube", "**/.kube", ".oci",
 	".config/doctl", ".config/linode-cli", ".config/heroku", ".config/fly", ".config/vercel/auth.json", ".config/netlify/config.json",

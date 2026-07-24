@@ -445,13 +445,15 @@ func (q *Queries) InsertOrchestrationProjectEvent(ctx context.Context, arg Inser
 }
 
 const listRecordedFlyMachines = `-- name: ListRecordedFlyMachines :many
-SELECT project_id,fly_machine_id,state FROM fly_machines
+SELECT project_id,fly_machine_id,state,image_ref,observed_config_hash FROM fly_machines
 `
 
 type ListRecordedFlyMachinesRow struct {
-	ProjectID    string
-	FlyMachineID string
-	State        string
+	ProjectID          string
+	FlyMachineID       string
+	State              string
+	ImageRef           string
+	ObservedConfigHash string
 }
 
 func (q *Queries) ListRecordedFlyMachines(ctx context.Context) ([]ListRecordedFlyMachinesRow, error) {
@@ -463,7 +465,13 @@ func (q *Queries) ListRecordedFlyMachines(ctx context.Context) ([]ListRecordedFl
 	var items []ListRecordedFlyMachinesRow
 	for rows.Next() {
 		var i ListRecordedFlyMachinesRow
-		if err := rows.Scan(&i.ProjectID, &i.FlyMachineID, &i.State); err != nil {
+		if err := rows.Scan(
+			&i.ProjectID,
+			&i.FlyMachineID,
+			&i.State,
+			&i.ImageRef,
+			&i.ObservedConfigHash,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -647,6 +655,30 @@ type StartReconciliationRunParams struct {
 
 func (q *Queries) StartReconciliationRun(ctx context.Context, arg StartReconciliationRunParams) error {
 	_, err := q.db.ExecContext(ctx, startReconciliationRun, arg.ID, arg.Scope, arg.State)
+	return err
+}
+
+const updateOrchestratedMachineObservation = `-- name: UpdateOrchestratedMachineObservation :exec
+UPDATE fly_machines
+SET state=$1,image_ref=$2,observed_config_hash=$3,
+version=version+1,updated_at=now()
+WHERE project_id=$4
+`
+
+type UpdateOrchestratedMachineObservationParams struct {
+	State              string
+	ImageRef           string
+	ObservedConfigHash string
+	ProjectID          string
+}
+
+func (q *Queries) UpdateOrchestratedMachineObservation(ctx context.Context, arg UpdateOrchestratedMachineObservationParams) error {
+	_, err := q.db.ExecContext(ctx, updateOrchestratedMachineObservation,
+		arg.State,
+		arg.ImageRef,
+		arg.ObservedConfigHash,
+		arg.ProjectID,
+	)
 	return err
 }
 

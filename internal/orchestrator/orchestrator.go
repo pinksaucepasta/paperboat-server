@@ -14,12 +14,10 @@ import (
 	"strings"
 	"time"
 
-	"filippo.io/age"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
-	"github.com/pinksaucepasta/paperboat-server/internal/secrets"
 )
 
 var ErrVolumeResizeRequiresApproval = errors.New("volume resize requires approved Fly resize or replacement policy")
@@ -30,7 +28,6 @@ type Service struct {
 	fly               fly.Client
 	cfg               config.Config
 	beforeStop        func(context.Context, string) error
-	issueEnrollment   func(context.Context, string, string, string, time.Duration) (string, error)
 	ensureHostedRoute func(context.Context, string, string, string, string) error
 	verifyReadiness   func(context.Context, string) error
 }
@@ -39,10 +36,6 @@ type Service struct {
 // runtime is still reachable. Failures are recorded but never strand a stop.
 func (s *Service) SetBeforeStop(fn func(context.Context, string) error) {
 	s.beforeStop = fn
-}
-
-func (s *Service) SetHostedEnrollmentIssuer(fn func(context.Context, string, string, string, time.Duration) (string, error)) {
-	s.issueEnrollment = fn
 }
 
 func (s *Service) SetHostedRouteEnsurer(fn func(context.Context, string, string, string, string) error) {
@@ -144,15 +137,8 @@ func (s *Service) provisionProject(ctx context.Context, projectID string) error 
 	if err != nil {
 		return err
 	}
-	if s.issueEnrollment != nil {
-		if ensureErr := s.repo.EnsureHostedControlEnvironment(ctx, intent.ID, intent.UserID); ensureErr != nil {
-			return fmt.Errorf("ensure hosted control environment: %w", ensureErr)
-		}
-		credential, issueErr := s.issueEnrollment(ctx, intent.UserID, "hosted-create:"+intent.ID, intent.ID, 10*time.Minute)
-		if issueErr != nil {
-			return fmt.Errorf("issue hosted helper enrollment: %w", issueErr)
-		}
-		intent.EnrollmentCredential = credential
+	if ensureErr := s.repo.EnsureHostedControlEnvironment(ctx, intent.ID, intent.UserID); ensureErr != nil {
+		return fmt.Errorf("ensure hosted control environment: %w", ensureErr)
 	}
 	if s.ensureHostedRoute != nil {
 		host := providerName(s.cfg.Providers.Agentunnel.RouteSubdomainPrefix, intent.ID) + "." + strings.Trim(strings.ToLower(s.cfg.HelperBaseDomain), ".")
@@ -362,13 +348,6 @@ func (s *Service) deleteProject(ctx context.Context, projectID string) error {
 		if err := s.deleteProviderSecrets(ctx, intent); err != nil {
 			return err
 		}
-	} else if errors.Is(intentErr, secrets.ErrDecrypt) {
-		// The project's stored secrets were encrypted under a key that is no
-		// longer configured, so we can't read them to clean up provider secrets.
-		// Deletion must still complete — otherwise a key change would strand the
-		// project (and its storage allocation) in "deleting" forever. The Fly
-		// machine and volume are torn down by ID above/below and don't need the
-		// decrypted values.
 	} else if !errors.Is(intentErr, sql.ErrNoRows) {
 		return intentErr
 	}
@@ -484,45 +463,18 @@ func (s *Service) machineSpec(intent ProjectIntent, volumeID string) fly.Machine
 		"PAPERBOAT_HELPER_LISTEN_ADDRESS":            "127.0.0.1:8080",
 		"PAPERBOAT_CONTROL_URL":                      strings.TrimRight(s.cfg.HTTP.PublicBaseURL, "/"),
 		"PAPERBOAT_CONTROL_ISSUER":                   config.NormalizeIssuer(s.cfg.HTTP.PublicBaseURL),
-		"PAPERBOAT_ENROLLMENT_CREDENTIAL_ENV":        s.cfg.Fly.EnrollmentSecret,
 		"PAPERBOAT_PROJECT_ID":                       intent.ID,
 		"PAPERBOAT_MACHINE_ID":                       machineName,
 		"PAPERBOAT_REPOSITORY_URL":                   intent.RepositoryURL,
 		"PAPERBOAT_DEFAULT_BRANCH":                   intent.DefaultBranch,
 		"PAPERBOAT_PRESET_CODES":                     strings.Join(intent.PresetCodes, ","),
 		"PAPERBOAT_IDLE_TIMEOUT_CODE":                intent.IdleTimeoutCode,
-		"PAPERBOAT_GITHUB_TOKEN_ENV":                 s.cfg.Fly.GitHubSecret,
 		"PAPERBOAT_SETUP_SCRIPT_REF":                 intent.SetupScriptRef,
-		"PAPERBOAT_SETUP_SCRIPT_ENV":                 s.cfg.Fly.SetupScriptSecret,
 		"PAPERBOAT_DESIRED_CONFIG_SHA":               intent.DesiredConfigHash,
 		"PAPERBOAT_ACTIVITY_ENDPOINT":                strings.TrimRight(s.cfg.HTTP.PublicBaseURL, "/") + "/api/machine/activity-heartbeat",
-		"PAPERBOAT_CONFIG_HOME":                      s.cfg.ConfigSync.HomeOverride,
-		"PAPERBOAT_CONFIG_INCLUDES":                  strings.Join(s.cfg.ConfigSync.Includes, ","),
-		"PAPERBOAT_CONFIG_EXCLUDES":                  strings.Join(s.cfg.ConfigSync.Excludes, ","),
-		"PAPERBOAT_CONFIG_MANDATORY_EXCLUDES":        strings.Join(s.cfg.ConfigSync.MandatoryExcludes, ","),
-		"PAPERBOAT_CONFIG_MAX_FILE_BYTES":            fmt.Sprint(s.cfg.ConfigSync.MaxFileBytes),
-		"PAPERBOAT_CONFIG_MAX_BATCH_BYTES":           fmt.Sprint(s.cfg.ConfigSync.MaxBatchBytes),
-		"PAPERBOAT_CONFIG_DEBOUNCE_SECONDS":          fmt.Sprint(int64(s.cfg.ConfigSync.Debounce / time.Second)),
-		"PAPERBOAT_CONFIG_MIN_PUSH_INTERVAL_SECONDS": fmt.Sprint(int64(s.cfg.ConfigSync.MinPushInterval / time.Second)),
-		"PAPERBOAT_CONFIG_MAX_DIRTY_DELAY_SECONDS":   fmt.Sprint(int64(s.cfg.ConfigSync.MaxDirtyDelay / time.Second)),
-		"PAPERBOAT_CONFIG_REMOTE_POLL_SECONDS":       fmt.Sprint(int64(s.cfg.ConfigSync.RemotePollInterval / time.Second)),
-		"PAPERBOAT_CONFIG_RETRY_LIMIT":               fmt.Sprint(s.cfg.ConfigSync.RetryLimit),
 		"PAPERBOAT_CONFIG_SHUTDOWN_DEADLINE_SECONDS": fmt.Sprint(flushSeconds),
 		"PAPERBOAT_CONFIG_SHUTDOWN_GRACE_SECONDS":    fmt.Sprint(graceSeconds),
 		"PAPERBOAT_ACTIVITY_SHUTDOWN_REPORT_SECONDS": fmt.Sprint(reportSeconds),
-		"PAPERBOAT_CONFIG_SUMMARY_LIMIT":             fmt.Sprint(s.cfg.ConfigSync.SummaryLimit),
-		"PAPERBOAT_CONFIG_POLICY_REVISION":           s.cfg.ConfigSync.PolicyRevision,
-		"PAPERBOAT_CONFIG_AGE_RECIPIENT":             intent.ConfigAgeRecipient,
-		"PAPERBOAT_CONFIG_AGE_KEY_VERSION":           fmt.Sprint(intent.ConfigAgeVersion),
-		"PAPERBOAT_CONFIG_REQUIRE_ENCRYPTION":        "1",
-		"PAPERBOAT_CONFIG_AGE_IDENTITY_FILE":         "/var/lib/paperboat/config-age-identity.txt",
-		"PAPERBOAT_CONFIG_CLASSIFY_ENDPOINT":         strings.TrimRight(s.cfg.HTTP.PublicBaseURL, "/") + "/api/machine/config-sync/classify",
-	}
-	if strings.TrimSpace(intent.GitHubConfigRepoURL) != "" {
-		env["PAPERBOAT_CONFIG_REPO_URL"] = intent.GitHubConfigRepoURL
-	}
-	if strings.TrimSpace(intent.GitHubConfigRepoBranch) != "" {
-		env["PAPERBOAT_CONFIG_REPO_BRANCH"] = intent.GitHubConfigRepoBranch
 	}
 	spec := fly.MachineSpec{
 		Name:        machineName,
@@ -557,10 +509,8 @@ func (s *Service) machineSpecHash(spec fly.MachineSpec) string {
 	secretRefs := make([]string, 0, len(spec.Secrets))
 	for _, secret := range spec.Secrets {
 		ref := secret.EnvVar + "=" + secret.Name
-		if secret.EnvVar != s.cfg.Fly.EnrollmentSecret {
-			valueHash := sha256.Sum256([]byte(secret.Value))
-			ref += ":" + hex.EncodeToString(valueHash[:])
-		}
+		valueHash := sha256.Sum256([]byte(secret.Value))
+		ref += ":" + hex.EncodeToString(valueHash[:])
 		secretRefs = append(secretRefs, ref)
 	}
 	sort.Strings(secretRefs)
@@ -697,38 +647,22 @@ func (s *Service) destroyVolume(ctx context.Context, volumeID string) error {
 	)
 }
 
-func (s *Service) projectSecrets(intent ProjectIntent) []fly.MachineSecret {
-	out := []fly.MachineSecret{{EnvVar: s.cfg.Fly.EnrollmentSecret, Name: providerSecretName("PBSECRET_ENROLLMENT", intent.ID), Value: intent.EnrollmentCredential}}
-	if strings.TrimSpace(intent.ConfigAgeIdentity) != "" {
-		out = append(out, fly.MachineSecret{EnvVar: "PAPERBOAT_CONFIG_AGE_IDENTITY", Name: providerSecretName("PBSECRET_CONFIG_AGE", intent.ID), Value: intent.ConfigAgeIdentity})
-	}
-	if strings.TrimSpace(intent.GitHubConfigToken) != "" {
-		out = append(out, fly.MachineSecret{
-			EnvVar: s.cfg.Fly.GitHubSecret,
-			Name:   providerSecretName("PBSECRET_GITHUB", intent.ID),
-			Value:  intent.GitHubConfigToken,
-		})
-	}
-	if strings.TrimSpace(intent.SetupScript) != "" {
-		out = append(out, fly.MachineSecret{
-			EnvVar: s.cfg.Fly.SetupScriptSecret,
-			Name:   providerSecretName("PBSECRET_SETUP", intent.ID),
-			Value:  intent.SetupScript,
-		})
-	}
-	return out
+func (s *Service) projectSecrets(ProjectIntent) []fly.MachineSecret {
+	return nil
 }
 
 func (s *Service) deleteProviderSecrets(ctx context.Context, intent ProjectIntent) error {
-	for _, secret := range s.projectSecrets(intent) {
-		if secret.Name == "" {
-			continue
-		}
+	for _, name := range []string{
+		providerSecretName("PBSECRET_SETUP", intent.ID),
+		providerSecretName("PBSECRET_ENROLLMENT", intent.ID),
+		providerSecretName("PBSECRET_GITHUB", intent.ID),
+		providerSecretName("PBSECRET_CONFIG_AGE", intent.ID),
+	} {
 		request := struct {
 			Name string `json:"name"`
-		}{Name: secret.Name}
-		if err := executeNonObservableMutation(ctx, s.repo, "delete_secret:"+secret.Name, "secret", request, func() error {
-			return s.fly.DeleteSecret(ctx, secret.Name)
+		}{Name: name}
+		if err := executeNonObservableMutation(ctx, s.repo, "delete_secret:"+name, "secret", request, func() error {
+			return s.fly.DeleteSecret(ctx, name)
 		}); err != nil && !errors.Is(err, fly.ErrNotFound) {
 			return err
 		}
@@ -799,28 +733,20 @@ type Job struct {
 }
 
 type ProjectIntent struct {
-	ID                     string
-	RepositoryURL          string
-	DefaultBranch          string
-	UserID                 string
-	StorageGB              int
-	MachineTypeCode        string
-	VCPU                   int
-	MemoryMB               int
-	RegionCode             string
-	PresetCodes            []string
-	IdleTimeoutCode        string
-	SetupScriptRef         string
-	SetupScript            string
-	DesiredConfigHash      string
-	PendingRestartApply    bool
-	GitHubConfigToken      string
-	GitHubConfigRepoURL    string
-	GitHubConfigRepoBranch string
-	EnrollmentCredential   string
-	ConfigAgeIdentity      string
-	ConfigAgeRecipient     string
-	ConfigAgeVersion       int32
+	ID                  string
+	RepositoryURL       string
+	DefaultBranch       string
+	UserID              string
+	StorageGB           int
+	MachineTypeCode     string
+	VCPU                int
+	MemoryMB            int
+	RegionCode          string
+	PresetCodes         []string
+	IdleTimeoutCode     string
+	SetupScriptRef      string
+	DesiredConfigHash   string
+	PendingRestartApply bool
 }
 
 type MachineRecord struct {
@@ -948,99 +874,8 @@ func (r *Repository) ProjectIntent(ctx context.Context, projectID string) (Proje
 		return ProjectIntent{}, err
 	}
 	intent := ProjectIntent{ID: row.ID, UserID: row.UserID, RepositoryURL: row.SourceUrl, DefaultBranch: row.DefaultBranch, StorageGB: int(row.AssignedGb), MachineTypeCode: row.MachineTypeCode, VCPU: int(row.Vcpu), MemoryMB: int(row.MemoryMb), RegionCode: row.RegionCode, IdleTimeoutCode: row.IdleTimeoutCode, SetupScriptRef: row.SetupScriptRef, DesiredConfigHash: row.DesiredConfigHash, PendingRestartApply: row.PendingRestartApply}
-	key, keyErr := r.ensureAccountConfigKey(ctx, intent.UserID)
-	if keyErr != nil {
-		return ProjectIntent{}, keyErr
-	}
-	intent.ConfigAgeIdentity, intent.ConfigAgeRecipient, intent.ConfigAgeVersion = key.Identity, key.Recipient, key.Version
 	_ = json.Unmarshal(databaseBytes(row.PresetCodes), &intent.PresetCodes)
-	token, err := r.githubConfigToken(ctx, intent.UserID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return ProjectIntent{}, err
-	}
-	intent.GitHubConfigToken = token
-	configRepoURL, configRepoBranch, err := r.githubConfigRepo(ctx, intent.UserID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return ProjectIntent{}, err
-	}
-	intent.GitHubConfigRepoURL = configRepoURL
-	intent.GitHubConfigRepoBranch = configRepoBranch
-	setupScript, err := r.setupScript(ctx, intent.ID, intent.SetupScriptRef)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return ProjectIntent{}, err
-	}
-	intent.SetupScript = setupScript
 	return intent, nil
-}
-
-type accountConfigKey struct {
-	Identity, Recipient string
-	Version             int32
-}
-
-func (r *Repository) ensureAccountConfigKey(ctx context.Context, userID string) (accountConfigKey, error) {
-	row, err := r.db.Queries().GetAccountConfigKey(ctx, userID)
-	if errors.Is(err, sql.ErrNoRows) {
-		identity, generateErr := age.GenerateX25519Identity()
-		if generateErr != nil {
-			return accountConfigKey{}, generateErr
-		}
-		ciphertext, encryptErr := secrets.Encrypt(r.encryptionKey, identity.String())
-		if encryptErr != nil {
-			return accountConfigKey{}, encryptErr
-		}
-		if _, err = r.db.Queries().InsertAccountConfigKey(ctx, dbsqlc.InsertAccountConfigKeyParams{UserID: userID, Recipient: identity.Recipient().String(), EncryptedIdentity: ciphertext}); err != nil {
-			return accountConfigKey{}, err
-		}
-		row, err = r.db.Queries().GetAccountConfigKey(ctx, userID)
-	}
-	if err != nil {
-		return accountConfigKey{}, err
-	}
-	identity, err := secrets.Decrypt(r.encryptionKey, row.EncryptedIdentity)
-	if err != nil {
-		return accountConfigKey{}, fmt.Errorf("decrypt account config identity: %w", err)
-	}
-	if len(row.PreviousEncryptedIdentity) > 0 {
-		previous, previousErr := secrets.Decrypt(r.encryptionKey, row.PreviousEncryptedIdentity)
-		if previousErr != nil {
-			return accountConfigKey{}, fmt.Errorf("decrypt previous account config identity: %w", previousErr)
-		}
-		identity += "\n" + previous
-	}
-	return accountConfigKey{Identity: identity, Recipient: row.Recipient, Version: row.KeyVersion}, nil
-}
-
-func (r *Repository) githubConfigToken(ctx context.Context, userID string) (string, error) {
-	ciphertext, err := r.db.Queries().GetLatestGitHubTokenCiphertext(ctx, userID)
-	if err != nil {
-		return "", err
-	}
-	plaintext, err := secrets.Decrypt(r.encryptionKey, ciphertext)
-	if err != nil {
-		return "", fmt.Errorf("decrypt GitHub config token: %w", err)
-	}
-	return plaintext, nil
-}
-
-func (r *Repository) githubConfigRepo(ctx context.Context, userID string) (string, string, error) {
-	row, err := r.db.Queries().GetGitHubConfigRepository(ctx, userID)
-	return row.CloneUrl, row.DefaultBranch, err
-}
-
-func (r *Repository) setupScript(ctx context.Context, projectID, setupScriptRef string) (string, error) {
-	if strings.TrimSpace(setupScriptRef) == "" {
-		return "", nil
-	}
-	ciphertext, err := r.db.Queries().GetProjectSetupScriptCiphertext(ctx, dbsqlc.GetProjectSetupScriptCiphertextParams{ProjectID: projectID, ID: setupScriptRef})
-	if err != nil {
-		return "", err
-	}
-	plaintext, err := secrets.Decrypt(r.encryptionKey, ciphertext)
-	if err != nil {
-		return "", fmt.Errorf("decrypt project setup script: %w", err)
-	}
-	return plaintext, nil
 }
 
 func (r *Repository) ProjectMachine(ctx context.Context, projectID string) (MachineRecord, error) {
@@ -1235,12 +1070,26 @@ func (r *Repository) ReconcileFly(ctx context.Context, client fly.Client) ([]Fin
 		if err != nil {
 			return findings, err
 		}
+		observationChanged := false
 		if actual.State != row.State {
 			findings = append(findings, Finding{ProjectID: row.ProjectID, Severity: "warning", Message: fmt.Sprintf("machine state drift: stored=%s actual=%s", row.State, actual.State)})
+			observationChanged = true
+		}
+		if actual.ImageRef != row.ImageRef {
+			findings = append(findings, Finding{ProjectID: row.ProjectID, Severity: "warning", Message: "machine image drift"})
+			observationChanged = true
+		}
+		if actual.ConfigHash != row.ObservedConfigHash {
+			findings = append(findings, Finding{ProjectID: row.ProjectID, Severity: "warning", Message: "machine configuration drift"})
+			observationChanged = true
+		}
+		if observationChanged {
 			// Provider observations must not promote a project to ready/running. Only
 			// the lifecycle operation that proves helper readiness may advance the
 			// product state; reconciliation records the provider observation alone.
-			_ = r.recordObservedMachineState(ctx, row.ProjectID, actual.State)
+			if err := r.recordObservedMachine(ctx, row.ProjectID, actual); err != nil {
+				return findings, err
+			}
 		}
 	}
 	machines, err := client.ListMachines(ctx, map[string]string{"managed_by": "paperboat-server"})
@@ -1260,11 +1109,13 @@ func (r *Repository) ReconcileFly(ctx context.Context, client fly.Client) ([]Fin
 	return findings, nil
 }
 
-func (r *Repository) recordObservedMachineState(ctx context.Context, projectID, providerState string) error {
+func (r *Repository) recordObservedMachine(ctx context.Context, projectID string, machine fly.Machine) error {
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		return tx.Queries().UpdateOrchestratedMachineState(ctx, dbsqlc.UpdateOrchestratedMachineStateParams{
-			ProjectID: projectID,
-			State:     providerState,
+		return tx.Queries().UpdateOrchestratedMachineObservation(ctx, dbsqlc.UpdateOrchestratedMachineObservationParams{
+			ProjectID:          projectID,
+			State:              machine.State,
+			ImageRef:           machine.ImageRef,
+			ObservedConfigHash: machine.ConfigHash,
 		})
 	})
 }

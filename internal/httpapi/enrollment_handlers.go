@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -109,7 +110,7 @@ func helperReplacement(service *controlplane.EnrollmentService) http.Handler {
 	})
 }
 
-func helperEnrollmentExchange(service *controlplane.EnrollmentService) http.HandlerFunc {
+func helperEnrollmentExchange(service *controlplane.EnrollmentService, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var input struct {
 			Credential string `json:"credential"`
@@ -126,12 +127,42 @@ func helperEnrollmentExchange(service *controlplane.EnrollmentService) http.Hand
 		}
 		identity, err := service.Exchange(r.Context(), input.Credential, publicKey)
 		if err != nil {
+			logger.WarnContext(r.Context(), "helper enrollment exchange rejected",
+				"reason", controlplane.EnrollmentExchangeRejectionClass(err))
 			status, code := http.StatusUnauthorized, "credential_invalid"
 			if errors.Is(err, controlplane.ErrEnrollmentUsed) {
 				status, code = http.StatusConflict, "credential_replayed"
 			}
 			noStore(w)
 			writeError(w, r, status, code, "Helper enrollment is unavailable.")
+			return
+		}
+		noStore(w)
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: identity})
+	}
+}
+
+func hostedHelperEnrollmentExchange(service *controlplane.EnrollmentService, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
+			WorkloadIdentity string `json:"workload_identity"`
+			PublicKey        string `json:"public_key"`
+		}
+		if !decodeStrictJSON(w, r, &input) {
+			return
+		}
+		publicKey, decodeErr := base64.RawURLEncoding.DecodeString(input.PublicKey)
+		if decodeErr != nil || len(input.WorkloadIdentity) < 32 || len(input.WorkloadIdentity) > 32<<10 {
+			noStore(w)
+			writeError(w, r, http.StatusUnauthorized, "credential_invalid", "Hosted helper enrollment is unavailable.")
+			return
+		}
+		identity, err := service.ExchangeHostedWorkloadIdentity(r.Context(), input.WorkloadIdentity, publicKey)
+		if err != nil {
+			logger.WarnContext(r.Context(), "hosted helper workload enrollment rejected",
+				"reason", controlplane.EnrollmentExchangeRejectionClass(err))
+			noStore(w)
+			writeError(w, r, http.StatusUnauthorized, "credential_invalid", "Hosted helper enrollment is unavailable.")
 			return
 		}
 		noStore(w)

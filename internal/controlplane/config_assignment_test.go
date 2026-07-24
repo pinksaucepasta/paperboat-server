@@ -31,7 +31,8 @@ func TestConfigAssignmentOwnershipConcurrencyAndBYODConsent(t *testing.T) {
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.connected_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root) VALUES ($1,$2,$3,'BYOD','linux','arm64','/workspace')`, "cfg_machine_"+suffix, userA, env); err != nil {
 		t.Fatal(err)
 	}
-	service := NewConfigAssignmentService(store, nil)
+	service := NewConfigAssignmentService(store, nil, "warning-1")
+	service.SetRepositoryResolver(testConfigRepositoryResolver())
 	repoA, err := service.ConnectRepository(ctx, userA, "github", "repo-a", "A")
 	if err != nil {
 		t.Fatal(err)
@@ -55,6 +56,18 @@ func TestConfigAssignmentOwnershipConcurrencyAndBYODConsent(t *testing.T) {
 	accepted, err := service.AcceptConsent(ctx, userA, env, "warning-1", assignment.Version)
 	if err != nil || accepted.ConsentState != "accepted" {
 		t.Fatalf("accepted = %#v, %v", accepted, err)
+	}
+	warning, err := service.Warning(ctx, userA, env)
+	if err != nil || warning.Revision != "warning-1" || warning.MachineName != "BYOD" || warning.RepositoryName != "R" || warning.CanonicalScope != "/workspace" {
+		t.Fatalf("warning = %#v, %v", warning, err)
+	}
+	pending, err := service.RemoveConsent(ctx, userA, env, accepted.Version)
+	if err != nil || pending.ConsentState != "pending" || pending.AcceptedAt.Valid {
+		t.Fatalf("removed consent = %#v, %v", pending, err)
+	}
+	accepted, err = service.AcceptConsent(ctx, userA, env, "warning-1", pending.Version)
+	if err != nil || accepted.ConsentState != "accepted" {
+		t.Fatalf("reaccepted = %#v, %v", accepted, err)
 	}
 	if err := service.Clear(ctx, userA, env, assignment.Version); !errors.Is(err, ErrAssignmentConflict) {
 		t.Fatalf("stale clear error = %v", err)
@@ -102,7 +115,8 @@ func TestConfigCredentialIsBoundReplaySafeAndRevokedWithAssignment(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assignments := NewConfigAssignmentService(store, nil)
+	assignments := NewConfigAssignmentService(store, nil, "warning-7")
+	assignments.SetRepositoryResolver(testConfigRepositoryResolver())
 	assignments.clock = func() time.Time { return now }
 	repository, err := assignments.ConnectRepository(ctx, user, "github", "config-repo", "Config")
 	if err != nil {
@@ -123,6 +137,8 @@ func TestConfigCredentialIsBoundReplaySafeAndRevokedWithAssignment(t *testing.T)
 	proof, _ := json.Marshal(helperProofEnvelope{Algorithm: "EdDSA", Payload: base64.RawURLEncoding.EncodeToString(payload), Signature: base64.RawURLEncoding.EncodeToString(ed25519.Sign(helperPrivate, payload))})
 	credentials := NewConfigCredentialService(store, signer, "https://api.example.test", "config-credential-encryption-key")
 	credentials.clock = func() time.Time { return now }
+	credentials.SetWarningRevision("warning-7")
+	credentials.SetRollout("leased_writes", true, nil)
 	issued, err := credentials.Issue(ctx, identity.Credential, proof, body, "POST", "/v1/config/credentials")
 	if err != nil {
 		t.Fatal(err)
@@ -135,7 +151,9 @@ func TestConfigCredentialIsBoundReplaySafeAndRevokedWithAssignment(t *testing.T)
 	if err != nil || replay.Credential != issued.Credential {
 		t.Fatalf("replay = %#v, %v", replay, err)
 	}
-	replacement, err := assignments.Assign(ctx, user, environmentID, repository.ID, "warning-8", assignment.Version)
+	updatedAssignments := NewConfigAssignmentService(store, nil, "warning-8")
+	updatedAssignments.clock = func() time.Time { return now }
+	replacement, err := updatedAssignments.Assign(ctx, user, environmentID, repository.ID, "warning-8", assignment.Version)
 	if err != nil || replacement.ID == assignment.ID {
 		t.Fatalf("replacement = %#v, %v", replacement, err)
 	}
@@ -197,7 +215,8 @@ func TestConfigAssignmentHostedDoesNotRequireConsent(t *testing.T) {
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id) VALUES ($1,$2,$3) ON CONFLICT (id) DO UPDATE SET owner_user_id=EXCLUDED.owner_user_id, desired_state='active'`, env, "workspace_"+suffix, user); err != nil {
 		t.Fatal(err)
 	}
-	service := NewConfigAssignmentService(store, nil)
+	service := NewConfigAssignmentService(store, nil, "warning-1")
+	service.SetRepositoryResolver(testConfigRepositoryResolver())
 	repo, err := service.ConnectRepository(ctx, user, "gitlab", "repo", "Hosted")
 	if err != nil {
 		t.Fatal(err)
@@ -206,4 +225,15 @@ func TestConfigAssignmentHostedDoesNotRequireConsent(t *testing.T) {
 	if err != nil || assignment.ConsentState != "not_required" {
 		t.Fatalf("assignment = %#v, %v", assignment, err)
 	}
+}
+
+func testConfigRepositoryResolver() ConfigRepositoryResolver {
+	return ConfigRepositoryResolverFunc(func(_ context.Context, userID, provider, externalID string) (ConfigRepositoryConnection, error) {
+		return ConfigRepositoryConnection{
+			ProviderAccountID: userID, ExternalRepositoryID: externalID, DisplayName: strings.ToUpper(externalID[:1]),
+			CloneURL:      "https://github.example/" + userID + "/" + externalID + ".git",
+			PublishURL:    "https://github.example/" + userID + "/" + externalID + ".git",
+			DefaultBranch: "main", AuthorizationRef: provider + ":" + userID, CredentialCapability: "repository_rw",
+		}, nil
+	})
 }

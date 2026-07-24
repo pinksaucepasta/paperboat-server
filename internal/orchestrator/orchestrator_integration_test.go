@@ -76,8 +76,9 @@ func TestProvisionProjectIsIdempotentAndLeavesMachineStopped(t *testing.T) {
 			t.Fatalf("hosted provision injected legacy environment %q", key)
 		}
 	}
-	if !hasSecretEnv(spec.Secrets, orchestratorTestConfig().Fly.EnrollmentSecret) {
-		t.Fatalf("hosted provision omitted enrollment secret reference: %#v", spec.Secrets)
+	if hasSecretEnv(spec.Secrets, orchestratorTestConfig().Fly.EnrollmentSecret) ||
+		hasSecretEnv(spec.Secrets, orchestratorTestConfig().Fly.GitHubSecret) {
+		t.Fatalf("hosted provision injected config-sync bootstrap secrets: %#v", spec.Secrets)
 	}
 	cfg := orchestratorTestConfig()
 	wantStopTimeout := cfg.ConfigSync.ShutdownFlushTimeout + cfg.ConfigSync.ShutdownGracePeriod + cfg.ConfigSync.ShutdownReportTimeout
@@ -763,8 +764,9 @@ func TestStartAndRestartRecreateMissingMachineOnExistingVolume(t *testing.T) {
 	if spec.Env["PAPERBOAT_PROJECT_ID"] != project.ID || spec.Env["PAPERBOAT_HELPER_PROFILE"] != "hosted" {
 		t.Fatalf("replacement helper identity env = project %q profile %q", spec.Env["PAPERBOAT_PROJECT_ID"], spec.Env["PAPERBOAT_HELPER_PROFILE"])
 	}
-	if spec.Env["PAPERBOAT_CONTROL_URL"] != strings.TrimRight(cfg.HTTP.PublicBaseURL, "/") || spec.Env["PAPERBOAT_ENROLLMENT_CREDENTIAL_ENV"] != cfg.Fly.EnrollmentSecret {
-		t.Fatalf("replacement enrollment env = control %q credential env %q", spec.Env["PAPERBOAT_CONTROL_URL"], spec.Env["PAPERBOAT_ENROLLMENT_CREDENTIAL_ENV"])
+	if spec.Env["PAPERBOAT_CONTROL_URL"] != strings.TrimRight(cfg.HTTP.PublicBaseURL, "/") ||
+		spec.Env["PAPERBOAT_ENROLLMENT_CREDENTIAL_ENV"] != "" {
+		t.Fatalf("replacement workload enrollment env = control %q credential env %q", spec.Env["PAPERBOAT_CONTROL_URL"], spec.Env["PAPERBOAT_ENROLLMENT_CREDENTIAL_ENV"])
 	}
 	if len(fakeFly.Volumes) != 1 {
 		t.Fatalf("healing created extra volumes: %d", len(fakeFly.Volumes))
@@ -814,6 +816,7 @@ func TestDeleteReleasesStorageAfterProviderCleanup(t *testing.T) {
 		RegionCode:      "iad",
 		PresetCodes:     []string{"codex"},
 		IdleTimeoutCode: "15m",
+		SetupScript:     "echo delete setup",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -839,9 +842,10 @@ func TestDeleteReleasesStorageAfterProviderCleanup(t *testing.T) {
 	if len(fakeFly.Volumes) != 0 || len(fakeFly.Machines) != 0 {
 		t.Fatalf("provider resources remain after delete: volumes=%d machines=%d", len(fakeFly.Volumes), len(fakeFly.Machines))
 	}
-	// Enrollment, config encryption, and GitHub secrets are removed.
-	if calls := countCalls(fakeFly.Calls, "DeleteSecret:"); calls != 3 {
-		t.Fatalf("DeleteSecret calls = %d, want 3; calls=%#v", calls, fakeFly.Calls)
+	// Deletion removes every historical per-project Fly secret name so projects
+	// created by older releases converge to the zero-secret model.
+	if calls := countCalls(fakeFly.Calls, "DeleteSecret:"); calls != 4 {
+		t.Fatalf("DeleteSecret calls = %d, want 4; calls=%#v", calls, fakeFly.Calls)
 	}
 }
 
@@ -918,6 +922,7 @@ func TestDeleteRetriesEveryProviderCleanupMutationBeforeStorageRelease(t *testin
 			project, _, err := projectService.Create(ctx, projects.CreateInput{
 				UserID: userID, IdempotencyKey: "orch-delete-failure", RepositoryURL: "https://github.com/paperboat/example.git",
 				StorageGB: 8, MachineTypeCode: "standard-1x", RegionCode: "iad", IdleTimeoutCode: "15m",
+				SetupScript: "echo delete failure setup",
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -966,7 +971,7 @@ func TestDeleteRetriesEveryProviderCleanupMutationBeforeStorageRelease(t *testin
 	}
 }
 
-func TestProvisionInjectsConfiguredMachineSecrets(t *testing.T) {
+func TestProvisionUsesHostedBootstrapWithoutMachineSecrets(t *testing.T) {
 	store := newOrchestratorTestDB(t)
 	ctx := context.Background()
 	seedOrchestratorCatalogs(t, store)
@@ -1000,23 +1005,11 @@ func TestProvisionInjectsConfiguredMachineSecrets(t *testing.T) {
 	for _, value := range fakeFly.MachineSpecs {
 		spec = value
 	}
-	if !hasSecretEnv(spec.Secrets, cfg.Fly.EnrollmentSecret) {
-		t.Fatalf("enrollment credential was not injected: %#v", spec.Secrets)
+	if len(spec.Secrets) != 0 {
+		t.Fatalf("hosted provision injected Fly secrets: %#v", spec.Secrets)
 	}
-	if !hasSecret(spec.Secrets, cfg.Fly.GitHubSecret, "github-config-token") {
-		t.Fatalf("github config token was not injected: %#v", spec.Secrets)
-	}
-	if !hasSecret(spec.Secrets, cfg.Fly.SetupScriptSecret, "echo setup from revision") {
-		t.Fatalf("setup script secret was not injected: %#v", spec.Secrets)
-	}
-	for _, secret := range spec.Secrets {
-		if !validFlySecretName(secret.Name) {
-			t.Fatalf("secret name %q is not Fly-compatible", secret.Name)
-		}
-	}
-	if spec.Env["PAPERBOAT_CONFIG_REPO_URL"] != "https://github.com/paperboat-test-user/paperboat-config.git" ||
-		spec.Env["PAPERBOAT_CONFIG_REPO_BRANCH"] != "main" {
-		t.Fatalf("github config repo env was not injected: %#v", spec.Env)
+	if spec.Env["PAPERBOAT_CONFIG_REPO_URL"] != "" || spec.Env["PAPERBOAT_CONFIG_REPO_BRANCH"] != "" {
+		t.Fatalf("legacy config repository coordinates were injected: %#v", spec.Env)
 	}
 	if spec.Env["PAPERBOAT_PROJECT_ID"] != project.ID ||
 		spec.Env["PAPERBOAT_CONTROL_URL"] != strings.TrimRight(cfg.HTTP.PublicBaseURL, "/") ||
@@ -1029,12 +1022,10 @@ func TestProvisionInjectsConfiguredMachineSecrets(t *testing.T) {
 	if strings.Contains(fmt.Sprint(spec.Env), "echo setup from revision") {
 		t.Fatalf("setup script leaked into env: %#v", spec.Env)
 	}
-	if spec.Env["PAPERBOAT_SETUP_SCRIPT_ENV"] != cfg.Fly.SetupScriptSecret {
-		t.Fatalf("setup script env name was not injected: %#v", spec.Env)
-	}
-	if spec.Env["PAPERBOAT_ENROLLMENT_CREDENTIAL_ENV"] != cfg.Fly.EnrollmentSecret ||
-		spec.Env["PAPERBOAT_GITHUB_TOKEN_ENV"] != cfg.Fly.GitHubSecret {
-		t.Fatalf("secret env names were not injected: %#v", spec.Env)
+	if spec.Env["PAPERBOAT_SETUP_SCRIPT_ENV"] != "" ||
+		spec.Env["PAPERBOAT_ENROLLMENT_CREDENTIAL_ENV"] != "" ||
+		spec.Env["PAPERBOAT_GITHUB_TOKEN_ENV"] != "" {
+		t.Fatalf("hosted secret env names were injected: %#v", spec.Env)
 	}
 	events, err := projectService.Events(ctx, "usr_orch_secrets", project.ID)
 	if err != nil {
@@ -1089,8 +1080,9 @@ func TestProvisionExcludesRetiredAgentunnelCredentials(t *testing.T) {
 			t.Fatalf("retired environment %q was injected: %#v", key, spec.Env)
 		}
 	}
-	if !hasSecretEnv(spec.Secrets, cfg.Fly.EnrollmentSecret) {
-		t.Fatalf("canonical enrollment credential was not injected: %#v", spec.Secrets)
+	if hasSecretEnv(spec.Secrets, cfg.Fly.EnrollmentSecret) ||
+		hasSecretEnv(spec.Secrets, cfg.Fly.GitHubSecret) {
+		t.Fatalf("canonical hosted composition injected config-sync secrets: %#v", spec.Secrets)
 	}
 }
 
@@ -1222,6 +1214,54 @@ func TestReconcileQueuesOrphanMachineForReview(t *testing.T) {
 	}
 	if state != "needs_review" {
 		t.Fatalf("orphan job state = %q, want needs_review", state)
+	}
+}
+
+func TestReconcileRecordsMachineStateImageAndConfigDriftWithoutPromotingProject(t *testing.T) {
+	store := newOrchestratorTestDB(t)
+	ctx := context.Background()
+	seedOrchestratorCatalogs(t, store)
+	insertOrchestratorUser(t, store, "usr_reconcile_drift", 20)
+
+	cfg := orchestratorTestConfig()
+	project, _, err := projects.NewService(store, audit.NewWriter(store), cfg).Create(ctx, projects.CreateInput{
+		UserID: "usr_reconcile_drift", IdempotencyKey: "reconcile-drift-project",
+		RepositoryURL: "https://github.com/paperboat/example.git", StorageGB: 10,
+		MachineTypeCode: "standard-1x", RegionCode: "iad", IdleTimeoutCode: "15m",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fakeFly := fly.NewFakeClient()
+	service := NewService(store, fakeFly, cfg)
+	if err := service.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var machine fly.Machine
+	for id, current := range fakeFly.Machines {
+		current.State = "started"
+		current.ImageRef = "registry.fly.io/paperboat-projects:external@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		current.ConfigHash = "external-config-hash"
+		fakeFly.Machines[id] = current
+		machine = current
+	}
+
+	run, err := service.Reconcile(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(run.Findings) != 3 {
+		t.Fatalf("reconcile findings = %#v, want state, image, and configuration drift", run.Findings)
+	}
+	var state, imageRef, configHash, projectState string
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state,image_ref,observed_config_hash FROM paperboat.fly_machines WHERE project_id=$1`, project.ID).Scan(&state, &imageRef, &configHash); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state FROM paperboat.projects WHERE id=$1`, project.ID).Scan(&projectState); err != nil {
+		t.Fatal(err)
+	}
+	if state != machine.State || imageRef != machine.ImageRef || configHash != machine.ConfigHash || projectState != "stopped" {
+		t.Fatalf("observation = state %q image %q config %q project %q", state, imageRef, configHash, projectState)
 	}
 }
 
