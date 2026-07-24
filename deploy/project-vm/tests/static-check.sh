@@ -29,7 +29,7 @@ for command in claude codex pi opencode amp crush; do
 done
 
 grep -q 'paperboat-helper.*run' "$root/Dockerfile"
-grep -Fq 'ENTRYPOINT ["/usr/bin/tini", "--subreaper", "--"]' "$root/Dockerfile"
+grep -Fq 'ENTRYPOINT ["/usr/bin/tini", "-s", "--"]' "$root/Dockerfile"
 grep -q 'COPY paperboat-helper' "$root/Dockerfile"
 grep -q 'io.paperboat.image.contract="hosted-helper-v1"' "$root/Dockerfile"
 grep -q 'io.paperboat.source.helper.revision' "$root/Dockerfile"

@@ -90,5 +90,5 @@ RUN chmod 0755 /usr/local/bin/paperboat-helper /usr/local/bin/paperboat-config-s
 WORKDIR /workspace
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=6 CMD ["/usr/local/bin/paperboat-healthcheck"]
-ENTRYPOINT ["/usr/bin/tini", "--subreaper", "--"]
+ENTRYPOINT ["/usr/bin/tini", "-s", "--"]
 CMD ["/usr/local/bin/paperboat-helper", "run"]
