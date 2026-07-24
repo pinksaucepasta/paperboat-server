@@ -63,6 +63,28 @@
           "data": {}
         }
       },
+      "ClientConfiguration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "cli_verification_url",
+          "connected_machines_url"
+        ],
+        "properties": {
+          "version": {
+            "const": "1"
+          },
+          "cli_verification_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "connected_machines_url": {
+            "type": "string",
+            "format": "uri"
+          }
+        }
+      },
       "ErrorResponse": {
         "type": "object",
         "required": [
@@ -1921,6 +1943,32 @@
           },
           "503": {
             "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/client-configuration": {
+      "get": {
+        "summary": "Publish server-owned URLs used by Paperboat clients",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Current client configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ClientConfiguration"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }

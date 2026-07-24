@@ -66,6 +66,7 @@ Responses:
 ### Health
 
 - `GET /.well-known/jwks.json`
+- `GET /v1/client-configuration`
 - `GET /healthz`
 - `GET /readyz`
 

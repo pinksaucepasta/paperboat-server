@@ -25,6 +25,7 @@ func TestOpenAPIDocumentCoversPublicAndFrozenTargetPaths(t *testing.T) {
 	}
 	required := map[string][]string{
 		"/.well-known/jwks.json":                               {"get"},
+		"/v1/client-configuration":                             {"get"},
 		"/healthz":                                             {"get"},
 		"/metrics":                                             {"get"},
 		"/readyz":                                              {"get"},

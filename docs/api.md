@@ -167,6 +167,7 @@ Session list records contain `id`, `name`, `is_default`, `state`, nullable
 `attached_count`, `last_active_at`, `created_at`, and `updated_at`.
 
 - `GET /.well-known/jwks.json`
+- `GET /v1/client-configuration` returns server-owned URLs used by unauthenticated clients.
 - `POST /api/auth/device/authorize`
 - `POST /api/auth/device/token`
 - `POST /api/auth/token/refresh`

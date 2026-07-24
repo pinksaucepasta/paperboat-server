@@ -88,6 +88,7 @@ func NewRouter(opts Options) http.Handler {
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /healthz", health)
 		mux.HandleFunc("GET /readyz", ready(opts.ReadinessChecker))
+		mux.HandleFunc("GET /v1/client-configuration", clientConfiguration(opts.Config))
 		mux.Handle("GET /metrics", metrics(opts.ControlDiagnostics))
 		if opts.MintKeys != nil {
 			mux.Handle("GET /.well-known/jwks.json", opts.MintKeys)

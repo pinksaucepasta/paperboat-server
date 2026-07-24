@@ -39,6 +39,7 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 		"PAPERBOAT_CONFIG_SYNC_MODE":                            "read_only",
 		"PAPERBOAT_CONFIG_SYNC_BYOD_ENABLED":                    "true",
 		"PAPERBOAT_CONFIG_SYNC_ENVIRONMENT_ALLOWLIST":           "env_one,env_two",
+		"PAPERBOAT_CONNECTED_MACHINES_URL":                      "https://dashboard.example.test/machines",
 	}
 	cfg, err := Load(context.Background(), LoadOptions{
 		LookupEnv: func(key string) (string, bool) {
@@ -54,6 +55,9 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 	}
 	if cfg.Environment != EnvironmentTest {
 		t.Fatalf("environment = %q", cfg.Environment)
+	}
+	if cfg.CLIAuth.ConnectedMachinesURL != env["PAPERBOAT_CONNECTED_MACHINES_URL"] {
+		t.Fatalf("connected machines URL = %q", cfg.CLIAuth.ConnectedMachinesURL)
 	}
 	if cfg.HelperBaseDomain != "helper.example.test" {
 		t.Fatalf("helper base domain = %q", cfg.HelperBaseDomain)
@@ -288,6 +292,13 @@ func TestValidationRejectsInvalidCLIAuthURLAndTrustedProxyCIDR(t *testing.T) {
 			t.Fatalf("verification URL %q error = %v", raw, err)
 		}
 	}
+	for _, raw := range []string{"dashboard.example.com/machines", "ftp://dashboard.example.com/machines", "://bad"} {
+		cfg := Default()
+		cfg.CLIAuth.ConnectedMachinesURL = raw
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "cli_auth.connected_machines_url") {
+			t.Fatalf("connected machines URL %q error = %v", raw, err)
+		}
+	}
 	cfg := Default()
 	cfg.HTTP.TrustedProxyCIDRs = []string{"not-a-cidr"}
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "trusted_proxy_cidrs") {
@@ -298,6 +309,7 @@ func TestValidationRejectsInvalidCLIAuthURLAndTrustedProxyCIDR(t *testing.T) {
 func TestValidationAcceptsAbsoluteCLIAuthURLAndTrustedProxyCIDR(t *testing.T) {
 	cfg := Default()
 	cfg.CLIAuth.VerificationURL = "https://dashboard.example.com/cli/authorize"
+	cfg.CLIAuth.ConnectedMachinesURL = "https://dashboard.example.com/dashboard/connected-machines"
 	cfg.HTTP.TrustedProxyCIDRs = []string{"10.0.0.0/8", "2001:db8::/32"}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)

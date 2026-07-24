@@ -170,6 +170,7 @@ type Classifier struct {
 
 type CLIAuth struct {
 	VerificationURL          string        `json:"verification_url"`
+	ConnectedMachinesURL     string        `json:"connected_machines_url"`
 	ClientID                 string        `json:"client_id"`
 	AllowedScopes            []string      `json:"allowed_scopes"`
 	DeviceGrantLifetime      time.Duration `json:"device_grant_lifetime"`
@@ -340,6 +341,7 @@ func Default() Config {
 			ExcludePatterns:     []string{"**/*.db", "**/*.db-wal", "**/*.db-shm", "**/*.sqlite", "**/*.sqlite3"}},
 		CLIAuth: CLIAuth{
 			VerificationURL:          "http://localhost:3000/cli/authorize",
+			ConnectedMachinesURL:     "http://localhost:3000/dashboard/connected-machines",
 			ClientID:                 "paperboat-cli",
 			AllowedScopes:            []string{"account:read", "clients:revoke", "projects:read", "projects:connect", "session:refresh"},
 			DeviceGrantLifetime:      10 * time.Minute,
@@ -506,11 +508,14 @@ func (c Config) Validate() error {
 			errs = append(errs, err)
 		}
 	}
-	if strings.TrimSpace(c.CLIAuth.VerificationURL) == "" || strings.TrimSpace(c.CLIAuth.ClientID) == "" || len(c.CLIAuth.AllowedScopes) == 0 {
-		errs = append(errs, fmt.Errorf("cli_auth verification_url, client_id, and allowed_scopes are required"))
+	if strings.TrimSpace(c.CLIAuth.VerificationURL) == "" || strings.TrimSpace(c.CLIAuth.ConnectedMachinesURL) == "" || strings.TrimSpace(c.CLIAuth.ClientID) == "" || len(c.CLIAuth.AllowedScopes) == 0 {
+		errs = append(errs, fmt.Errorf("cli_auth verification_url, connected_machines_url, client_id, and allowed_scopes are required"))
 	}
 	if verificationURL, err := url.Parse(c.CLIAuth.VerificationURL); err != nil || (verificationURL.Scheme != "http" && verificationURL.Scheme != "https") || verificationURL.Host == "" {
 		errs = append(errs, fmt.Errorf("cli_auth.verification_url must be an absolute http or https URL"))
+	}
+	if connectedMachinesURL, err := url.Parse(c.CLIAuth.ConnectedMachinesURL); err != nil || (connectedMachinesURL.Scheme != "http" && connectedMachinesURL.Scheme != "https") || connectedMachinesURL.Host == "" {
+		errs = append(errs, fmt.Errorf("cli_auth.connected_machines_url must be an absolute http or https URL"))
 	}
 	if c.CLIAuth.DeviceGrantLifetime <= 0 || c.CLIAuth.AccessTokenLifetime <= 0 || c.CLIAuth.RefreshTokenLifetime <= 0 || c.CLIAuth.PollInterval <= 0 {
 		errs = append(errs, fmt.Errorf("cli_auth lifetimes and poll_interval must be positive"))
@@ -684,6 +689,7 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_CLASSIFIER_REVISION", &c.Classifier.Revision)
 	setString("PAPERBOAT_CLASSIFIER_SCHEMA_MODE", &c.Classifier.SchemaMode)
 	setString("PAPERBOAT_CLI_VERIFICATION_URL", &c.CLIAuth.VerificationURL)
+	setString("PAPERBOAT_CONNECTED_MACHINES_URL", &c.CLIAuth.ConnectedMachinesURL)
 	setString("PAPERBOAT_CLI_CLIENT_ID", &c.CLIAuth.ClientID)
 	setString("PAPERBOAT_MINT_ACTIVE_KEY_ID", &c.CLIAuth.MintActiveKeyID)
 	setString("PAPERBOAT_GITHUB_OAUTH_AUTHORIZE_URL", &c.GitHub.OAuthAuthorizeURL)
