@@ -469,7 +469,9 @@ func (c Config) Validate() error {
 	if c.TerminalSessions.MaxActivePerProject <= 0 || c.TerminalSessions.OperationTimeout <= 0 || c.TerminalSessions.RetryBackoff <= 0 || c.TerminalSessions.WorkerInterval <= 0 || c.TerminalSessions.MaxAttemptsBeforeAlert <= 0 {
 		errs = append(errs, fmt.Errorf("terminal_sessions limits and timings must be positive"))
 	}
-	if c.ConfigSync.MaxFileBytes <= 0 || c.ConfigSync.MaxBatchBytes < c.ConfigSync.MaxFileBytes || !containsAll(c.ConfigSync.MandatoryExcludes, configsyncpolicy.MandatoryExcludes()) {
+	if c.ConfigSync.MaxFileBytes < 1 || c.ConfigSync.MaxFileBytes > 100<<20 ||
+		c.ConfigSync.MaxBatchBytes < c.ConfigSync.MaxFileBytes || c.ConfigSync.MaxBatchBytes > 500<<20 ||
+		!containsAll(c.ConfigSync.MandatoryExcludes, configsyncpolicy.MandatoryExcludes()) {
 		errs = append(errs, fmt.Errorf("config_sync exclusions and size limits are invalid"))
 	}
 	if c.ConfigSync.Mode != "disabled" && c.ConfigSync.Mode != "read_only" && c.ConfigSync.Mode != "leased_writes" {
@@ -477,6 +479,9 @@ func (c Config) Validate() error {
 	}
 	if (c.ConfigSync.Mode != "disabled" || c.ConfigSync.BYODEnabled) && len(c.ConfigSync.Includes) == 0 {
 		errs = append(errs, fmt.Errorf("config_sync.includes must contain at least one explicit path pattern when config sync is enabled"))
+	}
+	if len(c.ConfigSync.Includes) > 256 || len(c.ConfigSync.Excludes) > 512 || len(c.ConfigSync.MandatoryExcludes) > 1024 {
+		errs = append(errs, fmt.Errorf("config_sync path pattern counts exceed runtime limits"))
 	}
 	for _, environmentID := range c.ConfigSync.EnvironmentAllowlist {
 		if strings.TrimSpace(environmentID) == "" || len(environmentID) > 128 {
@@ -491,11 +496,16 @@ func (c Config) Validate() error {
 			errs = append(errs, err)
 		}
 	}
-	if c.ConfigSync.Debounce <= 0 || c.ConfigSync.MinPushInterval <= 0 || c.ConfigSync.MaxDirtyDelay <= 0 || c.ConfigSync.RemotePollInterval <= 0 || c.ConfigSync.RetryLimit <= 0 || c.ConfigSync.ShutdownFlushTimeout <= 0 || c.ConfigSync.ShutdownGracePeriod <= 0 || c.ConfigSync.ShutdownReportTimeout <= 0 || c.ConfigSync.StaleHeartbeatAfter <= 0 || c.ConfigSync.SummaryLimit <= 0 || strings.TrimSpace(c.ConfigSync.PolicyRevision) == "" || strings.TrimSpace(c.ConfigSync.WarningRevision) == "" {
+	if c.ConfigSync.Debounce < time.Second || c.ConfigSync.Debounce > 5*time.Minute ||
+		c.ConfigSync.MinPushInterval < time.Minute || c.ConfigSync.MinPushInterval > 24*time.Hour ||
+		c.ConfigSync.MaxDirtyDelay < c.ConfigSync.Debounce || c.ConfigSync.MaxDirtyDelay > 24*time.Hour ||
+		c.ConfigSync.RemotePollInterval < time.Second || c.ConfigSync.RemotePollInterval > time.Hour ||
+		c.ConfigSync.RetryLimit < 1 || c.ConfigSync.RetryLimit > 20 ||
+		c.ConfigSync.ShutdownFlushTimeout < time.Second || c.ConfigSync.ShutdownFlushTimeout > 10*time.Minute ||
+		c.ConfigSync.ShutdownGracePeriod <= 0 || c.ConfigSync.ShutdownReportTimeout <= 0 ||
+		c.ConfigSync.StaleHeartbeatAfter <= 0 || c.ConfigSync.SummaryLimit < 1 || c.ConfigSync.SummaryLimit > 1000 ||
+		strings.TrimSpace(c.ConfigSync.PolicyRevision) == "" || strings.TrimSpace(c.ConfigSync.WarningRevision) == "" {
 		errs = append(errs, fmt.Errorf("config_sync timing, retention, and policy revision are required"))
-	}
-	if c.ConfigSync.MinPushInterval < 5*time.Minute {
-		errs = append(errs, fmt.Errorf("config_sync.min_push_interval must be at least five minutes"))
 	}
 	if u, err := url.Parse(c.Classifier.BaseURL); err != nil || u.Scheme == "" || u.Host == "" || strings.TrimSpace(c.Classifier.Model) == "" || strings.TrimSpace(c.Classifier.ModelRevision) == "" || strings.TrimSpace(c.Classifier.Revision) == "" {
 		errs = append(errs, fmt.Errorf("classifier provider and revisions are required"))
@@ -1100,7 +1110,8 @@ func containsAll(values, required []string) bool {
 
 func validateConfigSyncPattern(pattern string) error {
 	pattern = filepath.ToSlash(strings.TrimSpace(pattern))
-	if pattern == "" || filepath.IsAbs(pattern) || strings.HasPrefix(pattern, "/") {
+	if pattern == "" || len(pattern) > 512 || filepath.IsAbs(pattern) || strings.HasPrefix(pattern, "/") ||
+		strings.Contains(pattern, "\\") || strings.Contains(pattern, "\x00") {
 		return fmt.Errorf("config_sync path pattern %q is unsafe", pattern)
 	}
 	for _, part := range strings.Split(pattern, "/") {

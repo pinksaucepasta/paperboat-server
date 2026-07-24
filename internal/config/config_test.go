@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
@@ -174,7 +175,10 @@ func TestConfigFileCannotReplaceMandatoryConfigSyncExcludes(t *testing.T) {
 }
 
 func TestValidationRejectsUnsafeConfigSyncPatterns(t *testing.T) {
-	for _, pattern := range []string{"/absolute", "../traversal", "safe/../traversal", "[invalid"} {
+	for _, pattern := range []string{
+		"/absolute", "../traversal", "safe/../traversal", "[invalid", `back\slash`,
+		"nul\x00path", strings.Repeat("a", 513),
+	} {
 		cfg := Default()
 		cfg.ConfigSync.Includes = []string{pattern}
 		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "config_sync path pattern") {
@@ -202,6 +206,41 @@ func TestValidationRequiresExplicitConfigSyncIncludes(t *testing.T) {
 	cfg := Default()
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("disabled config sync rejected empty includes: %v", err)
+	}
+}
+
+func TestValidationRejectsConfigSyncPoliciesHelpersCannotConsume(t *testing.T) {
+	patterns := func(count int) []string {
+		result := make([]string, count)
+		for i := range result {
+			result[i] = ".bashrc"
+		}
+		return result
+	}
+	tests := map[string]func(*Config){
+		"file size":  func(cfg *Config) { cfg.ConfigSync.MaxFileBytes = 100<<20 + 1 },
+		"batch size": func(cfg *Config) { cfg.ConfigSync.MaxBatchBytes = 500<<20 + 1 },
+		"includes":   func(cfg *Config) { cfg.ConfigSync.Includes = patterns(257) },
+		"excludes":   func(cfg *Config) { cfg.ConfigSync.Excludes = patterns(513) },
+		"mandatory excludes": func(cfg *Config) {
+			cfg.ConfigSync.MandatoryExcludes = append(cfg.ConfigSync.MandatoryExcludes, patterns(1025-len(cfg.ConfigSync.MandatoryExcludes))...)
+		},
+		"debounce":      func(cfg *Config) { cfg.ConfigSync.Debounce = 5*time.Minute + 1 },
+		"push interval": func(cfg *Config) { cfg.ConfigSync.MinPushInterval = 24*time.Hour + 1 },
+		"dirty delay":   func(cfg *Config) { cfg.ConfigSync.MaxDirtyDelay = cfg.ConfigSync.Debounce - 1 },
+		"poll interval": func(cfg *Config) { cfg.ConfigSync.RemotePollInterval = time.Hour + 1 },
+		"retry limit":   func(cfg *Config) { cfg.ConfigSync.RetryLimit = 21 },
+		"flush timeout": func(cfg *Config) { cfg.ConfigSync.ShutdownFlushTimeout = 10*time.Minute + 1 },
+		"summary limit": func(cfg *Config) { cfg.ConfigSync.SummaryLimit = 1001 },
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			cfg := Default()
+			mutate(&cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("helper-incompatible config sync policy was accepted")
+			}
+		})
 	}
 }
 
