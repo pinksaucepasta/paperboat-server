@@ -28,8 +28,7 @@ func TestProviderRequestContainsMetadataOnlyAndParsesStrictOutput(t *testing.T) 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		requestBody = string(b)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"{\"results\":[{\"path\":\".config/tool/config.json\",\"decision\":\"portable\",\"confidence\":0.9,\"reason_code\":\"tool_config\"}]}"},"finish_reason":"stop","index":0}]}`)
+		writeStream(w, `{"results":[{"path":".config/tool/config.json","decision":"portable","confidence":0.9,"reason_code":"tool_config"}]}`)
 	}))
 	defer server.Close()
 	service, err := New(Config{BaseURL: server.URL, APIKey: "test-key", Model: "test-model", Revision: "classifier-1", Timeout: time.Second, MaxCandidates: 4, SchemaMode: "json_schema"})
@@ -48,7 +47,7 @@ func TestProviderRequestContainsMetadataOnlyAndParsesStrictOutput(t *testing.T) 
 			t.Fatalf("request leaked forbidden field %q: %s", forbidden, requestBody)
 		}
 	}
-	if !strings.Contains(requestBody, "response_format") || !strings.Contains(requestBody, "untrusted_metadata") {
+	if !strings.Contains(requestBody, `"stream":true`) || !strings.Contains(requestBody, `"text"`) || !strings.Contains(requestBody, "untrusted_metadata") {
 		t.Fatalf("request missing structured safety controls: %s", requestBody)
 	}
 }
@@ -57,7 +56,7 @@ func TestProviderRejectsMalformedAndInvalidEnumOutput(t *testing.T) {
 	for _, content := range []string{`not-json`, `{"results":[{"path":".config/tool","decision":"copy_all","confidence":1,"reason_code":"bad"}]}`} {
 		t.Run(content, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":`+strconv.Quote(content)+`},"finish_reason":"stop","index":0}]}`)
+				writeStream(w, content)
 			}))
 			defer server.Close()
 			service, _ := New(Config{BaseURL: server.URL, APIKey: "key", Model: "model", Revision: "1", Timeout: time.Second, MaxCandidates: 1, SchemaMode: "json_object"})
@@ -78,4 +77,20 @@ func TestValidateResponseIsStrict(t *testing.T) {
 	if err := validateResponse(valid, candidates); err == nil {
 		t.Fatal("invalid decision was accepted")
 	}
+
+	reorderedCandidates := []Candidate{{Path: ".config/one"}, {Path: ".config/two"}}
+	reordered := Response{Results: []Result{
+		{Path: ".config/two", Decision: Portable, Confidence: .9, ReasonCode: "tool_config"},
+		{Path: ".config/one", Decision: Exclude, Confidence: .9, ReasonCode: "runtime"},
+	}}
+	if err := validateResponse(reordered, reorderedCandidates); err == nil {
+		t.Fatal("reordered paths were accepted")
+	}
+}
+
+func writeStream(w http.ResponseWriter, content string) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":"+strconv.Quote(content)+"}\n\n")
+	_, _ = io.WriteString(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{}}\n\n")
+	_, _ = io.WriteString(w, "data: [DONE]\n\n")
 }
