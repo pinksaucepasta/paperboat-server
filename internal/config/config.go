@@ -333,7 +333,7 @@ func Default() Config {
 			Debounce: 10 * time.Second, MinPushInterval: 5 * time.Minute, MaxDirtyDelay: 5 * time.Minute,
 			RemotePollInterval: time.Minute, RetryLimit: 5, ShutdownFlushTimeout: 30 * time.Second,
 			ShutdownGracePeriod: 2 * time.Second, ShutdownReportTimeout: 10 * time.Second,
-			StaleHeartbeatAfter: 2 * time.Minute, SummaryLimit: 50, PolicyRevision: "2", WarningRevision: "config-sync-warning-v1",
+			StaleHeartbeatAfter: 2 * time.Minute, SummaryLimit: 50, PolicyRevision: "3", WarningRevision: "config-sync-warning-v1",
 		},
 		Classifier: Classifier{BaseURL: "https://api.openai.com/v1", Model: "gpt-5-mini", ModelRevision: "gpt-5-mini", Revision: "1", Timeout: 15 * time.Second, RetryLimit: 2, RetryBackoff: 500 * time.Millisecond, MaxCandidates: 20, CacheTTL: 7 * 24 * time.Hour, SchemaMode: "json_schema", RequestsPerMinute: 60,
 			PortablePatterns:    []string{".claude/.credentials.json", ".claude.json", ".codex/auth.json", ".config/opencode/auth.json", ".local/share/opencode/auth.json", ".npmrc", ".config/npm/npmrc"},

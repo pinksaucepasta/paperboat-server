@@ -3,6 +3,11 @@ package configsyncpolicy
 var mandatoryExcludes = []string{
 	".git", "**/.git",
 	".paperboat", "**/.paperboat",
+	".config/paperboat", ".config/paperboat/**",
+	".local/bin/paperboat-helper",
+	".config/systemd/user/paperboat-helper.service",
+	".config/systemd/user/default.target.wants/paperboat-helper.service",
+	"Library/LaunchAgents/com.pinksaucepasta.paperboat-helper.plist",
 	".ssh", "**/.ssh", ".gnupg", "**/.gnupg", ".password-store",
 	".aws", "**/.aws", ".azure", ".config/gcloud", ".kube", "**/.kube", ".oci",
 	".config/doctl", ".config/linode-cli", ".config/heroku", ".config/fly", ".config/vercel/auth.json", ".config/netlify/config.json",
