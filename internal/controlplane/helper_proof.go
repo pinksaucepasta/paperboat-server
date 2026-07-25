@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -17,6 +18,8 @@ import (
 )
 
 var ErrHelperProof = errors.New("helper proof is invalid")
+
+const helperIdentityRenewalExpiryGrace = 24 * time.Hour
 
 type helperProofEnvelope struct {
 	Algorithm string `json:"alg"`
@@ -36,11 +39,25 @@ type HelperProofClaims struct {
 }
 
 func (s *EnrollmentService) VerifyHelperRequest(ctx context.Context, identityToken string, proof []byte, method, path string, body []byte) (HelperProofClaims, error) {
+	return s.verifyHelperRequest(ctx, identityToken, proof, method, path, body, 0)
+}
+
+func (s *EnrollmentService) verifyHelperRenewalRequest(ctx context.Context, identityToken string, proof []byte, body []byte) (HelperProofClaims, error) {
+	return s.verifyHelperRequest(ctx, identityToken, proof, http.MethodPost, "/v1/helper-identity-renewals", body, helperIdentityRenewalExpiryGrace)
+}
+
+func (s *EnrollmentService) verifyHelperRequest(ctx context.Context, identityToken string, proof []byte, method, path string, body []byte, expiryGrace time.Duration) (HelperProofClaims, error) {
 	if len(proof) == 0 || len(proof) > 16*1024 || len(body) > maxEdgeDocument {
 		return HelperProofClaims{}, ErrHelperProof
 	}
 	now := s.clock().UTC()
-	identity, err := s.signer.VerifyCredential(identityToken, s.issuer, "helper_identity", now)
+	var identity mint.CredentialClaims
+	var err error
+	if expiryGrace > 0 {
+		identity, err = s.signer.VerifyCredentialWithExpiryGrace(identityToken, s.issuer, "helper_identity", now, expiryGrace)
+	} else {
+		identity, err = s.signer.VerifyCredential(identityToken, s.issuer, "helper_identity", now)
+	}
 	if err != nil || identity.HelperID == "" || identity.KeyThumbprint == "" {
 		return HelperProofClaims{}, ErrHelperProof
 	}

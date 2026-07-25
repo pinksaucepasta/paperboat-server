@@ -300,6 +300,17 @@ func (p *Provider) SignCredential(input CredentialInput) (string, error) {
 }
 
 func (p *Provider) VerifyCredential(token, expectedIssuer, expectedClass string, now time.Time) (CredentialClaims, error) {
+	return p.verifyCredential(token, expectedIssuer, expectedClass, now, 0)
+}
+
+func (p *Provider) VerifyCredentialWithExpiryGrace(token, expectedIssuer, expectedClass string, now time.Time, expiryGrace time.Duration) (CredentialClaims, error) {
+	if expiryGrace <= 0 {
+		return CredentialClaims{}, errors.New("credential expiry grace is invalid")
+	}
+	return p.verifyCredential(token, expectedIssuer, expectedClass, now, expiryGrace)
+}
+
+func (p *Provider) verifyCredential(token, expectedIssuer, expectedClass string, now time.Time, expiryGrace time.Duration) (CredentialClaims, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return CredentialClaims{}, errors.New("credential is malformed")
@@ -349,7 +360,7 @@ func (p *Provider) VerifyCredential(token, expectedIssuer, expectedClass string,
 		return CredentialClaims{}, errors.New("credential scopes are invalid")
 	case claims.Subject == "" || claims.JTI == "" || claims.EnvironmentID == "":
 		return CredentialClaims{}, errors.New("credential base bindings are invalid")
-	case claims.ExpiresAt <= current:
+	case claims.ExpiresAt <= current-int64(expiryGrace/time.Second):
 		return CredentialClaims{}, errors.New("credential is expired")
 	case claims.IssuedAt > current+60:
 		return CredentialClaims{}, errors.New("credential issued-at is invalid")

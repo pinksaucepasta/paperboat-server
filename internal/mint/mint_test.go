@@ -132,6 +132,27 @@ func TestSignCredentialUsesExactClassBindings(t *testing.T) {
 	}
 }
 
+func TestVerifyCredentialExpiryGraceIsExplicitAndBounded(t *testing.T) {
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	provider, err := New([]Key{{ID: "key-1", PrivateKey: testKey(1)}}, "key-1", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := provider.SignCredential(CredentialInput{Issuer: "https://api.example.test", Audience: "paperboat-control", Subject: "helper_1", JTI: "jti_identity_1", IssuedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(-time.Hour), CredentialClass: "helper_identity", Scopes: []string{"helper:connect", "helper:renew"}, EnvironmentID: "env_1", HelperID: "helper_1", KeyThumbprint: "sha256:key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.VerifyCredential(token, "https://api.example.test", "helper_identity", now); err == nil {
+		t.Fatal("strict verification accepted expired credential")
+	}
+	if _, err := provider.VerifyCredentialWithExpiryGrace(token, "https://api.example.test", "helper_identity", now, 2*time.Hour); err != nil {
+		t.Fatalf("grace verification rejected credential: %v", err)
+	}
+	if _, err := provider.VerifyCredentialWithExpiryGrace(token, "https://api.example.test", "helper_identity", now, 30*time.Minute); err == nil {
+		t.Fatal("grace verification accepted credential outside grace")
+	}
+}
+
 func TestSignCredentialConfigSyncBindsAssignmentAndWarning(t *testing.T) {
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	provider, err := New([]Key{{ID: "key-config", PrivateKey: testKey(11)}}, "key-config", time.Minute)
