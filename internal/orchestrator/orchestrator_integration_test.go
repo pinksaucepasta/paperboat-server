@@ -2,7 +2,6 @@ package orchestrator
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -68,17 +67,8 @@ func TestProvisionProjectIsIdempotentAndLeavesMachineStopped(t *testing.T) {
 	for _, value := range fakeFly.MachineSpecs {
 		spec = value
 	}
-	if hasSecretEnv(spec.Secrets, orchestratorTestConfig().Fly.AgentunnelSecret) || hasSecretEnv(spec.Secrets, "PAPERBOAT_MACHINE_ACTIVITY_TOKEN") {
-		t.Fatalf("hosted provision injected legacy agentunnel secrets: %#v", spec.Secrets)
-	}
-	for key := range spec.Env {
-		if strings.Contains(key, "AGENTUNNEL") || strings.Contains(key, "PAPERCODE") {
-			t.Fatalf("hosted provision injected legacy environment %q", key)
-		}
-	}
-	if hasSecretEnv(spec.Secrets, orchestratorTestConfig().Fly.EnrollmentSecret) ||
-		hasSecretEnv(spec.Secrets, orchestratorTestConfig().Fly.GitHubSecret) {
-		t.Fatalf("hosted provision injected config-sync bootstrap secrets: %#v", spec.Secrets)
+	if len(spec.Secrets) != 0 {
+		t.Fatalf("hosted provision injected secrets: %#v", spec.Secrets)
 	}
 	cfg := orchestratorTestConfig()
 	wantStopTimeout := cfg.ConfigSync.ShutdownFlushTimeout + cfg.ConfigSync.ShutdownGracePeriod + cfg.ConfigSync.ShutdownReportTimeout
@@ -89,11 +79,11 @@ func TestProvisionProjectIsIdempotentAndLeavesMachineStopped(t *testing.T) {
 		t.Fatalf("shutdown lifecycle env = %#v", spec.Env)
 	}
 	var resources int
-	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.agentunnel_resources WHERE project_id = $1`, project.ID).Scan(&resources); err != nil {
+	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.provider_routes WHERE project_id = $1`, project.ID).Scan(&resources); err != nil {
 		t.Fatal(err)
 	}
 	if resources != 0 {
-		t.Fatalf("hosted provision created %d legacy agentunnel resources", resources)
+		t.Fatalf("hosted provision created %d legacy provider_route resources", resources)
 	}
 	if err := service.provisionProject(ctx, project.ID); err != nil {
 		t.Fatal(err)
@@ -330,18 +320,17 @@ func TestProvisionAdoptsExistingProviderResourcesBeforeCreate(t *testing.T) {
 	}
 }
 
-func TestHostedProvisionDoesNotDependOnAgentunnel(t *testing.T) {
+func TestHostedProvisionDoesNotDependOnProviderRoute(t *testing.T) {
 	store := newOrchestratorTestDB(t)
 	ctx := context.Background()
 	seedOrchestratorCatalogs(t, store)
-	insertOrchestratorUser(t, store, "usr_orch_agentunnel_down", 20)
+	insertOrchestratorUser(t, store, "usr_orch_provider_route_down", 20)
 
 	cfg := orchestratorTestConfig()
-	cfg.Secrets.AgentunnelMachineToken = ""
 	projectService := projects.NewService(store, audit.NewWriter(store), cfg)
 	project, _, err := projectService.Create(ctx, projects.CreateInput{
-		UserID:          "usr_orch_agentunnel_down",
-		IdempotencyKey:  "orch-agentunnel-down",
+		UserID:          "usr_orch_provider_route_down",
+		IdempotencyKey:  "orch-provider_route-down",
 		RepositoryURL:   "https://github.com/paperboat/example.git",
 		StorageGB:       8,
 		MachineTypeCode: "standard-1x",
@@ -357,7 +346,7 @@ func TestHostedProvisionDoesNotDependOnAgentunnel(t *testing.T) {
 
 	err = service.RunOnce(ctx)
 	if err != nil {
-		t.Fatalf("RunOnce failed through disabled legacy agentunnel: %v", err)
+		t.Fatalf("RunOnce failed through disabled legacy provider_route: %v", err)
 	}
 	if len(fakeFly.Volumes) != 1 || len(fakeFly.Machines) != 1 {
 		t.Fatalf("fake Fly resources = %d volumes, %d machines; want one of each", len(fakeFly.Volumes), len(fakeFly.Machines))
@@ -805,7 +794,6 @@ func TestDeleteReleasesStorageAfterProviderCleanup(t *testing.T) {
 	insertGitHubToken(t, store, "usr_orch_delete", "github-delete-token")
 
 	cfg := orchestratorTestConfig()
-	cfg.Secrets.AgentunnelMachineToken = "agentunnel-delete-token"
 	projectService := projects.NewService(store, audit.NewWriter(store), cfg)
 	project, _, err := projectService.Create(ctx, projects.CreateInput{
 		UserID:          "usr_orch_delete",
@@ -856,7 +844,6 @@ func TestDeleteContinuesToVolumeWhenMachineAlreadyGone(t *testing.T) {
 	insertOrchestratorUser(t, store, "usr_orch_delete_partial", 20)
 
 	cfg := orchestratorTestConfig()
-	cfg.Secrets.AgentunnelMachineToken = "agentunnel-delete-partial-token"
 	projectService := projects.NewService(store, audit.NewWriter(store), cfg)
 	project, _, err := projectService.Create(ctx, projects.CreateInput{
 		UserID:          "usr_orch_delete_partial",
@@ -917,7 +904,6 @@ func TestDeleteRetriesEveryProviderCleanupMutationBeforeStorageRelease(t *testin
 			insertGitHubToken(t, store, userID, "github-delete-failure-token")
 
 			cfg := orchestratorTestConfig()
-			cfg.Secrets.AgentunnelMachineToken = "agentunnel-delete-failure-token"
 			projectService := projects.NewService(store, audit.NewWriter(store), cfg)
 			project, _, err := projectService.Create(ctx, projects.CreateInput{
 				UserID: userID, IdempotencyKey: "orch-delete-failure", RepositoryURL: "https://github.com/paperboat/example.git",
@@ -980,7 +966,6 @@ func TestProvisionUsesHostedBootstrapWithoutMachineSecrets(t *testing.T) {
 	insertGitHubToken(t, store, "usr_orch_secrets", "github-config-token")
 
 	cfg := orchestratorTestConfig()
-	cfg.Secrets.AgentunnelMachineToken = "agentunnel-machine-token"
 	projectService := projects.NewService(store, audit.NewWriter(store), cfg)
 	project, _, err := projectService.Create(ctx, projects.CreateInput{
 		UserID:          "usr_orch_secrets",
@@ -1032,57 +1017,9 @@ func TestProvisionUsesHostedBootstrapWithoutMachineSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, event := range events {
-		if strings.Contains(fmt.Sprint(event.Metadata), "github-config-token") || strings.Contains(fmt.Sprint(event.Metadata), "agentunnel-machine-token") {
+		if strings.Contains(fmt.Sprint(event.Metadata), "github-config-token") || strings.Contains(fmt.Sprint(event.Metadata), "provider_route-machine-token") {
 			t.Fatalf("project event leaked secret metadata: %#v", event)
 		}
-	}
-}
-
-func TestProvisionExcludesRetiredAgentunnelCredentials(t *testing.T) {
-	store := newOrchestratorTestDB(t)
-	ctx := context.Background()
-	seedOrchestratorCatalogs(t, store)
-	insertOrchestratorUser(t, store, "usr_orch_project_token", 20)
-
-	cfg := orchestratorTestConfig()
-	cfg.Secrets.AgentunnelMachineToken = "fallback-agentunnel-machine-token"
-	cfg.Providers.Agentunnel.BaseURL = "https://agentunnel.example"
-	projectService := projects.NewService(store, audit.NewWriter(store), cfg)
-	project, _, err := projectService.Create(ctx, projects.CreateInput{
-		UserID:          "usr_orch_project_token",
-		IdempotencyKey:  "orch-project-token",
-		RepositoryURL:   "https://github.com/paperboat/example.git",
-		StorageGB:       8,
-		MachineTypeCode: "standard-1x",
-		RegionCode:      "iad",
-		PresetCodes:     []string{"codex"},
-		IdleTimeoutCode: "15m",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	insertAgentunnelToken(t, store, project.ID, "project-agentunnel-machine-token")
-
-	fakeFly := fly.NewFakeClient()
-	service := NewService(store, fakeFly, cfg)
-	if err := service.RunOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	var spec fly.MachineSpec
-	for _, value := range fakeFly.MachineSpecs {
-		spec = value
-	}
-	if hasSecretEnv(spec.Secrets, cfg.Fly.AgentunnelSecret) {
-		t.Fatalf("retired agentunnel secret was injected: %#v", spec.Secrets)
-	}
-	for key := range spec.Env {
-		if strings.Contains(key, "AGENTUNNEL") || strings.Contains(key, "PAPERCODE") {
-			t.Fatalf("retired environment %q was injected: %#v", key, spec.Env)
-		}
-	}
-	if hasSecretEnv(spec.Secrets, cfg.Fly.EnrollmentSecret) ||
-		hasSecretEnv(spec.Secrets, cfg.Fly.GitHubSecret) {
-		t.Fatalf("canonical hosted composition injected config-sync secrets: %#v", spec.Secrets)
 	}
 }
 
@@ -1090,14 +1027,14 @@ func TestMachineSpecHashChangesWhenSecretValueRotates(t *testing.T) {
 	base := fly.MachineSpec{
 		Name: "paperboat-project",
 		Secrets: []fly.MachineSecret{{
-			EnvVar: "AGENTUNNEL_MACHINE_TOKEN",
-			Name:   "PBSECRET_AGENTUNNEL_PROJECT",
-			Value:  "old-agentunnel-machine-token",
+			EnvVar: "PAPERBOAT_ROUTE_CREDENTIAL",
+			Name:   "PBSECRET_ROUTE_PROJECT",
+			Value:  "old-provider_route-machine-token",
 		}},
 	}
 	rotated := base
 	rotated.Secrets = append([]fly.MachineSecret(nil), base.Secrets...)
-	rotated.Secrets[0].Value = "rotated-agentunnel-machine-token"
+	rotated.Secrets[0].Value = "rotated-provider_route-machine-token"
 	service := NewService(nil, fly.NewFakeClient(), orchestratorTestConfig())
 	if service.machineSpecHash(base) == service.machineSpecHash(rotated) {
 		t.Fatal("machine spec hash did not detect rotated secret value")
@@ -1285,28 +1222,6 @@ func countCalls(calls []string, prefix string) int {
 	return count
 }
 
-func hasSecret(secrets []fly.MachineSecret, envVar, value string) bool {
-	for _, secret := range secrets {
-		if secret.EnvVar == envVar && secret.Value == value && secret.Name != "" {
-			return true
-		}
-	}
-	return false
-}
-
-func hasSecretEnv(secrets []fly.MachineSecret, envVar string) bool {
-	for _, secret := range secrets {
-		if secret.EnvVar == envVar {
-			return true
-		}
-	}
-	return false
-}
-
-func validFlySecretName(name string) bool {
-	return regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`).MatchString(name)
-}
-
 func validFlyVolumeName(name string) bool {
 	return regexp.MustCompile(`^[a-z0-9_]{1,30}$`).MatchString(name)
 }
@@ -1321,34 +1236,6 @@ func insertGitHubToken(t *testing.T, store *db.DB, userID, token string) {
 INSERT INTO paperboat.github_oauth_tokens (id, user_id, token_ciphertext, scopes, provider_account_login, last_validated_at)
 VALUES ($1, $2, $3, ARRAY['repo'], $4, now())
 ON CONFLICT (user_id) DO UPDATE SET token_ciphertext = EXCLUDED.token_ciphertext, revoked_at = NULL, expires_at = NULL, last_validated_at = now()`, "ght_"+userID, userID, ciphertext, "gh_"+userID); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func insertAgentunnelToken(t *testing.T, store *db.DB, projectID, token string) {
-	t.Helper()
-	ciphertext, err := secrets.Encrypt(orchestratorTestConfig().Secrets.EncryptionKey, token)
-	if err != nil {
-		t.Fatal(err)
-	}
-	metadata := fmt.Sprintf(`{"resource_kind":"http_tunnel","machine_token_ciphertext":%q}`, hex.EncodeToString(ciphertext))
-	if _, err := store.SQL().ExecContext(context.Background(), `
-INSERT INTO paperboat.agentunnel_resources (id, project_id, tunnel_id, client_id, resource_id, metadata)
-VALUES ($1, $2, $3, $4, $5, $6::jsonb)`, "agr_"+projectID, projectID, "tun_"+projectID, "cli_"+projectID, "tun_"+projectID, metadata); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func updateAgentunnelToken(t *testing.T, store *db.DB, projectID, token string) {
-	t.Helper()
-	ciphertext, err := secrets.Encrypt(orchestratorTestConfig().Secrets.EncryptionKey, token)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.SQL().ExecContext(context.Background(), `
-UPDATE paperboat.agentunnel_resources
-SET metadata = jsonb_set(metadata, '{machine_token_ciphertext}', to_jsonb($2::text))
-WHERE project_id = $1`, projectID, hex.EncodeToString(ciphertext)); err != nil {
 		t.Fatal(err)
 	}
 }

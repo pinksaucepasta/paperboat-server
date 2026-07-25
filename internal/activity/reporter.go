@@ -39,8 +39,8 @@ type Config struct {
 }
 
 type Heartbeat struct {
-	ProjectID       string             `json:"project_id"`
-	MachineID       string             `json:"machine_id"`
+	ProjectID       string             `json:"environment_id"`
+	MachineID       string             `json:"resource_id"`
 	LastActivityAt  time.Time          `json:"last_activity_at"`
 	Signals         map[string]string  `json:"signals"`
 	ReporterVersion string             `json:"reporter_version"`

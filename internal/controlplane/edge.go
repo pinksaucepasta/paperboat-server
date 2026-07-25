@@ -394,10 +394,10 @@ func (s *EdgeService) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/nodes/register", s.handleRegister)
 	mux.HandleFunc("POST /v1/nodes/heartbeat", s.handleHeartbeat)
-	mux.HandleFunc("POST /v1/assignment/current", s.handleAssignment)
-	mux.HandleFunc("POST /v1/routes/desired", s.handleRoutes)
-	mux.HandleFunc("POST /v1/routes/observed", s.handleObservedRoutes)
-	mux.HandleFunc("POST /v1/usage/report", s.handleUsage)
+	mux.HandleFunc("POST /v1/edge/assignments/current", s.handleAssignment)
+	mux.HandleFunc("POST /v1/edge/routes/desired-state", s.handleRoutes)
+	mux.HandleFunc("POST /v1/edge/routes/observations", s.handleObservedRoutes)
+	mux.HandleFunc("POST /v1/edge/usage-reports", s.handleUsage)
 	mux.HandleFunc("GET /v1/trust/revocations", s.handleRevocations)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && r.URL.Path == "/v1/connectors/admission" {

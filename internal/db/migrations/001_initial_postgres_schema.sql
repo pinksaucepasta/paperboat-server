@@ -382,7 +382,7 @@ CREATE TABLE IF NOT EXISTS access_sessions (
 	updated_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS agentunnel_resources (
+CREATE TABLE IF NOT EXISTS provider_routes (
 	id text PRIMARY KEY,
 	project_id text NOT NULL UNIQUE REFERENCES projects(id),
 	tunnel_id text NOT NULL,

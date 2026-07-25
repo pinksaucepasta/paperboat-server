@@ -1,6 +1,6 @@
 -- +goose Up
--- Phase 4 control-plane records are additive. Transitional tables remain readable
--- for the Phase 12 rollback window and are not rewritten by this migration.
+-- Control-plane records are additive. Transitional tables remain readable
+-- for the defined rollback window and are not rewritten by this migration.
 CREATE TABLE control_environments (
   id text PRIMARY KEY,
   workspace_id text NOT NULL,

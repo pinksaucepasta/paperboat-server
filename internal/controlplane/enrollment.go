@@ -103,7 +103,7 @@ func (s *EnrollmentService) EnsureBootGrant(ctx context.Context, actorID, operat
 }
 
 func (s *EnrollmentService) VerifyActivityHeartbeat(ctx context.Context, identityToken string, proof, body []byte, environmentID, machineID string) error {
-	claims, err := s.VerifyHelperRequest(ctx, identityToken, proof, http.MethodPost, "/api/machine/activity-heartbeat", body)
+	claims, err := s.VerifyHelperRequest(ctx, identityToken, proof, http.MethodPost, "/v1/environment-activity-observations", body)
 	if err != nil || claims.EnvironmentID != environmentID {
 		return ErrHelperProof
 	}
@@ -418,7 +418,7 @@ func EnrollmentExchangeRejectionClass(err error) string {
 }
 
 func (s *EnrollmentService) Renew(ctx context.Context, identityToken string, proof, body []byte) (HelperIdentity, error) {
-	claims, err := s.VerifyHelperRequest(ctx, identityToken, proof, "POST", "/v1/helpers/renew", body)
+	claims, err := s.VerifyHelperRequest(ctx, identityToken, proof, "POST", "/v1/helper-identity-renewals", body)
 	if err != nil {
 		return HelperIdentity{}, ErrHelperProof
 	}

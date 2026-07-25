@@ -646,22 +646,22 @@ VALUES ($1, $2, 'polar', $3, $4, 'extra_storage', '0', true)`, "bp_storage_"+suf
 	}
 }
 
-func TestConnectedMachineSubscriptionAllocatesPeriodsAndRevokesOnCancellation(t *testing.T) {
+func TestUserMachineSubscriptionAllocatesPeriodsAndRevokesOnCancellation(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
 	userID := "usr_connected_subscription_" + suffix
-	machineID := "cm_" + suffix
+	machineID := "um_" + suffix
 	insertUser(t, store, userID, "connected-subscription-"+suffix+"@example.com")
 	if _, err := store.SQL().ExecContext(ctx, `
-INSERT INTO paperboat.connected_machines (id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state)
+INSERT INTO paperboat.user_machines (id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state)
 VALUES ($1, $2, $3, $4, 'darwin', 'arm64', '/Users/example', 'offline', 'occupied')`, machineID, userID, "env_"+suffix, "Mac "+suffix); err != nil {
 		t.Fatal(err)
 	}
 	productID, priceID := "prod_connected_sub_"+suffix, "price_connected_sub_"+suffix
 	if _, err := store.SQL().ExecContext(ctx, `
 INSERT INTO paperboat.billing_products (id, code, provider, provider_product_id, provider_price_id, catalog_type, catalog_ref, active)
-VALUES ($1, $2, 'polar', $3, $4, 'connected_machine_subscription', '{"allowance_bytes":1048576}', true)`, "bp_connected_sub_"+suffix, "connected-subscription-"+suffix, productID, priceID); err != nil {
+VALUES ($1, $2, 'polar', $3, $4, 'user_machine_subscription', '{"allowance_bytes":1048576}', true)`, "bp_connected_sub_"+suffix, "connected-subscription-"+suffix, productID, priceID); err != nil {
 		t.Fatal(err)
 	}
 	service := billing.NewService(billing.NewRepository(store), billing.FakePolarClient{}, audit.NewWriter(store))
@@ -672,14 +672,14 @@ VALUES ($1, $2, 'polar', $3, $4, 'connected_machine_subscription', '{"allowance_
 	}
 	var seats int
 	var allowance int64
-	if err := store.SQL().QueryRowContext(ctx, `SELECT seat_quantity, allowance_bytes FROM paperboat.connected_machine_entitlements WHERE user_id = $1`, userID).Scan(&seats, &allowance); err != nil {
+	if err := store.SQL().QueryRowContext(ctx, `SELECT seat_quantity, allowance_bytes FROM paperboat.user_machine_entitlements WHERE user_id = $1`, userID).Scan(&seats, &allowance); err != nil {
 		t.Fatal(err)
 	}
 	if seats != 2 || allowance != 1048576 {
 		t.Fatalf("entitlement seats/allowance = %d/%d", seats, allowance)
 	}
 	var included int64
-	if err := store.SQL().QueryRowContext(ctx, `SELECT included_bytes FROM paperboat.connected_machine_bandwidth_periods WHERE connected_machine_id = $1`, machineID).Scan(&included); err != nil {
+	if err := store.SQL().QueryRowContext(ctx, `SELECT included_bytes FROM paperboat.user_machine_bandwidth_periods WHERE user_machine_id = $1`, machineID).Scan(&included); err != nil {
 		t.Fatal(err)
 	}
 	if included != 1048576 {
@@ -690,10 +690,10 @@ VALUES ($1, $2, 'polar', $3, $4, 'connected_machine_subscription', '{"allowance_
 		t.Fatal(err)
 	}
 	var entitlementState, machineState, seatState string
-	if err := store.SQL().QueryRowContext(ctx, `SELECT state FROM paperboat.connected_machine_entitlements WHERE user_id = $1`, userID).Scan(&entitlementState); err != nil {
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state FROM paperboat.user_machine_entitlements WHERE user_id = $1`, userID).Scan(&entitlementState); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SQL().QueryRowContext(ctx, `SELECT state, seat_state FROM paperboat.connected_machines WHERE id = $1`, machineID).Scan(&machineState, &seatState); err != nil {
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state, seat_state FROM paperboat.user_machines WHERE id = $1`, machineID).Scan(&machineState, &seatState); err != nil {
 		t.Fatal(err)
 	}
 	if entitlementState != "canceled" || machineState != "revoked" || seatState != "released" {
@@ -701,7 +701,7 @@ VALUES ($1, $2, 'polar', $3, $4, 'connected_machine_subscription', '{"allowance_
 	}
 }
 
-func TestConnectedMachineBandwidthTopupGrantAndRefund(t *testing.T) {
+func TestUserMachineBandwidthTopupGrantAndRefund(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
@@ -710,7 +710,7 @@ func TestConnectedMachineBandwidthTopupGrantAndRefund(t *testing.T) {
 	productID, priceID := "prod_connected_topup_"+suffix, "price_connected_topup_"+suffix
 	if _, err := store.SQL().ExecContext(ctx, `
 INSERT INTO paperboat.billing_products (id, code, provider, provider_product_id, provider_price_id, catalog_type, catalog_ref, active)
-VALUES ($1, $2, 'polar', $3, $4, 'connected_machine_bandwidth_topup', '{"bytes":4194304}', true)`, "bp_connected_topup_"+suffix, "connected-topup-"+suffix, productID, priceID); err != nil {
+VALUES ($1, $2, 'polar', $3, $4, 'user_machine_bandwidth_topup', '{"bytes":4194304}', true)`, "bp_connected_topup_"+suffix, "connected-topup-"+suffix, productID, priceID); err != nil {
 		t.Fatal(err)
 	}
 	service := billing.NewService(billing.NewRepository(store), billing.FakePolarClient{}, audit.NewWriter(store))
@@ -720,7 +720,7 @@ VALUES ($1, $2, 'polar', $3, $4, 'connected_machine_bandwidth_topup', '{"bytes":
 		t.Fatal(err)
 	}
 	var remaining int64
-	if err := store.SQL().QueryRowContext(ctx, `SELECT remaining_bytes FROM paperboat.connected_machine_bandwidth_topups WHERE provider_order_id = $1`, orderID).Scan(&remaining); err != nil {
+	if err := store.SQL().QueryRowContext(ctx, `SELECT remaining_bytes FROM paperboat.user_machine_bandwidth_topups WHERE provider_order_id = $1`, orderID).Scan(&remaining); err != nil {
 		t.Fatal(err)
 	}
 	if remaining != 4194304 {
@@ -731,7 +731,7 @@ VALUES ($1, $2, 'polar', $3, $4, 'connected_machine_bandwidth_topup', '{"bytes":
 		t.Fatal(err)
 	}
 	var state string
-	if err := store.SQL().QueryRowContext(ctx, `SELECT state, remaining_bytes FROM paperboat.connected_machine_bandwidth_topups WHERE provider_order_id = $1`, orderID).Scan(&state, &remaining); err != nil {
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state, remaining_bytes FROM paperboat.user_machine_bandwidth_topups WHERE provider_order_id = $1`, orderID).Scan(&state, &remaining); err != nil {
 		t.Fatal(err)
 	}
 	if state != "void" || remaining != 0 {

@@ -21,7 +21,7 @@ requests, or the workspace.
 1. Stop issuing with the affected key by activating an uncompromised configured key and
    deploying the server.
 2. As an authenticated administrator with a current CSRF token, send
-   `POST /api/admin/mint/signing-keys/{key_id}/revoke` with an `Idempotency-Key` header and
+   `POST /v1/admin/mint/signing-keys/{key_id}/revoke` with an `Idempotency-Key` header and
    JSON body `{"reason":"<bounded operator reason>"}`.
 3. Verify `GET /v1/trust/revocations` through the private edge-control identity contains
    the key ID in `key_ids`. Do not expose the edge-control credential in command history.

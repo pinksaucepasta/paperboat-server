@@ -22,7 +22,7 @@ func TestDescriptorUsesCanonicalNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := string(b)
-	for _, forbidden := range []string{"papercode", "agentunnel", "websocket_base_url", "http_base_url", "project_id", "connected_machine_id"} {
+	for _, forbidden := range []string{"helper", "provider_route", "websocket_base_url", "http_base_url", "project_id", "user_machine_id"} {
 		if strings.Contains(got, forbidden) {
 			t.Fatalf("descriptor contains legacy name %q: %s", forbidden, got)
 		}

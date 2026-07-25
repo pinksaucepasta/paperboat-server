@@ -30,7 +30,7 @@ type RuntimeService struct {
 }
 
 type ProjectSessionRevoker interface {
-	RetryPendingPapercodeRevocations(context.Context) error
+	RetryPendingHelperRevocations(context.Context) error
 }
 
 type EnforcementConfig struct {
@@ -79,7 +79,7 @@ func (s *RuntimeService) SetDownstreamRevoker(revoker ProjectSessionRevoker) {
 
 func (s *RuntimeService) RunOnce(ctx context.Context) (runErr error) {
 	defer func() {
-		runErr = errors.Join(runErr, s.propagatePapercodeRevocations(ctx))
+		runErr = errors.Join(runErr, s.propagateHelperRevocations(ctx))
 	}()
 	now := s.now().UTC()
 	if err := s.processPendingCheckpoints(ctx); err != nil {
@@ -123,11 +123,11 @@ func (s *RuntimeService) observeMachine(ctx context.Context, machine MeterableMa
 	return s.observeStopped(ctx, machine.ProjectID, now, observed.State, "high")
 }
 
-func (s *RuntimeService) propagatePapercodeRevocations(ctx context.Context) error {
+func (s *RuntimeService) propagateHelperRevocations(ctx context.Context) error {
 	if s.downstream == nil {
 		return nil
 	}
-	return s.downstream.RetryPendingPapercodeRevocations(ctx)
+	return s.downstream.RetryPendingHelperRevocations(ctx)
 }
 
 func (s *RuntimeService) Worker(interval time.Duration) func(context.Context) error {
@@ -611,7 +611,7 @@ func (r *RuntimeRepository) RecordActivity(ctx context.Context, projectID string
 
 func validActivitySource(source string) bool {
 	switch source {
-	case "connect_session", "agentunnel_connection", "papercode_activity", "cli_activity", "vm_heartbeat":
+	case "connect_session", "provider_route_connection", "helper_activity", "cli_activity", "vm_heartbeat":
 		return true
 	default:
 		return false
@@ -634,12 +634,12 @@ func (r *RuntimeRepository) RecordHeartbeat(ctx context.Context, heartbeat Activ
 		return err
 	}
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		updated, err := tx.Queries().MarkConnectedMachineOnlineFromHelper(ctx, dbsqlc.MarkConnectedMachineOnlineFromHelperParams{ID: heartbeat.MachineID, EnvironmentID: heartbeat.ProjectID})
+		updated, err := tx.Queries().MarkUserMachineOnlineFromHelper(ctx, dbsqlc.MarkUserMachineOnlineFromHelperParams{ID: heartbeat.MachineID, EnvironmentID: heartbeat.ProjectID})
 		if err != nil {
 			return err
 		}
 		if updated == 1 {
-			_, err = tx.Queries().MarkConnectedMachineEnrollmentReady(ctx, sql.NullString{String: heartbeat.MachineID, Valid: true})
+			_, err = tx.Queries().MarkUserMachineEnrollmentReady(ctx, sql.NullString{String: heartbeat.MachineID, Valid: true})
 			return err
 		}
 		if err := tx.Queries().UpsertActivityHeartbeat(ctx, dbsqlc.UpsertActivityHeartbeatParams{ProjectID: heartbeat.ProjectID, MachineID: heartbeat.MachineID, LastActivityAt: heartbeat.LastActivityAt, LastHeartbeatAt: sql.NullTime{Time: heartbeat.LastHeartbeatAt, Valid: true}, ReporterVersion: heartbeat.ReporterVersion, Signals: b}); err != nil {

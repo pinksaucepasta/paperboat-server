@@ -35,7 +35,7 @@ tunnel observations.
 ## Hosted Provider Recovery
 
 For an uncertain hosted secret deletion, an authenticated administrator may call
-`POST /api/admin/hosted-provider-operations/{operation_id}/recover` with either
+`POST /v1/admin/hosted-provider-operations/{operation_id}/recover` with either
 `confirm_deleted` (after independent provider evidence) or `retry`. The request
 must include CSRF protection and an idempotency key. Evidence is hashed before
 being persisted or added to the audit log. Never use `confirm_deleted` without

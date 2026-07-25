@@ -291,7 +291,7 @@ WHERE project_id = $1`, project.ID, 8); err != nil {
 		t.Fatal(err)
 	}
 	if machineRows != 0 {
-		t.Fatalf("phase 6 update mutated provider machine rows, count = %d", machineRows)
+		t.Fatalf("project update mutated provider machine rows, count = %d", machineRows)
 	}
 	deleting, err := service.Delete(ctx, "usr_project_update", project.ID)
 	if err != nil {
@@ -558,6 +558,6 @@ func seedProjectCatalogs(t *testing.T, store *db.DB) {
 
 func projectTestConfig() config.Config {
 	cfg := config.Default()
-	cfg.Secrets.EncryptionKey = "test-project-encryption-key-for-phase-six"
+	cfg.Secrets.EncryptionKey = "test-project-encryption-key-for-project-update"
 	return cfg
 }

@@ -141,7 +141,7 @@ func (s *Service) provisionProject(ctx context.Context, projectID string) error 
 		return fmt.Errorf("ensure hosted control environment: %w", ensureErr)
 	}
 	if s.ensureHostedRoute != nil {
-		host := providerName(s.cfg.Providers.Agentunnel.RouteSubdomainPrefix, intent.ID) + "." + strings.Trim(strings.ToLower(s.cfg.HelperBaseDomain), ".")
+		host := providerName(s.cfg.Access.RouteSubdomainPrefix, intent.ID) + "." + strings.Trim(strings.ToLower(s.cfg.HelperBaseDomain), ".")
 		if routeErr := s.ensureHostedRoute(ctx, intent.UserID, "hosted-route:"+intent.ID, intent.ID, host); routeErr != nil {
 			return fmt.Errorf("ensure hosted helper route: %w", routeErr)
 		}
@@ -471,7 +471,7 @@ func (s *Service) machineSpec(intent ProjectIntent, volumeID string) fly.Machine
 		"PAPERBOAT_IDLE_TIMEOUT_CODE":                intent.IdleTimeoutCode,
 		"PAPERBOAT_SETUP_SCRIPT_REF":                 intent.SetupScriptRef,
 		"PAPERBOAT_DESIRED_CONFIG_SHA":               intent.DesiredConfigHash,
-		"PAPERBOAT_ACTIVITY_ENDPOINT":                strings.TrimRight(s.cfg.HTTP.PublicBaseURL, "/") + "/api/machine/activity-heartbeat",
+		"PAPERBOAT_ACTIVITY_ENDPOINT":                strings.TrimRight(s.cfg.HTTP.PublicBaseURL, "/") + "/v1/environment-activity-observations",
 		"PAPERBOAT_CONFIG_SHUTDOWN_DEADLINE_SECONDS": fmt.Sprint(flushSeconds),
 		"PAPERBOAT_CONFIG_SHUTDOWN_GRACE_SECONDS":    fmt.Sprint(graceSeconds),
 		"PAPERBOAT_ACTIVITY_SHUTDOWN_REPORT_SECONDS": fmt.Sprint(reportSeconds),
@@ -1140,17 +1140,6 @@ func (r *Repository) RecordProjectEvent(ctx context.Context, projectID, eventTyp
 	})
 }
 
-func mapProviderState(state string) string {
-	if isProviderRunning(state) {
-		return "running"
-	}
-	return "stopped"
-}
-
-func isProviderRunning(state string) bool {
-	return state == "running" || state == "started"
-}
-
 func insertEvent(ctx context.Context, tx *db.Tx, projectID, eventType, message string, metadata map[string]any) error {
 	b, _ := json.Marshal(metadata)
 	return tx.Queries().InsertOrchestrationProjectEvent(ctx, dbsqlc.InsertOrchestrationProjectEventParams{ID: newID("pevt"), ProjectID: projectID, EventType: eventType, Message: message, Metadata: b})
@@ -1165,15 +1154,6 @@ func databaseBytes(value any) []byte {
 	default:
 		return nil
 	}
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func newID(prefix string) string {

@@ -52,15 +52,15 @@ func TestRunShutsDownHTTPServerBeforeReturningWorkerError(t *testing.T) {
 	}
 }
 
-func TestNormalizePapercodeIssuer(t *testing.T) {
+func TestNormalizeHelperIssuer(t *testing.T) {
 	tests := map[string]string{
 		"  https://paperboat.example///  ":              "https://paperboat.example",
 		"HTTPS://PAPERBOAT.EXAMPLE:443/path/?ignored=1": "https://paperboat.example/path",
 		"http://PAPERBOAT.EXAMPLE:80/":                  "http://paperboat.example",
 	}
 	for input, want := range tests {
-		if got := normalizePapercodeIssuer(input); got != want {
-			t.Errorf("normalizePapercodeIssuer(%q) = %q, want %q", input, got, want)
+		if got := normalizeHelperIssuer(input); got != want {
+			t.Errorf("normalizeHelperIssuer(%q) = %q, want %q", input, got, want)
 		}
 	}
 }

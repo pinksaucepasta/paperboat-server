@@ -62,7 +62,7 @@ func TestCatalogPlansReturnsContractPayload(t *testing.T) {
 	}}}
 
 	rec := httptest.NewRecorder()
-	catalogPlans(reader).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/catalog/plans", nil))
+	catalogPlans(reader).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/catalog/plans", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
@@ -86,7 +86,7 @@ func TestCatalogEndpointsReturnInternalErrorWhenRepositoryFails(t *testing.T) {
 	reader := fakeCatalogReader{err: errors.New("db down")}
 
 	rec := httptest.NewRecorder()
-	catalogRegions(reader, nil, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/catalog/regions", nil))
+	catalogRegions(reader, nil, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/catalog/regions", nil))
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
@@ -112,7 +112,7 @@ func TestCatalogRegionsSyncsFlyRegionsBeforeReturningCatalog(t *testing.T) {
 	writer := &fakeRegionWriter{}
 
 	rec := httptest.NewRecorder()
-	catalogRegions(reader, flyClient, writer).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/catalog/regions", nil))
+	catalogRegions(reader, flyClient, writer).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/catalog/regions", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
@@ -146,7 +146,7 @@ func TestCatalogRegionsFallsBackToCatalogWhenFlyFails(t *testing.T) {
 	writer := &fakeRegionWriter{}
 
 	rec := httptest.NewRecorder()
-	catalogRegions(reader, flyClient, writer).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/catalog/regions", nil))
+	catalogRegions(reader, flyClient, writer).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/catalog/regions", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
@@ -169,7 +169,7 @@ func TestCatalogMachineTypesReturnsContractPayload(t *testing.T) {
 	}}}
 
 	rec := httptest.NewRecorder()
-	catalogMachineTypes(reader).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/catalog/machine-types", nil))
+	catalogMachineTypes(reader).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/catalog/machine-types", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())

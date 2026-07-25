@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pinksaucepasta/paperboat-server/internal/agentunnel"
+	"github.com/pinksaucepasta/paperboat-server/internal/access"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 )
@@ -235,7 +235,7 @@ func projectsUpdate(service *projects.Service) http.HandlerFunc {
 	}
 }
 
-func projectsDelete(service *projects.Service, access *agentunnel.Service) http.HandlerFunc {
+func projectsDelete(service *projects.Service, access *access.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := principalFromContext(r.Context())
 		if !ok {
@@ -271,7 +271,7 @@ func projectsStart(service *projects.Service) http.HandlerFunc {
 	}
 }
 
-func projectsStop(service *projects.Service, access *agentunnel.Service) http.HandlerFunc {
+func projectsStop(service *projects.Service, access *access.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := principalFromContext(r.Context())
 		if !ok {

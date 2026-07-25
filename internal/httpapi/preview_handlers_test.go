@@ -56,14 +56,14 @@ func TestOwnedPreviewResponseIncludesAccountContext(t *testing.T) {
 	response := newOwnedPreviewResponse(controlplane.OwnedPreview{
 		Preview:         dbsqlc.ControlPreview{ID: "prv_1", EnvironmentID: "env_1", PublicHost: "preview.example.test"},
 		ProjectID:       "prj_1",
-		MachineID:       sql.NullString{String: "cm_1", Valid: true},
+		ResourceID:      sql.NullString{String: "um_1", Valid: true},
 		UserID:          sql.NullString{String: "usr_1", Valid: true},
 		EnvironmentName: "workstation",
 		EnvironmentKind: "byod",
 		OwnerEmail:      "owner@example.test",
 	})
 
-	if response.ProjectID != "prj_1" || response.MachineID != "cm_1" || response.UserID != "usr_1" || response.EnvironmentName != "workstation" || response.EnvironmentKind != "byod" || response.OwnerEmail != "owner@example.test" {
+	if response.ProjectID != "prj_1" || response.ResourceID != "um_1" || response.UserID != "usr_1" || response.EnvironmentName != "workstation" || response.EnvironmentKind != "byod" || response.OwnerEmail != "owner@example.test" {
 		t.Fatalf("account context missing from preview response: %#v", response)
 	}
 }

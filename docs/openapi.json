@@ -69,7 +69,7 @@
         "required": [
           "version",
           "cli_verification_url",
-          "connected_machines_url"
+          "user_machines_url"
         ],
         "properties": {
           "version": {
@@ -79,7 +79,7 @@
             "type": "string",
             "format": "uri"
           },
-          "connected_machines_url": {
+          "user_machines_url": {
             "type": "string",
             "format": "uri"
           }
@@ -235,7 +235,7 @@
           "token_type",
           "expires_in",
           "scope",
-          "client_session_id"
+          "cli_client_session_id"
         ],
         "properties": {
           "access_token": {
@@ -254,7 +254,7 @@
           "scope": {
             "const": "account:read clients:revoke projects:read projects:connect session:refresh"
           },
-          "client_session_id": {
+          "cli_client_session_id": {
             "type": "string"
           }
         }
@@ -353,7 +353,7 @@
           }
         }
       },
-      "CLIConnectDescriptor": {
+      "EnvironmentConnectionDescriptor": {
         "type": "object",
         "additionalProperties": false,
         "required": [
@@ -661,11 +661,11 @@
           }
         }
       },
-      "AuthorizedClient": {
+      "CLIClientSession": {
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "client_session_id",
+          "cli_client_session_id",
           "client_id",
           "client_label",
           "device_type",
@@ -680,7 +680,7 @@
           "current"
         ],
         "properties": {
-          "client_session_id": {
+          "cli_client_session_id": {
             "type": "string"
           },
           "client_id": {
@@ -756,7 +756,7 @@
           }
         }
       },
-      "AuthorizedClientList": {
+      "CLIClientSessionList": {
         "type": "object",
         "additionalProperties": false,
         "required": [
@@ -767,7 +767,7 @@
           "items": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/AuthorizedClient"
+              "$ref": "#/components/schemas/CLIClientSession"
             }
           },
           "pagination": {
@@ -804,7 +804,7 @@
           }
         }
       },
-      "ConnectionStatus": {
+      "ConnectionReadiness": {
         "oneOf": [
           {
             "type": "object",
@@ -930,12 +930,12 @@
                 "const": false
               },
               "status": {
-                "const": "papercode_starting"
+                "const": "helper_starting"
               },
               "reason": {
                 "type": "string",
                 "enum": [
-                  "papercode_unhealthy",
+                  "helper_unhealthy",
                   "terminal_session_operation_pending"
                 ]
               },
@@ -1314,44 +1314,6 @@
           }
         }
       },
-      "MachineActivityHeartbeat": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "project_id",
-          "machine_id",
-          "last_activity_at",
-          "sampled_at"
-        ],
-        "properties": {
-          "project_id": {
-            "type": "string"
-          },
-          "machine_id": {
-            "type": "string"
-          },
-          "last_activity_at": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "signals": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "string"
-            }
-          },
-          "reporter_version": {
-            "type": "string"
-          },
-          "sampled_at": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "config_sync": {
-            "$ref": "#/components/schemas/ConfigSyncHeartbeat"
-          }
-        }
-      },
       "ConfigSyncStatus": {
         "type": "object",
         "required": [
@@ -1398,7 +1360,11 @@
             "properties": {
               "mode": {
                 "type": "string",
-                "enum": ["disabled", "read_only", "leased_writes"]
+                "enum": [
+                  "disabled",
+                  "read_only",
+                  "leased_writes"
+                ]
               },
               "byod_enabled": {
                 "type": "boolean"
@@ -1887,6 +1853,44 @@
             "maxLength": 8192
           }
         }
+      },
+      "EnvironmentActivityObservation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "environment_id",
+          "resource_id",
+          "last_activity_at",
+          "sampled_at"
+        ],
+        "properties": {
+          "last_activity_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "signals": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "reporter_version": {
+            "type": "string"
+          },
+          "sampled_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "config_sync": {
+            "$ref": "#/components/schemas/ConfigSyncHeartbeat"
+          },
+          "environment_id": {
+            "type": "string"
+          },
+          "resource_id": {
+            "type": "string"
+          }
+        }
       }
     },
     "responses": {
@@ -1944,7 +1948,8 @@
           "503": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "get_well_known_jwks_json"
       }
     },
     "/v1/client-configuration": {
@@ -1970,7 +1975,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "get_v1_client_configuration"
       }
     },
     "/healthz": {
@@ -1988,10 +1994,11 @@
               }
             }
           }
-        }
+        },
+        "operationId": "get_healthz"
       }
     },
-    "/v1/assignment/current": {
+    "/v1/edge/assignments/current": {
       "post": {
         "summary": "Fetch current connector assignment",
         "security": [
@@ -2006,7 +2013,8 @@
           "401": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_edge_assignments_current"
       }
     },
     "/v1/nodes/register": {
@@ -2024,7 +2032,8 @@
           "401": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_nodes_register"
       }
     },
     "/v1/nodes/heartbeat": {
@@ -2042,10 +2051,11 @@
           "401": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_nodes_heartbeat"
       }
     },
-    "/v1/routes/desired": {
+    "/v1/edge/routes/desired-state": {
       "post": {
         "summary": "Fetch desired routes for tunnel node",
         "security": [
@@ -2060,10 +2070,11 @@
           "401": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_edge_routes_desired_state"
       }
     },
-    "/v1/usage/report": {
+    "/v1/edge/usage-reports": {
       "post": {
         "summary": "Reconcile signed absolute usage",
         "security": [
@@ -2081,7 +2092,8 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_edge_usage_reports"
       }
     },
     "/v1/connectors/admission": {
@@ -2134,10 +2146,11 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_connectors_admission"
       }
     },
-    "/v1/helpers/enroll": {
+    "/v1/helper-enrollments": {
       "post": {
         "summary": "Exchange one-time helper enrollment",
         "security": [],
@@ -2151,10 +2164,11 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_helper_enrollments"
       }
     },
-    "/v1/helpers/enroll/hosted": {
+    "/v1/hosted-helper-enrollments": {
       "post": {
         "summary": "Enroll a hosted helper with Fly workload identity",
         "description": "Exchanges a short-lived Fly-signed OIDC workload identity obtained from the Machine-local API. The verified Fly app and machine ID must map to an active canonical hosted environment; no bootstrap secret is stored in the Machine configuration.",
@@ -2195,28 +2209,45 @@
           "401": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_hosted_helper_enrollments"
       }
     },
-    "/v1/helpers/hosted-bootstrap": {
+    "/v1/hosted-helper-bootstrap": {
       "post": {
         "summary": "Fetch memory-only hosted bootstrap material",
         "description": "Requires a current helper identity and Ed25519 request proof. Returns the selected setup-script revision and, when the project source is private, a short-lived repository-scoped read credential. The response is never stored in Fly Machine configuration and is marked no-store.",
-        "security": [{"bearerHelperIdentity": []}],
-        "parameters": [{
-          "name": "X-Paperboat-Helper-Proof",
-          "in": "header",
-          "required": true,
-          "schema": {"type": "string", "description": "Unpadded base64url helper-proof envelope."}
-        }],
+        "security": [
+          {
+            "bearerHelperIdentity": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-Paperboat-Helper-Proof",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Unpadded base64url helper-proof envelope."
+            }
+          }
+        ],
         "responses": {
-          "200": {"description": "Current memory-only hosted bootstrap material."},
-          "400": {"$ref": "#/components/responses/Error"},
-          "401": {"$ref": "#/components/responses/Error"}
-        }
+          "200": {
+            "description": "Current memory-only hosted bootstrap material."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "post_v1_hosted_helper_bootstrap"
       }
     },
-    "/v1/helpers/renew": {
+    "/v1/helper-identity-renewals": {
       "post": {
         "summary": "Renew a helper identity credential",
         "description": "Requires a still-valid helper identity and an Ed25519 proof over the exact operation request. Exact operation replays return the same encrypted-at-rest result.",
@@ -2270,12 +2301,13 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_helper_identity_renewals"
       }
     },
-    "/v1/connected-machines/installations/failure": {
+    "/v1/user-machine-installation-failures": {
       "post": {
-        "summary": "Report a retryable connected-machine installation failure",
+        "summary": "Report a retryable user-machine installation failure",
         "description": "Requires the active helper identity and an Ed25519 proof over the exact request. Transitions only the matching installing or connecting enrollment to failed_retryable.",
         "security": [
           {
@@ -2299,23 +2331,50 @@
               "schema": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["enrollment_id", "stage"],
+                "required": [
+                  "enrollment_id",
+                  "stage"
+                ],
                 "properties": {
-                  "enrollment_id": {"type": "string", "minLength": 1},
-                  "helper_id": {"type": "string", "minLength": 1},
-                  "helper_enrollment_id": {"type": "string"},
-                  "stage": {"type": "string", "enum": ["artifact_verification", "service_install", "service_readiness"]}
+                  "enrollment_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "helper_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "helper_enrollment_id": {
+                    "type": "string"
+                  },
+                  "stage": {
+                    "type": "string",
+                    "enum": [
+                      "artifact_verification",
+                      "service_install",
+                      "service_readiness"
+                    ]
+                  }
                 }
               }
             }
           }
         },
         "responses": {
-          "202": {"description": "Failure recorded for identity-preserving retry."},
-          "400": {"$ref": "#/components/responses/Error"},
-          "401": {"$ref": "#/components/responses/Error"},
-          "409": {"$ref": "#/components/responses/Error"}
-        }
+          "202": {
+            "description": "Failure recorded for identity-preserving retry."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "post_v1_user_machine_installation_failures"
       }
     },
     "/v1/config/credentials": {
@@ -2333,7 +2392,8 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_config_credentials"
       }
     },
     "/v1/config/leases/acquire": {
@@ -2342,11 +2402,20 @@
         "description": "Helper-proof authenticated endpoint. Eligibility, assignment, warning revision, helper generation, and repository are revalidated before issuing a monotonic fencing token.",
         "security": [],
         "responses": {
-          "200": {"description": "Exclusive writer lease acquired."},
-          "400": {"$ref": "#/components/responses/Error"},
-          "401": {"$ref": "#/components/responses/Error"},
-          "409": {"$ref": "#/components/responses/Error"}
-        }
+          "200": {
+            "description": "Exclusive writer lease acquired."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "post_v1_config_leases_acquire"
       }
     },
     "/v1/config/leases/renew": {
@@ -2355,11 +2424,20 @@
         "description": "Renews only a current, eligible holder matching the lease ID and fencing token.",
         "security": [],
         "responses": {
-          "200": {"description": "Writer lease renewed."},
-          "400": {"$ref": "#/components/responses/Error"},
-          "401": {"$ref": "#/components/responses/Error"},
-          "409": {"$ref": "#/components/responses/Error"}
-        }
+          "200": {
+            "description": "Writer lease renewed."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "post_v1_config_leases_renew"
       }
     },
     "/v1/config/leases/release": {
@@ -2368,11 +2446,20 @@
         "description": "Idempotently releases only the current eligible holder matching the lease ID and fencing token.",
         "security": [],
         "responses": {
-          "200": {"description": "Writer lease released."},
-          "400": {"$ref": "#/components/responses/Error"},
-          "401": {"$ref": "#/components/responses/Error"},
-          "409": {"$ref": "#/components/responses/Error"}
-        }
+          "200": {
+            "description": "Writer lease released."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "post_v1_config_leases_release"
       }
     },
     "/v1/config/status": {
@@ -2381,11 +2468,20 @@
         "description": "Helper-proof authenticated endpoint. Accepts only bounded, monotonic status bound to the current environment, assignment, repository, helper generation, and warning revision.",
         "security": [],
         "responses": {
-          "202": {"description": "Status revision recorded."},
-          "400": {"$ref": "#/components/responses/Error"},
-          "401": {"$ref": "#/components/responses/Error"},
-          "409": {"$ref": "#/components/responses/Error"}
-        }
+          "202": {
+            "description": "Status revision recorded."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "post_v1_config_status"
       }
     },
     "/v1/config/repository-access": {
@@ -2394,12 +2490,23 @@
         "description": "Requires both the helper identity proof and current config-sync credential. Returns one GitHub App installation token restricted to the assigned repository; provider authorization never reaches the helper.",
         "security": [],
         "responses": {
-          "200": {"description": "Repository-scoped access issued."},
-          "400": {"$ref": "#/components/responses/Error"},
-          "401": {"$ref": "#/components/responses/Error"},
-          "409": {"$ref": "#/components/responses/Error"},
-          "503": {"$ref": "#/components/responses/Error"}
-        }
+          "200": {
+            "description": "Repository-scoped access issued."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "post_v1_config_repository_access"
       }
     },
     "/v1/config/runtime": {
@@ -2408,10 +2515,17 @@
         "description": "Requires both helper identity proof and current config-sync credential. Returns the server-owned policy revision, limits, classifier revisions, encrypted-repository format, current/overlap age identities for helper memory only, and the authoritative sync-revision floor needed to preserve monotonic status across restarts.",
         "security": [],
         "responses": {
-          "200": {"description": "Current config runtime descriptor."},
-          "400": {"$ref": "#/components/responses/Error"},
-          "401": {"$ref": "#/components/responses/Error"}
-        }
+          "200": {
+            "description": "Current config runtime descriptor."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "post_v1_config_runtime"
       }
     },
     "/v1/config/classify": {
@@ -2420,11 +2534,20 @@
         "description": "Requires helper identity proof and a current assignment-bound config-sync credential. Only the allowlisted metadata schema is accepted; file contents, absolute paths, identities, repository coordinates, credentials, and keys are forbidden.",
         "security": [],
         "responses": {
-          "200": {"description": "Ordered classification decisions and authoritative revisions."},
-          "400": {"$ref": "#/components/responses/Error"},
-          "401": {"$ref": "#/components/responses/Error"},
-          "429": {"$ref": "#/components/responses/Error"}
-        }
+          "200": {
+            "description": "Ordered classification decisions and authoritative revisions."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "post_v1_config_classify"
       }
     },
     "/v1/config/conflict-resolutions/pending": {
@@ -2432,9 +2555,14 @@
         "summary": "List pending conflict resolutions for the current helper binding",
         "security": [],
         "responses": {
-          "200": {"description": "Bounded pending resolution actions."},
-          "401": {"$ref": "#/components/responses/Error"}
-        }
+          "200": {
+            "description": "Bounded pending resolution actions."
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "post_v1_config_conflict_resolutions_pending"
       }
     },
     "/v1/config/conflict-resolutions/acknowledge": {
@@ -2442,13 +2570,20 @@
         "summary": "Acknowledge a landed conflict resolution",
         "security": [],
         "responses": {
-          "200": {"description": "Resolution marked applied."},
-          "401": {"$ref": "#/components/responses/Error"},
-          "409": {"$ref": "#/components/responses/Error"}
-        }
+          "200": {
+            "description": "Resolution marked applied."
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "post_v1_config_conflict_resolutions_acknowledge"
       }
     },
-    "/v1/routes/observed": {
+    "/v1/edge/routes/observations": {
       "post": {
         "summary": "Record applied route snapshot",
         "description": "Private edge-control endpoint. Stale revision, node, or connector generation observations are rejected.",
@@ -2464,7 +2599,8 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_edge_routes_observations"
       }
     },
     "/v1/trust/revocations": {
@@ -2483,10 +2619,11 @@
           "503": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "get_v1_trust_revocations"
       }
     },
-    "/api/config-repositories": {
+    "/v1/config-repositories": {
       "get": {
         "summary": "List connected config repositories",
         "security": [
@@ -2504,7 +2641,8 @@
           "200": {
             "description": "Owned repositories."
           }
-        }
+        },
+        "operationId": "get_v1_config_repositories"
       },
       "post": {
         "summary": "Connect a config repository",
@@ -2523,22 +2661,36 @@
           "400": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_config_repositories"
       }
     },
-    "/api/config-repositories/candidates": {
+    "/v1/config-repositories/candidates": {
       "get": {
         "summary": "List private repositories eligible for config connection",
         "description": "Returns bounded GitHub repository identifiers and display metadata available through the user's current authorization. No provider credential is returned.",
-        "security": [{"bearerAuth": ["projects:read"]}],
+        "security": [
+          {
+            "bearerAuth": [
+              "projects:read"
+            ]
+          }
+        ],
         "responses": {
-          "200": {"description": "Eligible private repositories."},
-          "400": {"$ref": "#/components/responses/Error"},
-          "401": {"$ref": "#/components/responses/Error"}
-        }
+          "200": {
+            "description": "Eligible private repositories."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "get_v1_config_repositories_candidates"
       }
     },
-    "/api/config-repositories/{repository_id}": {
+    "/v1/config-repositories/{repository_id}": {
       "delete": {
         "summary": "Disconnect a configuration repository without deleting provider data",
         "security": [
@@ -2556,10 +2708,11 @@
           "404": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "delete_v1_config_repositories_repository_id"
       }
     },
-    "/api/environments/{environment_id}/helper-enrollments": {
+    "/v1/environments/{environment_id}/helper-enrollments": {
       "post": {
         "summary": "Issue one-time helper enrollment",
         "security": [
@@ -2582,10 +2735,11 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_environments_environment_id_helper_enrollments"
       }
     },
-    "/api/environments/{environment_id}/helpers/{helper_id}/replace": {
+    "/v1/environments/{environment_id}/helpers/{helper_id}/replace": {
       "post": {
         "summary": "Replace environment helper",
         "security": [
@@ -2608,10 +2762,11 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_environments_environment_id_helpers_helper_id_replace"
       }
     },
-    "/api/environments/{environment_id}/config-assignment": {
+    "/v1/environments/{environment_id}/config-assignment": {
       "get": {
         "summary": "Read environment config assignment",
         "security": [
@@ -2632,7 +2787,8 @@
           "404": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "get_v1_environments_environment_id_config_assignment"
       },
       "put": {
         "summary": "Assign config repository",
@@ -2655,7 +2811,8 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "put_v1_environments_environment_id_config_assignment"
       },
       "delete": {
         "summary": "Clear config assignment",
@@ -2678,10 +2835,11 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "delete_v1_environments_environment_id_config_assignment"
       }
     },
-    "/api/environments/{environment_id}/config-assignment/consent": {
+    "/v1/environments/{environment_id}/config-assignment/consent": {
       "post": {
         "summary": "Accept config warning revision",
         "security": [
@@ -2699,7 +2857,8 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_environments_environment_id_config_assignment_consent"
       },
       "delete": {
         "summary": "Remove config warning consent and immediately revoke sync eligibility",
@@ -2718,10 +2877,11 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "delete_v1_environments_environment_id_config_assignment_consent"
       }
     },
-    "/api/environments/{environment_id}/config-assignment/warning": {
+    "/v1/environments/{environment_id}/config-assignment/warning": {
       "get": {
         "summary": "Read the current server-authoritative BYOD config warning",
         "security": [
@@ -2742,21 +2902,62 @@
           "404": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "get_v1_environments_environment_id_config_assignment_warning"
       }
     },
-    "/v1/previews/tls/ask": {
+    "/v1/tls/authorizations/previews": {
       "get": {
         "summary": "Authorize TLS for an active preview route",
-        "parameters": [{"name":"domain","in":"query","required":true,"schema":{"type":"string"}}],
-        "responses": {"204":{"description":"Certificate issuance allowed."},"404":{"$ref":"#/components/responses/Error"},"503":{"$ref":"#/components/responses/Error"}}
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Certificate issuance allowed."
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "get_v1_tls_authorizations_previews"
       }
     },
-    "/v1/routes/tls/ask": {
+    "/v1/tls/authorizations/routes": {
       "get": {
         "summary": "Authorize TLS for an active control route",
-        "parameters": [{"name":"domain","in":"query","required":true,"schema":{"type":"string"}}],
-        "responses": {"204":{"description":"Certificate issuance allowed."},"404":{"$ref":"#/components/responses/Error"},"503":{"$ref":"#/components/responses/Error"}}
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Certificate issuance allowed."
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "get_v1_tls_authorizations_routes"
       }
     },
     "/v1/previews/credentials": {
@@ -2800,7 +3001,8 @@
           "401": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_previews_credentials"
       }
     },
     "/v1/previews/operations": {
@@ -2887,7 +3089,8 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_previews_operations"
       }
     },
     "/v1/previews/observations": {
@@ -2974,10 +3177,11 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_previews_observations"
       }
     },
-    "/api/previews": {
+    "/v1/previews": {
       "get": {
         "summary": "List the user's active public previews",
         "description": "Returns active previews with project or machine and owner context. Preview creation is available only to in-environment agents through paperboat-helper.",
@@ -2996,10 +3200,11 @@
           "200": {
             "description": "Owned active public previews and readiness states."
           }
-        }
+        },
+        "operationId": "get_v1_previews"
       }
     },
-    "/api/previews/{preview_id}": {
+    "/v1/previews/{preview_id}": {
       "delete": {
         "summary": "Revoke an owned public preview",
         "description": "The public route is detached and the identity remains tombstoned for the retention period. This endpoint cannot create previews.",
@@ -3030,10 +3235,11 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "delete_v1_previews_preview_id"
       }
     },
-    "/api/environments/{environment_id}/routes": {
+    "/v1/environments/{environment_id}/routes": {
       "post": {
         "summary": "Create revisioned route intent",
         "security": [
@@ -3051,10 +3257,11 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_environments_environment_id_routes"
       }
     },
-    "/api/routes/{route_id}": {
+    "/v1/routes/{route_id}": {
       "patch": {
         "summary": "Transition route intent",
         "security": [
@@ -3072,10 +3279,11 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "patch_v1_routes_route_id"
       }
     },
-    "/api/admin/mint/signing-keys/{key_id}/revoke": {
+    "/v1/admin/mint/signing-keys/{key_id}/revoke": {
       "post": {
         "summary": "Revoke mint signing key",
         "security": [
@@ -3098,10 +3306,11 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_admin_mint_signing_keys_key_id_revoke"
       }
     },
-    "/api/admin/control-operations/{operation_id}/recover": {
+    "/v1/admin/control-operations/{operation_id}/recover": {
       "post": {
         "summary": "Recover dead-lettered control operation",
         "security": [
@@ -3132,10 +3341,11 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_admin_control_operations_operation_id_recover"
       }
     },
-    "/api/admin/billing/uncertain/{kind}/{operation_id}/recover": {
+    "/v1/admin/billing/uncertain/{kind}/{operation_id}/recover": {
       "post": {
         "summary": "Requeue an uncertain billing operation after provider evidence confirms no mutation",
         "description": "Admin-only, CSRF-protected and idempotent. Supported kinds are checkout, portal, subscription_update, and auto_topup. The evidence reference is hashed before persistence or audit.",
@@ -3211,10 +3421,11 @@
           "503": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_admin_billing_uncertain_kind_operation_id_recover"
       }
     },
-    "/api/admin/hosted-provider-operations/{operation_id}/recover": {
+    "/v1/admin/hosted-provider-operations/{operation_id}/recover": {
       "post": {
         "summary": "Recover an uncertain hosted secret deletion",
         "security": [
@@ -3277,10 +3488,11 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_admin_hosted_provider_operations_operation_id_recover"
       }
     },
-    "/api/admin/edge/usage-keys": {
+    "/v1/admin/edge/usage-keys": {
       "post": {
         "summary": "Provision edge usage verification key",
         "security": [
@@ -3303,10 +3515,11 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_admin_edge_usage_keys"
       }
     },
-    "/api/admin/edge/usage-keys/{key_id}/revoke": {
+    "/v1/admin/edge/usage-keys/{key_id}/revoke": {
       "post": {
         "summary": "Revoke edge usage verification key",
         "security": [
@@ -3326,7 +3539,8 @@
           "204": {
             "description": "Usage key revoked."
           }
-        }
+        },
+        "operationId": "post_v1_admin_edge_usage_keys_key_id_revoke"
       }
     },
     "/metrics": {
@@ -3347,7 +3561,8 @@
           "403": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "get_metrics"
       }
     },
     "/readyz": {
@@ -3368,10 +3583,11 @@
           "503": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "get_readyz"
       }
     },
-    "/api/me": {
+    "/v1/me": {
       "get": {
         "summary": "Current user and entitlement state",
         "security": [
@@ -3396,10 +3612,11 @@
           "401": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "get_v1_me"
       }
     },
-    "/api/config-sync/status": {
+    "/v1/config-sync/status": {
       "get": {
         "summary": "Account configuration sync status",
         "description": "Cookie authentication requires no bearer scope. Bearer authentication requires account:read.",
@@ -3440,10 +3657,11 @@
           "402": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "get_v1_config_sync_status"
       }
     },
-    "/api/config-sync/environments/{environment_id}/conflict-resolutions": {
+    "/v1/config-sync/environments/{environment_id}/conflict-resolutions": {
       "post": {
         "summary": "Request an explicit current-revision conflict resolution",
         "parameters": [
@@ -3451,28 +3669,42 @@
             "name": "environment_id",
             "in": "path",
             "required": true,
-            "schema": {"type": "string"}
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "security": [
-          {"cookieSession": []},
-          {"csrfHeader": []}
+          {
+            "cookieSession": []
+          },
+          {
+            "csrfHeader": []
+          }
         ],
         "responses": {
-          "202": {"description": "Resolution queued for the bound helper."},
-          "400": {"$ref": "#/components/responses/Error"},
-          "409": {"$ref": "#/components/responses/Error"}
-        }
+          "202": {
+            "description": "Resolution queued for the bound helper."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "post_v1_config_sync_environments_environment_id_conflict_resolutions"
       }
     },
-    "/api/config-sync/overrides": {
+    "/v1/config-sync/overrides": {
       "get": {
         "summary": "List exact path classification overrides",
         "responses": {
           "200": {
             "description": "Overrides."
           }
-        }
+        },
+        "operationId": "get_v1_config_sync_overrides"
       },
       "put": {
         "summary": "Set exact path classification override",
@@ -3491,7 +3723,8 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "put_v1_config_sync_overrides"
       },
       "delete": {
         "summary": "Remove exact path classification override",
@@ -3507,10 +3740,11 @@
           "200": {
             "description": "Override removed."
           }
-        }
+        },
+        "operationId": "delete_v1_config_sync_overrides"
       }
     },
-    "/api/config-sync/recovery-key/export": {
+    "/v1/config-sync/recovery-key/export": {
       "post": {
         "summary": "Export age recovery identity after purpose-bound reauthentication",
         "security": [
@@ -3528,10 +3762,11 @@
           "401": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_config_sync_recovery_key_export"
       }
     },
-    "/api/config-sync/recovery-key/rotate": {
+    "/v1/config-sync/recovery-key/rotate": {
       "post": {
         "summary": "Rotate account config encryption identity",
         "security": [
@@ -3552,20 +3787,22 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_config_sync_recovery_key_rotate"
       }
     },
-    "/api/auth/workos/reauth/state": {
+    "/v1/auth/workos/reauth/state": {
       "get": {
         "summary": "Create purpose-bound WorkOS reauthentication state",
         "responses": {
           "200": {
             "description": "Reauthentication state."
           }
-        }
+        },
+        "operationId": "get_v1_auth_workos_reauth_state"
       }
     },
-    "/api/auth/workos/reauth/callback": {
+    "/v1/auth/workos/reauth/callback": {
       "post": {
         "summary": "Verify purpose-bound WorkOS reauthentication",
         "responses": {
@@ -3575,10 +3812,11 @@
           "401": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_auth_workos_reauth_callback"
       }
     },
-    "/api/auth/device/authorize": {
+    "/v1/auth/device/authorize": {
       "post": {
         "summary": "Create a CLI device authorization grant",
         "security": [],
@@ -3630,10 +3868,11 @@
           "429": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_auth_device_authorize"
       }
     },
-    "/api/auth/device/token": {
+    "/v1/auth/device/token": {
       "post": {
         "summary": "Poll a CLI device grant",
         "security": [],
@@ -3685,10 +3924,11 @@
           "429": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_auth_device_token"
       }
     },
-    "/api/auth/device/requests/{user_code}": {
+    "/v1/auth/device/requests/{user_code}": {
       "parameters": [
         {
           "name": "user_code",
@@ -3732,10 +3972,11 @@
           "410": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "get_v1_auth_device_requests_user_code"
       }
     },
-    "/api/auth/device/requests/{user_code}/approve": {
+    "/v1/auth/device/requests/{user_code}/approve": {
       "parameters": [
         {
           "name": "user_code",
@@ -3783,10 +4024,11 @@
           "410": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_auth_device_requests_user_code_approve"
       }
     },
-    "/api/auth/device/requests/{user_code}/deny": {
+    "/v1/auth/device/requests/{user_code}/deny": {
       "parameters": [
         {
           "name": "user_code",
@@ -3834,10 +4076,11 @@
           "410": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_auth_device_requests_user_code_deny"
       }
     },
-    "/api/auth/token/refresh": {
+    "/v1/auth/token/refresh": {
       "post": {
         "summary": "Rotate a CLI refresh token",
         "security": [
@@ -3880,10 +4123,11 @@
           "401": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_auth_token_refresh"
       }
     },
-    "/api/auth/token/revoke": {
+    "/v1/auth/token/revoke": {
       "post": {
         "summary": "Revoke a CLI client-session family",
         "description": "Logs out only the CLI client-session family identified by the bearer credential.",
@@ -3909,10 +4153,11 @@
           "401": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_auth_token_revoke"
       }
     },
-    "/api/auth/clients": {
+    "/v1/auth/cli-client-sessions": {
       "get": {
         "summary": "List authorized Paperboat clients",
         "description": "Cookie authentication requires no bearer scope. Bearer authentication requires account:read.",
@@ -3961,7 +4206,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Authorized clients.",
+            "description": "CLI client sessions.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3972,7 +4217,7 @@
                   ],
                   "properties": {
                     "data": {
-                      "$ref": "#/components/schemas/AuthorizedClientList"
+                      "$ref": "#/components/schemas/CLIClientSessionList"
                     }
                   }
                 }
@@ -3985,13 +4230,14 @@
           "403": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "get_v1_auth_cli_client_sessions"
       }
     },
-    "/api/auth/clients/{client_session_id}": {
+    "/v1/auth/cli-client-sessions/{cli_client_session_id}": {
       "parameters": [
         {
-          "name": "client_session_id",
+          "name": "cli_client_session_id",
           "in": "path",
           "required": true,
           "schema": {
@@ -4027,10 +4273,11 @@
           "404": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "delete_v1_auth_cli_client_sessions_cli_client_session_id"
       }
     },
-    "/api/auth/workos/state": {
+    "/v1/auth/workos/state": {
       "get": {
         "summary": "Create a WorkOS OAuth state token",
         "security": [],
@@ -4045,10 +4292,11 @@
               }
             }
           }
-        }
+        },
+        "operationId": "get_v1_auth_workos_state"
       }
     },
-    "/api/auth/workos/callback": {
+    "/v1/auth/workos/callback": {
       "post": {
         "summary": "Complete WorkOS login",
         "security": [],
@@ -4066,10 +4314,11 @@
           "400": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_auth_workos_callback"
       }
     },
-    "/api/auth/logout": {
+    "/v1/auth/logout": {
       "post": {
         "summary": "Log out current session",
         "description": "Revokes the current WorkOS-backed browser session and active downstream access sessions. Independent CLI client sessions remain active.",
@@ -4095,10 +4344,11 @@
           "401": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_auth_logout"
       }
     },
-    "/api/auth/csrf": {
+    "/v1/auth/csrf": {
       "get": {
         "summary": "Read CSRF token for browser writes",
         "responses": {
@@ -4115,10 +4365,11 @@
           "401": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "get_v1_auth_csrf"
       }
     },
-    "/api/billing/entitlement": {
+    "/v1/billing/entitlement": {
       "get": {
         "summary": "Current billing entitlement",
         "responses": {
@@ -4135,10 +4386,11 @@
           "401": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "get_v1_billing_entitlement"
       }
     },
-    "/api/billing/usage": {
+    "/v1/billing/usage": {
       "get": {
         "summary": "Credit and storage usage",
         "responses": {
@@ -4155,10 +4407,11 @@
           "401": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "get_v1_billing_usage"
       }
     },
-    "/api/billing/plan-products": {
+    "/v1/billing/plan-products": {
       "get": {
         "summary": "Billable plan products",
         "responses": {
@@ -4175,10 +4428,11 @@
           "401": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "get_v1_billing_plan_products"
       }
     },
-    "/api/billing/storage": {
+    "/v1/billing/storage": {
       "get": {
         "summary": "Current recurring storage quantity",
         "responses": {
@@ -4192,7 +4446,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "get_v1_billing_storage"
       },
       "put": {
         "summary": "Update recurring storage quantity",
@@ -4223,10 +4478,11 @@
           "400": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "put_v1_billing_storage"
       }
     },
-    "/api/billing/storage-preview": {
+    "/v1/billing/storage-change-preview": {
       "get": {
         "summary": "Preview recurring storage price and effective date",
         "responses": {
@@ -4243,10 +4499,11 @@
           "400": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "get_v1_billing_storage_change_preview"
       }
     },
-    "/api/billing/auto-topup": {
+    "/v1/billing/auto-topup": {
       "get": {
         "summary": "Current credit auto-top-up policy",
         "responses": {
@@ -4260,7 +4517,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "get_v1_billing_auto_topup"
       },
       "put": {
         "summary": "Update credit auto-top-up policy",
@@ -4286,10 +4544,11 @@
           "400": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "put_v1_billing_auto_topup"
       }
     },
-    "/api/billing/checkout": {
+    "/v1/billing/checkout": {
       "post": {
         "summary": "Create a Polar checkout session",
         "security": [
@@ -4319,10 +4578,11 @@
           "400": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_billing_checkout"
       }
     },
-    "/api/billing/customer-portal": {
+    "/v1/billing/customer-portal": {
       "post": {
         "summary": "Create a Polar customer portal session",
         "security": [
@@ -4352,10 +4612,11 @@
           "400": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_billing_customer_portal"
       }
     },
-    "/api/webhooks/polar": {
+    "/v1/webhooks/polar": {
       "post": {
         "summary": "Polar webhook receiver",
         "security": [],
@@ -4373,10 +4634,11 @@
           "400": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_webhooks_polar"
       }
     },
-    "/api/catalog/plans": {
+    "/v1/catalog/plans": {
       "get": {
         "summary": "Plan catalog",
         "responses": {
@@ -4390,10 +4652,11 @@
               }
             }
           }
-        }
+        },
+        "operationId": "get_v1_catalog_plans"
       }
     },
-    "/api/catalog/machine-types": {
+    "/v1/catalog/machine-types": {
       "get": {
         "summary": "Machine type catalog",
         "security": [
@@ -4418,10 +4681,11 @@
               }
             }
           }
-        }
+        },
+        "operationId": "get_v1_catalog_machine_types"
       }
     },
-    "/api/catalog/presets": {
+    "/v1/catalog/presets": {
       "get": {
         "summary": "VM preset catalog",
         "security": [
@@ -4446,10 +4710,11 @@
               }
             }
           }
-        }
+        },
+        "operationId": "get_v1_catalog_presets"
       }
     },
-    "/api/catalog/idle-timeouts": {
+    "/v1/catalog/idle-timeouts": {
       "get": {
         "summary": "Idle timeout catalog",
         "security": [
@@ -4474,10 +4739,11 @@
               }
             }
           }
-        }
+        },
+        "operationId": "get_v1_catalog_idle_timeouts"
       }
     },
-    "/api/catalog/regions": {
+    "/v1/catalog/regions": {
       "get": {
         "summary": "Region catalog",
         "security": [
@@ -4502,10 +4768,11 @@
               }
             }
           }
-        }
+        },
+        "operationId": "get_v1_catalog_regions"
       }
     },
-    "/api/github/status": {
+    "/v1/github/status": {
       "get": {
         "summary": "GitHub connection status",
         "responses": {
@@ -4522,10 +4789,11 @@
           "401": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "get_v1_github_status"
       }
     },
-    "/api/github/repositories": {
+    "/v1/github/repositories": {
       "get": {
         "summary": "List connected GitHub repositories",
         "security": [
@@ -4553,10 +4821,11 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "get_v1_github_repositories"
       }
     },
-    "/api/github/oauth/start": {
+    "/v1/github/oauth/start": {
       "post": {
         "summary": "Start GitHub OAuth",
         "security": [
@@ -4581,10 +4850,11 @@
           "400": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_github_oauth_start"
       }
     },
-    "/api/github/oauth/callback": {
+    "/v1/github/oauth/callback": {
       "get": {
         "summary": "Complete GitHub OAuth from browser redirect",
         "responses": {
@@ -4601,7 +4871,8 @@
           "400": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "get_v1_github_oauth_callback"
       },
       "post": {
         "summary": "Complete GitHub OAuth",
@@ -4627,10 +4898,11 @@
           "400": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_github_oauth_callback"
       }
     },
-    "/api/github/config-repo/provision": {
+    "/v1/github/config-repositories/provision": {
       "post": {
         "summary": "Provision private config repo",
         "security": [
@@ -4660,10 +4932,11 @@
           "400": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_github_config_repositories_provision"
       }
     },
-    "/api/dashboard/usage-summary": {
+    "/v1/usage-summary": {
       "get": {
         "summary": "Account usage summary",
         "description": "Cookie authentication requires no bearer scope. Bearer authentication requires account:read.",
@@ -4692,10 +4965,11 @@
           "401": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "get_v1_usage_summary"
       }
     },
-    "/api/projects": {
+    "/v1/projects": {
       "get": {
         "summary": "List projects",
         "description": "Cookie authentication requires no bearer scope. Bearer authentication requires projects:read.",
@@ -4773,7 +5047,8 @@
           "403": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "get_v1_projects"
       },
       "post": {
         "summary": "Create project",
@@ -4807,10 +5082,11 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_projects"
       }
     },
-    "/api/projects/{project_id}": {
+    "/v1/projects/{project_id}": {
       "parameters": [
         {
           "$ref": "#/components/parameters/ProjectID"
@@ -4832,7 +5108,8 @@
           "404": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "get_v1_projects_project_id"
       },
       "patch": {
         "summary": "Update desired project configuration",
@@ -4880,7 +5157,8 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "patch_v1_projects_project_id"
       },
       "delete": {
         "summary": "Queue project deletion",
@@ -4898,10 +5176,11 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "delete_v1_projects_project_id"
       }
     },
-    "/api/projects/{project_id}/start": {
+    "/v1/projects/{project_id}/start": {
       "parameters": [
         {
           "$ref": "#/components/parameters/ProjectID"
@@ -4931,10 +5210,11 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_projects_project_id_start"
       }
     },
-    "/api/projects/{project_id}/stop": {
+    "/v1/projects/{project_id}/stop": {
       "parameters": [
         {
           "$ref": "#/components/parameters/ProjectID"
@@ -4964,10 +5244,11 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_projects_project_id_stop"
       }
     },
-    "/api/projects/{project_id}/restart": {
+    "/v1/projects/{project_id}/restart": {
       "parameters": [
         {
           "$ref": "#/components/parameters/ProjectID"
@@ -4997,10 +5278,11 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_projects_project_id_restart"
       }
     },
-    "/api/projects/{project_id}/keep-alive": {
+    "/v1/projects/{project_id}/keep-alive": {
       "parameters": [
         {
           "$ref": "#/components/parameters/ProjectID"
@@ -5030,17 +5312,18 @@
           "400": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_projects_project_id_keep_alive"
       }
     },
-    "/api/projects/{project_id}/activity": {
+    "/v1/projects/{project_id}/activity": {
       "parameters": [
         {
           "$ref": "#/components/parameters/ProjectID"
         }
       ],
       "post": {
-        "summary": "Record papercode or CLI activity",
+        "summary": "Record helper or CLI activity",
         "security": [
           {
             "cookieSession": []
@@ -5066,10 +5349,11 @@
           "400": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_projects_project_id_activity"
       }
     },
-    "/api/projects/{project_id}/events": {
+    "/v1/projects/{project_id}/events": {
       "parameters": [
         {
           "$ref": "#/components/parameters/ProjectID"
@@ -5103,10 +5387,11 @@
           "404": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "get_v1_projects_project_id_events"
       }
     },
-    "/api/projects/{project_id}/terminal-sessions": {
+    "/v1/projects/{project_id}/terminal-sessions": {
       "parameters": [
         {
           "$ref": "#/components/parameters/ProjectID"
@@ -5129,7 +5414,8 @@
           "404": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "get_v1_projects_project_id_terminal_sessions"
       },
       "post": {
         "summary": "Create terminal session",
@@ -5156,10 +5442,11 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_projects_project_id_terminal_sessions"
       }
     },
-    "/api/projects/{project_id}/terminal-sessions/{session_id}": {
+    "/v1/projects/{project_id}/terminal-sessions/{session_id}": {
       "parameters": [
         {
           "$ref": "#/components/parameters/ProjectID"
@@ -5193,7 +5480,8 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "patch_v1_projects_project_id_terminal_sessions_session_id"
       },
       "delete": {
         "summary": "Delete terminal session history",
@@ -5218,10 +5506,11 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "delete_v1_projects_project_id_terminal_sessions_session_id"
       }
     },
-    "/api/projects/{project_id}/terminal-sessions/{session_id}/close": {
+    "/v1/projects/{project_id}/terminal-sessions/{session_id}/close": {
       "parameters": [
         {
           "$ref": "#/components/parameters/ProjectID"
@@ -5255,10 +5544,11 @@
           "404": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_projects_project_id_terminal_sessions_session_id_close"
       }
     },
-    "/api/projects/{project_id}/cli-connect": {
+    "/v1/projects/{project_id}/connection-descriptor": {
       "parameters": [
         {
           "$ref": "#/components/parameters/ProjectID"
@@ -5288,7 +5578,7 @@
                   ],
                   "properties": {
                     "data": {
-                      "$ref": "#/components/schemas/CLIConnectDescriptor"
+                      "$ref": "#/components/schemas/EnvironmentConnectionDescriptor"
                     }
                   }
                 }
@@ -5307,7 +5597,7 @@
                   ],
                   "properties": {
                     "data": {
-                      "$ref": "#/components/schemas/ConnectionStatus"
+                      "$ref": "#/components/schemas/ConnectionReadiness"
                     }
                   }
                 }
@@ -5329,10 +5619,11 @@
           "503": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_projects_project_id_connection_descriptor"
       }
     },
-    "/api/projects/{project_id}/connection-status": {
+    "/v1/projects/{project_id}/connection-readiness": {
       "parameters": [
         {
           "$ref": "#/components/parameters/ProjectID"
@@ -5371,7 +5662,7 @@
                   ],
                   "properties": {
                     "data": {
-                      "$ref": "#/components/schemas/ConnectionStatus"
+                      "$ref": "#/components/schemas/ConnectionReadiness"
                     }
                   }
                 }
@@ -5387,12 +5678,13 @@
           "404": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "get_v1_projects_project_id_connection_readiness"
       }
     },
-    "/api/connected-machines": {
+    "/v1/user-machines": {
       "get": {
-        "summary": "List connected machines",
+        "summary": "List user machines",
         "security": [
           {
             "cookieSession": []
@@ -5406,14 +5698,15 @@
         ],
         "responses": {
           "200": {
-            "description": "Connected machine page."
+            "description": "User machine page."
           }
-        }
+        },
+        "operationId": "get_v1_user_machines"
       }
     },
-    "/api/connected-machine-enrollments": {
+    "/v1/user-machine-enrollments": {
       "post": {
-        "summary": "Start dashboard-owned connected-machine enrollment",
+        "summary": "Start dashboard-owned user-machine enrollment",
         "security": [
           {
             "cookieSession": []
@@ -5434,10 +5727,11 @@
           "400": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_user_machine_enrollments"
       }
     },
-    "/api/connected-machine-enrollments/{enrollment_id}": {
+    "/v1/user-machine-enrollments/{enrollment_id}": {
       "parameters": [
         {
           "name": "enrollment_id",
@@ -5449,7 +5743,7 @@
         }
       ],
       "get": {
-        "summary": "Read connected-machine enrollment state",
+        "summary": "Read user-machine enrollment state",
         "security": [
           {
             "cookieSession": []
@@ -5462,10 +5756,11 @@
           "404": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "get_v1_user_machine_enrollments_enrollment_id"
       }
     },
-    "/api/connected-machine-enrollments/{enrollment_id}/cancel": {
+    "/v1/user-machine-enrollments/{enrollment_id}/cancel": {
       "parameters": [
         {
           "name": "enrollment_id",
@@ -5477,7 +5772,7 @@
         }
       ],
       "post": {
-        "summary": "Cancel connected-machine enrollment",
+        "summary": "Cancel user-machine enrollment",
         "security": [
           {
             "cookieSession": []
@@ -5493,10 +5788,11 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_user_machine_enrollments_enrollment_id_cancel"
       }
     },
-    "/api/connected-machine-enrollments/{enrollment_id}/retry": {
+    "/v1/user-machine-enrollments/{enrollment_id}/retry": {
       "parameters": [
         {
           "name": "enrollment_id",
@@ -5508,7 +5804,7 @@
         }
       ],
       "post": {
-        "summary": "Retry connected-machine enrollment with a new generation",
+        "summary": "Retry user-machine enrollment with a new generation",
         "security": [
           {
             "cookieSession": []
@@ -5524,12 +5820,13 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_user_machine_enrollments_enrollment_id_retry"
       }
     },
-    "/api/connected-machines/overview": {
+    "/v1/user-machines/overview": {
       "get": {
-        "summary": "Read connected-machine seats and bandwidth",
+        "summary": "Read user-machine seats and bandwidth",
         "security": [
           {
             "cookieSession": []
@@ -5543,14 +5840,15 @@
         ],
         "responses": {
           "200": {
-            "description": "Connected-machine entitlement and bandwidth usage."
+            "description": "User-machine entitlement and bandwidth usage."
           }
-        }
+        },
+        "operationId": "get_v1_user_machines_overview"
       }
     },
-    "/api/connected-machines/pairings": {
+    "/v1/user-machines/pairings": {
       "post": {
-        "summary": "Create connected-machine pairing",
+        "summary": "Create user-machine pairing",
         "security": [],
         "responses": {
           "201": {
@@ -5559,10 +5857,56 @@
           "400": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_user_machines_pairings"
       }
     },
-    "/api/connected-machines/pairings/{user_code}/approve": {
+    "/v1/user-machines/pairings/installation": {
+      "post": {
+        "summary": "Consume approved user-machine installation material",
+        "description": "Exchanges the one-time pairing verifier for installation material. The material is returned at most once.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "verifier"
+                ],
+                "properties": {
+                  "verifier": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Single-use installation material."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "post_v1_user_machines_pairings_installation"
+      }
+    },
+    "/v1/user-machines/pairings/{user_code}/approve": {
       "parameters": [
         {
           "name": "user_code",
@@ -5574,7 +5918,7 @@
         }
       ],
       "post": {
-        "summary": "Approve connected-machine pairing",
+        "summary": "Approve user-machine pairing",
         "security": [
           {
             "cookieSession": []
@@ -5590,10 +5934,11 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_user_machines_pairings_user_code_approve"
       }
     },
-    "/api/connected-machines/pairings/{user_code}/deny": {
+    "/v1/user-machines/pairings/{user_code}/deny": {
       "parameters": [
         {
           "name": "user_code",
@@ -5605,7 +5950,7 @@
         }
       ],
       "post": {
-        "summary": "Deny connected-machine pairing",
+        "summary": "Deny user-machine pairing",
         "security": [
           {
             "cookieSession": []
@@ -5627,13 +5972,14 @@
           "410": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_user_machines_pairings_user_code_deny"
       }
     },
-    "/api/connected-machines/{connected_machine_id}": {
+    "/v1/user-machines/{user_machine_id}": {
       "parameters": [
         {
-          "name": "connected_machine_id",
+          "name": "user_machine_id",
           "in": "path",
           "required": true,
           "schema": {
@@ -5642,18 +5988,19 @@
         }
       ],
       "get": {
-        "summary": "Read connected machine",
+        "summary": "Read user machine",
         "responses": {
           "200": {
-            "description": "Connected machine."
+            "description": "User machine."
           },
           "404": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "get_v1_user_machines_user_machine_id"
       },
       "delete": {
-        "summary": "Delete connected machine",
+        "summary": "Delete user machine",
         "security": [
           {
             "cookieSession": []
@@ -5669,13 +6016,14 @@
           "200": {
             "description": "Machine deleted."
           }
-        }
+        },
+        "operationId": "delete_v1_user_machines_user_machine_id"
       }
     },
-    "/api/connected-machines/{connected_machine_id}/disconnect": {
+    "/v1/user-machines/{user_machine_id}/disconnect": {
       "parameters": [
         {
-          "name": "connected_machine_id",
+          "name": "user_machine_id",
           "in": "path",
           "required": true,
           "schema": {
@@ -5684,7 +6032,7 @@
         }
       ],
       "post": {
-        "summary": "Disconnect connected machine",
+        "summary": "Disconnect user machine",
         "security": [
           {
             "cookieSession": []
@@ -5700,13 +6048,14 @@
           "200": {
             "description": "Machine disconnected."
           }
-        }
+        },
+        "operationId": "post_v1_user_machines_user_machine_id_disconnect"
       }
     },
-    "/api/connected-machines/{connected_machine_id}/connect": {
+    "/v1/user-machines/{user_machine_id}/connection-descriptor": {
       "parameters": [
         {
-          "name": "connected_machine_id",
+          "name": "user_machine_id",
           "in": "path",
           "required": true,
           "schema": {
@@ -5715,7 +6064,7 @@
         }
       ],
       "post": {
-        "summary": "Create connected-machine CLI descriptor",
+        "summary": "Create user-machine CLI descriptor",
         "description": "The optional body selects a terminal_session_id; omission selects default.",
         "security": [
           {
@@ -5727,7 +6076,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Fresh connected-machine CLI descriptor."
+            "description": "Fresh user-machine CLI descriptor."
           },
           "401": {
             "$ref": "#/components/responses/Error"
@@ -5735,13 +6084,14 @@
           "404": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_user_machines_user_machine_id_connection_descriptor"
       }
     },
-    "/api/connected-machines/{connected_machine_id}/connection-status": {
+    "/v1/user-machines/{user_machine_id}/connection-readiness": {
       "parameters": [
         {
-          "name": "connected_machine_id",
+          "name": "user_machine_id",
           "in": "path",
           "required": true,
           "schema": {
@@ -5759,7 +6109,7 @@
         }
       ],
       "get": {
-        "summary": "Read connected-machine connection status",
+        "summary": "Read user-machine connection status",
         "security": [
           {
             "bearerAccess": []
@@ -5778,13 +6128,14 @@
           "404": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "get_v1_user_machines_user_machine_id_connection_readiness"
       }
     },
-    "/api/connected-machines/{connected_machine_id}/terminal-sessions": {
+    "/v1/user-machines/{user_machine_id}/terminal-sessions": {
       "parameters": [
         {
-          "name": "connected_machine_id",
+          "name": "user_machine_id",
           "in": "path",
           "required": true,
           "schema": {
@@ -5793,7 +6144,7 @@
         }
       ],
       "get": {
-        "summary": "List connected-machine terminal sessions",
+        "summary": "List user-machine terminal sessions",
         "security": [
           {
             "bearerAccess": []
@@ -5806,10 +6157,11 @@
           "200": {
             "description": "Terminal session page."
           }
-        }
+        },
+        "operationId": "get_v1_user_machines_user_machine_id_terminal_sessions"
       },
       "post": {
-        "summary": "Create connected-machine terminal session",
+        "summary": "Create user-machine terminal session",
         "security": [
           {
             "bearerAccess": []
@@ -5833,13 +6185,14 @@
           "409": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_user_machines_user_machine_id_terminal_sessions"
       }
     },
-    "/api/connected-machines/{connected_machine_id}/terminal-sessions/{session_id}": {
+    "/v1/user-machines/{user_machine_id}/terminal-sessions/{session_id}": {
       "parameters": [
         {
-          "name": "connected_machine_id",
+          "name": "user_machine_id",
           "in": "path",
           "required": true,
           "schema": {
@@ -5856,7 +6209,7 @@
         }
       ],
       "patch": {
-        "summary": "Rename connected-machine terminal session",
+        "summary": "Rename user-machine terminal session",
         "security": [
           {
             "bearerAccess": []
@@ -5869,10 +6222,11 @@
           "200": {
             "description": "Terminal session renamed."
           }
-        }
+        },
+        "operationId": "patch_v1_user_machines_user_machine_id_terminal_sessions_session_id"
       },
       "delete": {
-        "summary": "Delete connected-machine terminal session history",
+        "summary": "Delete user-machine terminal session history",
         "security": [
           {
             "bearerAccess": []
@@ -5888,13 +6242,14 @@
           "202": {
             "description": "History purge queued."
           }
-        }
+        },
+        "operationId": "delete_v1_user_machines_user_machine_id_terminal_sessions_session_id"
       }
     },
-    "/api/connected-machines/{connected_machine_id}/terminal-sessions/{session_id}/close": {
+    "/v1/user-machines/{user_machine_id}/terminal-sessions/{session_id}/close": {
       "parameters": [
         {
-          "name": "connected_machine_id",
+          "name": "user_machine_id",
           "in": "path",
           "required": true,
           "schema": {
@@ -5911,7 +6266,7 @@
         }
       ],
       "post": {
-        "summary": "Close connected-machine terminal session",
+        "summary": "Close user-machine terminal session",
         "security": [
           {
             "bearerAccess": []
@@ -5927,10 +6282,11 @@
           "202": {
             "description": "Terminal close queued."
           }
-        }
+        },
+        "operationId": "post_v1_user_machines_user_machine_id_terminal_sessions_session_id_close"
       }
     },
-    "/api/machine/activity-heartbeat": {
+    "/v1/environment-activity-observations": {
       "post": {
         "summary": "VM heartbeat callback",
         "description": "Authenticated with the project-machine bearer credential. Config sync summaries are sanitized and retained up to the configured server limit.",
@@ -5940,7 +6296,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/MachineActivityHeartbeat"
+                "$ref": "#/components/schemas/EnvironmentActivityObservation"
               }
             }
           }
@@ -5962,10 +6318,11 @@
           "401": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_environment_activity_observations"
       }
     },
-    "/api/admin/users/{user_id}/adjust-credits": {
+    "/v1/admin/users/{user_id}/adjust-credits": {
       "post": {
         "summary": "Admin credit adjustment",
         "security": [
@@ -6003,10 +6360,11 @@
           "403": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_admin_users_user_id_adjust_credits"
       }
     },
-    "/api/admin/users/{user_id}/adjust-storage": {
+    "/v1/admin/users/{user_id}/adjust-storage": {
       "post": {
         "summary": "Admin storage adjustment",
         "security": [
@@ -6044,7 +6402,8 @@
           "403": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "operationId": "post_v1_admin_users_user_id_adjust_storage"
       }
     }
   }

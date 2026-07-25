@@ -20,7 +20,7 @@ func TestSignPublishesFrozenClaims(t *testing.T) {
 		t.Fatal(err)
 	}
 	issuedAt := time.Unix(1_700_000_000, 0)
-	token, err := provider.Sign(ProofInput{Issuer: "https://api.example.test", EnvironmentID: "env_1", UserID: "usr_1", ClientSessionID: "cls_1", JTI: "jti_1", Nonce: "nonce_1", IssuedAt: issuedAt, ExpiresAt: issuedAt.Add(2 * time.Minute)})
+	token, err := provider.Sign(ProofInput{Issuer: "https://api.example.test", EnvironmentID: "env_1", UserID: "usr_1", CLIClientSessionID: "cls_1", JTI: "jti_1", Nonce: "nonce_1", IssuedAt: issuedAt, ExpiresAt: issuedAt.Add(2 * time.Minute)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestJWKSIncludesRotationOverlapKeys(t *testing.T) {
 func TestSigningKeyRollbackUsesPublishedOverlapKey(t *testing.T) {
 	keys := []Key{{ID: "current", PrivateKey: testKey(7)}, {ID: "previous", PrivateKey: testKey(8)}}
 	now := time.Unix(1_700_000_000, 0)
-	input := ProofInput{Issuer: "issuer", EnvironmentID: "env", UserID: "user", ClientSessionID: "client", JTI: "jti", Nonce: "nonce", IssuedAt: now, ExpiresAt: now.Add(time.Minute)}
+	input := ProofInput{Issuer: "issuer", EnvironmentID: "env", UserID: "user", CLIClientSessionID: "client", JTI: "jti", Nonce: "nonce", IssuedAt: now, ExpiresAt: now.Add(time.Minute)}
 	current, err := New(keys, "current", time.Minute)
 	if err != nil {
 		t.Fatal(err)
@@ -103,7 +103,7 @@ func TestSigningKeyRollbackUsesPublishedOverlapKey(t *testing.T) {
 func TestSignRejectsOverlongProof(t *testing.T) {
 	provider, _ := New([]Key{{ID: "key", PrivateKey: testKey(5)}}, "key", time.Minute)
 	now := time.Now()
-	_, err := provider.Sign(ProofInput{Issuer: "issuer", EnvironmentID: "env", UserID: "user", ClientSessionID: "client", JTI: "jti", Nonce: "nonce", IssuedAt: now, ExpiresAt: now.Add(MaxProofTTL + time.Second)})
+	_, err := provider.Sign(ProofInput{Issuer: "issuer", EnvironmentID: "env", UserID: "user", CLIClientSessionID: "client", JTI: "jti", Nonce: "nonce", IssuedAt: now, ExpiresAt: now.Add(MaxProofTTL + time.Second)})
 	if err == nil {
 		t.Fatal("expected lifetime error")
 	}
@@ -204,7 +204,7 @@ func TestSignRevocationUsesSeparateTypeAndScope(t *testing.T) {
 	provider, _ := New([]Key{{ID: "key", PrivateKey: testKey(6)}}, "key", time.Minute)
 	now := time.Unix(1_700_000_000, 0)
 	token, err := provider.SignRevocation(RevocationInput{
-		ProofInput: ProofInput{Issuer: "issuer", EnvironmentID: "env", UserID: "user", ClientSessionID: "client", JTI: "jti", Nonce: "nonce", IssuedAt: now, ExpiresAt: now.Add(time.Minute)},
+		ProofInput: ProofInput{Issuer: "issuer", EnvironmentID: "env", UserID: "user", CLIClientSessionID: "client", JTI: "jti", Nonce: "nonce", IssuedAt: now, ExpiresAt: now.Add(time.Minute)},
 		SessionIDs: []string{"session-1"}, Reason: "logout",
 	})
 	if err != nil {
@@ -228,7 +228,7 @@ func TestSignHealthUsesDedicatedTypeAndScope(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	token, err := provider.SignHealth(ProofInput{
 		Issuer: "https://paperboat.example", EnvironmentID: "env_1", UserID: "usr_1",
-		ClientSessionID: "cls_1", JTI: "health-jti", Nonce: "health-nonce",
+		CLIClientSessionID: "cls_1", JTI: "health-jti", Nonce: "health-nonce",
 		IssuedAt: now, ExpiresAt: now.Add(time.Minute),
 	})
 	if err != nil {

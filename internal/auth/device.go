@@ -45,8 +45,8 @@ type DeviceAuthorization struct {
 type DeviceTokenInput struct{ ClientID, DeviceCode, Network string }
 
 type TokenSet struct {
-	AccessToken, RefreshToken, TokenType, Scope, ClientSessionID string
-	ExpiresIn                                                    int
+	AccessToken, RefreshToken, TokenType, Scope, CLIClientSessionID string
+	ExpiresIn                                                       int
 }
 
 type DeviceRequest struct {
@@ -237,10 +237,10 @@ func (s *DeviceService) Poll(ctx context.Context, in DeviceTokenInput) (TokenSet
 		if err = q.CreateClientSession(ctx, dbsqlc.CreateClientSessionParams{ID: sessionID, UserID: grant.UserID, ClientID: grant.ClientID, ClientLabel: grant.ClientLabel, DeviceType: grant.DeviceType, Os: grant.Os, Scopes: grant.Scopes, CreatedAt: now, ApprovedAt: approvedAt.Time}); err != nil {
 			return err
 		}
-		if err = q.CreateClientAccessToken(ctx, dbsqlc.CreateClientAccessTokenParams{TokenHash: s.hash(access), ClientSessionID: sessionID, ExpiresAt: now.Add(s.cfg.AccessTokenLifetime), CreatedAt: now}); err != nil {
+		if err = q.CreateClientAccessToken(ctx, dbsqlc.CreateClientAccessTokenParams{TokenHash: s.hash(access), CLIClientSessionID: sessionID, ExpiresAt: now.Add(s.cfg.AccessTokenLifetime), CreatedAt: now}); err != nil {
 			return err
 		}
-		if err = q.CreateClientRefreshToken(ctx, dbsqlc.CreateClientRefreshTokenParams{TokenHash: s.hash(refresh), ClientSessionID: sessionID, ExpiresAt: now.Add(s.cfg.RefreshTokenLifetime), CreatedAt: now}); err != nil {
+		if err = q.CreateClientRefreshToken(ctx, dbsqlc.CreateClientRefreshTokenParams{TokenHash: s.hash(refresh), CLIClientSessionID: sessionID, ExpiresAt: now.Add(s.cfg.RefreshTokenLifetime), CreatedAt: now}); err != nil {
 			return err
 		}
 		rows, err := q.ConsumeDeviceGrant(ctx, dbsqlc.ConsumeDeviceGrantParams{ID: grant.ID, ConsumedAt: sql.NullTime{Time: now, Valid: true}})
@@ -257,10 +257,10 @@ func (s *DeviceService) Poll(ctx context.Context, in DeviceTokenInput) (TokenSet
 		if completionLatency < 0 {
 			completionLatency = 0
 		}
-		if err := s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: grant.UserID, ActorType: audit.ActorUser, EventType: "auth.device.completed", ResourceType: "device_grant", ResourceID: grant.ID, IdempotencyKey: "auth.device.completed:" + grant.ID, Metadata: map[string]any{"client_id": grant.ClientID, "client_session_id": sessionID, "latency_ms": completionLatency}}); err != nil {
+		if err := s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: grant.UserID, ActorType: audit.ActorUser, EventType: "auth.device.completed", ResourceType: "device_grant", ResourceID: grant.ID, IdempotencyKey: "auth.device.completed:" + grant.ID, Metadata: map[string]any{"client_id": grant.ClientID, "cli_client_session_id": sessionID, "latency_ms": completionLatency}}); err != nil {
 			return err
 		}
-		out = TokenSet{AccessToken: access, RefreshToken: refresh, TokenType: "Bearer", ExpiresIn: int(s.cfg.AccessTokenLifetime / time.Second), Scope: grant.Scopes, ClientSessionID: sessionID}
+		out = TokenSet{AccessToken: access, RefreshToken: refresh, TokenType: "Bearer", ExpiresIn: int(s.cfg.AccessTokenLifetime / time.Second), Scope: grant.Scopes, CLIClientSessionID: sessionID}
 		return nil
 	})
 	if err != nil {
@@ -382,8 +382,8 @@ func (s *DeviceService) Refresh(ctx context.Context, token string) (TokenSet, er
 		}
 		if stored.State != "active" {
 			replay = true
-			replaySID = stored.ClientSessionID
-			return s.revokeTx(ctx, tx, stored.ClientSessionID, "refresh_replay")
+			replaySID = stored.CLIClientSessionID
+			return s.revokeTx(ctx, tx, stored.CLIClientSessionID, "refresh_replay")
 		}
 		if !s.now().Before(stored.ExpiresAt) {
 			return ErrUnauthenticated
@@ -393,13 +393,13 @@ func (s *DeviceService) Refresh(ctx context.Context, token string) (TokenSet, er
 		if err = q.MarkClientRefreshTokenRotated(ctx, dbsqlc.MarkClientRefreshTokenRotatedParams{TokenHash: stored.TokenHash, RotatedAt: sql.NullTime{Time: now, Valid: true}}); err != nil {
 			return err
 		}
-		if err = q.CreateClientRefreshToken(ctx, dbsqlc.CreateClientRefreshTokenParams{TokenHash: s.hash(refresh), ClientSessionID: stored.ClientSessionID, ExpiresAt: now.Add(s.cfg.RefreshTokenLifetime), CreatedAt: now}); err != nil {
+		if err = q.CreateClientRefreshToken(ctx, dbsqlc.CreateClientRefreshTokenParams{TokenHash: s.hash(refresh), CLIClientSessionID: stored.CLIClientSessionID, ExpiresAt: now.Add(s.cfg.RefreshTokenLifetime), CreatedAt: now}); err != nil {
 			return err
 		}
-		if err = q.CreateClientAccessToken(ctx, dbsqlc.CreateClientAccessTokenParams{TokenHash: s.hash(access), ClientSessionID: stored.ClientSessionID, ExpiresAt: now.Add(s.cfg.AccessTokenLifetime), CreatedAt: now}); err != nil {
+		if err = q.CreateClientAccessToken(ctx, dbsqlc.CreateClientAccessTokenParams{TokenHash: s.hash(access), CLIClientSessionID: stored.CLIClientSessionID, ExpiresAt: now.Add(s.cfg.AccessTokenLifetime), CreatedAt: now}); err != nil {
 			return err
 		}
-		out = TokenSet{AccessToken: access, RefreshToken: refresh, TokenType: "Bearer", ExpiresIn: int(s.cfg.AccessTokenLifetime / time.Second), Scope: stored.Scopes, ClientSessionID: stored.ClientSessionID}
+		out = TokenSet{AccessToken: access, RefreshToken: refresh, TokenType: "Bearer", ExpiresIn: int(s.cfg.AccessTokenLifetime / time.Second), Scope: stored.Scopes, CLIClientSessionID: stored.CLIClientSessionID}
 		return nil
 	})
 	if err != nil {
@@ -449,11 +449,11 @@ func (s *DeviceService) revokeTx(ctx context.Context, tx *db.Tx, sid, reason str
 	if err != nil {
 		return err
 	}
-	err = q.RevokeClientAccessTokens(ctx, dbsqlc.RevokeClientAccessTokensParams{ClientSessionID: sid, RevokedAt: sql.NullTime{Time: now, Valid: true}})
+	err = q.RevokeClientAccessTokens(ctx, dbsqlc.RevokeClientAccessTokensParams{CLIClientSessionID: sid, RevokedAt: sql.NullTime{Time: now, Valid: true}})
 	if err != nil {
 		return err
 	}
-	err = q.RevokeClientRefreshTokens(ctx, dbsqlc.RevokeClientRefreshTokensParams{ClientSessionID: sid, RevokedAt: sql.NullTime{Time: now, Valid: true}})
+	err = q.RevokeClientRefreshTokens(ctx, dbsqlc.RevokeClientRefreshTokensParams{CLIClientSessionID: sid, RevokedAt: sql.NullTime{Time: now, Valid: true}})
 	if err != nil {
 		return err
 	}

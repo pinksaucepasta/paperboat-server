@@ -364,132 +364,19 @@ func (s *Service) HasActiveEntitlement(ctx context.Context, userID string) (bool
 	return s.db.Queries().UserHasActiveSubscription(ctx, userID)
 }
 
-func (s *Service) ensureFreeEntitlementResources(ctx context.Context, userID string) (bool, error) {
-	plan, err := s.db.Queries().GetFreePlanEntitlement(ctx)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	// Fast path: once the free-plan resources have been provisioned, the write
-	// transaction below is a no-op. Skip it with a cheap read so that reads stay
-	// cheap and concurrent entitlement checks (e.g. the dashboard loading
-	// several gated endpoints at once) don't contend on the same rows under
-	// serializable isolation.
-	provisioned, err := s.freeResourcesProvisioned(ctx, plan, userID)
-	if err != nil {
-		return false, err
-	}
-	if provisioned {
-		return true, nil
-	}
-	return true, s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		creditAccountID, err := ensureCreditAccountTx(ctx, tx, userID)
-		if err != nil {
-			return err
-		}
-		if positiveNumericString(plan.IncludedCredits) {
-			if err := grantCreditsOnceTx(ctx, tx, creditAccountID, "free-plan:"+plan.ID+":credits:"+userID, plan.ID, plan.IncludedCredits); err != nil {
-				return err
-			}
-		}
-		storageAccountID, err := ensureStorageAccountTx(ctx, tx, userID)
-		if err != nil {
-			return err
-		}
-		return setIncludedStorageOnceTx(ctx, tx, storageAccountID, "free-plan:"+plan.ID+":storage:"+userID, plan.ID, int(plan.IncludedStorageGb))
-	})
-}
+// Fast path: once the free-plan resources have been provisioned, the write
+// transaction below is a no-op. Skip it with a cheap read so that reads stay
+// cheap and concurrent entitlement checks (e.g. the dashboard loading
+// several gated endpoints at once) don't contend on the same rows under
+// serializable isolation.
 
 // freeResourcesProvisioned reports whether the free-plan credit grant and
 // included-storage ledger entries already exist for the user, using cheap
 // read-only lookups (no write transaction). The idempotency keys match those
 // written in ensureFreeEntitlementResources.
-func (s *Service) freeResourcesProvisioned(ctx context.Context, plan dbsqlc.GetFreePlanEntitlementRow, userID string) (bool, error) {
-	q := s.db.Queries()
-	if positiveNumericString(plan.IncludedCredits) {
-		seen, err := q.CreditLedgerEntryExists(ctx, "free-plan:"+plan.ID+":credits:"+userID)
-		if err != nil {
-			return false, err
-		}
-		if !seen {
-			return false, nil
-		}
-	}
-	if _, err := q.GetStorageLedgerEntryByIdempotencyKey(ctx, "free-plan:"+plan.ID+":storage:"+userID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return false, nil
-		}
-		return false, err
-	}
-	return true, nil
-}
 
 func (s *Service) OwnsProject(ctx context.Context, userID, projectID string) (bool, error) {
 	return s.db.Queries().UserOwnsProject(ctx, dbsqlc.UserOwnsProjectParams{ID: projectID, UserID: userID})
-}
-
-func ensureCreditAccountTx(ctx context.Context, tx *db.Tx, userID string) (string, error) {
-	return tx.Queries().EnsureCreditAccount(ctx, dbsqlc.EnsureCreditAccountParams{ID: newID("cred"), UserID: userID})
-}
-
-func ensureStorageAccountTx(ctx context.Context, tx *db.Tx, userID string) (string, error) {
-	return tx.Queries().EnsureStorageAccount(ctx, dbsqlc.EnsureStorageAccountParams{ID: newID("stor"), UserID: userID})
-}
-
-func grantCreditsOnceTx(ctx context.Context, tx *db.Tx, accountID, idempotencyKey, planVersionID, amount string) error {
-	q := tx.Queries()
-	seen, err := q.CreditLedgerEntryExists(ctx, idempotencyKey)
-	if err != nil || seen {
-		return err
-	}
-	rows, err := q.InsertFreeCreditGrant(ctx, dbsqlc.InsertFreeCreditGrantParams{ID: newID("cled"), AccountID: accountID, Amount: amount, SourceID: planVersionID, IdempotencyKey: idempotencyKey})
-	if err != nil {
-		return err
-	}
-	if rows == 0 {
-		return err
-	}
-	return q.IncreaseCreditBalance(ctx, dbsqlc.IncreaseCreditBalanceParams{ID: accountID, Amount: amount})
-}
-
-func setIncludedStorageOnceTx(ctx context.Context, tx *db.Tx, accountID, idempotencyKey, planVersionID string, includedGB int) error {
-	q := tx.Queries()
-	usage, err := q.GetStorageUsageForUpdate(ctx, accountID)
-	if err != nil {
-		return err
-	}
-	if int(usage.AllocatedGb) > includedGB+int(usage.PurchasedGb) {
-		return errors.New("free included storage is below allocated storage")
-	}
-	if err := q.SetIncludedStorage(ctx, dbsqlc.SetIncludedStorageParams{ID: accountID, IncludedGb: int32(includedGB)}); err != nil {
-		return err
-	}
-	rows, err := q.InsertFreeIncludedStorageLedger(ctx, dbsqlc.InsertFreeIncludedStorageLedgerParams{ID: newID("sled"), AccountID: accountID, AmountGb: int32(includedGB), SourceID: planVersionID, IdempotencyKey: idempotencyKey})
-	if err != nil {
-		return err
-	}
-	if rows > 0 {
-		return err
-	}
-	return storageLedgerEntryMatchesTx(ctx, tx, accountID, "included_set", includedGB, "plan", planVersionID, idempotencyKey)
-}
-
-func storageLedgerEntryMatchesTx(ctx context.Context, tx *db.Tx, accountID, entryType string, amountGB int, sourceType, sourceID, idempotencyKey string) error {
-	existing, err := tx.Queries().GetStorageLedgerEntryByIdempotencyKey(ctx, idempotencyKey)
-	if err != nil {
-		return err
-	}
-	if existing.AccountID != accountID || existing.EntryType != entryType || int(existing.AmountGb) != amountGB || existing.SourceType != sourceType || existing.SourceID != sourceID {
-		return errors.New("storage ledger idempotency key conflicts with existing entry")
-	}
-	return err
-}
-
-func positiveNumericString(value string) bool {
-	value = strings.TrimSpace(value)
-	return value != "" && value != "0" && value != "0.0" && value != "0.000000"
 }
 
 var (

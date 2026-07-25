@@ -1299,11 +1299,6 @@ func remoteFileEquals(remote, rel, wanted string) bool {
 	return err == nil && string(output) == wanted
 }
 
-func remoteHasFile(remote, rel string) bool {
-	cmd := exec.Command("git", "--git-dir="+remote, "cat-file", "-e", "main:"+filepath.ToSlash(rel))
-	return cmd.Run() == nil
-}
-
 func readStatusState(path string) string {
 	status, err := ReadStatus(path, 50)
 	if err != nil || status == nil {

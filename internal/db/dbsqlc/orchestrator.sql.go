@@ -249,23 +249,6 @@ func (q *Queries) GetLatestGitHubTokenCiphertext(ctx context.Context, userID str
 	return token_ciphertext, err
 }
 
-const getOrchestrationAgentunnelResource = `-- name: GetOrchestrationAgentunnelResource :one
-SELECT tunnel_id,client_id,(metadata->>'machine_token_ciphertext')::text AS machine_token_ciphertext FROM agentunnel_resources WHERE project_id=$1
-`
-
-type GetOrchestrationAgentunnelResourceRow struct {
-	TunnelID               string
-	ClientID               string
-	MachineTokenCiphertext string
-}
-
-func (q *Queries) GetOrchestrationAgentunnelResource(ctx context.Context, projectID string) (GetOrchestrationAgentunnelResourceRow, error) {
-	row := q.db.QueryRowContext(ctx, getOrchestrationAgentunnelResource, projectID)
-	var i GetOrchestrationAgentunnelResourceRow
-	err := row.Scan(&i.TunnelID, &i.ClientID, &i.MachineTokenCiphertext)
-	return i, err
-}
-
 const getOrchestrationProjectIntent = `-- name: GetOrchestrationProjectIntent :one
 SELECT p.id,p.user_id,pr.source_url,pr.default_branch,psa.assigned_gb,mt.code AS machine_type_code,mtv.vcpu,mtv.memory_mb,rg.code AS region_code,
 coalesce(json_agg(vp.code ORDER BY vp.code) FILTER (WHERE vp.code IS NOT NULL),'[]'::json) AS preset_codes,
@@ -313,6 +296,23 @@ func (q *Queries) GetOrchestrationProjectIntent(ctx context.Context, id string) 
 		&i.DesiredConfigHash,
 		&i.PendingRestartApply,
 	)
+	return i, err
+}
+
+const getOrchestrationProviderRouteResource = `-- name: GetOrchestrationProviderRouteResource :one
+SELECT tunnel_id,client_id,(metadata->>'machine_token_ciphertext')::text AS machine_token_ciphertext FROM provider_routes WHERE project_id=$1
+`
+
+type GetOrchestrationProviderRouteResourceRow struct {
+	TunnelID               string
+	ClientID               string
+	MachineTokenCiphertext string
+}
+
+func (q *Queries) GetOrchestrationProviderRouteResource(ctx context.Context, projectID string) (GetOrchestrationProviderRouteResourceRow, error) {
+	row := q.db.QueryRowContext(ctx, getOrchestrationProviderRouteResource, projectID)
+	var i GetOrchestrationProviderRouteResourceRow
+	err := row.Scan(&i.TunnelID, &i.ClientID, &i.MachineTokenCiphertext)
 	return i, err
 }
 

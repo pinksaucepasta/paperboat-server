@@ -18,15 +18,15 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/auth"
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
-	"github.com/pinksaucepasta/paperboat-server/internal/connectedmachines"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
+	"github.com/pinksaucepasta/paperboat-server/internal/usermachines"
 )
 
 func TestAuthLoginMeCSRFLogoutAndAudit(t *testing.T) {
 	store, router := newAuthIntegrationRouter(t)
 	state := authState(t, router)
 	login := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/workos/callback", strings.NewReader(`{"code":"workos_test:login@example.com:Login User","state":"`+state.Value+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/workos/callback", strings.NewReader(`{"code":"workos_test:login@example.com:Login User","state":"`+state.Value+`"}`))
 	req.AddCookie(state.Cookie)
 	router.ServeHTTP(login, req)
 	if login.Code != http.StatusOK {
@@ -35,7 +35,7 @@ func TestAuthLoginMeCSRFLogoutAndAudit(t *testing.T) {
 	cookies := login.Result().Cookies()
 
 	me := httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	req = httptest.NewRequest(http.MethodGet, "/v1/me", nil)
 	addCookies(req, cookies)
 	router.ServeHTTP(me, req)
 	if me.Code != http.StatusOK {
@@ -46,7 +46,7 @@ func TestAuthLoginMeCSRFLogoutAndAudit(t *testing.T) {
 	}
 
 	csrf := httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/api/auth/csrf", nil)
+	req = httptest.NewRequest(http.MethodGet, "/v1/auth/csrf", nil)
 	addCookies(req, cookies)
 	router.ServeHTTP(csrf, req)
 	if csrf.Code != http.StatusOK {
@@ -55,7 +55,7 @@ func TestAuthLoginMeCSRFLogoutAndAudit(t *testing.T) {
 	csrfToken := csrfCookie(t, cookies)
 
 	logout := httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
+	req = httptest.NewRequest(http.MethodPost, "/v1/auth/logout", nil)
 	addCookies(req, cookies)
 	req.Header.Set(auth.CSRFHeaderName, csrfToken)
 	router.ServeHTTP(logout, req)
@@ -88,7 +88,7 @@ func TestCSRFEndpointBootstrapsMissingCSRFCookie(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/auth/csrf", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/auth/csrf", nil)
 	req.AddCookie(sessionCookie)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -114,7 +114,7 @@ func TestCSRFEndpointBootstrapsMissingCSRFCookie(t *testing.T) {
 func TestWorkOSCallbackRejectsMissingState(t *testing.T) {
 	_, router := newAuthIntegrationRouter(t)
 	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/auth/workos/callback", strings.NewReader(`{"code":"workos_test:login@example.com:Login User"}`)))
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/auth/workos/callback", strings.NewReader(`{"code":"workos_test:login@example.com:Login User"}`)))
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("callback without state status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -125,7 +125,7 @@ func TestCookieWriteRequiresCSRFAndActiveEntitlement(t *testing.T) {
 	cookies := loginCookies(t, router, "workos_payment:payment@example.com:Payment User")
 
 	missingCSRF := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/projects", strings.NewReader(`{}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects", strings.NewReader(`{}`))
 	addCookies(req, cookies)
 	router.ServeHTTP(missingCSRF, req)
 	if missingCSRF.Code != http.StatusForbidden {
@@ -133,7 +133,7 @@ func TestCookieWriteRequiresCSRFAndActiveEntitlement(t *testing.T) {
 	}
 
 	noPlan := httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/api/projects", strings.NewReader(`{}`))
+	req = httptest.NewRequest(http.MethodPost, "/v1/projects", strings.NewReader(`{}`))
 	addCookies(req, cookies)
 	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
 	router.ServeHTTP(noPlan, req)
@@ -150,11 +150,11 @@ VALUES ($1, $2, 'polar', $3, 'active', $4)`,
 	}
 
 	withPlan := httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/api/projects", strings.NewReader(`{}`))
+	req = httptest.NewRequest(http.MethodPost, "/v1/projects", strings.NewReader(`{}`))
 	addCookies(req, cookies)
 	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
 	router.ServeHTTP(withPlan, req)
-	if withPlan.Code != http.StatusNotImplemented {
+	if withPlan.Code != http.StatusServiceUnavailable {
 		t.Fatalf("with plan status = %d, body = %s", withPlan.Code, withPlan.Body.String())
 	}
 }
@@ -164,7 +164,7 @@ func TestUnsubscribedUserRequiresSubscription(t *testing.T) {
 	cookies := loginCookies(t, router, "workos_free:free@example.com:Free User")
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/projects", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/projects", nil)
 	addCookies(req, cookies)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusPaymentRequired {
@@ -192,7 +192,7 @@ VALUES ($1, $2, 'Other User Project', 'ready', $3)`, projectID, userB, "owner-te
 	if owns {
 		t.Fatal("cross-user project ownership returned true")
 	}
-	req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/me", nil)
 	addCookies(req, cookiesA)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -212,7 +212,7 @@ func TestAdminBillingAdjustmentsRequireAdminAndWriteLedger(t *testing.T) {
 	}
 
 	denied := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/admin/users/"+targetID+"/adjust-credits", strings.NewReader(`{"amount":"5","reason":"test"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/users/"+targetID+"/adjust-credits", strings.NewReader(`{"amount":"5","reason":"test"}`))
 	addCookies(req, targetCookies)
 	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, targetCookies))
 	req.Header.Set("Idempotency-Key", "admin-denied-"+targetID)
@@ -222,7 +222,7 @@ func TestAdminBillingAdjustmentsRequireAdminAndWriteLedger(t *testing.T) {
 	}
 
 	credits := httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/api/admin/users/"+targetID+"/adjust-credits", strings.NewReader(`{"amount":"7.5","reason":"support correction"}`))
+	req = httptest.NewRequest(http.MethodPost, "/v1/admin/users/"+targetID+"/adjust-credits", strings.NewReader(`{"amount":"7.5","reason":"support correction"}`))
 	addCookies(req, adminCookies)
 	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, adminCookies))
 	req.Header.Set("Idempotency-Key", "admin-credit-"+targetID)
@@ -232,7 +232,7 @@ func TestAdminBillingAdjustmentsRequireAdminAndWriteLedger(t *testing.T) {
 	}
 
 	storage := httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/api/admin/users/"+targetID+"/adjust-storage", strings.NewReader(`{"purchased_gb":3,"reason":"support correction"}`))
+	req = httptest.NewRequest(http.MethodPost, "/v1/admin/users/"+targetID+"/adjust-storage", strings.NewReader(`{"purchased_gb":3,"reason":"support correction"}`))
 	addCookies(req, adminCookies)
 	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, adminCookies))
 	req.Header.Set("Idempotency-Key", "admin-storage-"+targetID)
@@ -304,7 +304,7 @@ func newAuthIntegrationRouter(t *testing.T) (*db.DB, http.Handler) {
 	service := auth.NewService(store, auditWriter, auth.FakeWorkOSVerifier{}, []string{"test-session-key"}, false)
 	deviceService := auth.NewDeviceService(store, auditWriter, config.Default().CLIAuth, []string{"test-device-hash-key"})
 	billingService := billing.NewService(billing.NewRepository(store), billing.FakePolarClient{}, auditWriter)
-	connectedMachineService := connectedmachines.New(store, auditWriter, connectedmachines.Policy{}, billingService)
+	userMachineService := usermachines.New(store, auditWriter, usermachines.Policy{}, billingService)
 	cfg := config.Default()
 	return store, NewRouter(Options{
 		Config: cfg,
@@ -312,25 +312,11 @@ func newAuthIntegrationRouter(t *testing.T) (*db.DB, http.Handler) {
 		ReadinessChecker: readinessFunc(func(context.Context) error {
 			return nil
 		}),
-		Auth:              service,
-		DeviceAuth:        deviceService,
-		Billing:           billingService,
-		ConnectedMachines: connectedMachineService,
+		Auth:         service,
+		DeviceAuth:   deviceService,
+		Billing:      billingService,
+		UserMachines: userMachineService,
 	})
-}
-
-func seedFreePlan(t *testing.T, store *db.DB, credits string, storageGB int) {
-	t.Helper()
-	if _, err := store.SQL().ExecContext(context.Background(), `
-INSERT INTO paperboat.plans (id, code, name, active, current_version_id)
-VALUES ('plan_free', 'free', 'Free', true, 'pv_free')`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.SQL().ExecContext(context.Background(), `
-INSERT INTO paperboat.plan_versions (id, plan_id, version_number, included_credits, included_storage_gb)
-VALUES ('pv_free', 'plan_free', 1, $1::numeric, $2)`, credits, storageGB); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func resetIntegrationTables(t *testing.T, store *db.DB) {
@@ -385,7 +371,7 @@ func loginCookies(t *testing.T, router http.Handler, code string) []*http.Cookie
 	state := authState(t, router)
 	body, _ := json.Marshal(map[string]string{"code": code, "state": state.Value})
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/workos/callback", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/workos/callback", bytes.NewReader(body))
 	req.AddCookie(state.Cookie)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -402,7 +388,7 @@ type issuedState struct {
 func authState(t *testing.T, router http.Handler) issuedState {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/auth/workos/state", nil))
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/auth/workos/state", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("state status = %d, body = %s", rec.Code, rec.Body.String())
 	}

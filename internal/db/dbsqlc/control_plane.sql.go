@@ -439,7 +439,7 @@ func (q *Queries) ApplyControlRouteObservation(ctx context.Context, arg ApplyCon
 const bYODHelperOwnsMachine = `-- name: BYODHelperOwnsMachine :one
 SELECT EXISTS (
   SELECT 1 FROM control_helpers h
-  JOIN connected_machines m ON m.environment_id = h.environment_id
+  JOIN user_machines m ON m.environment_id = h.environment_id
   WHERE h.id = $1 AND h.environment_id = $2
     AND h.state = 'active' AND h.revoked_at IS NULL
     AND m.id = $3 AND m.deleted_at IS NULL
@@ -1831,7 +1831,7 @@ SELECT cm.display_name AS machine_name, cm.workspace_root AS canonical_scope,
        r.display_name AS repository_name
 FROM control_config_assignments a
 JOIN control_environments e ON e.id = a.environment_id
-JOIN connected_machines cm ON cm.environment_id = e.id AND cm.deleted_at IS NULL
+JOIN user_machines cm ON cm.environment_id = e.id AND cm.deleted_at IS NULL
 JOIN control_config_repositories r ON r.id = a.repository_id AND r.state = 'active'
 WHERE a.environment_id = $1 AND e.owner_user_id = $2
   AND e.desired_state = 'active' AND e.revoked_at IS NULL AND a.revoked_at IS NULL
@@ -2907,7 +2907,7 @@ func (q *Queries) InsertControlUsageReceipt(ctx context.Context, arg InsertContr
 }
 
 const isControlEnvironmentBYOD = `-- name: IsControlEnvironmentBYOD :one
-SELECT EXISTS (SELECT 1 FROM connected_machines WHERE environment_id = $1 AND deleted_at IS NULL)
+SELECT EXISTS (SELECT 1 FROM user_machines WHERE environment_id = $1 AND deleted_at IS NULL)
 `
 
 func (q *Queries) IsControlEnvironmentBYOD(ctx context.Context, environmentID string) (bool, error) {
@@ -3331,7 +3331,7 @@ LEFT JOIN LATERAL (
 ) helper ON true
 LEFT JOIN control_config_sync_statuses status
   ON status.environment_id = environment.id
-LEFT JOIN connected_machines machine
+LEFT JOIN user_machines machine
   ON machine.environment_id = environment.id AND machine.deleted_at IS NULL
 LEFT JOIN projects project
   ON project.id = environment.workspace_id AND project.user_id = environment.owner_user_id
@@ -3441,7 +3441,7 @@ SELECT p.id, p.environment_id, p.logical_name, p.preview_key, p.collision_counte
        COALESCE(u.primary_email, '') AS owner_email
 FROM control_previews p
 JOIN control_environments e ON e.id = p.environment_id
-LEFT JOIN connected_machines cm ON cm.environment_id = e.id AND cm.deleted_at IS NULL
+LEFT JOIN user_machines cm ON cm.environment_id = e.id AND cm.deleted_at IS NULL
 LEFT JOIN projects pr ON pr.id = e.workspace_id
 LEFT JOIN users u ON u.id = e.owner_user_id
 WHERE e.owner_user_id = $1
@@ -3629,17 +3629,17 @@ SELECT revoked.jti FROM (
   SELECT c.jti, c.revoked_at FROM control_config_credentials c
   WHERE c.revoked_at IS NOT NULL AND c.expires_at > $1
   UNION ALL
-  SELECT a.papercode_terminal_session_id AS jti, a.revoked_at FROM access_sessions a
-  WHERE a.revoked_at IS NOT NULL AND a.expires_at > $1 AND a.papercode_terminal_session_id IS NOT NULL
+  SELECT a.helper_terminal_session_id AS jti, a.revoked_at FROM access_sessions a
+  WHERE a.revoked_at IS NOT NULL AND a.expires_at > $1 AND a.helper_terminal_session_id IS NOT NULL
   UNION ALL
-  SELECT a.papercode_file_session_id AS jti, a.revoked_at FROM access_sessions a
-  WHERE a.revoked_at IS NOT NULL AND a.expires_at > $1 AND a.papercode_file_session_id IS NOT NULL
+  SELECT a.helper_file_session_id AS jti, a.revoked_at FROM access_sessions a
+  WHERE a.revoked_at IS NOT NULL AND a.expires_at > $1 AND a.helper_file_session_id IS NOT NULL
   UNION ALL
-  SELECT m.papercode_terminal_session_id AS jti, m.revoked_at FROM connected_machine_access_sessions m
-  WHERE m.revoked_at IS NOT NULL AND m.expires_at > $1 AND m.papercode_terminal_session_id IS NOT NULL
+  SELECT m.helper_terminal_session_id AS jti, m.revoked_at FROM user_machine_access_sessions m
+  WHERE m.revoked_at IS NOT NULL AND m.expires_at > $1 AND m.helper_terminal_session_id IS NOT NULL
   UNION ALL
-  SELECT m.papercode_file_session_id AS jti, m.revoked_at FROM connected_machine_access_sessions m
-  WHERE m.revoked_at IS NOT NULL AND m.expires_at > $1 AND m.papercode_file_session_id IS NOT NULL
+  SELECT m.helper_file_session_id AS jti, m.revoked_at FROM user_machine_access_sessions m
+  WHERE m.revoked_at IS NOT NULL AND m.expires_at > $1 AND m.helper_file_session_id IS NOT NULL
 ) revoked
 ORDER BY revoked.revoked_at, revoked.jti
 LIMIT $2
@@ -3907,7 +3907,7 @@ const reconcileStaleControlConfigWarning = `-- name: ReconcileStaleControlConfig
 WITH stale AS (
   SELECT a.environment_id
   FROM control_config_assignments a
-  JOIN connected_machines cm ON cm.environment_id = a.environment_id AND cm.deleted_at IS NULL
+  JOIN user_machines cm ON cm.environment_id = a.environment_id AND cm.deleted_at IS NULL
   WHERE a.repository_id IS NOT NULL AND a.revoked_at IS NULL
     AND a.consent_state = 'accepted'
     AND a.warning_revision IS DISTINCT FROM $1

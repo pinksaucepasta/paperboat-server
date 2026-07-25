@@ -6,35 +6,35 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/pinksaucepasta/paperboat-server/internal/agentunnel"
+	"github.com/pinksaucepasta/paperboat-server/internal/access"
 )
 
-func projectsConnect(service *agentunnel.Service, kind agentunnel.ConnectKind) http.HandlerFunc {
+func projectConnectionDescriptor(service *access.Service, kind access.DescriptorKind) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := principalFromContext(r.Context())
 		if !ok {
 			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
 			return
 		}
-		clientSessionID := ""
+		cliClientSessionID := ""
 		if p.Client != nil {
-			clientSessionID = p.Client.SessionID
+			cliClientSessionID = p.Client.SessionID
 		}
 		var body struct {
 			TerminalSessionID string `json:"terminal_session_id"`
 		}
-		if kind == agentunnel.ConnectCLI && r.Body != nil {
+		if kind == access.DescriptorForCLI && r.Body != nil {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
 				writeError(w, r, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON.")
 				return
 			}
 		}
-		response, err := service.Connect(r.Context(), agentunnel.ConnectInput{
-			UserID:            p.User.ID,
-			ProjectID:         r.PathValue("project_id"),
-			Kind:              kind,
-			ClientSessionID:   clientSessionID,
-			TerminalSessionID: body.TerminalSessionID,
+		response, err := service.Connect(r.Context(), access.DescriptorRequest{
+			UserID:             p.User.ID,
+			ProjectID:          r.PathValue("project_id"),
+			Kind:               kind,
+			CLIClientSessionID: cliClientSessionID,
+			TerminalSessionID:  body.TerminalSessionID,
 		})
 		if writeAccessError(w, r, err) {
 			return
@@ -47,7 +47,7 @@ func projectsConnect(service *agentunnel.Service, kind agentunnel.ConnectKind) h
 	}
 }
 
-func projectsConnectionStatus(service *agentunnel.Service) http.HandlerFunc {
+func projectConnectionReadiness(service *access.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := principalFromContext(r.Context())
 		if !ok {
@@ -67,29 +67,29 @@ func writeAccessError(w http.ResponseWriter, r *http.Request, err error) bool {
 		return false
 	}
 	switch {
-	case errors.Is(err, agentunnel.ErrTerminalSessionOperationPending):
+	case errors.Is(err, access.ErrTerminalSessionOperationPending):
 		writeError(w, r, http.StatusConflict, "terminal_session_operation_pending", "Terminal session operation is pending. Retry shortly.")
-	case errors.Is(err, agentunnel.ErrTerminalSessionNotFound):
+	case errors.Is(err, access.ErrTerminalSessionNotFound):
 		writeError(w, r, http.StatusNotFound, "terminal_session_not_found", "Terminal session was not found.")
-	case errors.Is(err, agentunnel.ErrTerminalRuntimeUnavailable):
+	case errors.Is(err, access.ErrTerminalRuntimeUnavailable):
 		writeError(w, r, http.StatusServiceUnavailable, "terminal_runtime_unavailable", "Terminal runtime is unavailable. Retry shortly.")
-	case errors.Is(err, agentunnel.ErrNotFound):
+	case errors.Is(err, access.ErrNotFound):
 		writeError(w, r, http.StatusNotFound, "project_not_found", "Project was not found.")
-	case errors.Is(err, agentunnel.ErrDeleted):
+	case errors.Is(err, access.ErrDeleted):
 		writeError(w, r, http.StatusConflict, "project_deleted", "Deleted projects cannot be connected.")
-	case errors.Is(err, agentunnel.ErrInvalidState):
+	case errors.Is(err, access.ErrInvalidState):
 		writeError(w, r, http.StatusConflict, "machine_not_ready", "Machine is not ready for connection.")
-	case errors.Is(err, agentunnel.ErrMachineFailed):
+	case errors.Is(err, access.ErrMachineFailed):
 		writeError(w, r, http.StatusConflict, "machine_failed", "The project machine failed to start.")
-	case errors.Is(err, agentunnel.ErrInsufficientCredit):
+	case errors.Is(err, access.ErrInsufficientCredit):
 		writeError(w, r, http.StatusConflict, "credits_exhausted", "Credits are too low to connect to this project.")
-	case errors.Is(err, agentunnel.ErrTunnelUnavailable):
+	case errors.Is(err, access.ErrTunnelUnavailable):
 		writeError(w, r, http.StatusServiceUnavailable, "tunnel_unavailable", "The tunnel is not available yet.")
-	case errors.Is(err, agentunnel.ErrProvider):
+	case errors.Is(err, access.ErrProvider):
 		writeError(w, r, http.StatusBadGateway, "provider_error", "The access provider rejected the connection request.")
-	case errors.Is(err, agentunnel.ErrCredentialIssuerUnavailable):
-		writeError(w, r, http.StatusNotImplemented, "credential_issuer_unavailable", "CLI papercode credential issuance is not available yet.")
-	case errors.Is(err, agentunnel.ErrGitHubRequired):
+	case errors.Is(err, access.ErrCredentialIssuerUnavailable):
+		writeError(w, r, http.StatusServiceUnavailable, "credential_issuer_unavailable", "Connection credential issuance is unavailable. Retry later.")
+	case errors.Is(err, access.ErrGitHubRequired):
 		writeError(w, r, http.StatusConflict, "github_config_not_ready", "GitHub config is not ready for this project.")
 	default:
 		writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")

@@ -6,13 +6,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pinksaucepasta/paperboat-server/internal/agentunnel"
+	"github.com/pinksaucepasta/paperboat-server/internal/access"
 )
 
 func TestWriteAccessErrorDistinguishesMachineFailure(t *testing.T) {
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/projects/prj_1/cli-connect", nil)
-	if !writeAccessError(recorder, request, agentunnel.ErrMachineFailed) {
+	request := httptest.NewRequest(http.MethodPost, "/v1/projects/prj_1/connection-descriptor", nil)
+	if !writeAccessError(recorder, request, access.ErrMachineFailed) {
 		t.Fatal("machine failure was not handled")
 	}
 	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), `"code":"machine_failed"`) {

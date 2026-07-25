@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/pinksaucepasta/paperboat-server/internal/agentunnel"
+	"github.com/pinksaucepasta/paperboat-server/internal/access"
 	"github.com/pinksaucepasta/paperboat-server/internal/auth"
 )
 
@@ -108,7 +108,7 @@ func workOSReauthCallback(service *auth.Service) http.HandlerFunc {
 	}
 }
 
-func logout(service *auth.Service, access *agentunnel.Service) http.HandlerFunc {
+func logout(service *auth.Service, access *access.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if unsafeMethod(r.Method) {
 			if err := service.ValidateCSRF(r.Context(), r); err != nil {
@@ -254,7 +254,7 @@ func requireScope(scope string, next http.Handler) http.Handler {
 }
 
 func shouldRotateForRequest(r *http.Request) bool {
-	return !unsafeMethod(r.Method) && r.URL.Path != "/api/auth/csrf"
+	return !unsafeMethod(r.Method) && r.URL.Path != "/v1/auth/csrf"
 }
 
 func requireCSRF(service *auth.Service, next http.Handler) http.Handler {

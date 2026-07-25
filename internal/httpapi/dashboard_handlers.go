@@ -51,8 +51,8 @@ func dashboardUsageSummary(billingService *billing.Service, projectService *proj
 				"running":           running,
 				"restart_required":  restartRequired,
 				"counts_by_state":   states,
-				"list_endpoint":     "/api/projects",
-				"connection_status": "/api/projects/{project_id}/connection-status",
+				"list_endpoint":     "/v1/projects",
+				"connection_status": "/v1/projects/{project_id}/connection-descriptor",
 			},
 		}})
 	})

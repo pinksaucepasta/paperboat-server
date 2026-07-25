@@ -3,10 +3,8 @@ package configsync
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
 
@@ -255,73 +253,6 @@ func (r *Repository) RotationWorker(interval time.Duration) func(context.Context
 	}
 }
 
-func (r *Repository) Account(ctx context.Context, userID string) (AccountStatus, error) {
-	result := AccountStatus{State: "idle", Policy: PolicyInfo{Revision: r.policy.PolicyRevision, MaxFileBytes: r.policy.MaxFileBytes, MaxBatchBytes: r.policy.MaxBatchBytes, Format: "paperboat-chezmoi-age-v1", MandatoryExclusions: append([]string{}, r.policy.MandatoryExcludes...)}, Projects: []MachineStatus{}}
-	repo, err := r.db.Queries().GetConfigSyncRepositoryByUser(ctx, userID)
-	if err == nil {
-		result.Repository = RepositoryInfo{Owner: repo.Owner, Name: repo.Name, Branch: repo.DefaultBranch, WebURL: safeWebURL(repo.HtmlUrl)}
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return AccountStatus{}, err
-	}
-	rows, err := r.db.Queries().ListConfigSyncStatusesByUser(ctx, userID)
-	if err != nil {
-		return AccountStatus{}, err
-	}
-	for _, row := range rows {
-		item := MachineStatus{ProjectID: row.ProjectID, ProjectName: row.ProjectName, ProjectState: row.ProjectState, MachineID: row.MachineID, State: row.State, RemoteCommit: row.RemoteCommit, PendingPathCount: int(row.PendingPathCount), ErrorCode: row.ErrorCode, ErrorMessage: row.ErrorMessage, MaxFileBytes: row.MaxFileBytes, MaxBatchBytes: row.MaxBatchBytes, PolicyRevision: row.PolicyRevision, ClassifierPolicyRevision: row.ClassifierPolicyRevision, ClassifierModelRevision: row.ClassifierModelRevision, ClassifierHealth: row.ClassifierHealth, EncryptionKeyVersion: int(row.EncryptionKeyVersion)}
-		if row.MaxFileBytes > 0 && row.MaxFileBytes < result.Policy.MaxFileBytes {
-			result.Policy.MaxFileBytes = row.MaxFileBytes
-		}
-		if row.MaxBatchBytes > 0 && row.MaxBatchBytes < result.Policy.MaxBatchBytes {
-			result.Policy.MaxBatchBytes = row.MaxBatchBytes
-		}
-		if row.LastAttemptAt.Valid {
-			at := row.LastAttemptAt.Time.UTC()
-			item.LastAttemptAt = &at
-		}
-		if row.LastSuccessfulSyncAt.Valid {
-			at := row.LastSuccessfulSyncAt.Time.UTC()
-			item.LastSuccessfulAt = &at
-		}
-		_ = json.Unmarshal(row.Skipped, &item.Skipped)
-		_ = json.Unmarshal(row.Conflicts, &item.Conflicts)
-		_ = json.Unmarshal(row.ClassifierPending, &item.ClassifierPending)
-		item.Skipped = boundSummaries(item.Skipped, r.policy.SummaryLimit)
-		item.Conflicts = boundSummaries(item.Conflicts, r.policy.SummaryLimit)
-		item.ClassifierPending = boundSummaries(item.ClassifierPending, r.policy.SummaryLimit)
-		if item.Skipped == nil {
-			item.Skipped = []PathSummary{}
-		}
-		if item.Conflicts == nil {
-			item.Conflicts = []PathSummary{}
-		}
-		if item.ClassifierPending == nil {
-			item.ClassifierPending = []PathSummary{}
-		}
-		if row.State == "" {
-			item.State = stateWithoutHeartbeat(row.ProjectState)
-		} else {
-			heartbeat := row.HeartbeatAt.UTC()
-			statusUpdated := row.StatusUpdatedAt.UTC()
-			statusObserved := row.StatusObservedAt.UTC()
-			received := row.ReceivedAt.UTC()
-			item.HeartbeatAt = &heartbeat
-			item.StatusUpdatedAt = &statusUpdated
-			now := r.now()
-			activityStale := now.Sub(received) > r.policy.StaleHeartbeatAfter
-			statusStale := now.Sub(statusObserved) > r.policy.StaleHeartbeatAfter
-			if activeProject(row.ProjectState) && (activityStale || statusStale) {
-				item.LastResultState, item.State = item.State, "offline"
-			} else if !activeProject(row.ProjectState) {
-				item.LastResultState, item.State = item.State, "idle"
-			}
-		}
-		result.Projects = append(result.Projects, item)
-	}
-	result.State = aggregate(result.Projects)
-	return result, nil
-}
-
 func activeProject(state string) bool {
 	switch state {
 	case "creating", "provisioning_storage", "provisioning_machine", "starting", "running", "restarting", "stopping":
@@ -350,13 +281,4 @@ func aggregate(items []MachineStatus) string {
 		}
 	}
 	return state
-}
-
-func safeWebURL(raw string) string {
-	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
-		return ""
-	}
-	parsed.RawQuery, parsed.Fragment = "", ""
-	return parsed.String()
 }

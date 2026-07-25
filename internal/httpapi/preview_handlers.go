@@ -14,7 +14,7 @@ type previewResponse struct {
 	ID              string     `json:"id"`
 	EnvironmentID   string     `json:"environment_id"`
 	ProjectID       string     `json:"project_id,omitempty"`
-	MachineID       string     `json:"machine_id,omitempty"`
+	ResourceID      string     `json:"resource_id,omitempty"`
 	UserID          string     `json:"user_id,omitempty"`
 	LogicalName     string     `json:"logical_name"`
 	PreviewKey      string     `json:"preview_key"`
@@ -55,8 +55,8 @@ func newOwnedPreviewResponse(item controlplane.OwnedPreview) previewResponse {
 	response.EnvironmentName = item.EnvironmentName
 	response.EnvironmentKind = item.EnvironmentKind
 	response.OwnerEmail = item.OwnerEmail
-	if item.MachineID.Valid {
-		response.MachineID = item.MachineID.String
+	if item.ResourceID.Valid {
+		response.ResourceID = item.ResourceID.String
 	}
 	if item.UserID.Valid {
 		response.UserID = item.UserID.String

@@ -18,15 +18,15 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 )
 
-func TestConnectedMachineHeartbeatCommitsServerReceiptTime(t *testing.T) {
+func TestUserMachineHeartbeatCommitsServerReceiptTime(t *testing.T) {
 	store := openRuntimeTestDB(t)
 	ctx := context.Background()
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
-	userID, machineID, environmentID := "usr_heartbeat_"+suffix, "cm_heartbeat_"+suffix, "env_heartbeat_"+suffix
+	userID, machineID, environmentID := "usr_heartbeat_"+suffix, "um_heartbeat_"+suffix, "env_heartbeat_"+suffix
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_"+suffix, "heartbeat-"+suffix+"@example.test"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.connected_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,'Heartbeat','linux','amd64','/home/test','offline','occupied',false)`, machineID, userID, environmentID); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,'Heartbeat','linux','amd64','/home/test','offline','occupied',false)`, machineID, userID, environmentID); err != nil {
 		t.Fatal(err)
 	}
 	started := time.Now().UTC().Add(-time.Second)
@@ -36,7 +36,7 @@ func TestConnectedMachineHeartbeatCommitsServerReceiptTime(t *testing.T) {
 	var state string
 	var online bool
 	var lastSeen time.Time
-	if err := store.SQL().QueryRowContext(ctx, `SELECT state,online,last_seen_at FROM paperboat.connected_machines WHERE id=$1`, machineID).Scan(&state, &online, &lastSeen); err != nil {
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state,online,last_seen_at FROM paperboat.user_machines WHERE id=$1`, machineID).Scan(&state, &online, &lastSeen); err != nil {
 		t.Fatal(err)
 	}
 	if state != "online" || !online || lastSeen.Before(started) {
@@ -508,7 +508,7 @@ UPDATE paperboat.subscriptions SET state = 'canceled', current_period_end = $2 W
 	}
 	if _, err := store.SQL().ExecContext(ctx, `
 INSERT INTO paperboat.access_sessions (id, user_id, project_id, session_type, state, descriptor, expires_at, idempotency_key)
-VALUES ($1, $2, $3, 'papercode', 'active', '{}'::jsonb, $4, $5)`,
+VALUES ($1, $2, $3, 'helper', 'active', '{}'::jsonb, $4, $5)`,
 		"acs_entitlement_"+suffix, userID, "prj_entitlement_"+suffix, nowPlusHour(), "access-entitlement-"+suffix); err != nil {
 		t.Fatal(err)
 	}

@@ -1,8 +1,9 @@
 # Paperboat Server API
 
-Status: existing Phase 10 APIs plus the implemented Phase 1 CLI authorization surface. Device
-authorization, bearer sessions, JWKS, and the final descriptor are documented before their
-implementation phases. The machine-readable schema is [`docs/openapi.json`](openapi.json).
+The API is contract-first. Its schemas are maintained in
+[`docs/openapi.json`](openapi.json); CI extracts registered methods and paths from the
+router and requires matching OpenAPI operations. Focused contract tests additionally
+verify authentication and important request and response schemas.
 
 This API is the control-plane contract for dashboard and CLI clients. It authorizes,
 meters, and orchestrates resources; it does not proxy terminal, preview, or WebSocket
@@ -38,33 +39,33 @@ Project lifecycle and access routes are replay-safe through persisted project, s
 and orchestration state; they do not currently require a client idempotency key.
 
 Mutable resources include a numeric `version`. Dashboard updates to
-`PATCH /api/projects/{project_id}` must send either an `If-Match` header containing that
+`PATCH /v1/projects/{project_id}` must send either an `If-Match` header containing that
 version or a `version` field in the JSON body. Stale writes fail with `version_conflict`.
 
 ## Dashboard Reads
 
-- `GET /api/me`
-- `GET /api/billing/entitlement`
-- `GET /api/billing/usage`
-- `GET /api/billing/plan-products`
-- `GET /api/dashboard/usage-summary`
-- `GET /api/config-sync/status`
-- `GET|PUT|DELETE /api/config-sync/overrides`
-- `POST /api/config-sync/recovery-key/export`
-- `POST /api/config-sync/recovery-key/rotate`
-- `GET /api/catalog/plans`
-- `GET /api/catalog/machine-types`
-- `GET /api/catalog/presets`
-- `GET /api/catalog/idle-timeouts`
-- `GET /api/catalog/regions`
-- `GET /api/github/status`
-- `GET /api/projects`
-- `GET /api/projects/{project_id}`
-- `GET /api/projects/{project_id}/events`
-- `GET /api/projects/{project_id}/connection-status`
-- `GET /api/projects/{project_id}/terminal-sessions`
+- `GET /v1/me`
+- `GET /v1/billing/entitlement`
+- `GET /v1/billing/usage`
+- `GET /v1/billing/plan-products`
+- `GET /v1/usage-summary`
+- `GET /v1/config-sync/status`
+- `GET|PUT|DELETE /v1/config-sync/overrides`
+- `POST /v1/config-sync/recovery-key/export`
+- `POST /v1/config-sync/recovery-key/rotate`
+- `GET /v1/catalog/plans`
+- `GET /v1/catalog/machine-types`
+- `GET /v1/catalog/presets`
+- `GET /v1/catalog/idle-timeouts`
+- `GET /v1/catalog/regions`
+- `GET /v1/github/status`
+- `GET /v1/projects`
+- `GET /v1/projects/{project_id}`
+- `GET /v1/projects/{project_id}/events`
+- `GET /v1/projects/{project_id}/connection-readiness`
+- `GET /v1/projects/{project_id}/terminal-sessions`
 
-`GET /api/projects` returns a shaped list response:
+`GET /v1/projects` returns a shaped list response:
 
 ```json
 {
@@ -97,25 +98,25 @@ machine types, presets, idle timeouts, regions, credit weights, or storage limit
 
 ## Dashboard Writes
 
-- `POST /api/auth/workos/callback`
-- `POST /api/auth/logout`
-- `GET /api/auth/device/requests/{user_code}`
-- `POST /api/auth/device/requests/{user_code}/approve`
-- `POST /api/auth/device/requests/{user_code}/deny`
-- `POST /api/billing/checkout`
-- `POST /api/billing/customer-portal`
-- `POST /api/github/oauth/start`
-- `GET /api/github/oauth/callback`
-- `POST /api/github/oauth/callback`
-- `POST /api/github/config-repo/provision`
-- `POST /api/projects`
-- `PATCH /api/projects/{project_id}`
-- `DELETE /api/projects/{project_id}`
-- `POST /api/projects/{project_id}/start`
-- `POST /api/projects/{project_id}/stop`
-- `POST /api/projects/{project_id}/restart`
-- `POST /api/projects/{project_id}/keep-alive`
-- `POST /api/projects/{project_id}/activity`
+- `POST /v1/auth/workos/callback`
+- `POST /v1/auth/logout`
+- `GET /v1/auth/device/requests/{user_code}`
+- `POST /v1/auth/device/requests/{user_code}/approve`
+- `POST /v1/auth/device/requests/{user_code}/deny`
+- `POST /v1/billing/checkout`
+- `POST /v1/billing/customer-portal`
+- `POST /v1/github/oauth/start`
+- `GET /v1/github/oauth/callback`
+- `POST /v1/github/oauth/callback`
+- `POST /v1/github/config-repositories/provision`
+- `POST /v1/projects`
+- `PATCH /v1/projects/{project_id}`
+- `DELETE /v1/projects/{project_id}`
+- `POST /v1/projects/{project_id}/start`
+- `POST /v1/projects/{project_id}/stop`
+- `POST /v1/projects/{project_id}/restart`
+- `POST /v1/projects/{project_id}/keep-alive`
+- `POST /v1/projects/{project_id}/activity`
 
 Project create returns `201` for a new idempotency key and `200` for a matching retry.
 Project lifecycle writes return accepted state and enqueue provider work; clients should
@@ -124,18 +125,18 @@ use project reads, project events, and connection status for progress.
 ## CLI Access
 
 CLI sign-in uses the device authorization and rotating client-session contract documented
-in `docs/contracts/cli-authorization.md`. Browser cookies and papercode environment tokens
+in `docs/contracts/cli-authorization.md`. Browser cookies and helper environment tokens
 are not accepted as CLI identity. CLI project APIs require scoped Paperboat bearer tokens.
-Dashboard `POST /api/auth/logout` revokes only the current browser session; CLI family
-logout uses `POST /api/auth/token/revoke`. Account suspension and administrative account
+Dashboard `POST /v1/auth/logout` revokes only the current browser session; CLI family
+logout uses `POST /v1/auth/token/revoke`. Account suspension and administrative account
 revocation revoke all authorized CLI clients.
 Client revocation also marks linked Paperboat access-session records revoked and those
-records now retain papercode terminal/file session IDs. Signed bearer invalidation is
+records now retain helper terminal/file session IDs. Signed bearer invalidation is
 implemented for client, user, project, and metering/entitlement enforcement. Enforcement
 uses a durable delivery marker and retries failed downstream propagation. Downstream
 credentials otherwise expire at their configured short lifetime.
-`GET /api/projects` requires `projects:read`. `POST /api/projects/{project_id}/cli-connect`
-and `GET /api/projects/{project_id}/connection-status` require `projects:connect`.
+`GET /v1/projects` requires `projects:read`. `POST /v1/projects/{project_id}/connection-descriptor`
+and `GET /v1/projects/{project_id}/connection-readiness` require `projects:connect`.
 
 ## Terminal Sessions
 
@@ -145,21 +146,21 @@ session used by existing CLI versions. Session names are lower-case, unique per 
 must match `[a-z0-9][a-z0-9._-]{0,63}`. The server creates opaque terminal IDs; client
 supplied names never become runtime terminal IDs.
 
-`GET /api/projects/{project_id}/connection-status` accepts the same optional
+`GET /v1/projects/{project_id}/connection-readiness` accepts the same optional
 `terminal_session_id` query parameter. CLI readiness polls and the final descriptor
 re-broker therefore retain the selected session rather than reverting to `default`.
-When any terminal close or history purge is awaiting Papercode reconciliation, the endpoint
-returns the retryable `papercode_starting` / `terminal_session_operation_pending` state until
+When any terminal close or history purge is awaiting Helper reconciliation, the endpoint
+returns the retryable `helper_starting` / `terminal_session_operation_pending` state until
 the cleanup is complete.
 
-- `GET /api/projects/{project_id}/terminal-sessions` requires `projects:read` and accepts
+- `GET /v1/projects/{project_id}/terminal-sessions` requires `projects:read` and accepts
   `limit` (1-200) and `offset`.
-- `POST /api/projects/{project_id}/terminal-sessions` requires `projects:connect`, an
+- `POST /v1/projects/{project_id}/terminal-sessions` requires `projects:connect`, an
   `Idempotency-Key`, and an optional `{ "name": "api" }` body.
-- `PATCH /api/projects/{project_id}/terminal-sessions/{session_id}` renames a non-default
+- `PATCH /v1/projects/{project_id}/terminal-sessions/{session_id}` renames a non-default
   session.
-- `POST /api/projects/{project_id}/terminal-sessions/{session_id}/close` and `DELETE ...`
-  first apply physical papercode work when the runtime is reachable. `200` means it was
+- `POST /v1/projects/{project_id}/terminal-sessions/{session_id}/close` and `DELETE ...`
+  first apply physical helper work when the runtime is reachable. `200` means it was
   applied immediately; `202` means it remains pending and that session cannot be attached
   until reconciliation completes.
 
@@ -168,20 +169,20 @@ Session list records contain `id`, `name`, `is_default`, `state`, nullable
 
 - `GET /.well-known/jwks.json`
 - `GET /v1/client-configuration` returns server-owned URLs used by unauthenticated clients.
-- `POST /api/auth/device/authorize`
-- `POST /api/auth/device/token`
-- `POST /api/auth/token/refresh`
-- `POST /api/auth/token/revoke`
-- `GET /api/auth/clients`
-- `DELETE /api/auth/clients/{client_session_id}`
-- `POST /api/projects/{project_id}/cli-connect`
-- `GET /api/projects/{project_id}/connection-status`
+- `POST /v1/auth/device/authorize`
+- `POST /v1/auth/device/token`
+- `POST /v1/auth/token/refresh`
+- `POST /v1/auth/token/revoke`
+- `GET /v1/auth/cli-client-sessions`
+- `DELETE /v1/auth/cli-client-sessions/{cli_client_session_id}`
+- `POST /v1/projects/{project_id}/connection-descriptor`
+- `GET /v1/projects/{project_id}/connection-readiness`
 
 `cli-connect` returns a short-lived descriptor that lets the CLI connect through
-agentunnel. The server may start or resume the project machine before returning the
+provider_route. The server may start or resume the project machine before returning the
 descriptor. A not-ready response is HTTP `202` and contains no credentials; the CLI polls
 connection status and calls `cli-connect` again once ready. Live terminal and staged-image
-traffic still goes through agentunnel to papercode, not this API.
+traffic still goes through provider_route to helper, not this API.
 
 ## Error Codes
 

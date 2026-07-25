@@ -52,17 +52,17 @@ func TestHealthDoesNotRequireReadiness(t *testing.T) {
 	}
 }
 
-func TestRetiredHostedAccessRoutesAreNotRegistered(t *testing.T) {
+func TestRetiredHostedEnvironmentAccesssAreNotRegistered(t *testing.T) {
 	router := NewRouter(Options{Config: config.Default(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	for _, path := range []string{
-		"/api/projects/prj_retired/connect",
-		"/api/projects/prj_retired/papercode-connect",
+		"/v1/projects/prj_retired/connect",
+		"/v1/projects/prj_retired/helper-connect",
 	} {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, path, nil)
 		router.ServeHTTP(rec, req)
-		if rec.Code != http.StatusNotImplemented {
-			t.Fatalf("POST %s status = %d, want unregistered-route 501", path, rec.Code)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("POST %s status = %d, want unregistered-route 404", path, rec.Code)
 		}
 	}
 }
@@ -131,7 +131,7 @@ func TestCORSAllowsConfiguredOrigins(t *testing.T) {
 		}),
 	})
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodOptions, "/api/projects", strings.NewReader(""))
+	req := httptest.NewRequest(http.MethodOptions, "/v1/projects", strings.NewReader(""))
 	req.Header.Set("Origin", "https://dashboard.example")
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNoContent {
@@ -151,9 +151,9 @@ func TestUnknownEndpointIsStructuredError(t *testing.T) {
 		}),
 	})
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/projects", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/projects", nil)
 	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotImplemented {
+	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), `"error"`) {
@@ -345,7 +345,7 @@ func TestPolarWebhookReturnsRetryableStatusForRetryableBillingError(t *testing.T
 	signature := signedWebhookSignature(t, []byte(secret), webhookID, timestamp, body)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/polar", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/webhooks/polar", bytes.NewReader(body))
 	req.Header.Set("Webhook-Id", webhookID)
 	req.Header.Set("Webhook-Timestamp", timestamp)
 	req.Header.Set("Webhook-Signature", signature)

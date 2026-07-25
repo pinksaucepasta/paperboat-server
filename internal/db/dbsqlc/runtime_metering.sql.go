@@ -97,7 +97,7 @@ func (q *Queries) EmitIdleWarning(ctx context.Context, arg EmitIdleWarningParams
 }
 
 const getHeartbeatMachineTokenCiphertext = `-- name: GetHeartbeatMachineTokenCiphertext :one
-SELECT (ar.metadata->>'machine_token_ciphertext')::text AS machine_token_ciphertext FROM fly_machines fm JOIN agentunnel_resources ar ON ar.project_id=fm.project_id
+SELECT (ar.metadata->>'machine_token_ciphertext')::text AS machine_token_ciphertext FROM fly_machines fm JOIN provider_routes ar ON ar.project_id=fm.project_id
 WHERE fm.project_id=$1 AND fm.fly_machine_id=$2
 `
 

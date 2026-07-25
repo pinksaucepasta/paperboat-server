@@ -23,7 +23,6 @@ func TestDeleteCompletesWhenSecretsAreUndecryptable(t *testing.T) {
 
 	// Provision under the original key.
 	cfg := orchestratorTestConfig()
-	cfg.Secrets.AgentunnelMachineToken = "agentunnel-keydrift-token"
 	projectService := projects.NewService(store, audit.NewWriter(store), cfg)
 	project, _, err := projectService.Create(ctx, projects.CreateInput{
 		UserID:          "usr_orch_keydrift",

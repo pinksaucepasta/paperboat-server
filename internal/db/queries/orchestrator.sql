@@ -99,8 +99,8 @@ SELECT clone_url,default_branch FROM github_config_repositories WHERE user_id=$1
 -- name: GetProjectSetupScriptCiphertext :one
 SELECT script_ciphertext FROM project_setup_script_revisions WHERE project_id=$1 AND id=$2;
 
--- name: GetOrchestrationAgentunnelResource :one
-SELECT tunnel_id,client_id,(metadata->>'machine_token_ciphertext')::text AS machine_token_ciphertext FROM agentunnel_resources WHERE project_id=$1;
+-- name: GetOrchestrationProviderRouteResource :one
+SELECT tunnel_id,client_id,(metadata->>'machine_token_ciphertext')::text AS machine_token_ciphertext FROM provider_routes WHERE project_id=$1;
 
 -- name: GetProjectMachine :one
 SELECT fly_machine_id,state FROM fly_machines WHERE project_id=$1;

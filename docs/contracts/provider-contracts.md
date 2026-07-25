@@ -93,7 +93,7 @@ Implementation constraints:
   configuration values, not code constants.
 - Restart apply updates the provider machine and clears `pending_restart_apply` only after
   the provider update succeeds.
-- Agentunnel machine token and GitHub config sync token are injected into the provider
+- ProviderRoute machine token and GitHub config sync token are injected into the provider
   machine spec through configurable Fly secret names. Machine process config explicitly
   opts out of app-wide secret inheritance and references only the required secret names.
   Secret values are never returned by HTTP APIs or written to project/audit event
@@ -135,7 +135,7 @@ Implementation constraints:
 
 ## Catalog Seed Sets
 
-Phase 2 must seed these catalogs from approved dynamic sources:
+Production deployment must seed these catalogs from approved dynamic sources:
 
 - `plans`
 - `plan_versions`

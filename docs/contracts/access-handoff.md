@@ -1,6 +1,6 @@
 # Access Handoff Contracts
 
-Status: Phase 0 frozen implementation target.
+Status: Contract frozen implementation target.
 
 ## Boundary
 
@@ -10,13 +10,13 @@ preview, HTTP, or WebSocket traffic.
 Live data path:
 
 ```text
-papercode / paperboat-cli / dashboard
-  -> agentunnel route
+helper / paperboat-cli / dashboard
+  -> provider_route route
   -> project VM
-  -> papercode server / preview service
+  -> helper server / preview service
 ```
 
-Project access uses the Agentunnel HTTP/WebSocket route exclusively. No project SSH/TCP
+Project access uses the ProviderRoute HTTP/WebSocket route exclusively. No project SSH/TCP
 route is provisioned or returned from `cli-connect`.
 
 Control path:
@@ -38,7 +38,7 @@ Every connect endpoint must verify:
 - User has enough credit state to connect or start according to approved policy.
 - Project is not deleted, deleting, failed without recovery, or suspended.
 - GitHub/config provisioning state is compatible with requested action.
-- Machine and agentunnel resources exist or can be reconciled.
+- Machine and provider_route resources exist or can be reconciled.
 - Access event and failure reason are recorded.
 
 ## Shared Descriptor Rules
@@ -51,14 +51,14 @@ Descriptors:
 - Include current `project_state`.
 - Include connection status and reason if not connectable.
 - Include only client-safe routing metadata.
-- Exclude raw agentunnel client tokens, API keys, SSH keys, provider tokens, and
+- Exclude raw provider_route client tokens, API keys, SSH keys, provider tokens, and
   VM-injected credentials.
 
-The former generic `connect` and Papercode-specific `papercode-connect` endpoints are
+The former generic `connect` and Helper-specific `helper-connect` endpoints are
 retired. They are not registered production routes. Hosted terminal clients use the
 canonical bearer-authenticated endpoint below.
 
-## `POST /api/projects/{project_id}/cli-connect`
+## `POST /v1/projects/{project_id}/connection-descriptor`
 
 Ready CLI descriptors include `issuer`, the normalized Paperboat public issuer. Clients
 must compare it to the normalized issuer of their active credential profile before using
@@ -68,15 +68,15 @@ The descriptor's `environment` object includes both `environment_id` (the stable
 identity) and `project_id` (the owning Paperboat project). These identifiers are distinct;
 clients bind the environment to `project_id` and do not infer one from the other.
 
-`POST /api/projects/{project_id}/activity` accepts either the dashboard cookie plus CSRF
+`POST /v1/projects/{project_id}/activity` accepts either the dashboard cookie plus CSRF
 header or a Paperboat bearer session with `projects:connect`; CLI activity uses the latter
 and sends `source: "cli_activity"` with the event name in metadata.
 
 Purpose:
 
 - Return CLI-safe connection metadata for terminal attach and image paste upload.
-- The CLI is a headless papercode terminal client: it attaches over the
-  tunneled papercode HTTP/WebSocket route, not over SSH.
+- The CLI is a headless helper terminal client: it attaches over the
+  tunneled helper HTTP/WebSocket route, not over SSH.
 
 Frozen ready response data shape:
 
@@ -95,7 +95,7 @@ Frozen ready response data shape:
     "project_root": "/workspace/project"
   },
   "terminal": {
-    "kind": "papercode_websocket",
+    "kind": "paperboat_terminal_v1",
     "websocket_base_url": "wss://...",
     "auth": {
       "method": "websocket_ticket",
@@ -108,9 +108,9 @@ Frozen ready response data shape:
     "cwd": "/workspace/project"
   },
   "upload": {
-    "kind": "papercode_staged_image",
+    "kind": "paperboat_staged_image_v1",
     "http_base_url": "https://...",
-    "path": "/api/files/staged-images",
+    "path": "/v1/files/staged-images",
     "auth": {
       "method": "bearer",
       "token": "pat_...",
@@ -126,25 +126,25 @@ Frozen ready response data shape:
 
 `thread_id` and `terminal_id` are server-authored protocol identifiers, not project or
 machine identities. `expires_at` is no later than any nested credential expiry. Endpoint
-URLs must be HTTPS/WSS agentunnel routes and never contain VM addresses or provider tokens.
+URLs must be HTTPS/WSS provider_route routes and never contain VM addresses or provider tokens.
 
 Not-ready `cli-connect` responses use HTTP `202`, `connectable: false`, and one of these
 stable statuses:
 
 - `machine_starting` with reason `machine_start_queued` or `machine_not_running`
 - `tunnel_connecting` with reason `tunnel_offline`
-- `papercode_starting` with reason `papercode_unhealthy`
+- `helper_starting` with reason `helper_unhealthy`
 
 They include `project_id`, `project_state`, `status`, `reason`, and
 `retry_after_seconds`. Every pending combination has `connectable: false` and a positive
 retry interval. The only ready combination is `connectable: true`, `status: ready`,
 `reason: ready`, and `retry_after_seconds: 0`.
-`GET /api/projects/{project_id}/connection-status` reports those readiness fields but never
+`GET /v1/projects/{project_id}/connection-readiness` reports those readiness fields but never
 returns terminal or upload credentials. Its optional `terminal_session_id` query parameter
 retains the selected terminal identity during polling; once it reports ready, the client calls
 `cli-connect` again with that same ID to mint fresh auth material.
 Pending terminal close and history-purge operations are reconciled before it reports ready;
-until then it returns `papercode_starting` with
+until then it returns `helper_starting` with
 `terminal_session_operation_pending` and a retry interval.
 
 Runtime status:
@@ -152,13 +152,13 @@ Runtime status:
 - In fake-provider mode, `cli-connect` issues short-lived scoped terminal/upload auth
   metadata for local orchestration coverage.
 - In real-provider mode, `cli-connect` must fail closed with
-  `credential_issuer_unavailable` unless a papercode-valid credential issuer is configured.
+  `credential_issuer_unavailable` unless a helper-valid credential issuer is configured.
 - Do not return random, placeholder, unpersisted, or server-local-only token strings in
   `terminal.auth` or `upload.auth`.
 
 Approved baseline:
 
-- Real-provider `cli-connect` requires a configured papercode credential issuer. Without
+- Real-provider `cli-connect` requires a configured helper credential issuer. Without
   it, the endpoint fails closed with `credential_issuer_unavailable`.
 - Terminal auth is a single-use WebSocket ticket scoped to `terminal:operate`. Upload auth
   is a short-lived bearer token scoped only to `file:stage`.
@@ -167,14 +167,14 @@ Approved baseline:
 - Upload endpoint path, image size limit, and MIME policy are dynamic credential issuer or
   server configuration values, never CLI constants.
 
-## Connected-machine descriptors
+## User-machine descriptors
 
-`POST /api/connected-machines/{connected_machine_id}/connect` and
-`GET /api/connected-machines/{connected_machine_id}/connection-status` use the canonical
+`POST /v1/user-machines/{user_machine_id}/connection-descriptor` and
+`GET /v1/user-machines/{user_machine_id}/connection-readiness` uses the canonical
 `paperboat.environment-connection/v1` descriptor. The connect request accepts the optional
 `terminal_session_id` body field; status accepts it as a query field.
 
-Ready responses bind the environment to the connected machine:
+Ready responses bind the environment to the user machine:
 
 ```json
 {
@@ -183,7 +183,7 @@ Ready responses bind the environment to the connected machine:
   "environment": {
     "id": "env_...",
     "kind": "byod",
-    "resource_id": "cm_...",
+    "resource_id": "um_...",
     "display_name": "Studio",
     "state": "ready",
     "root": "/home/user"
@@ -193,8 +193,8 @@ Ready responses bind the environment to the connected machine:
 }
 ```
 
-The descriptor must not contain `project_id`, legacy connected-machine fields, raw
-connector addresses, connector tokens, or Agentunnel/Papercode implementation names.
+The descriptor must not contain `project_id`, legacy user-machine fields, raw
+connector addresses, connector tokens, or ProviderRoute/Helper implementation names.
 Terminal and upload endpoints use the applied `helper_https_wss` route assigned to the
 environment. Readiness requires the active environment and helper, the current admitted
 connector generation, its matching applied route observation, and a ready assigned edge
@@ -208,11 +208,11 @@ offline, lacks a seat, or has no remaining allowance/top-up capacity.
   machine replacement, and route reconciliation. It changes only when the project identity
   is permanently deleted and recreated.
 
-## Papercode Mint Proof
+## Helper Mint Proof
 
 The production mint request is a compact Ed25519 JWS with `alg=EdDSA`,
 `typ=t3-cloud-mint+jwt`, and a required `kid` published by the Paperboat issuer's JWKS.
-The payload and verification rules are owned by papercode's
+The payload and verification rules are owned by helper's
 `packages/contracts/src/paperboat.ts` contract:
 
 - Required claims: `iss`, `aud`, `sub`, `jti`, `iat`, `exp`, `environmentId`,
@@ -226,36 +226,36 @@ The payload and verification rules are owned by papercode's
 - JWKS caching follows HTTP cache policy. An unknown `kid` triggers one refresh. Old keys
   work only during the configured overlap while still published; unknown or unavailable
   keys fail closed.
-- Every issued papercode session id is recorded against the Paperboat client session so
+- Every issued helper session id is recorded against the Paperboat client session so
   logout, entitlement loss, project suspension/deletion, account suspension, and refresh
   replay can revoke downstream access.
 - `cli-connect` performs two independent mint/exchange flows: one session requests exactly
   `terminal:operate` and produces the WebSocket ticket; the other requests exactly
   `file:stage` and supplies the upload bearer. A bootstrap credential is never reused, and
   both downstream session ids are recorded for revocation.
-- Papercode creates both pairing grants without a proof-key thumbprint. `paperboat-server`
-  exchanges each bootstrap credential without a DPoP header, so papercode issues scoped
+- Helper creates both pairing grants without a proof-key thumbprint. `paperboat-server`
+  exchanges each bootstrap credential without a DPoP header, so helper issues scoped
   bearer sessions. The terminal bearer remains server-side and is used only to mint the
   single-use WebSocket ticket; the short-lived file bearer is the only access token returned
-  to the CLI. Papercode's separate proof-bound pairing profile remains DPoP-only.
+  to the CLI. Helper's separate proof-bound pairing profile remains DPoP-only.
 
 The normalized Paperboat issuer publishes `GET /.well-known/jwks.json`. It is
 unauthenticated and returns public signing keys with `kty=OKP`, `crv=Ed25519`, `alg=EdDSA`,
 `use=sig`, `kid`, and `x`. Cache lifetime and rotation overlap are dynamic configuration.
 Private key material is never exposed or stored in VM configuration.
 
-## `POST /api/projects/{project_id}/activity`
+## `POST /v1/projects/{project_id}/activity`
 
 Purpose:
 
-- Let authenticated papercode and paperboat-cli clients report user/agent activity that
+- Let authenticated helper and paperboat-cli clients report user/agent activity that
   should reset the server-owned idle detector.
 
 Request data shape:
 
 ```json
 {
-  "source": "papercode_activity",
+  "source": "helper_activity",
   "observed_at": "2026-07-05T12:00:00Z",
   "metadata": {
     "event": "editor_input"
@@ -265,20 +265,20 @@ Request data shape:
 
 Approved client sources:
 
-- `papercode_activity`
+- `helper_activity`
 - `cli_activity`
 
 Rules:
 
 - The endpoint requires an authenticated, entitled project owner.
 - `observed_at` is optional; the server records receipt time when it is omitted.
-- The endpoint rejects `connect_session`, `agentunnel_connection`, and `vm_heartbeat`
+- The endpoint rejects `connect_session`, `provider_route_connection`, and `vm_heartbeat`
   because those are server/provider-owned sources.
 - Metadata is diagnostic only and must not contain secrets or billing totals.
 
-## agentunnel Adapter Boundary
+## provider_route Adapter Boundary
 
-Observed agentunnel docs:
+Observed provider_route docs:
 
 - API envelope uses `ok` plus `data` or `error`.
 - Persistent TCP supports connect-info and forwarding status.
@@ -288,18 +288,18 @@ Observed agentunnel docs:
 
 Paperboat adapter behavior:
 
-- Calls agentunnel admin/control APIs server-side.
-- Stores agentunnel resource IDs in `agentunnel_resources`.
-- Translates agentunnel status into Paperboat connection status.
-- Keeps agentunnel response envelope internal to the adapter.
+- Calls provider_route admin/control APIs server-side.
+- Stores provider_route resource IDs in `provider_routes`.
+- Translates provider_route status into Paperboat connection status.
+- Keeps provider_route response envelope internal to the adapter.
 
 Approved baseline:
 
-- Paperboat uses server-side agentunnel admin/control APIs only.
+- Paperboat uses server-side provider_route admin/control APIs only.
 - Paperboat stores resource identifiers and client-safe route metadata, not raw provider
   secrets.
-- Agentunnel provisioning is idempotent and keyed by project.
+- ProviderRoute provisioning is idempotent and keyed by project.
 - User connect descriptors are short-lived and default to five minutes unless configured
   otherwise.
 - Revocation is implemented by refusing future descriptors and invoking provider-side
-  resource/session revocation when the agentunnel API exposes it.
+  resource/session revocation when the provider_route API exposes it.

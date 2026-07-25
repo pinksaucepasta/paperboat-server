@@ -21,7 +21,7 @@
           "features": [
             { "label": "1 active project", "icon": "projects" },
             { "label": "1 region", "icon": "regions" },
-            { "label": "Access to agentunnel", "icon": "agentunnel" },
+            { "label": "Secure terminal access", "icon": "terminal" },
             { "label": "Community support", "icon": "support" }
           ]
         }
@@ -42,7 +42,7 @@
           "features": [
             { "label": "Up to 5 active projects", "icon": "projects" },
             { "label": "Limited region access", "icon": "regions" },
-            { "label": "Access to agentunnel", "icon": "agentunnel" },
+            { "label": "Secure terminal access", "icon": "terminal" },
             { "label": "General support", "icon": "support" }
           ]
         }
@@ -64,7 +64,7 @@
           "features": [
             { "label": "Up to 20 active projects", "icon": "projects" },
             { "label": "Access to all regions", "icon": "regions" },
-            { "label": "Access to agentunnel", "icon": "agentunnel" },
+            { "label": "Secure terminal access", "icon": "terminal" },
             { "label": "Priority support", "icon": "support" }
           ]
         }
@@ -85,7 +85,7 @@
           "features": [
             { "label": "Up to 100 active projects", "icon": "projects" },
             { "label": "Access to all regions", "icon": "regions" },
-            { "label": "Access to agentunnel", "icon": "agentunnel" },
+            { "label": "Secure terminal access", "icon": "terminal" },
             { "label": "Priority support", "icon": "support" }
           ]
         }

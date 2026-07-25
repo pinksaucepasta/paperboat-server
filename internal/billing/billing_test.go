@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-func TestConnectedMachineEntitlementActive(t *testing.T) {
+func TestUserMachineEntitlementActive(t *testing.T) {
 	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
 		name, state string
@@ -28,7 +28,7 @@ func TestConnectedMachineEntitlementActive(t *testing.T) {
 		{name: "inactive current", state: "cancelled", end: now.Add(time.Hour), want: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if got := ConnectedMachineEntitlementActive(test.state, test.end, now); got != test.want {
+			if got := UserMachineEntitlementActive(test.state, test.end, now); got != test.want {
 				t.Fatalf("active = %t, want %t", got, test.want)
 			}
 		})

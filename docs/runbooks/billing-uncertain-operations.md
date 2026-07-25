@@ -22,7 +22,7 @@ evidence. Preserve the original request hash and operation key so a later retry
 cannot create a second provider mutation.
 
 When provider evidence proves that no mutation occurred, an administrator may call
-`POST /api/admin/billing/uncertain/{kind}/{operation_id}/recover` with the original
+`POST /v1/admin/billing/uncertain/{kind}/{operation_id}/recover` with the original
 operation idempotency key as `operation_id`, a new `Idempotency-Key` for the recovery,
 and `{ "evidence_reference": "<opaque-provider-or-incident-reference>" }`. Supported
 kinds are `checkout`, `portal`, `subscription_update`, and `auto_topup`.

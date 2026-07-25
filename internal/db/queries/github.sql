@@ -19,7 +19,7 @@ ON CONFLICT (user_id) DO UPDATE SET
 	updated_at = now(),
 	version = github_oauth_tokens.version + 1;
 
--- name: GetGitHubConnectionStatus :one
+-- name: GetGitHubConnectionReadiness :one
 SELECT scopes, last_validated_at, token_ciphertext FROM github_oauth_tokens
 WHERE user_id = $1 AND revoked_at IS NULL ORDER BY updated_at DESC LIMIT 1;
 

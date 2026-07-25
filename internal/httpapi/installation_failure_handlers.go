@@ -9,11 +9,11 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/pinksaucepasta/paperboat-server/internal/connectedmachines"
 	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
+	"github.com/pinksaucepasta/paperboat-server/internal/usermachines"
 )
 
-func helperInstallationFailure(enrollments *controlplane.EnrollmentService, machines *connectedmachines.Service) http.HandlerFunc {
+func helperInstallationFailure(enrollments *controlplane.EnrollmentService, machines *usermachines.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(io.LimitReader(r.Body, 4097))
 		if err != nil || len(body) > 4096 {
@@ -56,7 +56,7 @@ func helperInstallationFailure(enrollments *controlplane.EnrollmentService, mach
 			environmentID = claims.EnvironmentID
 		}
 		if err := machines.FailInstallation(r.Context(), input.EnrollmentID, environmentID, input.HelperID, input.HelperEnrollmentID, input.Stage); err != nil {
-			if errors.Is(err, connectedmachines.ErrEnrollmentState) {
+			if errors.Is(err, usermachines.ErrEnrollmentState) {
 				writeError(w, r, http.StatusConflict, "installation_failure_not_recorded", "The enrollment is no longer awaiting installation recovery.")
 				return
 			}

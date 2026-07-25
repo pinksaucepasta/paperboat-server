@@ -25,7 +25,7 @@ CREATE TABLE device_grants (
 );
 CREATE INDEX idx_device_grants_expiry ON device_grants(expires_at);
 
-CREATE TABLE client_sessions (
+CREATE TABLE cli_client_sessions (
 	id text PRIMARY KEY,
 	user_id text NOT NULL REFERENCES users(id),
 	client_id text NOT NULL,
@@ -41,27 +41,27 @@ CREATE TABLE client_sessions (
 	revocation_reason text,
 	version bigint NOT NULL DEFAULT 1
 );
-CREATE INDEX idx_client_sessions_user_created ON client_sessions(user_id, created_at DESC);
+CREATE INDEX idx_cli_client_sessions_user_created ON cli_client_sessions(user_id, created_at DESC);
 
-CREATE TABLE client_access_tokens (
+CREATE TABLE cli_access_tokens (
 	token_hash text PRIMARY KEY,
-	client_session_id text NOT NULL REFERENCES client_sessions(id) ON DELETE CASCADE,
+	cli_client_session_id text NOT NULL REFERENCES cli_client_sessions(id) ON DELETE CASCADE,
 	expires_at timestamptz NOT NULL,
 	created_at timestamptz NOT NULL,
 	revoked_at timestamptz
 );
-CREATE INDEX idx_client_access_tokens_session ON client_access_tokens(client_session_id);
+CREATE INDEX idx_cli_access_tokens_session ON cli_access_tokens(cli_client_session_id);
 
-CREATE TABLE client_refresh_tokens (
+CREATE TABLE cli_refresh_tokens (
 	token_hash text PRIMARY KEY,
-	client_session_id text NOT NULL REFERENCES client_sessions(id) ON DELETE CASCADE,
+	cli_client_session_id text NOT NULL REFERENCES cli_client_sessions(id) ON DELETE CASCADE,
 	state text NOT NULL CHECK (state IN ('active','rotated','revoked')),
 	expires_at timestamptz NOT NULL,
 	created_at timestamptz NOT NULL,
 	rotated_at timestamptz,
 	revoked_at timestamptz
 );
-CREATE UNIQUE INDEX idx_client_refresh_tokens_one_active ON client_refresh_tokens(client_session_id) WHERE state = 'active';
+CREATE UNIQUE INDEX idx_cli_refresh_tokens_one_active ON cli_refresh_tokens(cli_client_session_id) WHERE state = 'active';
 
 CREATE TABLE auth_rate_limits (
 	bucket_key text NOT NULL,

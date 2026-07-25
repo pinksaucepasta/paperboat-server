@@ -11,22 +11,22 @@ import (
 )
 
 type AccessSession struct {
-	ID                         string
-	UserID                     string
-	ProjectID                  string
-	SessionType                string
-	State                      string
-	Descriptor                 json.RawMessage
-	ExpiresAt                  time.Time
-	RevokedAt                  sql.NullTime
-	IdempotencyKey             string
-	Version                    int64
-	CreatedAt                  time.Time
-	UpdatedAt                  time.Time
-	ClientSessionID            sql.NullString
-	PapercodeTerminalSessionID sql.NullString
-	PapercodeFileSessionID     sql.NullString
-	PapercodeRevokedAt         sql.NullTime
+	ID                      string
+	UserID                  string
+	ProjectID               string
+	SessionType             string
+	State                   string
+	Descriptor              json.RawMessage
+	ExpiresAt               time.Time
+	RevokedAt               sql.NullTime
+	IdempotencyKey          string
+	Version                 int64
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
+	CLIClientSessionID      sql.NullString
+	HelperTerminalSessionID sql.NullString
+	HelperFileSessionID     sql.NullString
+	HelperRevokedAt         sql.NullTime
 }
 
 type AccountConfigKey struct {
@@ -39,28 +39,6 @@ type AccountConfigKey struct {
 	PreviousEncryptedIdentity []byte
 	CreatedAt                 time.Time
 	RotatedAt                 sql.NullTime
-}
-
-type AgentunnelCleanupOutbox struct {
-	ID           string
-	ProjectID    string
-	Action       string
-	Reason       string
-	PropagatedAt sql.NullTime
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-}
-
-type AgentunnelResource struct {
-	ID         string
-	ProjectID  string
-	TunnelID   string
-	ClientID   string
-	ResourceID string
-	Metadata   json.RawMessage
-	Version    int64
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
 }
 
 type AuditEvent struct {
@@ -141,25 +119,15 @@ type BillingUncertainRecovery struct {
 	CreatedAt      time.Time
 }
 
-type ClientAccessToken struct {
-	TokenHash       string
-	ClientSessionID string
-	ExpiresAt       time.Time
-	CreatedAt       time.Time
-	RevokedAt       sql.NullTime
+type CLIAccessToken struct {
+	TokenHash          string
+	CLIClientSessionID string
+	ExpiresAt          time.Time
+	CreatedAt          time.Time
+	RevokedAt          sql.NullTime
 }
 
-type ClientRefreshToken struct {
-	TokenHash       string
-	ClientSessionID string
-	State           string
-	ExpiresAt       time.Time
-	CreatedAt       time.Time
-	RotatedAt       sql.NullTime
-	RevokedAt       sql.NullTime
-}
-
-type ClientSession struct {
+type CLIClientSession struct {
 	ID               string
 	UserID           string
 	ClientID         string
@@ -174,6 +142,16 @@ type ClientSession struct {
 	RevokedAt        sql.NullTime
 	RevocationReason sql.NullString
 	Version          int64
+}
+
+type CLIRefreshToken struct {
+	TokenHash          string
+	CLIClientSessionID string
+	State              string
+	ExpiresAt          time.Time
+	CreatedAt          time.Time
+	RotatedAt          sql.NullTime
+	RevokedAt          sql.NullTime
 }
 
 type ConfigClassificationCache struct {
@@ -226,167 +204,6 @@ type ConfigSyncStatus struct {
 	ClassifierModelRevision  string
 	ClassifierHealth         string
 	EncryptionKeyVersion     int32
-}
-
-type ConnectedMachine struct {
-	ID                         string
-	UserID                     string
-	EnvironmentID              string
-	DisplayName                string
-	Platform                   string
-	Architecture               string
-	WorkspaceRoot              string
-	State                      string
-	SeatState                  string
-	Online                     bool
-	AgentunnelRouteID          sql.NullString
-	AgentunnelClientID         sql.NullString
-	AgentunnelHttpBaseUrl      sql.NullString
-	AgentunnelWebsocketBaseUrl sql.NullString
-	RuntimeVersions            json.RawMessage
-	EnrolledAt                 sql.NullTime
-	LastSeenAt                 sql.NullTime
-	RevokedAt                  sql.NullTime
-	DisconnectedAt             sql.NullTime
-	DeletedAt                  sql.NullTime
-	Version                    int64
-	CreatedAt                  time.Time
-	UpdatedAt                  time.Time
-}
-
-type ConnectedMachineAccessSession struct {
-	ID                         string
-	ConnectedMachineID         string
-	UserID                     string
-	EnvironmentID              string
-	ClientSessionID            string
-	HttpBaseUrl                string
-	PapercodeTerminalSessionID sql.NullString
-	PapercodeFileSessionID     sql.NullString
-	State                      string
-	RevocationReason           sql.NullString
-	RevokedAt                  sql.NullTime
-	PapercodeRevokedAt         sql.NullTime
-	ExpiresAt                  time.Time
-	CreatedAt                  time.Time
-	UpdatedAt                  time.Time
-}
-
-type ConnectedMachineBandwidthPeriod struct {
-	ID                    string
-	ConnectedMachineID    string
-	PeriodStart           time.Time
-	PeriodEnd             time.Time
-	IncludedBytes         int64
-	ConsumedIncludedBytes int64
-	ConsumedTopupBytes    int64
-	CreatedAt             time.Time
-	UpdatedAt             time.Time
-}
-
-type ConnectedMachineBandwidthTopup struct {
-	ID              string
-	UserID          string
-	ProviderOrderID sql.NullString
-	PurchasedBytes  int64
-	RemainingBytes  int64
-	State           string
-	ExpiresAt       sql.NullTime
-	ConsumedAt      sql.NullTime
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-}
-
-type ConnectedMachineEnrollment struct {
-	ID                       string
-	UserID                   string
-	OperationID              string
-	IdempotencyKey           string
-	BootstrapTokenHash       []byte
-	BootstrapTokenCiphertext []byte
-	State                    string
-	Generation               int64
-	PairingID                sql.NullString
-	ConnectedMachineID       sql.NullString
-	RequestedDisplayName     sql.NullString
-	Platform                 sql.NullString
-	Architecture             sql.NullString
-	WorkspaceRoot            sql.NullString
-	ExpiresAt                time.Time
-	CancelledAt              sql.NullTime
-	CreatedAt                time.Time
-	UpdatedAt                time.Time
-}
-
-type ConnectedMachineEntitlement struct {
-	ID                     string
-	UserID                 string
-	ProviderSubscriptionID string
-	ProductCode            string
-	State                  string
-	SeatQuantity           int32
-	AllowanceBytes         int64
-	CurrentPeriodStart     time.Time
-	CurrentPeriodEnd       time.Time
-	UpdatedAt              time.Time
-	CreatedAt              time.Time
-}
-
-type ConnectedMachinePairing struct {
-	ID                           string
-	VerifierHash                 []byte
-	UserCode                     string
-	RequestedDisplayName         string
-	Platform                     string
-	Architecture                 string
-	WorkspaceRoot                string
-	RuntimeVersions              json.RawMessage
-	State                        string
-	ApprovedByUserID             sql.NullString
-	ConnectedMachineID           sql.NullString
-	InstallationConfigCiphertext []byte
-	InstallationConfigNonce      []byte
-	InstallationConfigConsumedAt sql.NullTime
-	ExpiresAt                    time.Time
-	ApprovedAt                   sql.NullTime
-	DeniedAt                     sql.NullTime
-	CreatedAt                    time.Time
-	UpdatedAt                    time.Time
-}
-
-type ConnectedMachineTerminalSession struct {
-	ID                  string
-	ConnectedMachineID  string
-	TerminalID          string
-	ThreadID            string
-	Name                string
-	IdempotencyKey      sql.NullString
-	IsDefault           bool
-	AutoNameOrdinal     sql.NullInt32
-	LaunchCwd           string
-	DesiredState        string
-	RuntimeState        string
-	LastActivityAt      sql.NullTime
-	LastRuntimeSyncAt   sql.NullTime
-	LastRuntimeSequence sql.NullInt64
-	DeletedAt           sql.NullTime
-	Version             int64
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
-}
-
-type ConnectedMachineTerminalSessionOperation struct {
-	ID                 string
-	ConnectedMachineID string
-	TerminalSessionID  string
-	Operation          string
-	State              string
-	Attempts           int32
-	NextAttemptAt      time.Time
-	LastError          sql.NullString
-	CompletedAt        sql.NullTime
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
 }
 
 type ConnectionEvent struct {
@@ -952,6 +769,19 @@ type GithubRepoProvisioningAttempt struct {
 	UpdatedAt      time.Time
 }
 
+type HelperRevocationOutbox struct {
+	ID                 string
+	UserID             string
+	ProjectID          string
+	CLIClientSessionID string
+	HttpBaseUrl        string
+	SessionIds         []string
+	Reason             string
+	PropagatedAt       sql.NullTime
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+}
+
 type HostedHelperIdentityRenewal struct {
 	OperationKey       string
 	HelperID           string
@@ -1086,19 +916,6 @@ type OrchestrationJob struct {
 	UpdatedAt      time.Time
 	LeaseToken     string
 	LeaseExpiresAt sql.NullTime
-}
-
-type PapercodeRevocationOutbox struct {
-	ID              string
-	UserID          string
-	ProjectID       string
-	ClientSessionID string
-	HttpBaseUrl     string
-	SessionIds      []string
-	Reason          string
-	PropagatedAt    sql.NullTime
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
 }
 
 type Plan struct {
@@ -1276,6 +1093,28 @@ type ProviderEvent struct {
 	CreatedAt       time.Time
 }
 
+type ProviderRoute struct {
+	ID         string
+	ProjectID  string
+	TunnelID   string
+	ClientID   string
+	ResourceID string
+	Metadata   json.RawMessage
+	Version    int64
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
+type ProviderRouteCleanupOutbox struct {
+	ID           string
+	ProjectID    string
+	Action       string
+	Reason       string
+	PropagatedAt sql.NullTime
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
 type ReconciliationRun struct {
 	ID         string
 	Scope      string
@@ -1383,6 +1222,167 @@ type UserIdentity struct {
 	Email           string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+}
+
+type UserMachine struct {
+	ID                            string
+	UserID                        string
+	EnvironmentID                 string
+	DisplayName                   string
+	Platform                      string
+	Architecture                  string
+	WorkspaceRoot                 string
+	State                         string
+	SeatState                     string
+	Online                        bool
+	ProviderRouteRouteID          sql.NullString
+	ProviderRouteClientID         sql.NullString
+	ProviderRouteHttpBaseUrl      sql.NullString
+	ProviderRouteWebsocketBaseUrl sql.NullString
+	RuntimeVersions               json.RawMessage
+	EnrolledAt                    sql.NullTime
+	LastSeenAt                    sql.NullTime
+	RevokedAt                     sql.NullTime
+	DisconnectedAt                sql.NullTime
+	DeletedAt                     sql.NullTime
+	Version                       int64
+	CreatedAt                     time.Time
+	UpdatedAt                     time.Time
+}
+
+type UserMachineAccessSession struct {
+	ID                      string
+	UserMachineID           string
+	UserID                  string
+	EnvironmentID           string
+	CLIClientSessionID      string
+	HttpBaseUrl             string
+	HelperTerminalSessionID sql.NullString
+	HelperFileSessionID     sql.NullString
+	State                   string
+	RevocationReason        sql.NullString
+	RevokedAt               sql.NullTime
+	HelperRevokedAt         sql.NullTime
+	ExpiresAt               time.Time
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
+}
+
+type UserMachineBandwidthPeriod struct {
+	ID                    string
+	UserMachineID         string
+	PeriodStart           time.Time
+	PeriodEnd             time.Time
+	IncludedBytes         int64
+	ConsumedIncludedBytes int64
+	ConsumedTopupBytes    int64
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+}
+
+type UserMachineBandwidthTopup struct {
+	ID              string
+	UserID          string
+	ProviderOrderID sql.NullString
+	PurchasedBytes  int64
+	RemainingBytes  int64
+	State           string
+	ExpiresAt       sql.NullTime
+	ConsumedAt      sql.NullTime
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+type UserMachineEnrollment struct {
+	ID                       string
+	UserID                   string
+	OperationID              string
+	IdempotencyKey           string
+	BootstrapTokenHash       []byte
+	BootstrapTokenCiphertext []byte
+	State                    string
+	Generation               int64
+	PairingID                sql.NullString
+	UserMachineID            sql.NullString
+	RequestedDisplayName     sql.NullString
+	Platform                 sql.NullString
+	Architecture             sql.NullString
+	WorkspaceRoot            sql.NullString
+	ExpiresAt                time.Time
+	CancelledAt              sql.NullTime
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
+}
+
+type UserMachineEntitlement struct {
+	ID                     string
+	UserID                 string
+	ProviderSubscriptionID string
+	ProductCode            string
+	State                  string
+	SeatQuantity           int32
+	AllowanceBytes         int64
+	CurrentPeriodStart     time.Time
+	CurrentPeriodEnd       time.Time
+	UpdatedAt              time.Time
+	CreatedAt              time.Time
+}
+
+type UserMachinePairing struct {
+	ID                           string
+	VerifierHash                 []byte
+	UserCode                     string
+	RequestedDisplayName         string
+	Platform                     string
+	Architecture                 string
+	WorkspaceRoot                string
+	RuntimeVersions              json.RawMessage
+	State                        string
+	ApprovedByUserID             sql.NullString
+	UserMachineID                sql.NullString
+	InstallationConfigCiphertext []byte
+	InstallationConfigNonce      []byte
+	InstallationConfigConsumedAt sql.NullTime
+	ExpiresAt                    time.Time
+	ApprovedAt                   sql.NullTime
+	DeniedAt                     sql.NullTime
+	CreatedAt                    time.Time
+	UpdatedAt                    time.Time
+}
+
+type UserMachineTerminalSession struct {
+	ID                  string
+	UserMachineID       string
+	TerminalID          string
+	ThreadID            string
+	Name                string
+	IdempotencyKey      sql.NullString
+	IsDefault           bool
+	AutoNameOrdinal     sql.NullInt32
+	LaunchCwd           string
+	DesiredState        string
+	RuntimeState        string
+	LastActivityAt      sql.NullTime
+	LastRuntimeSyncAt   sql.NullTime
+	LastRuntimeSequence sql.NullInt64
+	DeletedAt           sql.NullTime
+	Version             int64
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
+type UserMachineTerminalSessionOperation struct {
+	ID                string
+	UserMachineID     string
+	TerminalSessionID string
+	Operation         string
+	State             string
+	Attempts          int32
+	NextAttemptAt     time.Time
+	LastError         sql.NullString
+	CompletedAt       sql.NullTime
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 type VmPreset struct {

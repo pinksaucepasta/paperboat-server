@@ -12,7 +12,7 @@ import (
 func TestClientConfigurationPublishesDashboardURLs(t *testing.T) {
 	cfg := config.Default()
 	cfg.CLIAuth.VerificationURL = "https://dashboard.paperboat.test/cli/authorize"
-	cfg.CLIAuth.ConnectedMachinesURL = "https://console.paperboat.test/machines/add"
+	cfg.CLIAuth.UserMachinesURL = "https://console.paperboat.test/machines/add"
 	request := httptest.NewRequest(http.MethodGet, "/v1/client-configuration", nil)
 	recorder := httptest.NewRecorder()
 
@@ -33,7 +33,7 @@ func TestClientConfigurationPublishesDashboardURLs(t *testing.T) {
 	if response.Data.CLIVerificationURL != cfg.CLIAuth.VerificationURL {
 		t.Fatalf("cli_verification_url=%q", response.Data.CLIVerificationURL)
 	}
-	if response.Data.ConnectedMachinesURL != cfg.CLIAuth.ConnectedMachinesURL {
-		t.Fatalf("connected_machines_url=%q", response.Data.ConnectedMachinesURL)
+	if response.Data.UserMachinesURL != cfg.CLIAuth.UserMachinesURL {
+		t.Fatalf("user_machines_url=%q", response.Data.UserMachinesURL)
 	}
 }

@@ -101,7 +101,7 @@ UPDATE orchestration_jobs SET state='superseded',updated_at=now()
 WHERE aggregate_type='project' AND aggregate_id=$1 AND state='queued' AND job_type<>'project.delete';
 
 -- name: ProjectHasProviderResources :one
-SELECT EXISTS (SELECT 1 FROM fly_volumes WHERE project_id=sqlc.arg(project_id)::text) OR EXISTS (SELECT 1 FROM fly_machines WHERE project_id=sqlc.arg(project_id)) OR EXISTS (SELECT 1 FROM agentunnel_resources WHERE project_id=sqlc.arg(project_id));
+SELECT EXISTS (SELECT 1 FROM fly_volumes WHERE project_id=sqlc.arg(project_id)::text) OR EXISTS (SELECT 1 FROM fly_machines WHERE project_id=sqlc.arg(project_id)) OR EXISTS (SELECT 1 FROM provider_routes WHERE project_id=sqlc.arg(project_id));
 
 -- name: InsertProjectDeleteJob :exec
 INSERT INTO orchestration_jobs (id,job_type,aggregate_type,aggregate_id,idempotency_key,state,payload)

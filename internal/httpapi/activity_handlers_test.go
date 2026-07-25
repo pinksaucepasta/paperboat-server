@@ -41,7 +41,7 @@ func (f *fakeHeartbeatRepository) RecordHeartbeat(_ context.Context, heartbeat m
 func TestActivityHeartbeatValidatesSanitizesAndBoundsConfigStatus(t *testing.T) {
 	repository := &fakeHeartbeatRepository{}
 	body := `{
-		"project_id":"prj_test","machine_id":"machine_test",
+		"environment_id":"prj_test","resource_id":"machine_test",
 		"last_activity_at":"2026-07-14T01:00:00Z","sampled_at":"2026-07-14T01:00:01Z",
 		"reporter_version":"test","signals":{},
 		"config_sync":{"state":"error","pending_path_count":3,
@@ -50,7 +50,7 @@ func TestActivityHeartbeatValidatesSanitizesAndBoundsConfigStatus(t *testing.T) 
 		"max_file_bytes":10,"max_batch_bytes":20,"policy_revision":"revision-one","updated_at":"2026-07-14T01:00:00Z"}
 	}`
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/machine/activity-heartbeat", strings.NewReader(body))
+	request := httptest.NewRequest(http.MethodPost, "/v1/environment-activity-observations", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer machine-token")
 	activityHeartbeat(repository, nil, 2).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusAccepted {
@@ -68,8 +68,8 @@ func TestActivityHeartbeatValidatesSanitizesAndBoundsConfigStatus(t *testing.T) 
 func TestActivityHeartbeatUsesProofBoundHelperIdentity(t *testing.T) {
 	repository := &fakeHeartbeatRepository{verifyErr: errors.New("legacy verifier must not run")}
 	identity := &fakeActivityIdentity{}
-	body := `{"project_id":"prj_test","machine_id":"machine_test","last_activity_at":"2026-07-14T01:00:00Z","sampled_at":"2026-07-14T01:00:01Z","signals":{}}`
-	request := httptest.NewRequest(http.MethodPost, "/api/machine/activity-heartbeat", strings.NewReader(body))
+	body := `{"environment_id":"prj_test","resource_id":"machine_test","last_activity_at":"2026-07-14T01:00:00Z","sampled_at":"2026-07-14T01:00:01Z","signals":{}}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/environment-activity-observations", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer helper-identity")
 	request.Header.Set("X-Paperboat-Helper-Proof", "cHJvb2Y")
 	recorder := httptest.NewRecorder()
@@ -80,11 +80,11 @@ func TestActivityHeartbeatUsesProofBoundHelperIdentity(t *testing.T) {
 }
 
 func TestActivityHeartbeatRejectsUnsafeSummaryAndWrongCredential(t *testing.T) {
-	validPrefix := `{"project_id":"prj_test","machine_id":"machine_test","last_activity_at":"2026-07-14T01:00:00Z","sampled_at":"2026-07-14T01:00:01Z","config_sync":`
+	validPrefix := `{"environment_id":"prj_test","resource_id":"machine_test","last_activity_at":"2026-07-14T01:00:00Z","sampled_at":"2026-07-14T01:00:01Z","config_sync":`
 	missingTimestamp := validPrefix + `{"state":"healthy","pending_path_count":0,"max_file_bytes":10,"max_batch_bytes":20,"policy_revision":"1"}}`
 	repository := &fakeHeartbeatRepository{}
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/machine/activity-heartbeat", strings.NewReader(missingTimestamp))
+	request := httptest.NewRequest(http.MethodPost, "/v1/environment-activity-observations", strings.NewReader(missingTimestamp))
 	request.Header.Set("Authorization", "Bearer machine-token")
 	activityHeartbeat(repository, nil, 10).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest || repository.recorded != nil {
@@ -94,7 +94,7 @@ func TestActivityHeartbeatRejectsUnsafeSummaryAndWrongCredential(t *testing.T) {
 	unsafe := validPrefix + `{"state":"warning","pending_path_count":1,"skipped":[{"path":"../secret","reason":"unsafe"}],"conflicts":[],"max_file_bytes":10,"max_batch_bytes":20,"policy_revision":"1","updated_at":"2026-07-14T01:00:00Z"}}`
 	repository = &fakeHeartbeatRepository{}
 	recorder = httptest.NewRecorder()
-	request = httptest.NewRequest(http.MethodPost, "/api/machine/activity-heartbeat", strings.NewReader(unsafe))
+	request = httptest.NewRequest(http.MethodPost, "/v1/environment-activity-observations", strings.NewReader(unsafe))
 	request.Header.Set("Authorization", "Bearer machine-token")
 	activityHeartbeat(repository, nil, 10).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest || repository.recorded != nil {
@@ -103,7 +103,7 @@ func TestActivityHeartbeatRejectsUnsafeSummaryAndWrongCredential(t *testing.T) {
 
 	repository = &fakeHeartbeatRepository{verifyErr: metering.ErrInvalidHeartbeatCredential}
 	recorder = httptest.NewRecorder()
-	request = httptest.NewRequest(http.MethodPost, "/api/machine/activity-heartbeat", strings.NewReader(strings.TrimSuffix(validPrefix, `"config_sync":`)+`"signals":{}}`))
+	request = httptest.NewRequest(http.MethodPost, "/v1/environment-activity-observations", strings.NewReader(strings.TrimSuffix(validPrefix, `"config_sync":`)+`"signals":{}}`))
 	request.Header.Set("Authorization", "Bearer wrong")
 	activityHeartbeat(repository, nil, 10).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusUnauthorized {
@@ -113,9 +113,9 @@ func TestActivityHeartbeatRejectsUnsafeSummaryAndWrongCredential(t *testing.T) {
 
 func TestActivityHeartbeatRepositoryFailureIsInternalError(t *testing.T) {
 	repository := &fakeHeartbeatRepository{recordErr: errors.New("database unavailable")}
-	body := `{"project_id":"prj_test","machine_id":"machine_test","last_activity_at":"2026-07-14T01:00:00Z","sampled_at":"2026-07-14T01:00:01Z","signals":{}}`
+	body := `{"environment_id":"prj_test","resource_id":"machine_test","last_activity_at":"2026-07-14T01:00:00Z","sampled_at":"2026-07-14T01:00:01Z","signals":{}}`
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/machine/activity-heartbeat", strings.NewReader(body))
+	request := httptest.NewRequest(http.MethodPost, "/v1/environment-activity-observations", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer machine-token")
 	activityHeartbeat(repository, nil, 10).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusInternalServerError {
@@ -125,9 +125,9 @@ func TestActivityHeartbeatRepositoryFailureIsInternalError(t *testing.T) {
 
 func TestActivityHeartbeatReportsConfigStatusNewerThanItsSample(t *testing.T) {
 	repository := &fakeHeartbeatRepository{}
-	body := `{"project_id":"prj_test","machine_id":"machine_test","last_activity_at":"2026-07-14T01:00:00Z","sampled_at":"2026-07-14T01:00:01Z","signals":{},"config_sync":{"state":"healthy","pending_path_count":0,"max_file_bytes":10,"max_batch_bytes":20,"policy_revision":"1","updated_at":"2026-07-14T02:00:00Z"}}`
+	body := `{"environment_id":"prj_test","resource_id":"machine_test","last_activity_at":"2026-07-14T01:00:00Z","sampled_at":"2026-07-14T01:00:01Z","signals":{},"config_sync":{"state":"healthy","pending_path_count":0,"max_file_bytes":10,"max_batch_bytes":20,"policy_revision":"1","updated_at":"2026-07-14T02:00:00Z"}}`
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/machine/activity-heartbeat", strings.NewReader(body))
+	request := httptest.NewRequest(http.MethodPost, "/v1/environment-activity-observations", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer machine-token")
 	activityHeartbeat(repository, nil, 10).ServeHTTP(recorder, request)
 	sampledAt := time.Date(2026, 7, 14, 1, 0, 1, 0, time.UTC)

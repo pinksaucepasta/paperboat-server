@@ -15,21 +15,21 @@ import (
 )
 
 const createAccessSession = `-- name: CreateAccessSession :exec
-INSERT INTO access_sessions (id,user_id,project_id,client_session_id,papercode_terminal_session_id,papercode_file_session_id,session_type,state,descriptor,expires_at,idempotency_key)
+INSERT INTO access_sessions (id,user_id,project_id,cli_client_session_id,helper_terminal_session_id,helper_file_session_id,session_type,state,descriptor,expires_at,idempotency_key)
 VALUES ($1,$2,$3,nullif($4,''),nullif($5,''),nullif($6,''),$7,'active',$8::jsonb,$9,$10)
 `
 
 type CreateAccessSessionParams struct {
-	ID                         string
-	UserID                     string
-	ProjectID                  string
-	ClientSessionID            interface{}
-	PapercodeTerminalSessionID interface{}
-	PapercodeFileSessionID     interface{}
-	SessionType                string
-	Descriptor                 json.RawMessage
-	ExpiresAt                  time.Time
-	IdempotencyKey             string
+	ID                      string
+	UserID                  string
+	ProjectID               string
+	CLIClientSessionID      interface{}
+	HelperTerminalSessionID interface{}
+	HelperFileSessionID     interface{}
+	SessionType             string
+	Descriptor              json.RawMessage
+	ExpiresAt               time.Time
+	IdempotencyKey          string
 }
 
 func (q *Queries) CreateAccessSession(ctx context.Context, arg CreateAccessSessionParams) error {
@@ -37,9 +37,9 @@ func (q *Queries) CreateAccessSession(ctx context.Context, arg CreateAccessSessi
 		arg.ID,
 		arg.UserID,
 		arg.ProjectID,
-		arg.ClientSessionID,
-		arg.PapercodeTerminalSessionID,
-		arg.PapercodeFileSessionID,
+		arg.CLIClientSessionID,
+		arg.HelperTerminalSessionID,
+		arg.HelperFileSessionID,
 		arg.SessionType,
 		arg.Descriptor,
 		arg.ExpiresAt,
@@ -48,56 +48,33 @@ func (q *Queries) CreateAccessSession(ctx context.Context, arg CreateAccessSessi
 	return err
 }
 
-const createPapercodeRevocationOutbox = `-- name: CreatePapercodeRevocationOutbox :exec
-INSERT INTO papercode_revocation_outbox
-(id,user_id,project_id,client_session_id,http_base_url,session_ids,reason)
+const createHelperRevocationOutbox = `-- name: CreateHelperRevocationOutbox :exec
+INSERT INTO helper_revocation_outbox
+(id,user_id,project_id,cli_client_session_id,http_base_url,session_ids,reason)
 VALUES ($1,$2,$3,$4,$5,$6,$7)
 `
 
-type CreatePapercodeRevocationOutboxParams struct {
-	ID              string
-	UserID          string
-	ProjectID       string
-	ClientSessionID string
-	HttpBaseUrl     string
-	SessionIds      []string
-	Reason          string
+type CreateHelperRevocationOutboxParams struct {
+	ID                 string
+	UserID             string
+	ProjectID          string
+	CLIClientSessionID string
+	HttpBaseUrl        string
+	SessionIds         []string
+	Reason             string
 }
 
-func (q *Queries) CreatePapercodeRevocationOutbox(ctx context.Context, arg CreatePapercodeRevocationOutboxParams) error {
-	_, err := q.db.ExecContext(ctx, createPapercodeRevocationOutbox,
+func (q *Queries) CreateHelperRevocationOutbox(ctx context.Context, arg CreateHelperRevocationOutboxParams) error {
+	_, err := q.db.ExecContext(ctx, createHelperRevocationOutbox,
 		arg.ID,
 		arg.UserID,
 		arg.ProjectID,
-		arg.ClientSessionID,
+		arg.CLIClientSessionID,
 		arg.HttpBaseUrl,
 		pq.Array(arg.SessionIds),
 		arg.Reason,
 	)
 	return err
-}
-
-const getAgentunnelResource = `-- name: GetAgentunnelResource :one
-SELECT tunnel_id,client_id,resource_id,metadata FROM agentunnel_resources WHERE project_id=$1
-`
-
-type GetAgentunnelResourceRow struct {
-	TunnelID   string
-	ClientID   string
-	ResourceID string
-	Metadata   json.RawMessage
-}
-
-func (q *Queries) GetAgentunnelResource(ctx context.Context, projectID string) (GetAgentunnelResourceRow, error) {
-	row := q.db.QueryRowContext(ctx, getAgentunnelResource, projectID)
-	var i GetAgentunnelResourceRow
-	err := row.Scan(
-		&i.TunnelID,
-		&i.ClientID,
-		&i.ResourceID,
-		&i.Metadata,
-	)
-	return i, err
 }
 
 const getLatestProjectStopEventType = `-- name: GetLatestProjectStopEventType :one
@@ -109,6 +86,29 @@ func (q *Queries) GetLatestProjectStopEventType(ctx context.Context, projectID s
 	var event_type string
 	err := row.Scan(&event_type)
 	return event_type, err
+}
+
+const getProviderRouteResource = `-- name: GetProviderRouteResource :one
+SELECT tunnel_id,client_id,resource_id,metadata FROM provider_routes WHERE project_id=$1
+`
+
+type GetProviderRouteResourceRow struct {
+	TunnelID   string
+	ClientID   string
+	ResourceID string
+	Metadata   json.RawMessage
+}
+
+func (q *Queries) GetProviderRouteResource(ctx context.Context, projectID string) (GetProviderRouteResourceRow, error) {
+	row := q.db.QueryRowContext(ctx, getProviderRouteResource, projectID)
+	var i GetProviderRouteResourceRow
+	err := row.Scan(
+		&i.TunnelID,
+		&i.ClientID,
+		&i.ResourceID,
+		&i.Metadata,
+	)
+	return i, err
 }
 
 const gitHubConfigReady = `-- name: GitHubConfigReady :one
@@ -144,39 +144,39 @@ func (q *Queries) HasConnectCredits(ctx context.Context, arg HasConnectCreditsPa
 	return column_1, err
 }
 
-const listClientPapercodeSessions = `-- name: ListClientPapercodeSessions :many
-SELECT user_id,project_id,coalesce(client_session_id,'') AS client_session_id,
-coalesce(papercode_terminal_session_id,'') AS papercode_terminal_session_id,
-coalesce(papercode_file_session_id,'') AS papercode_file_session_id,
+const listClientHelperSessions = `-- name: ListClientHelperSessions :many
+SELECT user_id,project_id,coalesce(cli_client_session_id,'') AS cli_client_session_id,
+coalesce(helper_terminal_session_id,'') AS helper_terminal_session_id,
+coalesce(helper_file_session_id,'') AS helper_file_session_id,
 coalesce(descriptor #>> '{terminal,http_base_url}','') AS http_base_url
-FROM access_sessions WHERE client_session_id=$1
-AND (papercode_terminal_session_id IS NOT NULL OR papercode_file_session_id IS NOT NULL)
+FROM access_sessions WHERE cli_client_session_id=$1
+AND (helper_terminal_session_id IS NOT NULL OR helper_file_session_id IS NOT NULL)
 `
 
-type ListClientPapercodeSessionsRow struct {
-	UserID                     string
-	ProjectID                  string
-	ClientSessionID            string
-	PapercodeTerminalSessionID string
-	PapercodeFileSessionID     string
-	HttpBaseUrl                interface{}
+type ListClientHelperSessionsRow struct {
+	UserID                  string
+	ProjectID               string
+	CLIClientSessionID      string
+	HelperTerminalSessionID string
+	HelperFileSessionID     string
+	HttpBaseUrl             interface{}
 }
 
-func (q *Queries) ListClientPapercodeSessions(ctx context.Context, clientSessionID sql.NullString) ([]ListClientPapercodeSessionsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listClientPapercodeSessions, clientSessionID)
+func (q *Queries) ListClientHelperSessions(ctx context.Context, cliClientSessionID sql.NullString) ([]ListClientHelperSessionsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listClientHelperSessions, cliClientSessionID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ListClientPapercodeSessionsRow
+	var items []ListClientHelperSessionsRow
 	for rows.Next() {
-		var i ListClientPapercodeSessionsRow
+		var i ListClientHelperSessionsRow
 		if err := rows.Scan(
 			&i.UserID,
 			&i.ProjectID,
-			&i.ClientSessionID,
-			&i.PapercodeTerminalSessionID,
-			&i.PapercodeFileSessionID,
+			&i.CLIClientSessionID,
+			&i.HelperTerminalSessionID,
+			&i.HelperFileSessionID,
 			&i.HttpBaseUrl,
 		); err != nil {
 			return nil, err
@@ -192,27 +192,128 @@ func (q *Queries) ListClientPapercodeSessions(ctx context.Context, clientSession
 	return items, nil
 }
 
-const listPendingAgentunnelCleanupOutbox = `-- name: ListPendingAgentunnelCleanupOutbox :many
-SELECT id,project_id,action,reason FROM agentunnel_cleanup_outbox
+const listPendingHelperRevocationOutbox = `-- name: ListPendingHelperRevocationOutbox :many
+SELECT id,user_id,project_id,cli_client_session_id,http_base_url,session_ids,reason
+FROM helper_revocation_outbox
+WHERE propagated_at IS NULL
+ORDER BY created_at,id
+`
+
+type ListPendingHelperRevocationOutboxRow struct {
+	ID                 string
+	UserID             string
+	ProjectID          string
+	CLIClientSessionID string
+	HttpBaseUrl        string
+	SessionIds         []string
+	Reason             string
+}
+
+func (q *Queries) ListPendingHelperRevocationOutbox(ctx context.Context) ([]ListPendingHelperRevocationOutboxRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPendingHelperRevocationOutbox)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPendingHelperRevocationOutboxRow
+	for rows.Next() {
+		var i ListPendingHelperRevocationOutboxRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.ProjectID,
+			&i.CLIClientSessionID,
+			&i.HttpBaseUrl,
+			pq.Array(&i.SessionIds),
+			&i.Reason,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPendingHelperRevocations = `-- name: ListPendingHelperRevocations :many
+SELECT id,user_id,project_id,coalesce(cli_client_session_id,'') AS cli_client_session_id,
+coalesce(helper_terminal_session_id,'') AS helper_terminal_session_id,
+coalesce(helper_file_session_id,'') AS helper_file_session_id,
+coalesce(descriptor #>> '{terminal,http_base_url}','') AS http_base_url,
+coalesce(descriptor->>'revocation_reason','revoked') AS reason
+FROM access_sessions WHERE state='revoked' AND helper_revoked_at IS NULL
+AND (helper_terminal_session_id IS NOT NULL OR helper_file_session_id IS NOT NULL)
+`
+
+type ListPendingHelperRevocationsRow struct {
+	ID                      string
+	UserID                  string
+	ProjectID               string
+	CLIClientSessionID      string
+	HelperTerminalSessionID string
+	HelperFileSessionID     string
+	HttpBaseUrl             interface{}
+	Reason                  interface{}
+}
+
+func (q *Queries) ListPendingHelperRevocations(ctx context.Context) ([]ListPendingHelperRevocationsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPendingHelperRevocations)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPendingHelperRevocationsRow
+	for rows.Next() {
+		var i ListPendingHelperRevocationsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.ProjectID,
+			&i.CLIClientSessionID,
+			&i.HelperTerminalSessionID,
+			&i.HelperFileSessionID,
+			&i.HttpBaseUrl,
+			&i.Reason,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPendingProviderRouteCleanupOutbox = `-- name: ListPendingProviderRouteCleanupOutbox :many
+SELECT id,project_id,action,reason FROM provider_route_cleanup_outbox
 WHERE propagated_at IS NULL ORDER BY created_at,id
 `
 
-type ListPendingAgentunnelCleanupOutboxRow struct {
+type ListPendingProviderRouteCleanupOutboxRow struct {
 	ID        string
 	ProjectID string
 	Action    string
 	Reason    string
 }
 
-func (q *Queries) ListPendingAgentunnelCleanupOutbox(ctx context.Context) ([]ListPendingAgentunnelCleanupOutboxRow, error) {
-	rows, err := q.db.QueryContext(ctx, listPendingAgentunnelCleanupOutbox)
+func (q *Queries) ListPendingProviderRouteCleanupOutbox(ctx context.Context) ([]ListPendingProviderRouteCleanupOutboxRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPendingProviderRouteCleanupOutbox)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ListPendingAgentunnelCleanupOutboxRow
+	var items []ListPendingProviderRouteCleanupOutboxRow
 	for rows.Next() {
-		var i ListPendingAgentunnelCleanupOutboxRow
+		var i ListPendingProviderRouteCleanupOutboxRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.ProjectID,
@@ -232,140 +333,39 @@ func (q *Queries) ListPendingAgentunnelCleanupOutbox(ctx context.Context) ([]Lis
 	return items, nil
 }
 
-const listPendingPapercodeRevocationOutbox = `-- name: ListPendingPapercodeRevocationOutbox :many
-SELECT id,user_id,project_id,client_session_id,http_base_url,session_ids,reason
-FROM papercode_revocation_outbox
-WHERE propagated_at IS NULL
-ORDER BY created_at,id
-`
-
-type ListPendingPapercodeRevocationOutboxRow struct {
-	ID              string
-	UserID          string
-	ProjectID       string
-	ClientSessionID string
-	HttpBaseUrl     string
-	SessionIds      []string
-	Reason          string
-}
-
-func (q *Queries) ListPendingPapercodeRevocationOutbox(ctx context.Context) ([]ListPendingPapercodeRevocationOutboxRow, error) {
-	rows, err := q.db.QueryContext(ctx, listPendingPapercodeRevocationOutbox)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListPendingPapercodeRevocationOutboxRow
-	for rows.Next() {
-		var i ListPendingPapercodeRevocationOutboxRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.UserID,
-			&i.ProjectID,
-			&i.ClientSessionID,
-			&i.HttpBaseUrl,
-			pq.Array(&i.SessionIds),
-			&i.Reason,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listPendingPapercodeRevocations = `-- name: ListPendingPapercodeRevocations :many
-SELECT id,user_id,project_id,coalesce(client_session_id,'') AS client_session_id,
-coalesce(papercode_terminal_session_id,'') AS papercode_terminal_session_id,
-coalesce(papercode_file_session_id,'') AS papercode_file_session_id,
-coalesce(descriptor #>> '{terminal,http_base_url}','') AS http_base_url,
-coalesce(descriptor->>'revocation_reason','revoked') AS reason
-FROM access_sessions WHERE state='revoked' AND papercode_revoked_at IS NULL
-AND (papercode_terminal_session_id IS NOT NULL OR papercode_file_session_id IS NOT NULL)
-`
-
-type ListPendingPapercodeRevocationsRow struct {
-	ID                         string
-	UserID                     string
-	ProjectID                  string
-	ClientSessionID            string
-	PapercodeTerminalSessionID string
-	PapercodeFileSessionID     string
-	HttpBaseUrl                interface{}
-	Reason                     interface{}
-}
-
-func (q *Queries) ListPendingPapercodeRevocations(ctx context.Context) ([]ListPendingPapercodeRevocationsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listPendingPapercodeRevocations)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListPendingPapercodeRevocationsRow
-	for rows.Next() {
-		var i ListPendingPapercodeRevocationsRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.UserID,
-			&i.ProjectID,
-			&i.ClientSessionID,
-			&i.PapercodeTerminalSessionID,
-			&i.PapercodeFileSessionID,
-			&i.HttpBaseUrl,
-			&i.Reason,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listProjectPapercodeSessions = `-- name: ListProjectPapercodeSessions :many
-SELECT user_id,project_id,coalesce(client_session_id,'') AS client_session_id,
-coalesce(papercode_terminal_session_id,'') AS papercode_terminal_session_id,
-coalesce(papercode_file_session_id,'') AS papercode_file_session_id,
+const listProjectHelperSessions = `-- name: ListProjectHelperSessions :many
+SELECT user_id,project_id,coalesce(cli_client_session_id,'') AS cli_client_session_id,
+coalesce(helper_terminal_session_id,'') AS helper_terminal_session_id,
+coalesce(helper_file_session_id,'') AS helper_file_session_id,
 coalesce(descriptor #>> '{terminal,http_base_url}','') AS http_base_url
 FROM access_sessions WHERE project_id=$1
-AND (papercode_terminal_session_id IS NOT NULL OR papercode_file_session_id IS NOT NULL)
+AND (helper_terminal_session_id IS NOT NULL OR helper_file_session_id IS NOT NULL)
 `
 
-type ListProjectPapercodeSessionsRow struct {
-	UserID                     string
-	ProjectID                  string
-	ClientSessionID            string
-	PapercodeTerminalSessionID string
-	PapercodeFileSessionID     string
-	HttpBaseUrl                interface{}
+type ListProjectHelperSessionsRow struct {
+	UserID                  string
+	ProjectID               string
+	CLIClientSessionID      string
+	HelperTerminalSessionID string
+	HelperFileSessionID     string
+	HttpBaseUrl             interface{}
 }
 
-func (q *Queries) ListProjectPapercodeSessions(ctx context.Context, projectID string) ([]ListProjectPapercodeSessionsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listProjectPapercodeSessions, projectID)
+func (q *Queries) ListProjectHelperSessions(ctx context.Context, projectID string) ([]ListProjectHelperSessionsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listProjectHelperSessions, projectID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ListProjectPapercodeSessionsRow
+	var items []ListProjectHelperSessionsRow
 	for rows.Next() {
-		var i ListProjectPapercodeSessionsRow
+		var i ListProjectHelperSessionsRow
 		if err := rows.Scan(
 			&i.UserID,
 			&i.ProjectID,
-			&i.ClientSessionID,
-			&i.PapercodeTerminalSessionID,
-			&i.PapercodeFileSessionID,
+			&i.CLIClientSessionID,
+			&i.HelperTerminalSessionID,
+			&i.HelperFileSessionID,
 			&i.HttpBaseUrl,
 		); err != nil {
 			return nil, err
@@ -381,39 +381,39 @@ func (q *Queries) ListProjectPapercodeSessions(ctx context.Context, projectID st
 	return items, nil
 }
 
-const listUserPapercodeSessions = `-- name: ListUserPapercodeSessions :many
-SELECT user_id,project_id,coalesce(client_session_id,'') AS client_session_id,
-coalesce(papercode_terminal_session_id,'') AS papercode_terminal_session_id,
-coalesce(papercode_file_session_id,'') AS papercode_file_session_id,
+const listUserHelperSessions = `-- name: ListUserHelperSessions :many
+SELECT user_id,project_id,coalesce(cli_client_session_id,'') AS cli_client_session_id,
+coalesce(helper_terminal_session_id,'') AS helper_terminal_session_id,
+coalesce(helper_file_session_id,'') AS helper_file_session_id,
 coalesce(descriptor #>> '{terminal,http_base_url}','') AS http_base_url
 FROM access_sessions WHERE user_id=$1
-AND (papercode_terminal_session_id IS NOT NULL OR papercode_file_session_id IS NOT NULL)
+AND (helper_terminal_session_id IS NOT NULL OR helper_file_session_id IS NOT NULL)
 `
 
-type ListUserPapercodeSessionsRow struct {
-	UserID                     string
-	ProjectID                  string
-	ClientSessionID            string
-	PapercodeTerminalSessionID string
-	PapercodeFileSessionID     string
-	HttpBaseUrl                interface{}
+type ListUserHelperSessionsRow struct {
+	UserID                  string
+	ProjectID               string
+	CLIClientSessionID      string
+	HelperTerminalSessionID string
+	HelperFileSessionID     string
+	HttpBaseUrl             interface{}
 }
 
-func (q *Queries) ListUserPapercodeSessions(ctx context.Context, userID string) ([]ListUserPapercodeSessionsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listUserPapercodeSessions, userID)
+func (q *Queries) ListUserHelperSessions(ctx context.Context, userID string) ([]ListUserHelperSessionsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listUserHelperSessions, userID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ListUserPapercodeSessionsRow
+	var items []ListUserHelperSessionsRow
 	for rows.Next() {
-		var i ListUserPapercodeSessionsRow
+		var i ListUserHelperSessionsRow
 		if err := rows.Scan(
 			&i.UserID,
 			&i.ProjectID,
-			&i.ClientSessionID,
-			&i.PapercodeTerminalSessionID,
-			&i.PapercodeFileSessionID,
+			&i.CLIClientSessionID,
+			&i.HelperTerminalSessionID,
+			&i.HelperFileSessionID,
 			&i.HttpBaseUrl,
 		); err != nil {
 			return nil, err
@@ -429,66 +429,66 @@ func (q *Queries) ListUserPapercodeSessions(ctx context.Context, userID string) 
 	return items, nil
 }
 
-const markAccessSessionPapercodeRevocationPropagated = `-- name: MarkAccessSessionPapercodeRevocationPropagated :exec
-UPDATE access_sessions SET papercode_revoked_at=now(),updated_at=now()
-WHERE id=$1 AND state='revoked' AND papercode_revoked_at IS NULL
+const markAccessSessionHelperRevocationPropagated = `-- name: MarkAccessSessionHelperRevocationPropagated :exec
+UPDATE access_sessions SET helper_revoked_at=now(),updated_at=now()
+WHERE id=$1 AND state='revoked' AND helper_revoked_at IS NULL
 `
 
-func (q *Queries) MarkAccessSessionPapercodeRevocationPropagated(ctx context.Context, id string) error {
-	_, err := q.db.ExecContext(ctx, markAccessSessionPapercodeRevocationPropagated, id)
+func (q *Queries) MarkAccessSessionHelperRevocationPropagated(ctx context.Context, id string) error {
+	_, err := q.db.ExecContext(ctx, markAccessSessionHelperRevocationPropagated, id)
 	return err
 }
 
-const markAgentunnelCleanupOutboxPropagated = `-- name: MarkAgentunnelCleanupOutboxPropagated :exec
-UPDATE agentunnel_cleanup_outbox SET propagated_at=now(),updated_at=now()
-WHERE project_id=$1 AND propagated_at IS NULL
+const markClientHelperRevocationPropagated = `-- name: MarkClientHelperRevocationPropagated :exec
+UPDATE access_sessions SET helper_revoked_at=now(),updated_at=now()
+WHERE cli_client_session_id=$1 AND state='revoked' AND helper_revoked_at IS NULL
+AND (helper_terminal_session_id IS NOT NULL OR helper_file_session_id IS NOT NULL)
 `
 
-func (q *Queries) MarkAgentunnelCleanupOutboxPropagated(ctx context.Context, projectID string) error {
-	_, err := q.db.ExecContext(ctx, markAgentunnelCleanupOutboxPropagated, projectID)
+func (q *Queries) MarkClientHelperRevocationPropagated(ctx context.Context, cliClientSessionID sql.NullString) error {
+	_, err := q.db.ExecContext(ctx, markClientHelperRevocationPropagated, cliClientSessionID)
 	return err
 }
 
-const markClientPapercodeRevocationPropagated = `-- name: MarkClientPapercodeRevocationPropagated :exec
-UPDATE access_sessions SET papercode_revoked_at=now(),updated_at=now()
-WHERE client_session_id=$1 AND state='revoked' AND papercode_revoked_at IS NULL
-AND (papercode_terminal_session_id IS NOT NULL OR papercode_file_session_id IS NOT NULL)
-`
-
-func (q *Queries) MarkClientPapercodeRevocationPropagated(ctx context.Context, clientSessionID sql.NullString) error {
-	_, err := q.db.ExecContext(ctx, markClientPapercodeRevocationPropagated, clientSessionID)
-	return err
-}
-
-const markPapercodeRevocationOutboxPropagated = `-- name: MarkPapercodeRevocationOutboxPropagated :exec
-UPDATE papercode_revocation_outbox SET propagated_at=now(),updated_at=now()
+const markHelperRevocationOutboxPropagated = `-- name: MarkHelperRevocationOutboxPropagated :exec
+UPDATE helper_revocation_outbox SET propagated_at=now(),updated_at=now()
 WHERE id=$1 AND propagated_at IS NULL
 `
 
-func (q *Queries) MarkPapercodeRevocationOutboxPropagated(ctx context.Context, id string) error {
-	_, err := q.db.ExecContext(ctx, markPapercodeRevocationOutboxPropagated, id)
+func (q *Queries) MarkHelperRevocationOutboxPropagated(ctx context.Context, id string) error {
+	_, err := q.db.ExecContext(ctx, markHelperRevocationOutboxPropagated, id)
 	return err
 }
 
-const markProjectPapercodeRevocationPropagated = `-- name: MarkProjectPapercodeRevocationPropagated :exec
-UPDATE access_sessions SET papercode_revoked_at=now(),updated_at=now()
-WHERE project_id=$1 AND state='revoked' AND papercode_revoked_at IS NULL
-AND (papercode_terminal_session_id IS NOT NULL OR papercode_file_session_id IS NOT NULL)
+const markProjectHelperRevocationPropagated = `-- name: MarkProjectHelperRevocationPropagated :exec
+UPDATE access_sessions SET helper_revoked_at=now(),updated_at=now()
+WHERE project_id=$1 AND state='revoked' AND helper_revoked_at IS NULL
+AND (helper_terminal_session_id IS NOT NULL OR helper_file_session_id IS NOT NULL)
 `
 
-func (q *Queries) MarkProjectPapercodeRevocationPropagated(ctx context.Context, projectID string) error {
-	_, err := q.db.ExecContext(ctx, markProjectPapercodeRevocationPropagated, projectID)
+func (q *Queries) MarkProjectHelperRevocationPropagated(ctx context.Context, projectID string) error {
+	_, err := q.db.ExecContext(ctx, markProjectHelperRevocationPropagated, projectID)
 	return err
 }
 
-const markUserPapercodeRevocationPropagated = `-- name: MarkUserPapercodeRevocationPropagated :exec
-UPDATE access_sessions SET papercode_revoked_at=now(),updated_at=now()
-WHERE user_id=$1 AND state='revoked' AND papercode_revoked_at IS NULL
-AND (papercode_terminal_session_id IS NOT NULL OR papercode_file_session_id IS NOT NULL)
+const markProviderRouteCleanupOutboxPropagated = `-- name: MarkProviderRouteCleanupOutboxPropagated :exec
+UPDATE provider_route_cleanup_outbox SET propagated_at=now(),updated_at=now()
+WHERE project_id=$1 AND propagated_at IS NULL
 `
 
-func (q *Queries) MarkUserPapercodeRevocationPropagated(ctx context.Context, userID string) error {
-	_, err := q.db.ExecContext(ctx, markUserPapercodeRevocationPropagated, userID)
+func (q *Queries) MarkProviderRouteCleanupOutboxPropagated(ctx context.Context, projectID string) error {
+	_, err := q.db.ExecContext(ctx, markProviderRouteCleanupOutboxPropagated, projectID)
+	return err
+}
+
+const markUserHelperRevocationPropagated = `-- name: MarkUserHelperRevocationPropagated :exec
+UPDATE access_sessions SET helper_revoked_at=now(),updated_at=now()
+WHERE user_id=$1 AND state='revoked' AND helper_revoked_at IS NULL
+AND (helper_terminal_session_id IS NOT NULL OR helper_file_session_id IS NOT NULL)
+`
+
+func (q *Queries) MarkUserHelperRevocationPropagated(ctx context.Context, userID string) error {
+	_, err := q.db.ExecContext(ctx, markUserHelperRevocationPropagated, userID)
 	return err
 }
 
@@ -523,16 +523,16 @@ func (q *Queries) RecordConnectionEvent(ctx context.Context, arg RecordConnectio
 const revokeClientAccessSessions = `-- name: RevokeClientAccessSessions :exec
 UPDATE access_sessions SET state='revoked',revoked_at=coalesce(revoked_at,now()),updated_at=now(),version=version+1,
 descriptor=jsonb_set(descriptor,'{revocation_reason}',to_jsonb($1::text),true)
-WHERE client_session_id=$2 AND state='active' AND revoked_at IS NULL
+WHERE cli_client_session_id=$2 AND state='active' AND revoked_at IS NULL
 `
 
 type RevokeClientAccessSessionsParams struct {
-	Reason          string
-	ClientSessionID sql.NullString
+	Reason             string
+	CLIClientSessionID sql.NullString
 }
 
 func (q *Queries) RevokeClientAccessSessions(ctx context.Context, arg RevokeClientAccessSessionsParams) error {
-	_, err := q.db.ExecContext(ctx, revokeClientAccessSessions, arg.Reason, arg.ClientSessionID)
+	_, err := q.db.ExecContext(ctx, revokeClientAccessSessions, arg.Reason, arg.CLIClientSessionID)
 	return err
 }
 
@@ -568,61 +568,9 @@ func (q *Queries) RevokeUserAccessSessions(ctx context.Context, arg RevokeUserAc
 	return err
 }
 
-const upsertAgentunnelCleanupOutbox = `-- name: UpsertAgentunnelCleanupOutbox :exec
-INSERT INTO agentunnel_cleanup_outbox (id,project_id,action,reason)
-VALUES ($1,$2,$3,$4)
-ON CONFLICT (project_id) DO UPDATE SET action=EXCLUDED.action,reason=EXCLUDED.reason,
-propagated_at=NULL,updated_at=now()
-`
-
-type UpsertAgentunnelCleanupOutboxParams struct {
-	ID        string
-	ProjectID string
-	Action    string
-	Reason    string
-}
-
-func (q *Queries) UpsertAgentunnelCleanupOutbox(ctx context.Context, arg UpsertAgentunnelCleanupOutboxParams) error {
-	_, err := q.db.ExecContext(ctx, upsertAgentunnelCleanupOutbox,
-		arg.ID,
-		arg.ProjectID,
-		arg.Action,
-		arg.Reason,
-	)
-	return err
-}
-
-const upsertAgentunnelResource = `-- name: UpsertAgentunnelResource :exec
-INSERT INTO agentunnel_resources (id, project_id, tunnel_id, client_id, resource_id, metadata)
-VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-ON CONFLICT (project_id) DO UPDATE SET tunnel_id=EXCLUDED.tunnel_id,client_id=EXCLUDED.client_id,resource_id=EXCLUDED.resource_id,
-metadata=EXCLUDED.metadata,version=agentunnel_resources.version+1,updated_at=now()
-`
-
-type UpsertAgentunnelResourceParams struct {
-	ID         string
-	ProjectID  string
-	TunnelID   string
-	ClientID   string
-	ResourceID string
-	Metadata   json.RawMessage
-}
-
-func (q *Queries) UpsertAgentunnelResource(ctx context.Context, arg UpsertAgentunnelResourceParams) error {
-	_, err := q.db.ExecContext(ctx, upsertAgentunnelResource,
-		arg.ID,
-		arg.ProjectID,
-		arg.TunnelID,
-		arg.ClientID,
-		arg.ResourceID,
-		arg.Metadata,
-	)
-	return err
-}
-
 const upsertPreviewURLRecord = `-- name: UpsertPreviewURLRecord :exec
 INSERT INTO preview_url_records (id, project_id, preview_key, target_url, public_url, state)
-VALUES ($1, $2, 'papercode', $3, $4, 'active')
+VALUES ($1, $2, 'helper', $3, $4, 'active')
 ON CONFLICT (project_id, preview_key) DO UPDATE SET target_url=EXCLUDED.target_url,public_url=EXCLUDED.public_url,state='active',version=preview_url_records.version+1,updated_at=now()
 `
 
@@ -658,5 +606,57 @@ type UpsertProjectActivityParams struct {
 
 func (q *Queries) UpsertProjectActivity(ctx context.Context, arg UpsertProjectActivityParams) error {
 	_, err := q.db.ExecContext(ctx, upsertProjectActivity, arg.ProjectID, arg.Source, arg.Metadata)
+	return err
+}
+
+const upsertProviderRouteCleanupOutbox = `-- name: UpsertProviderRouteCleanupOutbox :exec
+INSERT INTO provider_route_cleanup_outbox (id,project_id,action,reason)
+VALUES ($1,$2,$3,$4)
+ON CONFLICT (project_id) DO UPDATE SET action=EXCLUDED.action,reason=EXCLUDED.reason,
+propagated_at=NULL,updated_at=now()
+`
+
+type UpsertProviderRouteCleanupOutboxParams struct {
+	ID        string
+	ProjectID string
+	Action    string
+	Reason    string
+}
+
+func (q *Queries) UpsertProviderRouteCleanupOutbox(ctx context.Context, arg UpsertProviderRouteCleanupOutboxParams) error {
+	_, err := q.db.ExecContext(ctx, upsertProviderRouteCleanupOutbox,
+		arg.ID,
+		arg.ProjectID,
+		arg.Action,
+		arg.Reason,
+	)
+	return err
+}
+
+const upsertProviderRouteResource = `-- name: UpsertProviderRouteResource :exec
+INSERT INTO provider_routes (id, project_id, tunnel_id, client_id, resource_id, metadata)
+VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+ON CONFLICT (project_id) DO UPDATE SET tunnel_id=EXCLUDED.tunnel_id,client_id=EXCLUDED.client_id,resource_id=EXCLUDED.resource_id,
+metadata=EXCLUDED.metadata,version=provider_routes.version+1,updated_at=now()
+`
+
+type UpsertProviderRouteResourceParams struct {
+	ID         string
+	ProjectID  string
+	TunnelID   string
+	ClientID   string
+	ResourceID string
+	Metadata   json.RawMessage
+}
+
+func (q *Queries) UpsertProviderRouteResource(ctx context.Context, arg UpsertProviderRouteResourceParams) error {
+	_, err := q.db.ExecContext(ctx, upsertProviderRouteResource,
+		arg.ID,
+		arg.ProjectID,
+		arg.TunnelID,
+		arg.ClientID,
+		arg.ResourceID,
+		arg.Metadata,
+	)
 	return err
 }

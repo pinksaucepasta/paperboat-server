@@ -671,7 +671,7 @@ func (q *Queries) NextProjectSetupScriptRevision(ctx context.Context, projectID 
 }
 
 const projectHasProviderResources = `-- name: ProjectHasProviderResources :one
-SELECT EXISTS (SELECT 1 FROM fly_volumes WHERE project_id=$1::text) OR EXISTS (SELECT 1 FROM fly_machines WHERE project_id=$1) OR EXISTS (SELECT 1 FROM agentunnel_resources WHERE project_id=$1)
+SELECT EXISTS (SELECT 1 FROM fly_volumes WHERE project_id=$1::text) OR EXISTS (SELECT 1 FROM fly_machines WHERE project_id=$1) OR EXISTS (SELECT 1 FROM provider_routes WHERE project_id=$1)
 `
 
 func (q *Queries) ProjectHasProviderResources(ctx context.Context, projectID string) (sql.NullBool, error) {

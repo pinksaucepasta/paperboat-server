@@ -28,8 +28,8 @@ type activityIdentityVerifier interface {
 func activityHeartbeat(repo activityHeartbeatRepository, identities activityIdentityVerifier, summaryLimit int) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			ProjectID            string             `json:"project_id"`
-			MachineID            string             `json:"machine_id"`
+			EnvironmentID        string             `json:"environment_id"`
+			ResourceID           string             `json:"resource_id"`
 			LastActivityAt       time.Time          `json:"last_activity_at"`
 			Signals              map[string]string  `json:"signals"`
 			ReporterVersion      string             `json:"reporter_version"`
@@ -42,7 +42,7 @@ func activityHeartbeat(repo activityHeartbeatRepository, identities activityIden
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "Heartbeat payload is invalid JSON.")
 			return
 		}
-		if req.ProjectID == "" || req.MachineID == "" || req.LastActivityAt.IsZero() || req.SampledAt.IsZero() {
+		if req.EnvironmentID == "" || req.ResourceID == "" || req.LastActivityAt.IsZero() || req.SampledAt.IsZero() {
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "Heartbeat payload is missing required fields.")
 			return
 		}
@@ -51,14 +51,14 @@ func activityHeartbeat(repo activityHeartbeatRepository, identities activityIden
 		if identities != nil && r.Header.Get("X-Paperboat-Helper-Proof") != "" {
 			proof, proofErr := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Helper-Proof"))
 			if proofErr == nil {
-				authErr = identities.VerifyActivityHeartbeat(r.Context(), got, proof, body, req.ProjectID, req.MachineID)
+				authErr = identities.VerifyActivityHeartbeat(r.Context(), got, proof, body, req.EnvironmentID, req.ResourceID)
 			}
 		} else {
-			authErr = repo.VerifyHeartbeatCredential(r.Context(), req.ProjectID, req.MachineID, got)
+			authErr = repo.VerifyHeartbeatCredential(r.Context(), req.EnvironmentID, req.ResourceID, got)
 		}
 		if authErr != nil {
 			if errors.Is(authErr, metering.ErrInvalidHeartbeatCredential) || errors.Is(authErr, controlplane.ErrHelperProof) {
-				writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Machine activity credential is invalid.")
+				writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Environment activity credential is invalid.")
 				return
 			}
 			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
@@ -82,8 +82,8 @@ func activityHeartbeat(repo activityHeartbeatRepository, identities activityIden
 			req.ConfigSyncObservedAt = statusObserved
 		}
 		if err := repo.RecordHeartbeat(r.Context(), metering.ActivityHeartbeat{
-			ProjectID:            req.ProjectID,
-			MachineID:            req.MachineID,
+			ProjectID:            req.EnvironmentID,
+			MachineID:            req.ResourceID,
 			LastActivityAt:       req.LastActivityAt.UTC(),
 			LastHeartbeatAt:      req.SampledAt.UTC(),
 			ReporterVersion:      req.ReporterVersion,

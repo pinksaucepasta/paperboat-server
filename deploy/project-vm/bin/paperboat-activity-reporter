@@ -1,4 +1,0 @@
-#!/usr/bin/env bash
-set -Eeuo pipefail
-
-exec "${PAPERBOAT_ACTIVITY_REPORTER_BINARY:-/usr/local/bin/paperboat-activity-reporter-go}"

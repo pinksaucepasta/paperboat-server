@@ -1,6 +1,6 @@
 # CLI Authorization Contract
 
-Status: Phase 0 frozen implementation target.
+Status: Contract frozen implementation target.
 
 This contract owns Paperboat public-client authorization. All JSON responses use the
 standard `{ "data": ... }` success envelope or `{ "error": { "code", "message",
@@ -24,7 +24,7 @@ list. Unknown clients return `invalid_client`; a non-exact or malformed scope se
 
 ## Device Authorization
 
-`POST /api/auth/device/authorize` is unauthenticated. It accepts `client_id`,
+`POST /v1/auth/device/authorize` is unauthenticated. It accepts `client_id`,
 `client_label`, `device_type`, `os`, and `scopes`. `client_label` is presentation-only,
 trimmed, and length-limited. `device_type` is one of `desktop`, `server`, or `container`.
 The response contains `device_code`, `user_code`, `verification_uri`,
@@ -37,7 +37,7 @@ the user code. Device codes have at least 256 bits of entropy. User codes use an
 unambiguous uppercase alphabet and are formatted for reading, but comparisons ignore the
 separator and ASCII case.
 
-`POST /api/auth/device/token` accepts exactly `client_id` and `device_code`. Before approval
+`POST /v1/auth/device/token` accepts exactly `client_id` and `device_code`. Before approval
 it returns HTTP 400 with `authorization_pending`. Polling faster than `interval` returns
 HTTP 400 with `slow_down`, includes the next `interval` in `error.details`, and resets the
 grant's next allowed poll time. Denial and expiry return HTTP 400 with `access_denied` and
@@ -50,7 +50,7 @@ Approval atomically transitions the grant from `pending` to `approved`; it does 
 the grant or issue tokens. Exactly one successful token poll atomically transitions the
 grant from `approved` to `consumed` while returning
 `access_token`, `refresh_token`, `token_type: "Bearer"`, `expires_in`, `scope`, and
-`client_session_id`. Access-token lifetime is dynamically configured; the initial production
+`cli_client_session_id`. Access-token lifetime is dynamically configured; the initial production
 default is 900 seconds. Poll responses and token responses use `Cache-Control: no-store` and
 `Pragma: no-cache`.
 
@@ -63,9 +63,9 @@ returned only at issuance and are excluded from logs, traces, audit metadata, an
 The dashboard approval endpoints use the HttpOnly WorkOS-backed cookie session. GET requires
 the cookie; POST additionally requires the CSRF header and cookie pair.
 
-- `GET /api/auth/device/requests/{user_code}`
-- `POST /api/auth/device/requests/{user_code}/approve`
-- `POST /api/auth/device/requests/{user_code}/deny`
+- `GET /v1/auth/device/requests/{user_code}`
+- `POST /v1/auth/device/requests/{user_code}/approve`
+- `POST /v1/auth/device/requests/{user_code}/deny`
 
 Lookup returns client label, device type, OS, requested scopes, issue time, expiry, user
 code, and state. It never returns the device code or any token. Approval is bound to the
@@ -79,32 +79,32 @@ expired or consumed requests returns HTTP
 ## Refresh And Revocation
 
 Refresh tokens are bearer credentials sent only as `Authorization: Bearer <refresh_token>`
-to `POST /api/auth/token/refresh`; there is no token in the JSON body. Every successful
+to `POST /v1/auth/token/refresh`; there is no token in the JSON body. Every successful
 refresh rotates the refresh token and returns a new access/refresh pair. Reuse of a rotated
 token revokes the entire client-session family. Concurrent refresh is serialized per family;
 only one request succeeds.
 
-`POST /api/auth/token/revoke` accepts either the current access or refresh token as a bearer
+`POST /v1/auth/token/revoke` accepts either the current access or refresh token as a bearer
 credential and idempotently revokes its client-session family. Retrying with a known token
 from an already-revoked family returns success; an arbitrary or unknown bearer remains an
-authentication failure and returns HTTP 401, matching OpenAPI. `GET /api/auth/clients` and
-`DELETE /api/auth/clients/{client_session_id}` accept either the WorkOS-backed dashboard
+authentication failure and returns HTTP 401, matching OpenAPI. `GET /v1/auth/cli-client-sessions` and
+`DELETE /v1/auth/cli-client-sessions/{cli_client_session_id}` accept either the WorkOS-backed dashboard
 cookie session (with CSRF on DELETE) or an access token. Bearer listing requires
 `account:read`; bearer deletion requires `clients:revoke`. The target must belong to the
-same Paperboat account. Logout is session-scoped: `POST /api/auth/logout` revokes only the
-current WorkOS-backed browser session, while `POST /api/auth/token/revoke` revokes the
+same Paperboat account. Logout is session-scoped: `POST /v1/auth/logout` revokes only the
+current WorkOS-backed browser session, while `POST /v1/auth/token/revoke` revokes the
 calling CLI client-session family. Browser logout also tears down active downstream access
 sessions, but it does not revoke independent CLI installations. Account suspension and
 administrative account revocation revoke every CLI client-session family. Refresh replay
 and explicit client deletion revoke the affected Paperboat family and mark its linked local
 access-session records revoked immediately. Invalidating the actual terminal and file bearer
-sessions inside papercode requires the signed control-plane revocation endpoint tracked in
-integration Phase 4; until that lands, those short-lived downstream credentials remain usable
-until expiry. Phase 1 must remain `Implemented`, not `Complete`, while this dependency is open.
+sessions inside helper requires the signed control-plane revocation endpoint tracked in
+downstream integration; until that lands, those short-lived downstream credentials remain usable
+until expiry. This capability must remain `Implemented`, not `Complete`, while this dependency is open.
 
-`GET /api/auth/clients` accepts `limit` (1-200, default 50), `offset` (default 0), and an
+`GET /v1/auth/cli-client-sessions` accepts `limit` (1-200, default 50), `offset` (default 0), and an
 optional `state=active|revoked`. Its `data` contains `items` and `pagination`. Every item
-contains `client_session_id`, `client_id`, `client_label`, `device_type`, `os`, normalized
+contains `cli_client_session_id`, `client_id`, `client_label`, `device_type`, `os`, normalized
 `scopes`, `state`, `created_at`, `approved_at`, nullable `last_used_at`, nullable
 `revoked_at`, nullable `revocation_reason`, and `current`. Pagination contains `limit`,
 `offset`, `total`, and nullable `next_offset`. Secrets are never included.

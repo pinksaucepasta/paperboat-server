@@ -11,7 +11,7 @@ BEGIN
 		SET state = 'revoked', revoked_at = coalesce(revoked_at, now()), updated_at = now(),
 			version = version + 1,
 			descriptor = jsonb_set(descriptor, '{revocation_reason}', to_jsonb(coalesce(NEW.revocation_reason, 'client_revoked')::text), true)
-		WHERE client_session_id = NEW.id AND state = 'active' AND revoked_at IS NULL;
+		WHERE cli_client_session_id = NEW.id AND state = 'active' AND revoked_at IS NULL;
 	END IF;
 	RETURN NEW;
 END;

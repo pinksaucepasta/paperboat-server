@@ -141,7 +141,7 @@ func (s *Service) applyOperations(ctx context.Context, items []dbsqlc.ListDueTer
 			jti, jtiErr := randomID("jti")
 			if jtiErr == nil {
 				now := time.Now().UTC()
-				credential, signErr := s.signer.SignCredential(mint.CredentialInput{Issuer: s.issuer, Audience: "paperboat-helper", Subject: item.UserID, JTI: jti, IssuedAt: now, ExpiresAt: now.Add(mint.MaxProofTTL), CredentialClass: "terminal_operation", Scopes: []string{"terminal:operate"}, EnvironmentID: item.ProjectID, UserID: item.UserID, ClientSessionID: item.ID, SessionID: item.TerminalSessionID})
+				credential, signErr := s.signer.SignCredential(mint.CredentialInput{Issuer: s.issuer, Audience: "paperboat-helper", Subject: item.UserID, JTI: jti, IssuedAt: now, ExpiresAt: now.Add(mint.MaxProofTTL), CredentialClass: "terminal_operation", Scopes: []string{"terminal:operate"}, EnvironmentID: item.ProjectID, UserID: item.UserID, CLIClientSessionID: item.ID, SessionID: item.TerminalSessionID})
 				if signErr == nil {
 					action := item.Operation
 					if action == "delete_history" {
@@ -294,7 +294,7 @@ func (s *Service) snapshot(ctx context.Context, projectID, userID string, rows [
 			return nil, randomErr
 		}
 		now := time.Now().UTC()
-		credential, signErr := s.signer.SignCredential(mint.CredentialInput{Issuer: s.issuer, Audience: "paperboat-helper", Subject: userID, JTI: jti, IssuedAt: now, ExpiresAt: now.Add(mint.MaxProofTTL), CredentialClass: "terminal_operation", Scopes: []string{"terminal:operate"}, EnvironmentID: projectID, UserID: userID, ClientSessionID: operationID, SessionID: row.ID})
+		credential, signErr := s.signer.SignCredential(mint.CredentialInput{Issuer: s.issuer, Audience: "paperboat-helper", Subject: userID, JTI: jti, IssuedAt: now, ExpiresAt: now.Add(mint.MaxProofTTL), CredentialClass: "terminal_operation", Scopes: []string{"terminal:operate"}, EnvironmentID: projectID, UserID: userID, CLIClientSessionID: operationID, SessionID: row.ID})
 		if signErr != nil {
 			return nil, signErr
 		}

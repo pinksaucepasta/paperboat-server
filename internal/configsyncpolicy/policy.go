@@ -4,7 +4,7 @@ var mandatoryExcludes = []string{
 	".git", "**/.git",
 	".paperboat", "**/.paperboat",
 	".config/paperboat", ".config/paperboat/**",
-	".local/bin/paperboat-helper",
+	".local/bin/pbh",
 	".config/systemd/user/paperboat-helper.service",
 	".config/systemd/user/default.target.wants/paperboat-helper.service",
 	"Library/LaunchAgents/com.pinksaucepasta.paperboat-helper.plist",

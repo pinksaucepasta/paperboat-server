@@ -264,7 +264,7 @@ func (s *Service) Events(ctx context.Context, userID, projectID string) ([]Event
 func (s *Service) RecordClientActivity(ctx context.Context, input ActivityInput) (Project, error) {
 	source := strings.TrimSpace(input.Source)
 	switch source {
-	case "papercode_activity", "cli_activity":
+	case "helper_activity", "cli_activity":
 	default:
 		return Project{}, ErrInvalidActivitySource
 	}
@@ -1005,7 +1005,7 @@ func (r *Repository) SetKeepAlive(ctx context.Context, userID, projectID string,
 
 func validActivitySource(source string) bool {
 	switch source {
-	case "connect_session", "agentunnel_connection", "papercode_activity", "cli_activity", "vm_heartbeat":
+	case "connect_session", "provider_route_connection", "helper_activity", "cli_activity", "vm_heartbeat":
 		return true
 	default:
 		return false

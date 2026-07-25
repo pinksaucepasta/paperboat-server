@@ -1137,15 +1137,6 @@ func selectBatch(paths []string, files map[string]fileState, extraBytes map[stri
 	return selected, deferred
 }
 
-func sortedKeys(values map[string]fileState) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
 func toSet(values []string) map[string]struct{} {
 	out := map[string]struct{}{}
 	for _, value := range values {

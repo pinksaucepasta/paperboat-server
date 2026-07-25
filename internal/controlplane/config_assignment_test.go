@@ -28,7 +28,7 @@ func TestConfigAssignmentOwnershipConcurrencyAndBYODConsent(t *testing.T) {
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id) VALUES ($1,$2,$3) ON CONFLICT (id) DO UPDATE SET owner_user_id=EXCLUDED.owner_user_id, desired_state='active'`, env, "workspace_"+suffix, userA); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.connected_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root) VALUES ($1,$2,$3,'BYOD','linux','arm64','/workspace')`, "cfg_machine_"+suffix, userA, env); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root) VALUES ($1,$2,$3,'BYOD','linux','arm64','/workspace')`, "cfg_machine_"+suffix, userA, env); err != nil {
 		t.Fatal(err)
 	}
 	service := NewConfigAssignmentService(store, nil, "warning-1")
@@ -96,7 +96,7 @@ func TestConfigCredentialIsBoundReplaySafeAndRevokedWithAssignment(t *testing.T)
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id) VALUES ($1,$2,$3)`, environmentID, "workspace_"+suffix, user); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.connected_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root) VALUES ($1,$2,$3,'BYOD','linux','arm64','/workspace')`, "cfg_credential_machine_"+suffix, user, environmentID); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root) VALUES ($1,$2,$3,'BYOD','linux','arm64','/workspace')`, "cfg_credential_machine_"+suffix, user, environmentID); err != nil {
 		t.Fatal(err)
 	}
 	privateKey := ed25519.NewKeyFromSeed([]byte(strings.Repeat("c", ed25519.SeedSize)))

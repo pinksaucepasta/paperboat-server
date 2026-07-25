@@ -15,7 +15,7 @@ func TestTerminalSessionMutationsRequirePrincipal(t *testing.T) {
 	}
 	for name, handler := range handlers {
 		t.Run(name, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodPost, "/api/projects/prj_1/terminal-sessions/pts_1", nil)
+			request := httptest.NewRequest(http.MethodPost, "/v1/projects/prj_1/terminal-sessions/pts_1", nil)
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, request)
 			if response.Code != http.StatusUnauthorized {

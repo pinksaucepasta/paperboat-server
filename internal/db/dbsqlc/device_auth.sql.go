@@ -42,7 +42,7 @@ func (q *Queries) ApproveDeviceGrant(ctx context.Context, arg ApproveDeviceGrant
 
 const authenticateClientAccessToken = `-- name: AuthenticateClientAccessToken :one
 SELECT cs.id,array_to_string(cs.scopes,' ') AS scopes,u.id AS user_id,u.workos_subject,u.primary_email,u.display_name,u.status,u.role,u.created_at
-FROM client_access_tokens t JOIN client_sessions cs ON cs.id=t.client_session_id JOIN users u ON u.id=cs.user_id
+FROM cli_access_tokens t JOIN cli_client_sessions cs ON cs.id=t.cli_client_session_id JOIN users u ON u.id=cs.user_id
 WHERE t.token_hash = ANY(string_to_array($1,' ')) AND t.revoked_at IS NULL AND t.expires_at>$2 AND cs.state='active' AND u.status='active'
 `
 
@@ -98,7 +98,7 @@ func (q *Queries) ConsumeDeviceGrant(ctx context.Context, arg ConsumeDeviceGrant
 }
 
 const countClientSessions = `-- name: CountClientSessions :one
-SELECT count(*) FROM client_sessions WHERE user_id=$1 AND ($2::text='' OR state=$2)
+SELECT count(*) FROM cli_client_sessions WHERE user_id=$1 AND ($2::text='' OR state=$2)
 `
 
 type CountClientSessionsParams struct {
@@ -114,20 +114,20 @@ func (q *Queries) CountClientSessions(ctx context.Context, arg CountClientSessio
 }
 
 const createClientAccessToken = `-- name: CreateClientAccessToken :exec
-INSERT INTO client_access_tokens (token_hash,client_session_id,expires_at,created_at) VALUES ($1,$2,$3,$4)
+INSERT INTO cli_access_tokens (token_hash,cli_client_session_id,expires_at,created_at) VALUES ($1,$2,$3,$4)
 `
 
 type CreateClientAccessTokenParams struct {
-	TokenHash       string
-	ClientSessionID string
-	ExpiresAt       time.Time
-	CreatedAt       time.Time
+	TokenHash          string
+	CLIClientSessionID string
+	ExpiresAt          time.Time
+	CreatedAt          time.Time
 }
 
 func (q *Queries) CreateClientAccessToken(ctx context.Context, arg CreateClientAccessTokenParams) error {
 	_, err := q.db.ExecContext(ctx, createClientAccessToken,
 		arg.TokenHash,
-		arg.ClientSessionID,
+		arg.CLIClientSessionID,
 		arg.ExpiresAt,
 		arg.CreatedAt,
 	)
@@ -135,20 +135,20 @@ func (q *Queries) CreateClientAccessToken(ctx context.Context, arg CreateClientA
 }
 
 const createClientRefreshToken = `-- name: CreateClientRefreshToken :exec
-INSERT INTO client_refresh_tokens (token_hash,client_session_id,state,expires_at,created_at) VALUES ($1,$2,'active',$3,$4)
+INSERT INTO cli_refresh_tokens (token_hash,cli_client_session_id,state,expires_at,created_at) VALUES ($1,$2,'active',$3,$4)
 `
 
 type CreateClientRefreshTokenParams struct {
-	TokenHash       string
-	ClientSessionID string
-	ExpiresAt       time.Time
-	CreatedAt       time.Time
+	TokenHash          string
+	CLIClientSessionID string
+	ExpiresAt          time.Time
+	CreatedAt          time.Time
 }
 
 func (q *Queries) CreateClientRefreshToken(ctx context.Context, arg CreateClientRefreshTokenParams) error {
 	_, err := q.db.ExecContext(ctx, createClientRefreshToken,
 		arg.TokenHash,
-		arg.ClientSessionID,
+		arg.CLIClientSessionID,
 		arg.ExpiresAt,
 		arg.CreatedAt,
 	)
@@ -156,7 +156,7 @@ func (q *Queries) CreateClientRefreshToken(ctx context.Context, arg CreateClient
 }
 
 const createClientSession = `-- name: CreateClientSession :exec
-INSERT INTO client_sessions (id,user_id,client_id,client_label,device_type,os,scopes,state,created_at,approved_at)
+INSERT INTO cli_client_sessions (id,user_id,client_id,client_label,device_type,os,scopes,state,created_at,approved_at)
 VALUES ($1,$2,$3,$4,$5,$6,string_to_array($7,' '),'active',$8,$9)
 `
 
@@ -274,36 +274,36 @@ func (q *Queries) ExpireDeviceGrantWithoutVersion(ctx context.Context, id string
 }
 
 const findClientSessionByToken = `-- name: FindClientSessionByToken :one
-SELECT client_session_id FROM client_access_tokens WHERE token_hash = ANY(string_to_array($1,' '))
-UNION SELECT client_session_id FROM client_refresh_tokens WHERE token_hash = ANY(string_to_array($1,' ')) LIMIT 1
+SELECT cli_client_session_id FROM cli_access_tokens WHERE token_hash = ANY(string_to_array($1,' '))
+UNION SELECT cli_client_session_id FROM cli_refresh_tokens WHERE token_hash = ANY(string_to_array($1,' ')) LIMIT 1
 `
 
 func (q *Queries) FindClientSessionByToken(ctx context.Context, stringToArray string) (string, error) {
 	row := q.db.QueryRowContext(ctx, findClientSessionByToken, stringToArray)
-	var client_session_id string
-	err := row.Scan(&client_session_id)
-	return client_session_id, err
+	var cli_client_session_id string
+	err := row.Scan(&cli_client_session_id)
+	return cli_client_session_id, err
 }
 
 const getClientRefreshTokenForUpdate = `-- name: GetClientRefreshTokenForUpdate :one
-SELECT rt.client_session_id,rt.state,rt.expires_at,array_to_string(cs.scopes,' ') AS scopes,rt.token_hash
-FROM client_refresh_tokens rt JOIN client_sessions cs ON cs.id=rt.client_session_id
+SELECT rt.cli_client_session_id,rt.state,rt.expires_at,array_to_string(cs.scopes,' ') AS scopes,rt.token_hash
+FROM cli_refresh_tokens rt JOIN cli_client_sessions cs ON cs.id=rt.cli_client_session_id
 WHERE rt.token_hash = ANY(string_to_array($1,' ')) FOR UPDATE OF rt,cs
 `
 
 type GetClientRefreshTokenForUpdateRow struct {
-	ClientSessionID string
-	State           string
-	ExpiresAt       time.Time
-	Scopes          string
-	TokenHash       string
+	CLIClientSessionID string
+	State              string
+	ExpiresAt          time.Time
+	Scopes             string
+	TokenHash          string
 }
 
 func (q *Queries) GetClientRefreshTokenForUpdate(ctx context.Context, stringToArray string) (GetClientRefreshTokenForUpdateRow, error) {
 	row := q.db.QueryRowContext(ctx, getClientRefreshTokenForUpdate, stringToArray)
 	var i GetClientRefreshTokenForUpdateRow
 	err := row.Scan(
-		&i.ClientSessionID,
+		&i.CLIClientSessionID,
 		&i.State,
 		&i.ExpiresAt,
 		&i.Scopes,
@@ -313,7 +313,7 @@ func (q *Queries) GetClientRefreshTokenForUpdate(ctx context.Context, stringToAr
 }
 
 const getClientSessionIdentity = `-- name: GetClientSessionIdentity :one
-SELECT user_id,client_id FROM client_sessions WHERE id=$1
+SELECT user_id,client_id FROM cli_client_sessions WHERE id=$1
 `
 
 type GetClientSessionIdentityRow struct {
@@ -329,7 +329,7 @@ func (q *Queries) GetClientSessionIdentity(ctx context.Context, id string) (GetC
 }
 
 const getClientSessionOwnerForUpdate = `-- name: GetClientSessionOwnerForUpdate :one
-SELECT user_id FROM client_sessions WHERE id=$1 FOR UPDATE
+SELECT user_id FROM cli_client_sessions WHERE id=$1 FOR UPDATE
 `
 
 func (q *Queries) GetClientSessionOwnerForUpdate(ctx context.Context, id string) (string, error) {
@@ -465,7 +465,7 @@ func (q *Queries) GetUserStatus(ctx context.Context, id string) (string, error) 
 
 const listClientSessions = `-- name: ListClientSessions :many
 SELECT id,client_id,client_label,device_type,os,array_to_string(scopes,' ') AS scopes,state,created_at,approved_at,last_used_at,revoked_at,revocation_reason
-FROM client_sessions WHERE user_id=$1 AND ($2::text='' OR state=$2) ORDER BY created_at DESC LIMIT $4 OFFSET $3
+FROM cli_client_sessions WHERE user_id=$1 AND ($2::text='' OR state=$2) ORDER BY created_at DESC LIMIT $4 OFFSET $3
 `
 
 type ListClientSessionsParams struct {
@@ -532,7 +532,7 @@ func (q *Queries) ListClientSessions(ctx context.Context, arg ListClientSessions
 }
 
 const markClientRefreshTokenRotated = `-- name: MarkClientRefreshTokenRotated :exec
-UPDATE client_refresh_tokens SET state='rotated',rotated_at=$2 WHERE token_hash=$1
+UPDATE cli_refresh_tokens SET state='rotated',rotated_at=$2 WHERE token_hash=$1
 `
 
 type MarkClientRefreshTokenRotatedParams struct {
@@ -546,35 +546,35 @@ func (q *Queries) MarkClientRefreshTokenRotated(ctx context.Context, arg MarkCli
 }
 
 const revokeClientAccessTokens = `-- name: RevokeClientAccessTokens :exec
-UPDATE client_access_tokens SET revoked_at=coalesce(revoked_at,$2) WHERE client_session_id=$1
+UPDATE cli_access_tokens SET revoked_at=coalesce(revoked_at,$2) WHERE cli_client_session_id=$1
 `
 
 type RevokeClientAccessTokensParams struct {
-	ClientSessionID string
-	RevokedAt       sql.NullTime
+	CLIClientSessionID string
+	RevokedAt          sql.NullTime
 }
 
 func (q *Queries) RevokeClientAccessTokens(ctx context.Context, arg RevokeClientAccessTokensParams) error {
-	_, err := q.db.ExecContext(ctx, revokeClientAccessTokens, arg.ClientSessionID, arg.RevokedAt)
+	_, err := q.db.ExecContext(ctx, revokeClientAccessTokens, arg.CLIClientSessionID, arg.RevokedAt)
 	return err
 }
 
 const revokeClientRefreshTokens = `-- name: RevokeClientRefreshTokens :exec
-UPDATE client_refresh_tokens SET state='revoked',revoked_at=coalesce(revoked_at,$2) WHERE client_session_id=$1 AND state<>'revoked'
+UPDATE cli_refresh_tokens SET state='revoked',revoked_at=coalesce(revoked_at,$2) WHERE cli_client_session_id=$1 AND state<>'revoked'
 `
 
 type RevokeClientRefreshTokensParams struct {
-	ClientSessionID string
-	RevokedAt       sql.NullTime
+	CLIClientSessionID string
+	RevokedAt          sql.NullTime
 }
 
 func (q *Queries) RevokeClientRefreshTokens(ctx context.Context, arg RevokeClientRefreshTokensParams) error {
-	_, err := q.db.ExecContext(ctx, revokeClientRefreshTokens, arg.ClientSessionID, arg.RevokedAt)
+	_, err := q.db.ExecContext(ctx, revokeClientRefreshTokens, arg.CLIClientSessionID, arg.RevokedAt)
 	return err
 }
 
 const revokeClientSession = `-- name: RevokeClientSession :exec
-UPDATE client_sessions SET state='revoked',revoked_at=coalesce(revoked_at,$2),revocation_reason=coalesce(revocation_reason,$3),version=version+1 WHERE id=$1
+UPDATE cli_client_sessions SET state='revoked',revoked_at=coalesce(revoked_at,$2),revocation_reason=coalesce(revocation_reason,$3),version=version+1 WHERE id=$1
 `
 
 type RevokeClientSessionParams struct {
@@ -623,7 +623,7 @@ func (q *Queries) TakeAuthRateLimit(ctx context.Context, arg TakeAuthRateLimitPa
 }
 
 const touchClientSession = `-- name: TouchClientSession :exec
-UPDATE client_sessions SET last_used_at=$2 WHERE id=$1
+UPDATE cli_client_sessions SET last_used_at=$2 WHERE id=$1
 `
 
 type TouchClientSessionParams struct {

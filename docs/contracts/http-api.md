@@ -1,6 +1,6 @@
 # HTTP API Contract
 
-Status: implemented Phase 10 contract baseline.
+Status: implemented contract baseline.
 
 This document freezes the `paperboat-server` HTTP/JSON contract shape for production
 implementation. Endpoint behavior remains server-side authoritative; clients are
@@ -39,9 +39,9 @@ Error responses:
 }
 ```
 
-Note: agentunnel uses its own `ok` envelope. `paperboat-server` must treat agentunnel as
+Note: provider_route uses its own `ok` envelope. `paperboat-server` must treat provider_route as
 an external provider contract and translate provider errors at its own boundary. Do not
-change agentunnel's public contract from this repo.
+change provider_route's public contract from this repo.
 
 ## Cross-Cutting Headers
 
@@ -54,7 +54,7 @@ Requests:
   replay-safe through server-side state and aggregate-scoped orchestration/session
   records.
 - `If-Match` with the numeric project `version`, or a JSON `version` field, for
-  `PATCH /api/projects/{project_id}` optimistic concurrency.
+  `PATCH /v1/projects/{project_id}` optimistic concurrency.
 
 Responses:
 
@@ -72,19 +72,19 @@ Responses:
 
 ### Auth and Session
 
-- `GET /api/me`
-- `POST /api/auth/workos/callback`
-- `POST /api/auth/logout`
-- `GET /api/auth/csrf`
-- `POST /api/auth/device/authorize`
-- `POST /api/auth/device/token`
-- `GET /api/auth/device/requests/{user_code}`
-- `POST /api/auth/device/requests/{user_code}/approve`
-- `POST /api/auth/device/requests/{user_code}/deny`
-- `POST /api/auth/token/refresh`
-- `POST /api/auth/token/revoke`
-- `GET /api/auth/clients`
-- `DELETE /api/auth/clients/{client_session_id}`
+- `GET /v1/me`
+- `POST /v1/auth/workos/callback`
+- `POST /v1/auth/logout`
+- `GET /v1/auth/csrf`
+- `POST /v1/auth/device/authorize`
+- `POST /v1/auth/device/token`
+- `GET /v1/auth/device/requests/{user_code}`
+- `POST /v1/auth/device/requests/{user_code}/approve`
+- `POST /v1/auth/device/requests/{user_code}/deny`
+- `POST /v1/auth/token/refresh`
+- `POST /v1/auth/token/revoke`
+- `GET /v1/auth/cli-client-sessions`
+- `DELETE /v1/auth/cli-client-sessions/{cli_client_session_id}`
 
 The device/session contract, polling outcomes, rotation, and revocation behavior are frozen
 in [cli-authorization.md](cli-authorization.md). Browser approval uses cookie plus CSRF;
@@ -92,35 +92,35 @@ CLI project reads and connects use scoped Paperboat bearer access tokens.
 
 ### Billing and Entitlements
 
-- `GET /api/billing/entitlement`
-- `GET /api/billing/usage`
-- `GET /api/billing/plan-products`
-- `GET /api/billing/storage`
-- `GET /api/billing/storage-preview?storage_gb={integer}`
-- `PUT /api/billing/storage`
-- `GET /api/billing/auto-topup`
-- `PUT /api/billing/auto-topup`
-- `GET /api/dashboard/usage-summary`
-- `POST /api/billing/checkout`
-- `POST /api/billing/customer-portal`
-- `POST /api/webhooks/polar`
+- `GET /v1/billing/entitlement`
+- `GET /v1/billing/usage`
+- `GET /v1/billing/plan-products`
+- `GET /v1/billing/storage`
+- `GET /v1/billing/storage-change-preview?storage_gb={integer}`
+- `PUT /v1/billing/storage`
+- `GET /v1/billing/auto-topup`
+- `PUT /v1/billing/auto-topup`
+- `GET /v1/usage-summary`
+- `POST /v1/billing/checkout`
+- `POST /v1/billing/customer-portal`
+- `POST /v1/webhooks/polar`
 
 ### Configuration Sync
 
-- `GET /api/config-sync/status` requires an authenticated account with an active entitlement and
+- `GET /v1/config-sync/status` requires an authenticated account with an active entitlement and
   returns the authoritative policy plus bounded environment, assignment, consent, helper,
   repository, revision, conflict, and recovery state. Stale helper observations are `offline`;
   unassigned environments are `disabled`. Policy reports the server rollout mode
   (`disabled`, `read_only`, or `leased_writes`) and whether BYOD is enabled.
-- `GET|PUT|DELETE /api/config-sync/overrides` lists and changes exact account-path overrides.
+- `GET|PUT|DELETE /v1/config-sync/overrides` lists and changes exact account-path overrides.
   Mandatory exclusions return `mandatory_exclusion` and cannot be weakened.
-- `POST /api/config-sync/recovery-key/export` and `/rotate` require CSRF plus a short-lived,
+- `POST /v1/config-sync/recovery-key/export` and `/rotate` require CSRF plus a short-lived,
   purpose-bound WorkOS reauthentication proof. Export responses are non-cacheable and audited.
 - `POST /v1/config/classify` requires helper proof plus a current assignment-bound config
   credential and accepts only the versioned, bounded relative-path metadata schema. Provider API
   keys, contents, absolute paths, identities, repository coordinates, and workspace names are
   never accepted from or returned to a helper.
-- `POST /api/config-sync/environments/{environment_id}/conflict-resolutions` records an
+- `POST /v1/config-sync/environments/{environment_id}/conflict-resolutions` records an
   explicit `keep_local`, `keep_remote`, or `externally_resolved` action against the current
   assignment version, remote revision, relative path, and deterministic conflict revision.
   Stale or ambiguous actions return a conflict.
@@ -128,7 +128,7 @@ CLI project reads and connects use scoped Paperboat bearer access tokens.
   `/v1/config/conflict-resolutions/acknowledge` require helper proof and the current
   assignment-bound config credential. A helper sees only its active binding and acknowledges
   only after the selected result lands.
-- `POST /api/machine/activity-heartbeat` accepts the existing authenticated activity payload
+- `POST /v1/environment-activity-observations` accepts the existing authenticated activity payload
   plus an optional validated `config_sync` object. Its required `updated_at` timestamp tracks the
   freshness of the sync daemon independently from the activity reporter. A status timestamp newer
   than its enclosing sample is persisted as a sanitized `status_clock_invalid` error at sample time,
@@ -137,49 +137,49 @@ CLI project reads and connects use scoped Paperboat bearer access tokens.
 
 ### Catalogs
 
-- `GET /api/catalog/plans`
-- `GET /api/catalog/machine-types`
-- `GET /api/catalog/presets`
-- `GET /api/catalog/idle-timeouts`
-- `GET /api/catalog/regions`
+- `GET /v1/catalog/plans`
+- `GET /v1/catalog/machine-types`
+- `GET /v1/catalog/presets`
+- `GET /v1/catalog/idle-timeouts`
+- `GET /v1/catalog/regions`
 
 ### GitHub
 
-- `GET /api/github/status`
-- `POST /api/github/oauth/start`
-- `POST /api/github/oauth/callback`
-- `POST /api/github/config-repo/provision`
+- `GET /v1/github/status`
+- `POST /v1/github/oauth/start`
+- `POST /v1/github/oauth/callback`
+- `POST /v1/github/config-repositories/provision`
 
 ### Projects
 
-- `GET /api/projects`
-- `POST /api/projects`
-- `GET /api/projects/{project_id}`
-- `PATCH /api/projects/{project_id}`
-- `DELETE /api/projects/{project_id}`
-- `POST /api/projects/{project_id}/start`
-- `POST /api/projects/{project_id}/stop`
-- `POST /api/projects/{project_id}/restart`
-- `POST /api/projects/{project_id}/activity`
-- `GET /api/projects/{project_id}/events`
-- `GET /api/projects/{project_id}/usage`
+- `GET /v1/projects`
+- `POST /v1/projects`
+- `GET /v1/projects/{project_id}`
+- `PATCH /v1/projects/{project_id}`
+- `DELETE /v1/projects/{project_id}`
+- `POST /v1/projects/{project_id}/start`
+- `POST /v1/projects/{project_id}/stop`
+- `POST /v1/projects/{project_id}/restart`
+- `POST /v1/projects/{project_id}/activity`
+- `GET /v1/projects/{project_id}/events`
+- `GET /v1/projects/{project_id}/usage`
 
 ### Access
 
-- `POST /api/projects/{project_id}/cli-connect`
-- `GET /api/projects/{project_id}/connection-status?terminal_session_id=pts_...`
+- `POST /v1/projects/{project_id}/connection-descriptor`
+- `GET /v1/projects/{project_id}/connection-readiness?terminal_session_id=pts_...`
 
-`GET /api/projects` supports `limit`, `offset`, `state`, and `sort`. Sort fields are
+`GET /v1/projects` supports `limit`, `offset`, `state`, and `sort`. Sort fields are
 `created_at`, `updated_at`, `name`, and `state`; prefix with `-` for descending order.
 
 ### Admin
 
-- `GET /api/admin/users`
-- `GET /api/admin/projects`
-- `GET /api/admin/orchestration-jobs`
-- `POST /api/admin/reconcile`
-- `POST /api/admin/users/{user_id}/adjust-credits`
-- `POST /api/admin/users/{user_id}/adjust-storage`
+- `GET /v1/admin/users`
+- `GET /v1/admin/projects`
+- `GET /v1/admin/orchestration-jobs`
+- `POST /v1/admin/reconcile`
+- `POST /v1/admin/users/{user_id}/adjust-credits`
+- `POST /v1/admin/users/{user_id}/adjust-storage`
 
 ## Canonical Error Codes
 
@@ -239,12 +239,12 @@ CLI APIs:
   connector credential. It contains no provider credential or internal alternate port.
   Exact retries replay the encrypted recorded document; changed body or proof bindings
   fail before a new admission is minted.
-- `POST /v1/helpers/enroll/hosted` accepts only a short-lived Fly OIDC workload identity
+- `POST /v1/hosted-helper-enrollments` accepts only a short-lived Fly OIDC workload identity
   obtained through the Machine-local `/.fly/api` socket and the helper's Ed25519 public
   key. The server verifies signature, issuer, audience, expiry, configured Fly app, and
   exact Fly machine-to-environment ownership before consuming canonical enrollment state.
   Hosted bootstrap credentials are never stored in Fly secrets or Machine environment.
-- `POST /v1/helpers/enroll` remains the one-time credential exchange for BYOD enrollment;
+- `POST /v1/helper-enrollments` remains the one-time credential exchange for BYOD enrollment;
   hosted production composition does not use it.
 - `POST /v1/config/credentials` accepts a helper identity credential, a bounded `{}` JSON
   body, and `X-Paperboat-Helper-Proof`; it returns a short-lived `config_sync` credential
@@ -257,7 +257,7 @@ CLI APIs:
   bearer, carry the durable identity separately in `X-Paperboat-Helper-Identity`, and
   remain signed by the enrolled helper key. The preview credential is held only in
   helper memory.
-- `POST /v1/connected-machines/installations/failure` accepts an active helper identity,
+- `POST /v1/user-machine-installation-failures` accepts an active helper identity,
   its exact Ed25519 request proof, and only `enrollment_id` plus the bounded stage
   `service_install|service_readiness`. It transitions the matching `installing|connecting`
   enrollment to `failed_retryable`; its stage is `artifact_verification`, `service_install`,
@@ -267,7 +267,7 @@ CLI APIs:
 - `GET /v1/trust/revocations` requires the edge-control bearer credential and returns the
   bounded revocation document consumed by tunnel trust snapshots (`jtis`, `environments`,
   `helper_generations`, and `key_ids`).
-- `POST /v1/routes/observed` accepts the bounded applied route snapshot from the assigned
+- `POST /v1/edge/routes/observations` accepts the bounded applied route snapshot from the assigned
   tunnel node. Each item is accepted only when route revision, node ID, and connector
   generation still match current desired ownership; stale observations return
   `version_conflict` and cannot mutate newer intent.
@@ -298,4 +298,4 @@ Initial contract:
 
 - Dashboard approves endpoint list, response shapes, error codes, and project states.
 - CLI approves `cli-connect`, connection status, and structured error behavior.
-- agentunnel boundary remains adapter-only; no agentunnel contract changes from this repo.
+- provider_route boundary remains adapter-only; no provider_route contract changes from this repo.

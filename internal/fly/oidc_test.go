@@ -37,13 +37,13 @@ func TestWorkloadIdentityVerifierValidatesFlyClaims(t *testing.T) {
 			"x": base64.RawURLEncoding.EncodeToString(publicKey),
 		}}})
 	})
-	verifier, err := newWorkloadIdentityVerifier(issuer, "https://control.example/v1/helpers/enroll/hosted", server.Client())
+	verifier, err := newWorkloadIdentityVerifier(issuer, "https://control.example/v1/hosted-helper-enrollments", server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
 	claims := jwt.MapClaims{
-		"iss": issuer, "aud": "https://control.example/v1/helpers/enroll/hosted",
+		"iss": issuer, "aud": "https://control.example/v1/hosted-helper-enrollments",
 		"iat": now.Unix(), "nbf": now.Add(-time.Second).Unix(), "exp": now.Add(10 * time.Minute).Unix(),
 		"jti": "fly-oidc-token-1", "app_name": "paperboat-projects",
 		"machine_id": "machine-1", "machine_name": "pbvm-project-1",

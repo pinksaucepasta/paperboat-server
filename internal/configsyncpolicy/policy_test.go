@@ -9,7 +9,7 @@ func TestMandatoryExcludesProtectPaperboatRuntime(t *testing.T) {
 	for _, required := range []string{
 		".config/paperboat",
 		".config/paperboat/**",
-		".local/bin/paperboat-helper",
+		".local/bin/pbh",
 		".config/systemd/user/paperboat-helper.service",
 		".config/systemd/user/default.target.wants/paperboat-helper.service",
 		"Library/LaunchAgents/com.pinksaucepasta.paperboat-helper.plist",

@@ -45,14 +45,14 @@ type Provider struct {
 }
 
 type ProofInput struct {
-	Issuer          string
-	EnvironmentID   string
-	UserID          string
-	ClientSessionID string
-	JTI             string
-	Nonce           string
-	IssuedAt        time.Time
-	ExpiresAt       time.Time
+	Issuer             string
+	EnvironmentID      string
+	UserID             string
+	CLIClientSessionID string
+	JTI                string
+	Nonce              string
+	IssuedAt           time.Time
+	ExpiresAt          time.Time
 }
 
 type RevocationInput struct {
@@ -89,7 +89,7 @@ type CredentialInput struct {
 	WarningRevision     string
 	HelperID            string
 	UserID              string
-	ClientSessionID     string
+	CLIClientSessionID  string
 	SessionID           string
 	KeyThumbprint       string
 	ConnectorGeneration int64
@@ -112,7 +112,7 @@ type CredentialClaims struct {
 	WarningRevision     string   `json:"warning_revision,omitempty"`
 	HelperID            string   `json:"helper_id,omitempty"`
 	UserID              string   `json:"user_id,omitempty"`
-	ClientSessionID     string   `json:"client_session_id,omitempty"`
+	CLIClientSessionID  string   `json:"cli_client_session_id,omitempty"`
 	SessionID           string   `json:"session_id,omitempty"`
 	KeyThumbprint       string   `json:"key_thumbprint,omitempty"`
 	ConnectorGeneration int64    `json:"connector_generation,omitempty"`
@@ -187,7 +187,7 @@ func ParseKeys(specs []string, activeID string, maxAge time.Duration) (*Provider
 }
 
 func (p *Provider) Sign(input ProofInput) (string, error) {
-	if strings.TrimSpace(input.Issuer) == "" || strings.TrimSpace(input.EnvironmentID) == "" || strings.TrimSpace(input.UserID) == "" || strings.TrimSpace(input.ClientSessionID) == "" || strings.TrimSpace(input.JTI) == "" || strings.TrimSpace(input.Nonce) == "" {
+	if strings.TrimSpace(input.Issuer) == "" || strings.TrimSpace(input.EnvironmentID) == "" || strings.TrimSpace(input.UserID) == "" || strings.TrimSpace(input.CLIClientSessionID) == "" || strings.TrimSpace(input.JTI) == "" || strings.TrimSpace(input.Nonce) == "" {
 		return "", errors.New("mint proof claims are incomplete")
 	}
 	issuedAt := input.IssuedAt.UTC()
@@ -198,13 +198,13 @@ func (p *Provider) Sign(input ProofInput) (string, error) {
 	return p.signClaims(ProofType, map[string]any{
 		"iss": input.Issuer, "aud": "t3-env:" + input.EnvironmentID, "sub": input.UserID,
 		"jti": input.JTI, "iat": issuedAt.Unix(), "exp": expiresAt.Unix(),
-		"environmentId": input.EnvironmentID, "clientSessionId": input.ClientSessionID,
+		"environmentId": input.EnvironmentID, "clientSessionId": input.CLIClientSessionID,
 		"nonce": input.Nonce, "scope": []string{ProofScope},
 	})
 }
 
 func (p *Provider) SignHealth(input ProofInput) (string, error) {
-	if strings.TrimSpace(input.Issuer) == "" || strings.TrimSpace(input.EnvironmentID) == "" || strings.TrimSpace(input.UserID) == "" || strings.TrimSpace(input.ClientSessionID) == "" || strings.TrimSpace(input.JTI) == "" || strings.TrimSpace(input.Nonce) == "" {
+	if strings.TrimSpace(input.Issuer) == "" || strings.TrimSpace(input.EnvironmentID) == "" || strings.TrimSpace(input.UserID) == "" || strings.TrimSpace(input.CLIClientSessionID) == "" || strings.TrimSpace(input.JTI) == "" || strings.TrimSpace(input.Nonce) == "" {
 		return "", errors.New("health proof claims are incomplete")
 	}
 	issuedAt := input.IssuedAt.UTC()
@@ -215,13 +215,13 @@ func (p *Provider) SignHealth(input ProofInput) (string, error) {
 	return p.signClaims(HealthType, map[string]any{
 		"iss": input.Issuer, "aud": "t3-env:" + input.EnvironmentID, "sub": input.UserID,
 		"jti": input.JTI, "iat": issuedAt.Unix(), "exp": expiresAt.Unix(),
-		"environmentId": input.EnvironmentID, "clientSessionId": input.ClientSessionID,
+		"environmentId": input.EnvironmentID, "clientSessionId": input.CLIClientSessionID,
 		"nonce": input.Nonce, "scope": []string{HealthScope},
 	})
 }
 
 func (p *Provider) SignRevocation(input RevocationInput) (string, error) {
-	if strings.TrimSpace(input.Issuer) == "" || strings.TrimSpace(input.EnvironmentID) == "" || strings.TrimSpace(input.UserID) == "" || strings.TrimSpace(input.ClientSessionID) == "" || strings.TrimSpace(input.JTI) == "" || strings.TrimSpace(input.Nonce) == "" || strings.TrimSpace(input.Reason) == "" || len(input.SessionIDs) == 0 {
+	if strings.TrimSpace(input.Issuer) == "" || strings.TrimSpace(input.EnvironmentID) == "" || strings.TrimSpace(input.UserID) == "" || strings.TrimSpace(input.CLIClientSessionID) == "" || strings.TrimSpace(input.JTI) == "" || strings.TrimSpace(input.Nonce) == "" || strings.TrimSpace(input.Reason) == "" || len(input.SessionIDs) == 0 {
 		return "", errors.New("revocation proof claims are incomplete")
 	}
 	issuedAt := input.IssuedAt.UTC()
@@ -232,7 +232,7 @@ func (p *Provider) SignRevocation(input RevocationInput) (string, error) {
 	return p.signClaims(RevokeType, map[string]any{
 		"iss": input.Issuer, "aud": "t3-env:" + input.EnvironmentID, "sub": input.UserID,
 		"jti": input.JTI, "iat": issuedAt.Unix(), "exp": expiresAt.Unix(),
-		"environmentId": input.EnvironmentID, "clientSessionId": input.ClientSessionID,
+		"environmentId": input.EnvironmentID, "clientSessionId": input.CLIClientSessionID,
 		"nonce": input.Nonce, "scope": []string{RevokeScope}, "sessionIds": input.SessionIDs,
 		"reason": input.Reason,
 	})
@@ -291,10 +291,10 @@ func (p *Provider) SignCredential(input CredentialInput) (string, error) {
 		}
 		claims["helper_id"], claims["assignment_id"], claims["warning_revision"] = input.HelperID, input.AssignmentID, input.WarningRevision
 	case "terminal_operation", "image_stage":
-		if input.UserID == "" || input.ClientSessionID == "" || input.SessionID == "" {
+		if input.UserID == "" || input.CLIClientSessionID == "" || input.SessionID == "" {
 			return "", errors.New("helper access bindings are required")
 		}
-		claims["user_id"], claims["client_session_id"], claims["session_id"] = input.UserID, input.ClientSessionID, input.SessionID
+		claims["user_id"], claims["cli_client_session_id"], claims["session_id"] = input.UserID, input.CLIClientSessionID, input.SessionID
 	}
 	return p.signClaims("paperboat-credential+jwt", claims)
 }
@@ -380,7 +380,7 @@ func (p *Provider) VerifyCredential(token, expectedIssuer, expectedClass string,
 			return CredentialClaims{}, errors.New("credential claims are invalid")
 		}
 	case "terminal_operation", "image_stage":
-		if claims.UserID == "" || claims.ClientSessionID == "" || claims.SessionID == "" {
+		if claims.UserID == "" || claims.CLIClientSessionID == "" || claims.SessionID == "" {
 			return CredentialClaims{}, errors.New("credential claims are invalid")
 		}
 	}
@@ -440,7 +440,7 @@ func (p *Provider) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 }
 
 // ActivePublicKeyPEM returns the active Ed25519 verification key in the
-// format required by the Papercode relay-config contract.
+// format required by the Helper relay-config contract.
 func (p *Provider) ActivePublicKeyPEM() (string, error) {
 	p.mu.RLock()
 	key := append(ed25519.PrivateKey(nil), p.keys[p.activeID]...)

@@ -57,7 +57,7 @@ func (t providerTransport) RoundTrip(request *http.Request) (*http.Response, err
 
 func normalizeProvider(provider string) string {
 	switch provider {
-	case "workos", "polar", "github", "agentunnel", "papercode":
+	case "workos", "polar", "github", "provider_route", "helper":
 		return provider
 	default:
 		return "unknown"
@@ -67,7 +67,7 @@ func normalizeProvider(provider string) string {
 func providerMetricsSnapshot() map[string]int64 {
 	providerMetrics.Lock()
 	defer providerMetrics.Unlock()
-	providers := [...]string{"workos", "polar", "github", "agentunnel", "papercode", "unknown"}
+	providers := [...]string{"workos", "polar", "github", "provider_route", "helper", "unknown"}
 	result := make(map[string]int64, len(providers)*4)
 	for _, provider := range providers {
 		metric := providerMetrics.values[provider]

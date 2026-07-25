@@ -14,8 +14,8 @@ import (
 
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
-	"github.com/pinksaucepasta/paperboat-server/internal/connectedmachines"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
+	"github.com/pinksaucepasta/paperboat-server/internal/usermachines"
 )
 
 func TestValidateUsageReport(t *testing.T) {
@@ -164,13 +164,13 @@ func TestReconcileUsageDebitsBYODBandwidthAndSuspendsOnExhaustion(t *testing.T) 
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_"+suffix, suffix+"@example.test"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.connected_machine_entitlements (id,user_id,provider_subscription_id,product_code,state,seat_quantity,allowance_bytes,current_period_start,current_period_end) VALUES ($1,$2,$3,'byod-test','active',1,100,$4,$5)`, "ent_"+suffix, userID, "sub_"+suffix, now.Add(-time.Hour), now.Add(time.Hour)); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machine_entitlements (id,user_id,provider_subscription_id,product_code,state,seat_quantity,allowance_bytes,current_period_start,current_period_end) VALUES ($1,$2,$3,'byod-test','active',1,100,$4,$5)`, "ent_"+suffix, userID, "sub_"+suffix, now.Add(-time.Hour), now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.connected_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,$4,'linux','amd64','/home/test','online','occupied',true)`, machineID, userID, "env_"+suffix, "Usage "+suffix); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,$4,'linux','amd64','/home/test','online','occupied',true)`, machineID, userID, "env_"+suffix, "Usage "+suffix); err != nil {
 		t.Fatal(err)
 	}
-	debit := connectedmachines.New(store, audit.NewWriter(store), connectedmachines.Policy{}, nil)
+	debit := usermachines.New(store, audit.NewWriter(store), usermachines.Policy{}, nil)
 	report := usageReport("op_bw_"+suffix, "epoch_bw_"+suffix, 120, now)
 	report.EdgeNodeID, report.EnvironmentID, report.RouteID = "node_"+suffix, "env_"+suffix, "route_"+suffix
 	receipt, err := ReconcileUsageWithBandwidth(ctx, store, report, now, debit)
@@ -182,7 +182,7 @@ func TestReconcileUsageDebitsBYODBandwidthAndSuspendsOnExhaustion(t *testing.T) 
 		t.Fatalf("replay = %#v, %v", replay, err)
 	}
 	var consumed int64
-	if err := store.SQL().QueryRowContext(ctx, `SELECT consumed_included_bytes FROM paperboat.connected_machine_bandwidth_periods WHERE connected_machine_id=$1`, machineID).Scan(&consumed); err != nil {
+	if err := store.SQL().QueryRowContext(ctx, `SELECT consumed_included_bytes FROM paperboat.user_machine_bandwidth_periods WHERE user_machine_id=$1`, machineID).Scan(&consumed); err != nil {
 		t.Fatal(err)
 	}
 	if consumed != 100 {

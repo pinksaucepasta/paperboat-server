@@ -30,20 +30,20 @@ func (q *Queries) GetGitHubConfigRepoStatus(ctx context.Context, userID string) 
 	return i, err
 }
 
-const getGitHubConnectionStatus = `-- name: GetGitHubConnectionStatus :one
+const getGitHubConnectionReadiness = `-- name: GetGitHubConnectionReadiness :one
 SELECT scopes, last_validated_at, token_ciphertext FROM github_oauth_tokens
 WHERE user_id = $1 AND revoked_at IS NULL ORDER BY updated_at DESC LIMIT 1
 `
 
-type GetGitHubConnectionStatusRow struct {
+type GetGitHubConnectionReadinessRow struct {
 	Scopes          []string
 	LastValidatedAt sql.NullTime
 	TokenCiphertext []byte
 }
 
-func (q *Queries) GetGitHubConnectionStatus(ctx context.Context, userID string) (GetGitHubConnectionStatusRow, error) {
-	row := q.db.QueryRowContext(ctx, getGitHubConnectionStatus, userID)
-	var i GetGitHubConnectionStatusRow
+func (q *Queries) GetGitHubConnectionReadiness(ctx context.Context, userID string) (GetGitHubConnectionReadinessRow, error) {
+	row := q.db.QueryRowContext(ctx, getGitHubConnectionReadiness, userID)
+	var i GetGitHubConnectionReadinessRow
 	err := row.Scan(pq.Array(&i.Scopes), &i.LastValidatedAt, &i.TokenCiphertext)
 	return i, err
 }

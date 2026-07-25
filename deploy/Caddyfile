@@ -2,7 +2,7 @@
 	email {$ACME_EMAIL}
 }
 
-pb.hexwagon.com {
+{$PAPERBOAT_CONTROL_DOMAIN} {
 	encode zstd gzip
 
 	reverse_proxy server:8080 {

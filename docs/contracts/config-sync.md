@@ -66,7 +66,7 @@ Stable recovery errors include `assignment_required`, `consent_required`,
 Status is monotonic by sync revision and bound to repository, assignment, environment,
 helper generation, warning, policy, and key revisions. The runtime descriptor includes
 the authoritative sync-revision floor so a restarted helper advances beyond the last
-accepted revision. A newer phase report for the same revision may replace an earlier
-phase report; an older helper timestamp or revision is rejected. Summaries are bounded
+accepted revision. A newer status report for the same revision may replace an earlier
+status report; an older helper timestamp or revision is rejected. Summaries are bounded
 and never contain file contents, absolute paths, credentials, keys, provider responses,
 or command output.

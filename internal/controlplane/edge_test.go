@@ -58,7 +58,7 @@ func TestEdgeAssignmentSerializesRevokedAsBoolean(t *testing.T) {
 		_, _ = store.SQL().ExecContext(context.Background(), `DELETE FROM paperboat.control_tunnel_nodes WHERE id=$1`, node)
 		_, _ = store.SQL().ExecContext(context.Background(), `DELETE FROM paperboat.control_environments WHERE id=$1`, environment)
 	})
-	request := httptest.NewRequest(http.MethodPost, "/v1/assignment/current", strings.NewReader(`{"environment_id":"`+environment+`","helper_id":"`+helper+`"}`))
+	request := httptest.NewRequest(http.MethodPost, "/v1/edge/assignments/current", strings.NewReader(`{"environment_id":"`+environment+`","helper_id":"`+helper+`"}`))
 	request.Header.Set("Authorization", "Bearer edge-control-test")
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
@@ -80,7 +80,7 @@ func TestEdgeHandlerRejectsUnknownAndTrailingJSON(t *testing.T) {
 		`{"edge_node_id":"node","unknown":true}`,
 		`{"edge_node_id":"node"}{"edge_node_id":"other"}`,
 	} {
-		request := httptest.NewRequest(http.MethodPost, "/v1/routes/desired", strings.NewReader(body))
+		request := httptest.NewRequest(http.MethodPost, "/v1/edge/routes/desired-state", strings.NewReader(body))
 		request.Header.Set("Authorization", "Bearer edge-control-credential-01234567890123456789")
 		request.Header.Set("Content-Type", "application/json")
 		response := httptest.NewRecorder()

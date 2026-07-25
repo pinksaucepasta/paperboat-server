@@ -107,7 +107,7 @@ func tokenRevoke(service *auth.DeviceService) http.HandlerFunc {
 	}
 }
 
-func clientsList(service *auth.DeviceService) http.HandlerFunc {
+func cliClientSessionsList(service *auth.DeviceService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, _ := principalFromContext(r.Context())
 		limit, err := queryInt(r, "limit", 50)
@@ -130,15 +130,15 @@ func clientsList(service *auth.DeviceService) http.HandlerFunc {
 		}
 		items := make([]map[string]any, 0, len(page.Items))
 		for _, i := range page.Items {
-			items = append(items, map[string]any{"client_session_id": i.ID, "client_id": i.ClientID, "client_label": i.ClientLabel, "device_type": i.DeviceType, "os": i.OS, "scopes": i.Scopes, "state": i.State, "created_at": i.CreatedAt, "approved_at": i.ApprovedAt, "last_used_at": i.LastUsedAt, "revoked_at": i.RevokedAt, "revocation_reason": i.RevocationReason, "current": i.Current})
+			items = append(items, map[string]any{"cli_client_session_id": i.ID, "client_id": i.ClientID, "client_label": i.ClientLabel, "device_type": i.DeviceType, "os": i.OS, "scopes": i.Scopes, "state": i.State, "created_at": i.CreatedAt, "approved_at": i.ApprovedAt, "last_used_at": i.LastUsedAt, "revoked_at": i.RevokedAt, "revocation_reason": i.RevocationReason, "current": i.Current})
 		}
 		writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]any{"items": items, "pagination": map[string]any{"limit": page.Limit, "offset": page.Offset, "total": page.Total, "next_offset": page.NextOffset}}})
 	}
 }
-func clientDelete(service *auth.DeviceService) http.HandlerFunc {
+func cliClientSessionDelete(service *auth.DeviceService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, _ := principalFromContext(r.Context())
-		if err := service.RevokeClient(r.Context(), p.User.ID, r.PathValue("client_session_id"), "user_revoked"); err != nil {
+		if err := service.RevokeClient(r.Context(), p.User.ID, r.PathValue("cli_client_session_id"), "user_revoked"); err != nil {
 			writeClientDeleteError(w, r, err)
 			return
 		}
@@ -148,7 +148,7 @@ func clientDelete(service *auth.DeviceService) http.HandlerFunc {
 
 func writeClientDeleteError(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, sql.ErrNoRows) {
-		writeError(w, r, http.StatusNotFound, "not_found", "Authorized client was not found.")
+		writeError(w, r, http.StatusNotFound, "not_found", "CLI client session was not found.")
 		return
 	}
 	writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
@@ -164,7 +164,7 @@ func deviceRequestPayload(out auth.DeviceRequest, user auth.User, issuer string)
 }
 func writeTokenSet(w http.ResponseWriter, out auth.TokenSet) {
 	noStore(w)
-	writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]any{"access_token": out.AccessToken, "refresh_token": out.RefreshToken, "token_type": out.TokenType, "expires_in": out.ExpiresIn, "scope": out.Scope, "client_session_id": out.ClientSessionID}})
+	writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]any{"access_token": out.AccessToken, "refresh_token": out.RefreshToken, "token_type": out.TokenType, "expires_in": out.ExpiresIn, "scope": out.Scope, "cli_client_session_id": out.CLIClientSessionID}})
 }
 func noStore(w http.ResponseWriter) {
 	w.Header().Set("Cache-Control", "no-store")

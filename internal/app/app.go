@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pinksaucepasta/paperboat-server/internal/agentunnel"
+	"github.com/pinksaucepasta/paperboat-server/internal/access"
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/auth"
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
@@ -19,7 +19,6 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/classifier"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/configsync"
-	"github.com/pinksaucepasta/paperboat-server/internal/connectedmachines"
 	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
@@ -31,6 +30,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/orchestrator"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 	"github.com/pinksaucepasta/paperboat-server/internal/terminalsessions"
+	"github.com/pinksaucepasta/paperboat-server/internal/usermachines"
 	"github.com/pinksaucepasta/paperboat-server/internal/workers"
 )
 
@@ -82,30 +82,34 @@ func New(opts Options) (*App, error) {
 	}
 	projectService := projects.NewService(store, auditWriter, opts.Config)
 	terminalSessionService := terminalsessions.New(store, projectService, opts.Config.TerminalSessions.MaxActivePerProject, opts.Config.TerminalSessions.RetryBackoff, opts.Config.TerminalSessions.MaxAttemptsBeforeAlert)
-	legacyAccessProvider := agentunnel.FakeClient{BaseURL: opts.Config.Providers.Agentunnel.BaseURL}
+	accessProvider := access.Client(access.DisabledClient{})
 	mintKeys, err := mintKeyProvider(opts.Config)
 	if err != nil {
 		_ = store.Close()
 		return nil, err
 	}
-	credentialIssuer := agentunnel.CredentialIssuer(agentunnel.FakeCredentialIssuer{})
-	agentunnelService := agentunnel.NewServiceWithCredentials(store, projectService, legacyAccessProvider, credentialIssuer, auditWriter, opts.Config)
-	agentunnelService.ConfigureCanonicalAccess(mintKeys)
+	credentialIssuer := access.CredentialIssuer(access.DisabledCredentialIssuer{})
+	if opts.Config.Providers.FakeMode {
+		accessProvider = access.FakeClient{}
+		credentialIssuer = access.FakeCredentialIssuer{}
+	}
+	accessService := access.NewServiceWithCredentials(store, projectService, accessProvider, credentialIssuer, auditWriter, opts.Config)
+	accessService.ConfigureCanonicalAccess(mintKeys)
 	terminalSessionService.ConfigureControl(func(ctx context.Context, environmentID string) (string, error) {
 		route, routeErr := store.Queries().GetActiveHelperRouteForEnvironment(ctx, environmentID)
 		if routeErr != nil {
 			return "", routeErr
 		}
 		return "https://" + route.PublicHost, nil
-	}, mintKeys, normalizePapercodeIssuer(opts.Config.HTTP.PublicBaseURL), &http.Client{Timeout: opts.Config.TerminalSessions.OperationTimeout})
-	agentunnelService.SetBeforeConnect(func(ctx context.Context, _ string, projectID string) error {
+	}, mintKeys, normalizeHelperIssuer(opts.Config.HTTP.PublicBaseURL), &http.Client{Timeout: opts.Config.TerminalSessions.OperationTimeout})
+	accessService.SetBeforeConnect(func(ctx context.Context, _ string, projectID string) error {
 		return terminalSessionService.ApplyPending(ctx, projectID)
 	})
-	deviceAuthService.SetDownstreamRevoker(agentunnelService)
+	deviceAuthService.SetDownstreamRevoker(accessService)
 	orchestratorService := orchestrator.NewService(store, flyProvider, opts.Config)
 	orchestratorService.SetBeforeStop(terminalSessionService.SnapshotProject)
 	meteringService := metering.NewRuntimeService(store, flyProvider, billingRepo)
-	meteringService.SetDownstreamRevoker(agentunnelService)
+	meteringService.SetDownstreamRevoker(accessService)
 	checker := readinessChecker{cfg: opts.Config, db: store}
 	var classificationProvider classifier.Provider
 	if opts.Config.Secrets.ClassifierAPIKey != "" {
@@ -118,18 +122,18 @@ func New(opts Options) (*App, error) {
 	}
 	classificationController := classifier.NewController(store, classificationProvider, opts.Config.Classifier, opts.Config.ConfigSync.PolicyRevision, auditWriter)
 	configSyncRepo := configsync.NewRepository(store, opts.Config.ConfigSync, opts.Config.Secrets.EncryptionKey, auditWriter)
-	connectedMachineService := connectedmachines.New(store, auditWriter, connectedmachines.Policy{PairingLifetime: opts.Config.ConnectedMachines.PairingLifetime, OfflineAfter: opts.Config.ConnectedMachines.OfflineAfter, AllowedPlatforms: opts.Config.ConnectedMachines.AllowedPlatforms}, billingService)
-	connectedMachineService.ConfigureProvisioning(legacyAccessProvider, opts.Config.Secrets.EncryptionKey)
-	connectedMachineService.ConfigureAccess(credentialIssuer, normalizePapercodeIssuer(opts.Config.HTTP.PublicBaseURL), opts.Config.CLIAuth.AccessTokenLifetime, opts.Config.Providers.Agentunnel.UploadMaxBytes, opts.Config.Providers.Agentunnel.UploadAllowedMIMEs, int64(opts.Config.Providers.Agentunnel.UploadRetention/time.Second))
-	connectedMachineService.ConfigureTerminalSessions(opts.Config.TerminalSessions.MaxActivePerProject, mintKeys, &http.Client{Timeout: opts.Config.TerminalSessions.OperationTimeout})
-	connectedMachineService.ConfigureBootstrapCommand(opts.Config.ConnectedMachines.BootstrapCommand)
-	if err := connectedMachineService.ConfigureHelperRoute(opts.Config.HelperBaseDomain, opts.Config.ConnectedMachines.HelperListenPort); err != nil {
+	userMachineService := usermachines.New(store, auditWriter, usermachines.Policy{PairingLifetime: opts.Config.UserMachines.PairingLifetime, OfflineAfter: opts.Config.UserMachines.OfflineAfter, AllowedPlatforms: opts.Config.UserMachines.AllowedPlatforms}, billingService)
+	userMachineService.ConfigureProvisioning(accessProvider, opts.Config.Secrets.EncryptionKey)
+	userMachineService.ConfigureAccess(credentialIssuer, normalizeHelperIssuer(opts.Config.HTTP.PublicBaseURL), opts.Config.CLIAuth.AccessTokenLifetime, opts.Config.Access.UploadMaxBytes, opts.Config.Access.UploadAllowedMIMEs, int64(opts.Config.Access.UploadRetention/time.Second))
+	userMachineService.ConfigureTerminalSessions(opts.Config.TerminalSessions.MaxActivePerProject, mintKeys, &http.Client{Timeout: opts.Config.TerminalSessions.OperationTimeout})
+	userMachineService.ConfigureBootstrapCommand(opts.Config.UserMachines.BootstrapCommand)
+	if err := userMachineService.ConfigureHelperRoute(opts.Config.HelperBaseDomain, opts.Config.UserMachines.HelperListenPort); err != nil {
 		return nil, err
 	}
-	if err := connectedMachineService.ConfigureHelperArtifacts(opts.Config.ConnectedMachines.HelperArtifactsJSON, opts.Config.ConnectedMachines.HelperArtifactPublicKey); err != nil {
+	if err := userMachineService.ConfigureHelperArtifacts(opts.Config.UserMachines.HelperArtifactsJSON, opts.Config.UserMachines.HelperArtifactPublicKey); err != nil {
 		return nil, err
 	}
-	billingService.SetConnectedMachineSessionRevoker(connectedMachineService)
+	billingService.SetUserMachineSessionRevoker(userMachineService)
 	enrollmentService := controlplane.NewEnrollmentService(store, mintKeys, auditWriter, config.NormalizeIssuer(opts.Config.HTTP.PublicBaseURL), opts.Config.Secrets.EncryptionKey)
 	hostedBootstrapService := controlplane.NewHostedBootstrapService(store, enrollmentService, opts.Config.Secrets.EncryptionKey)
 	hostedBootstrapService.SetSourceCredentialIssuer(controlplane.HostedSourceCredentialIssuerFunc(
@@ -158,7 +162,7 @@ func New(opts Options) (*App, error) {
 		},
 	))
 	if !opts.Config.Providers.FakeMode {
-		hostedEnrollmentAudience := config.NormalizeIssuer(opts.Config.HTTP.PublicBaseURL) + "/v1/helpers/enroll/hosted"
+		hostedEnrollmentAudience := config.NormalizeIssuer(opts.Config.HTTP.PublicBaseURL) + "/v1/hosted-helper-enrollments"
 		workloadVerifier, verifierErr := fly.NewWorkloadIdentityVerifier(
 			opts.Config.Fly.OrgSlug,
 			hostedEnrollmentAudience,
@@ -176,9 +180,9 @@ func New(opts Options) (*App, error) {
 				}, verifyErr
 			}))
 	}
-	connectedMachineService.ConfigureHelperEnrollment(func(ctx context.Context, actorID, operationKey, environmentID string, lifetime time.Duration) (connectedmachines.HelperEnrollmentGrant, error) {
+	userMachineService.ConfigureHelperEnrollment(func(ctx context.Context, actorID, operationKey, environmentID string, lifetime time.Duration) (usermachines.HelperEnrollmentGrant, error) {
 		grant, err := enrollmentService.Issue(ctx, actorID, operationKey, environmentID, lifetime)
-		return connectedmachines.HelperEnrollmentGrant{EnrollmentID: grant.EnrollmentID, HelperID: grant.HelperID, Credential: grant.Credential, ExpiresAt: grant.ExpiresAt}, err
+		return usermachines.HelperEnrollmentGrant{EnrollmentID: grant.EnrollmentID, HelperID: grant.HelperID, Credential: grant.Credential, ExpiresAt: grant.ExpiresAt}, err
 	})
 	configAssignmentService := controlplane.NewConfigAssignmentService(store, auditWriter, opts.Config.ConfigSync.WarningRevision)
 	configAssignmentService.SetRepositoryResolver(controlplane.ConfigRepositoryResolverFunc(func(ctx context.Context, userID, provider, externalID string) (controlplane.ConfigRepositoryConnection, error) {
@@ -278,7 +282,7 @@ func New(opts Options) (*App, error) {
 	var edgeControlService *controlplane.EdgeService
 	if opts.Config.Secrets.EdgeControlCredential != "" {
 		edgeControlService = controlplane.NewEdgeService(store, opts.Config.Secrets.EdgeControlCredential)
-		edgeControlService.SetBandwidthDebiter(connectedMachineService)
+		edgeControlService.SetBandwidthDebiter(userMachineService)
 		edgeControlService.SetAuditWriter(auditWriter)
 		edgeControlService.SetCredentialIssuer(mintKeys, config.NormalizeIssuer(opts.Config.HTTP.PublicBaseURL), opts.Config.Secrets.EncryptionKey)
 		edgeControlHandler = edgeControlService.Handler()
@@ -297,12 +301,12 @@ func New(opts Options) (*App, error) {
 		GitHub:                 githubService,
 		Projects:               projectService,
 		TerminalSessions:       terminalSessionService,
-		Agentunnel:             agentunnelService,
+		EnvironmentAccess:      accessService,
 		MeteringRepo:           metering.NewRuntimeRepository(store, opts.Config.Secrets.EncryptionKey),
 		ActivityIdentity:       enrollmentService,
 		ConfigSync:             configSyncRepo,
 		Classifier:             classificationController,
-		ConnectedMachines:      connectedMachineService,
+		UserMachines:           userMachineService,
 		MintKeys:               mintKeys,
 		EdgeControl:            edgeControlHandler,
 		EdgeControlAdmin:       edgeControlService,
@@ -328,7 +332,7 @@ func New(opts Options) (*App, error) {
 		billingService.AutoTopupWorker(opts.Config.HTTP.RequestTimeout),
 		configSyncRepo.RotationWorker(time.Minute),
 		terminalSessionService.Worker(opts.Config.TerminalSessions.WorkerInterval),
-		connectedMachineService.Worker(opts.Config.TerminalSessions.WorkerInterval),
+		userMachineService.Worker(opts.Config.TerminalSessions.WorkerInterval),
 		configAssignmentService.WarningReconciliationWorker(opts.Config.TerminalSessions.WorkerInterval),
 		configRepositoryAccessService.RevocationWorker(opts.Config.TerminalSessions.WorkerInterval, 25),
 	}
@@ -348,7 +352,7 @@ func New(opts Options) (*App, error) {
 	}, nil
 }
 
-func normalizePapercodeIssuer(raw string) string {
+func normalizeHelperIssuer(raw string) string {
 	return config.NormalizeIssuer(raw)
 }
 

@@ -39,10 +39,21 @@ make check
 
 ## Deployment
 
-The repo includes a Compose-based production stack under `deploy/`. It runs PostgreSQL,
-one-shot migration and seed jobs, the backend server, and Caddy for TLS termination. Start
-from `deploy/.env.example`, provide the required domain and secret files, then run
-`docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --build`.
+The repo includes a Compose-based production stack under `deploy/`. It runs one-shot
+migration and seed jobs, the backend server, and Caddy for TLS termination. PostgreSQL is
+external: set `PAPERBOAT_DATABASE_DSN` to its connection string. Start from
+`deploy/.env.example`, provide the required values and mounted secret files, then run
+`docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d`.
+
+Release container tags use `YYYY.MM.DD.X`. Run `tools/release-version.sh next`, create
+that exact tag without a `v` prefix, and push it.
+
+The server image contains only `paperboat-server`. Helper and CLI releases are built and
+published independently. Release CI signs a helper artifact manifest containing immutable
+URLs, byte lengths, and SHA-256 digests; mount that manifest and its Ed25519 public key at
+the paths configured by `PAPERBOAT_USER_MACHINES_HELPER_ARTIFACTS_JSON_FILE` and
+`PAPERBOAT_USER_MACHINES_HELPER_ARTIFACT_PUBLIC_KEY_FILE`. The CLI is never shipped by
+the server.
 
 The server exposes health/readiness, authentication, billing, usage, project, environment,
 and config-repository APIs. See [docs/api.md](docs/api.md) and
@@ -51,7 +62,7 @@ and config-repository APIs. See [docs/api.md](docs/api.md) and
 For direct server OAuth testing, set the GitHub OAuth app callback URL to:
 
 ```text
-https://<public-base-url>/api/github/oauth/callback
+https://<public-base-url>/v1/github/oauth/callback
 ```
 
 Run the server with:
@@ -103,9 +114,9 @@ Common environment overrides:
 - `PAPERBOAT_FLY_ORG_SLUG`
 - `PAPERBOAT_FLY_IMAGE_REF`
 - `PAPERBOAT_FLY_OPERATION_TIMEOUT`
-- `PAPERBOAT_CONNECTED_MACHINES_BOOTSTRAP_COMMAND`
-- `PAPERBOAT_CONNECTED_MACHINES_HELPER_ARTIFACTS_JSON`
-- `PAPERBOAT_CONNECTED_MACHINES_HELPER_ARTIFACT_PUBLIC_KEY`
+- `PAPERBOAT_USER_MACHINES_BOOTSTRAP_COMMAND`
+- `PAPERBOAT_USER_MACHINES_HELPER_ARTIFACTS_JSON`
+- `PAPERBOAT_USER_MACHINES_HELPER_ARTIFACT_PUBLIC_KEY`
 - `PAPERBOAT_PREVIEW_BASE_DOMAIN`
 - `PAPERBOAT_PREVIEW_IDENTITY_KEY` or `PAPERBOAT_PREVIEW_IDENTITY_KEY_FILE`
 - `PAPERBOAT_FLY_ORCHESTRATION_LEASE`

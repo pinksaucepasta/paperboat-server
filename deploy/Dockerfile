@@ -1,4 +1,7 @@
+ARG PAPERBOAT_VERSION
+
 FROM golang:1.25.7-bookworm AS build
+ARG PAPERBOAT_VERSION
 
 WORKDIR /src
 
@@ -6,10 +9,13 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/paperboat-server ./cmd/paperboat-server
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/paperboat-activity-reporter ./cmd/paperboat-activity-reporter
+RUN printf '%s\n' "${PAPERBOAT_VERSION}" | grep -Eq '^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.(0|[1-9][0-9]*)$' \
+  && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/paperboat-server ./cmd/paperboat-server
 
 FROM debian:bookworm-slim
+
+ARG PAPERBOAT_VERSION
+LABEL org.opencontainers.image.version="${PAPERBOAT_VERSION}"
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl tini \
@@ -18,7 +24,6 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY --from=build /out/paperboat-server /usr/local/bin/paperboat-server
-COPY --from=build /out/paperboat-activity-reporter /usr/local/bin/paperboat-activity-reporter
 
 EXPOSE 8080
 

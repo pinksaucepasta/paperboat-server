@@ -15,7 +15,7 @@ func TestPurposeBoundReauthenticationProof(t *testing.T) {
 	}
 	recorder := httptest.NewRecorder()
 	service.SetOAuthStateCookie(recorder, state)
-	request := httptest.NewRequest("POST", "/api/auth/workos/reauth/callback", nil)
+	request := httptest.NewRequest("POST", "/v1/auth/workos/reauth/callback", nil)
 	request.AddCookie(recorder.Result().Cookies()[0])
 	proof, err := service.VerifyReauthentication(context.Background(), request, CallbackInput{Code: "workos_subject:user@example.test", State: state}, user, "config_recovery_export")
 	if err != nil {
@@ -23,7 +23,7 @@ func TestPurposeBoundReauthenticationProof(t *testing.T) {
 	}
 	proofRecorder := httptest.NewRecorder()
 	service.SetReauthProofCookie(proofRecorder, proof)
-	exportRequest := httptest.NewRequest("POST", "/api/config-sync/recovery-key/export", nil)
+	exportRequest := httptest.NewRequest("POST", "/v1/config-sync/recovery-key/export", nil)
 	exportRequest.AddCookie(proofRecorder.Result().Cookies()[0])
 	if err := service.ValidateReauthProof(exportRequest, user.ID, "config_recovery_export"); err != nil {
 		t.Fatal(err)

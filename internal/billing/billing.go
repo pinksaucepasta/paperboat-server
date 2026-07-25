@@ -28,17 +28,17 @@ import (
 )
 
 var (
-	ErrIdempotencyConflict             = errors.New("idempotency key conflicts with existing billing operation")
-	ErrInsufficientCredits             = errors.New("insufficient credits")
-	ErrInsufficientStorage             = errors.New("insufficient storage available")
-	ErrInvalidSignature                = errors.New("invalid polar webhook signature")
-	ErrUnknownProduct                  = errors.New("billing product is not active or mapped")
-	ErrSamePlan                        = errors.New("billing subscription is already on this plan")
-	ErrTrialUnavailable                = errors.New("free trial is only available once per account")
-	ErrCheckoutPending                 = errors.New("another billing checkout is already pending")
-	ErrProviderOutcomeUnknown          = errors.New("billing provider outcome is unknown")
-	ErrRetryableWebhook                = errors.New("webhook could not be processed yet")
-	ErrConnectedMachineSeatUnavailable = errors.New("connected-machine subscription has no available seat")
+	ErrIdempotencyConflict        = errors.New("idempotency key conflicts with existing billing operation")
+	ErrInsufficientCredits        = errors.New("insufficient credits")
+	ErrInsufficientStorage        = errors.New("insufficient storage available")
+	ErrInvalidSignature           = errors.New("invalid polar webhook signature")
+	ErrUnknownProduct             = errors.New("billing product is not active or mapped")
+	ErrSamePlan                   = errors.New("billing subscription is already on this plan")
+	ErrTrialUnavailable           = errors.New("free trial is only available once per account")
+	ErrCheckoutPending            = errors.New("another billing checkout is already pending")
+	ErrProviderOutcomeUnknown     = errors.New("billing provider outcome is unknown")
+	ErrRetryableWebhook           = errors.New("webhook could not be processed yet")
+	ErrUserMachineSeatUnavailable = errors.New("user-machine subscription has no available seat")
 )
 
 type PolarAPIError struct{ StatusCode int }
@@ -47,36 +47,36 @@ func (e PolarAPIError) Error() string {
 	return fmt.Sprintf("polar api returned status %d", e.StatusCode)
 }
 
-// ReserveConnectedMachineSeat is consumed by pairing approval inside the same
-// serializable transaction as machine creation. A disconnected machine keeps
+// ReserveUserMachineSeat is consumed by pairing approval inside the same
+// serializable transaction as machine creation. A disuser machine keeps
 // its occupied seat; only explicit release/deletion changes this count.
-func (s *Service) ReserveConnectedMachineSeat(ctx context.Context, tx *db.Tx, userID string) error {
+func (s *Service) ReserveUserMachineSeat(ctx context.Context, tx *db.Tx, userID string) error {
 	if tx == nil {
-		return ErrConnectedMachineSeatUnavailable
+		return ErrUserMachineSeatUnavailable
 	}
-	entitlement, err := tx.Queries().GetConnectedMachineEntitlementForUpdate(ctx, userID)
+	entitlement, err := tx.Queries().GetUserMachineEntitlementForUpdate(ctx, userID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return ErrConnectedMachineSeatUnavailable
+		return ErrUserMachineSeatUnavailable
 	}
 	if err != nil {
 		return err
 	}
-	if !ConnectedMachineEntitlementActive(entitlement.State, entitlement.CurrentPeriodEnd, time.Now().UTC()) {
-		return ErrConnectedMachineSeatUnavailable
+	if !UserMachineEntitlementActive(entitlement.State, entitlement.CurrentPeriodEnd, time.Now().UTC()) {
+		return ErrUserMachineSeatUnavailable
 	}
-	occupied, err := tx.Queries().CountOccupiedConnectedMachineSeats(ctx, userID)
+	occupied, err := tx.Queries().CountOccupiedUserMachineSeats(ctx, userID)
 	if err != nil {
 		return err
 	}
 	if occupied >= entitlement.SeatQuantity {
-		return ErrConnectedMachineSeatUnavailable
+		return ErrUserMachineSeatUnavailable
 	}
 	return nil
 }
 
-// ConnectedMachineEntitlementActive is the shared availability rule used by
+// UserMachineEntitlementActive is the shared availability rule used by
 // both mutations and dashboard accounting.
-func ConnectedMachineEntitlementActive(state string, periodEnd, now time.Time) bool {
+func UserMachineEntitlementActive(state string, periodEnd, now time.Time) bool {
 	return (state == "active" || state == "trialing") && now.Before(periodEnd)
 }
 
@@ -286,20 +286,6 @@ func (r *Repository) Usage(ctx context.Context, userID string) (Usage, error) {
 	return Usage{CreditsBalance: row.CreditsBalance, IncludedStorageGB: int(row.IncludedStorageGb), PurchasedStorageGB: int(row.PurchasedStorageGb), AllocatedStorageGB: int(row.AllocatedStorageGb), AvailableStorageGB: int(row.AvailableStorageGb)}, nil
 }
 
-func (r *Repository) freeEntitlement(ctx context.Context, userID string) (Entitlement, error) {
-	plan, ok, err := r.freePlan(ctx)
-	if err != nil || !ok {
-		if err != nil {
-			return Entitlement{}, err
-		}
-		return Entitlement{State: "none", Active: false}, nil
-	}
-	if err := r.applyFreePlanResources(ctx, userID, plan); err != nil {
-		return Entitlement{}, err
-	}
-	return Entitlement{State: "free", PlanCode: "free", PlanName: plan.name, Active: true}, nil
-}
-
 type freePlan struct {
 	versionID         string
 	name              string
@@ -307,82 +293,14 @@ type freePlan struct {
 	includedStorageGB int
 }
 
-func (r *Repository) freePlan(ctx context.Context) (freePlan, bool, error) {
-	row, err := r.db.Queries().GetFreeBillingPlan(ctx)
-	if errors.Is(err, sql.ErrNoRows) {
-		return freePlan{}, false, nil
-	}
-	if err != nil {
-		return freePlan{}, false, fmt.Errorf("query free plan: %w", err)
-	}
-	return freePlan{versionID: row.ID, name: row.Name, includedCredits: row.IncludedCredits, includedStorageGB: int(row.IncludedStorageGb)}, true, nil
-}
-
-func (r *Repository) ensureFreePlanResources(ctx context.Context, userID string) error {
-	hasPaid, err := r.db.Queries().UserHasActiveSubscription(ctx, userID)
-	if err != nil {
-		return err
-	}
-	if hasPaid {
-		return nil
-	}
-	plan, ok, err := r.freePlan(ctx)
-	if err != nil || !ok {
-		return err
-	}
-	return r.applyFreePlanResources(ctx, userID, plan)
-}
-
-func (r *Repository) applyFreePlanResources(ctx context.Context, userID string, plan freePlan) error {
-	// Fast path: skip the write transaction once the free-plan resources exist.
-	// This keeps read endpoints (usage, entitlement) cheap and avoids
-	// serialization contention when they are loaded concurrently.
-	provisioned, err := r.freeResourcesProvisioned(ctx, userID, plan)
-	if err != nil {
-		return err
-	}
-	if provisioned {
-		return nil
-	}
-	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		if strings.TrimSpace(plan.includedCredits) != "" && plan.includedCredits != "0" && plan.includedCredits != "0.000000" {
-			if err := grantCreditsTx(ctx, tx, userID, newID("cled"), "free-plan:"+plan.versionID+":credits:"+userID, "plan", plan.versionID, plan.includedCredits, map[string]any{"plan_code": "free"}); err != nil {
-				return err
-			}
-		} else if _, err := ensureCreditAccount(ctx, tx, userID); err != nil {
-			return err
-		}
-		accountID, err := ensureStorageAccount(ctx, tx, userID)
-		if err != nil {
-			return err
-		}
-		return setIncludedStorageTx(ctx, tx, accountID, newID("sled"), "included_set", plan.includedStorageGB, "plan", plan.versionID, "free-plan:"+plan.versionID+":storage:"+userID, map[string]any{"plan_code": "free"})
-	})
-}
+// Fast path: skip the write transaction once the free-plan resources exist.
+// This keeps read endpoints (usage, entitlement) cheap and avoids
+// serialization contention when they are loaded concurrently.
 
 // freeResourcesProvisioned reports whether the free-plan credit grant and
 // included-storage ledger entries already exist for the user, using cheap
 // read-only lookups. The idempotency keys match those written in
 // applyFreePlanResources.
-func (r *Repository) freeResourcesProvisioned(ctx context.Context, userID string, plan freePlan) (bool, error) {
-	q := r.db.Queries()
-	if includedCredits := strings.TrimSpace(plan.includedCredits); includedCredits != "" && includedCredits != "0" && includedCredits != "0.000000" {
-		seen, err := q.CreditLedgerEntryExists(ctx, "free-plan:"+plan.versionID+":credits:"+userID)
-		if err != nil {
-			return false, err
-		}
-		if !seen {
-			return false, nil
-		}
-	}
-	if _, err := q.GetStorageLedgerEntryByIdempotencyKey(ctx, "free-plan:"+plan.versionID+":storage:"+userID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return false, nil
-		}
-		return false, err
-	}
-	return true, nil
-}
 
 func (r *Repository) ProductByCode(ctx context.Context, code string) (Product, error) {
 	row, err := r.db.Queries().GetBillingProductByCode(ctx, code)
@@ -535,20 +453,20 @@ func (r *Repository) RecordPolarEvent(ctx context.Context, providerEventID, even
 }
 
 type Service struct {
-	repo                    *Repository
-	client                  PolarClient
-	audit                   *audit.Writer
-	autoTopupRetryCooldown  time.Duration
-	checkoutReservationTTL  time.Duration
-	encryptionKey           string
-	connectedMachineRevoker ConnectedMachineSessionRevoker
+	repo                   *Repository
+	client                 PolarClient
+	audit                  *audit.Writer
+	autoTopupRetryCooldown time.Duration
+	checkoutReservationTTL time.Duration
+	encryptionKey          string
+	userMachineRevoker     UserMachineSessionRevoker
 }
 
-// ConnectedMachineSessionRevoker is deliberately narrow so billing can
+// UserMachineSessionRevoker is deliberately narrow so billing can
 // trigger post-commit revocation without taking a dependency on the connected
 // machine service package.
-type ConnectedMachineSessionRevoker interface {
-	ReconcileConnectedMachineEntitlement(context.Context, string) error
+type UserMachineSessionRevoker interface {
+	ReconcileUserMachineEntitlement(context.Context, string) error
 }
 
 func NewService(repo *Repository, client PolarClient, auditWriter *audit.Writer) *Service {
@@ -561,8 +479,8 @@ func (s *Service) SetAutoTopupRetryCooldown(value time.Duration) {
 	}
 }
 
-func (s *Service) SetConnectedMachineSessionRevoker(revoker ConnectedMachineSessionRevoker) {
-	s.connectedMachineRevoker = revoker
+func (s *Service) SetUserMachineSessionRevoker(revoker UserMachineSessionRevoker) {
+	s.userMachineRevoker = revoker
 }
 
 func (s *Service) SetCheckoutReservationTTL(value time.Duration) {
@@ -1078,14 +996,14 @@ func (s *Service) HandleWebhookWithID(ctx context.Context, providerEventID strin
 	inserted, err := s.repo.RecordPolarEvent(ctx, event.ID, event.Type, body, func(ctx context.Context, tx *db.Tx) error {
 		return s.processWebhookEvent(ctx, tx, event)
 	})
-	if err != nil || !inserted || s.connectedMachineRevoker == nil {
+	if err != nil || !inserted || s.userMachineRevoker == nil {
 		return inserted, err
 	}
 	userID := webhookPayload(event).firstString("external_user_id", "external_customer_id", "customer.external_id", "customer.external_user_id", "metadata.paperboat_user_id", "metadata.user_id")
 	if userID == "" {
 		return inserted, nil
 	}
-	return inserted, s.connectedMachineRevoker.ReconcileConnectedMachineEntitlement(ctx, userID)
+	return inserted, s.userMachineRevoker.ReconcileUserMachineEntitlement(ctx, userID)
 }
 
 func (s *Service) processWebhookEvent(ctx context.Context, tx *db.Tx, event WebhookEvent) error {
@@ -1125,59 +1043,59 @@ func (s *Service) processWebhookEvent(ctx context.Context, tx *db.Tx, event Webh
 			return err
 		}
 		return setPurchasedStorageTx(ctx, tx, accountID, newID("sled"), "purchased_set", gb, "polar_event", event.ID, event.ID+":storage:"+product.Code, map[string]any{"event_type": event.Type, "product_code": product.Code})
-	case "connected_machine_subscription":
-		return applyConnectedMachineSubscriptionWebhook(ctx, tx, event, payload, userID, product)
-	case "connected_machine_bandwidth_topup":
-		return applyConnectedMachineBandwidthTopupWebhook(ctx, tx, event, payload, userID, product)
+	case "user_machine_subscription":
+		return applyUserMachineSubscriptionWebhook(ctx, tx, event, payload, userID, product)
+	case "user_machine_bandwidth_topup":
+		return applyUserMachineBandwidthTopupWebhook(ctx, tx, event, payload, userID, product)
 	default:
 		return nil
 	}
 }
 
-func applyConnectedMachineSubscriptionWebhook(ctx context.Context, tx *db.Tx, event WebhookEvent, payload webhookMap, userID string, product Product) error {
+func applyUserMachineSubscriptionWebhook(ctx context.Context, tx *db.Tx, event WebhookEvent, payload webhookMap, userID string, product Product) error {
 	var catalog struct {
 		AllowanceBytes int64 `json:"allowance_bytes"`
 	}
 	if err := json.Unmarshal([]byte(product.CatalogRef), &catalog); err != nil || catalog.AllowanceBytes < 0 {
-		return fmt.Errorf("connected-machine product %q has invalid allowance catalog_ref", product.Code)
+		return fmt.Errorf("user-machine product %q has invalid allowance catalog_ref", product.Code)
 	}
 	subscriptionID := payload.firstString("subscription_id", "subscription.id", "id")
 	if subscriptionID == "" {
 		subscriptionID = event.ID
 	}
-	state := connectedMachineEntitlementState(subscriptionState(payload.firstString("subscription.status", "status", "state"), event.Type))
+	state := userMachineEntitlementState(subscriptionState(payload.firstString("subscription.status", "status", "state"), event.Type))
 	if state != "active" && state != "trialing" {
-		if _, err := tx.Queries().UpdateConnectedMachineEntitlementState(ctx, dbsqlc.UpdateConnectedMachineEntitlementStateParams{UserID: userID, ProviderSubscriptionID: subscriptionID, State: state}); err != nil {
+		if _, err := tx.Queries().UpdateUserMachineEntitlementState(ctx, dbsqlc.UpdateUserMachineEntitlementStateParams{UserID: userID, ProviderSubscriptionID: subscriptionID, State: state}); err != nil {
 			return err
 		}
-		_, err := tx.Queries().RevokeConnectedMachinesForEntitlement(ctx, userID)
+		_, err := tx.Queries().RevokeUserMachinesForEntitlement(ctx, userID)
 		return err
 	}
 	seats, err := strconv.Atoi(payload.firstString("subscription.seats", "seats"))
 	if err != nil || seats < 0 {
-		return fmt.Errorf("connected-machine subscription seats are invalid")
+		return fmt.Errorf("user-machine subscription seats are invalid")
 	}
 	start, startOK := payload.firstTime("subscription.current_period_start", "current_period_start", "period_start").(time.Time)
 	end, endOK := payload.firstTime("subscription.current_period_end", "current_period_end", "period_end", "ends_at").(time.Time)
 	if !startOK || !endOK {
-		return fmt.Errorf("%w: connected-machine subscription period missing", ErrRetryableWebhook)
+		return fmt.Errorf("%w: user-machine subscription period missing", ErrRetryableWebhook)
 	}
-	if err := tx.Queries().UpsertConnectedMachineEntitlement(ctx, dbsqlc.UpsertConnectedMachineEntitlementParams{ID: newID("cme"), UserID: userID, ProviderSubscriptionID: subscriptionID, ProductCode: product.Code, State: state, SeatQuantity: int32(seats), AllowanceBytes: catalog.AllowanceBytes, CurrentPeriodStart: start, CurrentPeriodEnd: end}); err != nil {
+	if err := tx.Queries().UpsertUserMachineEntitlement(ctx, dbsqlc.UpsertUserMachineEntitlementParams{ID: newID("cme"), UserID: userID, ProviderSubscriptionID: subscriptionID, ProductCode: product.Code, State: state, SeatQuantity: int32(seats), AllowanceBytes: catalog.AllowanceBytes, CurrentPeriodStart: start, CurrentPeriodEnd: end}); err != nil {
 		return err
 	}
-	machineIDs, err := tx.Queries().ListBillableConnectedMachineIDs(ctx, userID)
+	machineIDs, err := tx.Queries().ListBillableUserMachineIDs(ctx, userID)
 	if err != nil {
 		return err
 	}
 	for _, machineID := range machineIDs {
-		if _, err := tx.Queries().UpsertConnectedMachineBandwidthPeriod(ctx, dbsqlc.UpsertConnectedMachineBandwidthPeriodParams{ID: newID("cmbp"), ConnectedMachineID: machineID, PeriodStart: start, PeriodEnd: end, IncludedBytes: catalog.AllowanceBytes}); err != nil {
+		if _, err := tx.Queries().UpsertUserMachineBandwidthPeriod(ctx, dbsqlc.UpsertUserMachineBandwidthPeriodParams{ID: newID("cmbp"), UserMachineID: machineID, PeriodStart: start, PeriodEnd: end, IncludedBytes: catalog.AllowanceBytes}); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func connectedMachineEntitlementState(state string) string {
+func userMachineEntitlementState(state string) string {
 	switch state {
 	case "trialing", "active", "past_due", "canceled", "revoked":
 		return state
@@ -1186,18 +1104,18 @@ func connectedMachineEntitlementState(state string) string {
 	}
 }
 
-func applyConnectedMachineBandwidthTopupWebhook(ctx context.Context, tx *db.Tx, event WebhookEvent, payload webhookMap, userID string, product Product) error {
+func applyUserMachineBandwidthTopupWebhook(ctx context.Context, tx *db.Tx, event WebhookEvent, payload webhookMap, userID string, product Product) error {
 	var catalog struct {
 		Bytes int64 `json:"bytes"`
 	}
 	if err := json.Unmarshal([]byte(product.CatalogRef), &catalog); err != nil || catalog.Bytes <= 0 {
-		return fmt.Errorf("connected-machine bandwidth top-up %q has invalid catalog_ref", product.Code)
+		return fmt.Errorf("user-machine bandwidth top-up %q has invalid catalog_ref", product.Code)
 	}
 	orderID := payload.firstString("order_id", "order.id", "id")
 	if orderID == "" {
 		orderID = event.ID
 	}
-	_, err := tx.Queries().CreateConnectedMachineBandwidthTopup(ctx, dbsqlc.CreateConnectedMachineBandwidthTopupParams{ID: newID("cmbt"), UserID: userID, ProviderOrderID: sql.NullString{String: orderID, Valid: true}, PurchasedBytes: catalog.Bytes, ExpiresAt: sql.NullTime{}})
+	_, err := tx.Queries().CreateUserMachineBandwidthTopup(ctx, dbsqlc.CreateUserMachineBandwidthTopupParams{ID: newID("cmbt"), UserID: userID, ProviderOrderID: sql.NullString{String: orderID, Valid: true}, PurchasedBytes: catalog.Bytes, ExpiresAt: sql.NullTime{}})
 	return err
 }
 
@@ -1217,22 +1135,22 @@ func (s *Service) applyRefundWebhook(ctx context.Context, tx *db.Tx, event Webho
 			return err
 		}
 		return setPurchasedStorageTx(ctx, tx, accountID, newID("sled"), "cancellation", 0, "polar_event", event.ID, event.ID+":refund-storage:"+product.Code, map[string]any{"event_type": event.Type, "product_code": product.Code})
-	case "connected_machine_subscription":
+	case "user_machine_subscription":
 		subscriptionID := payload.firstString("subscription_id", "subscription.id", "id")
 		if subscriptionID == "" {
-			return fmt.Errorf("%w: connected-machine subscription id missing", ErrRetryableWebhook)
+			return fmt.Errorf("%w: user-machine subscription id missing", ErrRetryableWebhook)
 		}
-		if _, err := tx.Queries().UpdateConnectedMachineEntitlementState(ctx, dbsqlc.UpdateConnectedMachineEntitlementStateParams{UserID: userID, ProviderSubscriptionID: subscriptionID, State: "revoked"}); err != nil {
+		if _, err := tx.Queries().UpdateUserMachineEntitlementState(ctx, dbsqlc.UpdateUserMachineEntitlementStateParams{UserID: userID, ProviderSubscriptionID: subscriptionID, State: "revoked"}); err != nil {
 			return err
 		}
-		_, err := tx.Queries().RevokeConnectedMachinesForEntitlement(ctx, userID)
+		_, err := tx.Queries().RevokeUserMachinesForEntitlement(ctx, userID)
 		return err
-	case "connected_machine_bandwidth_topup":
+	case "user_machine_bandwidth_topup":
 		orderID := payload.firstString("order_id", "order.id", "id")
 		if orderID == "" {
-			return fmt.Errorf("%w: connected-machine bandwidth top-up order id missing", ErrRetryableWebhook)
+			return fmt.Errorf("%w: user-machine bandwidth top-up order id missing", ErrRetryableWebhook)
 		}
-		_, err := tx.Queries().VoidConnectedMachineBandwidthTopup(ctx, dbsqlc.VoidConnectedMachineBandwidthTopupParams{UserID: userID, ProviderOrderID: sql.NullString{String: orderID, Valid: true}})
+		_, err := tx.Queries().VoidUserMachineBandwidthTopup(ctx, dbsqlc.VoidUserMachineBandwidthTopupParams{UserID: userID, ProviderOrderID: sql.NullString{String: orderID, Valid: true}})
 		return err
 	default:
 		return nil

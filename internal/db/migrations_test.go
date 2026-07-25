@@ -57,7 +57,7 @@ func TestMigrateRequiresPostgresIntegrationDSN(t *testing.T) {
 	if !orchestrationIdempotencyApplied || !hasOrchestrationIdempotency {
 		t.Fatal("orchestration job idempotency migration was not applied")
 	}
-	for _, index := range []string{"terminal_session_operations_one_pending", "connected_machine_terminal_session_operations_one_pending"} {
+	for _, index := range []string{"terminal_session_operations_one_pending", "user_machine_terminal_session_operations_one_pending"} {
 		var applied bool
 		if err := store.SQL().QueryRowContext(context.Background(), `SELECT to_regclass('paperboat.' || $1) IS NOT NULL`, index).Scan(&applied); err != nil {
 			t.Fatal(err)
@@ -78,13 +78,13 @@ DELETE FROM paperboat.users WHERE id='usr_migration_revocation_probe'`); err != 
 INSERT INTO paperboat.users (id, workos_subject, primary_email, status)
 VALUES ('usr_migration_client_revocation_probe', 'workos_migration_client_revocation_probe', 'migration-client-revocation@example.test', 'active')
 ON CONFLICT (id) DO UPDATE SET status='active';
-INSERT INTO paperboat.client_sessions (id, user_id, client_id, client_label, device_type, os, scopes, state, created_at, approved_at)
+INSERT INTO paperboat.cli_client_sessions (id, user_id, client_id, client_label, device_type, os, scopes, state, created_at, approved_at)
 VALUES ('cls_migration_revocation_probe', 'usr_migration_client_revocation_probe', 'migration-probe', 'Migration probe', 'cli', 'linux', ARRAY[]::text[], 'active', now(), now())
 ON CONFLICT (id) DO UPDATE SET state='active', revoked_at=NULL, revocation_reason=NULL;
-UPDATE paperboat.client_sessions
+UPDATE paperboat.cli_client_sessions
 SET state='revoked', revoked_at=now(), revocation_reason='migration_probe'
 WHERE id='cls_migration_revocation_probe';
-DELETE FROM paperboat.client_sessions WHERE id='cls_migration_revocation_probe';
+DELETE FROM paperboat.cli_client_sessions WHERE id='cls_migration_revocation_probe';
 DELETE FROM paperboat.users WHERE id='usr_migration_client_revocation_probe'`); err != nil {
 		t.Fatalf("client revocation trigger execution failed: %v", err)
 	}
@@ -101,7 +101,7 @@ DELETE FROM paperboat.users WHERE id='usr_migration_client_revocation_probe'`); 
 	var hasClientRevocationTrigger bool
 	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (
 		SELECT 1 FROM pg_trigger
-		WHERE tgname = 'trg_users_revoke_client_sessions' AND NOT tgisinternal
+		WHERE tgname = 'trg_users_revoke_cli_client_sessions' AND NOT tgisinternal
 	)`).Scan(&hasClientRevocationTrigger); err != nil {
 		t.Fatal(err)
 	}

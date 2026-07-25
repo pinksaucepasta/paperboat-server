@@ -105,7 +105,7 @@ reporter_version=EXCLUDED.reporter_version,signals=EXCLUDED.signals,reporter_los
 idle_warning_sent_at=CASE WHEN EXCLUDED.last_activity_at>project_activity_markers.last_activity_at THEN NULL ELSE project_activity_markers.idle_warning_sent_at END,updated_at=now();
 
 -- name: GetHeartbeatMachineTokenCiphertext :one
-SELECT (ar.metadata->>'machine_token_ciphertext')::text AS machine_token_ciphertext FROM fly_machines fm JOIN agentunnel_resources ar ON ar.project_id=fm.project_id
+SELECT (ar.metadata->>'machine_token_ciphertext')::text AS machine_token_ciphertext FROM fly_machines fm JOIN provider_routes ar ON ar.project_id=fm.project_id
 WHERE fm.project_id=$1 AND fm.fly_machine_id=$2;
 
 -- name: EmitIdleWarning :execrows

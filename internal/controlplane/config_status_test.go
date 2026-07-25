@@ -118,7 +118,7 @@ func TestConfigAccountStatusUsesCanonicalAssignmentsConsentAndStatus(t *testing.
 		{`INSERT INTO paperboat.control_config_repositories (id,owner_user_id,provider,external_ref,display_name,state) VALUES ($1,$2,'github',$1,'owner/config','active')`, []any{repository, user}},
 		{`INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id) VALUES ($1,$1,$3),($2,$2,$3)`, []any{hostedEnvironment, byodEnvironment, user}},
 		{`INSERT INTO paperboat.control_helpers (id,environment_id,state,generation) VALUES ($1,$2,'active',1),($3,$4,'active',1)`, []any{hostedHelper, hostedEnvironment, byodHelper, byodEnvironment}},
-		{`INSERT INTO paperboat.connected_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state) VALUES ($1,$2,$3,'Laptop','darwin','arm64','/Users/test','online')`, []any{"machine_" + suffix, user, byodEnvironment}},
+		{`INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state) VALUES ($1,$2,$3,'Laptop','darwin','arm64','/Users/test','online')`, []any{"machine_" + suffix, user, byodEnvironment}},
 		{`INSERT INTO paperboat.control_config_assignments (id,environment_id,repository_id,consent_state,warning_revision) VALUES ($1,$2,$3,'not_required','warning-1'),($4,$5,$3,'pending','warning-1')`, []any{hostedAssignment, hostedEnvironment, repository, byodAssignment, byodEnvironment}},
 		{`INSERT INTO paperboat.control_config_sync_statuses
 		  (environment_id,repository_id,assignment_id,helper_id,helper_generation,

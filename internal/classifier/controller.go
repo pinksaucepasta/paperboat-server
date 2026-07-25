@@ -59,10 +59,6 @@ func NewController(store *db.DB, provider Provider, cfg config.Classifier, polic
 
 var ErrRateLimited = errors.New("classification rate limit exceeded")
 
-func (c *Controller) ProjectOwner(ctx context.Context, projectID string) (string, error) {
-	return c.db.Queries().GetConfigSyncProjectOwner(ctx, projectID)
-}
-
 func (c *Controller) Classify(ctx context.Context, userID string, candidates []Candidate) (ClassifiedResponse, error) {
 	if !c.allow(userID) {
 		return ClassifiedResponse{}, ErrRateLimited

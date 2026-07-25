@@ -36,7 +36,7 @@ type PreviewService struct {
 type OwnedPreview struct {
 	Preview         dbsqlc.ControlPreview
 	ProjectID       string
-	MachineID       sql.NullString
+	ResourceID      sql.NullString
 	UserID          sql.NullString
 	EnvironmentName string
 	EnvironmentKind string
@@ -115,7 +115,7 @@ func (s *PreviewService) ListOwned(ctx context.Context, userID string) ([]OwnedP
 		items = append(items, OwnedPreview{
 			Preview:         dbsqlc.ControlPreview{ID: row.ID, EnvironmentID: row.EnvironmentID, LogicalName: row.LogicalName, PreviewKey: row.PreviewKey, CollisionCounter: row.CollisionCounter, PublicHost: row.PublicHost, TargetHost: row.TargetHost, TargetPort: row.TargetPort, State: row.State, RouteID: row.RouteID, HelperReady: row.HelperReady, EdgeReady: row.EdgeReady, TargetReady: row.TargetReady, PublicAcknowledgedAt: row.PublicAcknowledgedAt, ExpiresAt: row.ExpiresAt, RemovedAt: row.RemovedAt, RetainedUntil: row.RetainedUntil, Version: row.Version, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt},
 			ProjectID:       row.WorkspaceID,
-			MachineID:       row.MachineID,
+			ResourceID:      row.MachineID,
 			UserID:          row.OwnerUserID,
 			EnvironmentName: row.EnvironmentName,
 			EnvironmentKind: row.EnvironmentKind,

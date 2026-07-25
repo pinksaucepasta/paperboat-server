@@ -74,7 +74,7 @@ func TestHelperEnrollmentExchangeIsSingleUseAndKeyBound(t *testing.T) {
 	service.clock = func() time.Time { return renewNow }
 	renewBody := []byte(`{"operation_id":"helper-renew-operation-01"}`)
 	renewHash := sha256.Sum256(renewBody)
-	renewClaims := HelperProofClaims{HelperID: identity.HelperID, EnvironmentID: environmentID, OperationID: "helper-renew-operation-01", Method: "POST", Path: "/v1/helpers/renew", BodySHA256: base64.RawURLEncoding.EncodeToString(renewHash[:]), IssuedAt: renewNow, ExpiresAt: renewNow.Add(time.Minute)}
+	renewClaims := HelperProofClaims{HelperID: identity.HelperID, EnvironmentID: environmentID, OperationID: "helper-renew-operation-01", Method: "POST", Path: "/v1/helper-identity-renewals", BodySHA256: base64.RawURLEncoding.EncodeToString(renewHash[:]), IssuedAt: renewNow, ExpiresAt: renewNow.Add(time.Minute)}
 	renewPayload, _ := json.Marshal(renewClaims)
 	renewProof, _ := json.Marshal(helperProofEnvelope{Algorithm: "EdDSA", Payload: base64.RawURLEncoding.EncodeToString(renewPayload), Signature: base64.RawURLEncoding.EncodeToString(ed25519.Sign(helperPrivate, renewPayload))})
 	renewed, err := service.Renew(ctx, identity.Credential, renewProof, renewBody)

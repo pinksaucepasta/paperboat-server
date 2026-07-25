@@ -14,7 +14,7 @@ import (
 func TestHostedHelperHostUsesTypedHelperBaseDomain(t *testing.T) {
 	cfg := config.Default()
 	cfg.HelperBaseDomain = "helper.example.test"
-	cfg.Providers.Agentunnel.RouteSubdomainPrefix = "pb"
+	cfg.Access.RouteSubdomainPrefix = "pb"
 
 	if got, want := HostedHelperHealthHost(cfg, "prj_test"), "pb-prj-test.helper.example.test"; got != want {
 		t.Fatalf("host = %q, want %q", got, want)

@@ -1,4 +1,4 @@
-# Phase 0 Decisions
+# Contract Decisions
 
 Status: implemented contract baseline, pending final cross-project sign-off.
 
@@ -7,13 +7,13 @@ Status: implemented contract baseline, pending final cross-project sign-off.
 - Workspace `AGENTS.md`
 - Workspace `USERSTORY.md`
 - `paperboat-server/AGENTS.md`
-- `agentunnel/docs/api.md`
-- `agentunnel/docs/cloud-agents-platform-plan.md`
-- `papercode/AGENTS.md`
-- `papercode/docs/architecture/remote.md`
-- `papercode/docs/architecture/connection-runtime.md`
-- `papercode/docs/cloud/environment-auth.md`
-- `papercode/docs/user/remote-access.md`
+- `provider_route/docs/api.md`
+- `provider_route/docs/cloud-agents-platform-plan.md`
+- `helper/AGENTS.md`
+- `helper/docs/architecture/remote.md`
+- `helper/docs/architecture/connection-runtime.md`
+- `helper/docs/cloud/environment-auth.md`
+- `helper/docs/user/remote-access.md`
 - `paperboat-dashboard/AGENTS.md`
 - `paperboat-cli/AGENTS.md`
 
@@ -24,8 +24,8 @@ Status: implemented contract baseline, pending final cross-project sign-off.
 Status: approved baseline.
 
 `paperboat-server` is a control plane only. Live terminal, preview, HTTP, and
-WebSocket traffic stays out of `paperboat-server` and flows through `agentunnel` and
-the per-VM papercode server.
+WebSocket traffic stays out of `paperboat-server` and flows through `provider_route` and
+the per-VM helper server.
 
 ### Persistence Backend
 
@@ -33,7 +33,7 @@ Status: approved.
 
 Decision:
 
-Postgres ships from the first production release. Phase 2 migrations create Paperboat
+Postgres ships from the first production release. Subsequent migrations create Paperboat
 objects inside a dedicated `paperboat` schema so the service does not collide with
 provider-managed or pre-existing `public` schema tables.
 
@@ -77,7 +77,7 @@ Status: approved baseline.
 Decision:
 
 - Dashboard uses WorkOS authentication and sends the callback to
-  `POST /api/auth/workos/callback`.
+  `POST /v1/auth/workos/callback`.
 - Server maps WorkOS subject plus email to a Paperboat user idempotently.
 - Browser session uses an HttpOnly secure session cookie and CSRF token.
 - Core feature APIs require both authenticated session and active entitlement.
@@ -151,58 +151,58 @@ Decision:
   short-lived and bound to the current repository, assignment, environment, helper
   generation, and operation; neither credential class is returned by user-facing APIs.
 
-### agentunnel Pre-Connect
+### provider_route Pre-Connect
 
 Status: approved baseline, descriptor details versioned in `access-handoff.md`.
 
 Decision:
 
 - `paperboat-server` authorizes user/project/entitlement state.
-- `paperboat-server` provisions or looks up agentunnel resources.
-- Returned descriptors reference agentunnel-managed HTTP/WebSocket/preview routes. Project
+- `paperboat-server` provisions or looks up provider_route resources.
+- Returned descriptors reference provider_route-managed HTTP/WebSocket/preview routes. Project
   SSH/TCP routes are not provisioned.
-- No agentunnel client tokens, API keys, SSH private keys, or raw credentials are
-  returned to dashboard, papercode, or CLI clients.
+- No provider_route client tokens, API keys, SSH private keys, or raw credentials are
+  returned to dashboard, helper, or CLI clients.
 
 See [access-handoff.md](access-handoff.md).
 
-### papercode AccessEndpoint
+### helper AccessEndpoint
 
-Status: Phase 0 frozen; client field names are versioned in `access-handoff.md`.
+Status: Contract frozen; client field names are versioned in `access-handoff.md`.
 
 Decision:
 
-- Paperboat represents each project as one stable papercode environment whose current
+- Paperboat represents each project as one stable helper environment whose current
   server runs on that project's VM.
 - Remoteness is expressed as a tunneled `AccessEndpoint`.
-- The final papercode client connection is still HTTP/WebSocket to the per-VM T3 server
-  through agentunnel.
-- Paperboat does not split papercode runtime behavior.
+- The final helper client connection is still HTTP/WebSocket to the per-VM T3 server
+  through provider_route.
+- Paperboat does not split helper runtime behavior.
 
 See [access-handoff.md](access-handoff.md).
 
 ### paperboat-cli Descriptor
 
-Status: Phase 0 frozen; authorization is versioned in `cli-authorization.md` and the
+Status: Contract frozen; authorization is versioned in `cli-authorization.md` and the
 descriptor/mint contract in `access-handoff.md`.
 
 Decision:
 
 - CLI asks `paperboat-server` for a project CLI connect descriptor.
-- Descriptor tells CLI how to open the agentunnel-mediated papercode WebSocket path and how to
-  reach the VM papercode server upload endpoint for image paste bridging.
+- Descriptor tells CLI how to open the provider_route-mediated helper WebSocket path and how to
+  reach the VM helper server upload endpoint for image paste bridging.
 - CLI uses dashboard-approved device authorization and its own revocable Paperboat client
-  session. It never synthesizes a browser cookie or treats a papercode token as a Paperboat
+  session. It never synthesizes a browser cookie or treats a helper token as a Paperboat
   session.
 - CLI terminal auth is a single-use `terminal:operate` WebSocket ticket. Upload auth is a
   separate short-lived bearer token scoped to `file:stage`.
-- Paperboat's downstream papercode mint profile is intentionally keyless: its signed proof
+- Paperboat's downstream helper mint profile is intentionally keyless: its signed proof
   omits proof-key claims and its bootstrap exchanges omit DPoP. The terminal bearer stays
   server-side to mint the ticket; only the separately scoped file bearer reaches the CLI.
 
 ### Paperboat CLI Device Sessions
 
-Status: Phase 0 frozen in [cli-authorization.md](cli-authorization.md).
+Status: Contract frozen in [cli-authorization.md](cli-authorization.md).
 
 Decision:
 
@@ -210,7 +210,7 @@ Decision:
 - Device grants are explicitly approved or denied through the dashboard and are single-use.
 - Each installation has an independently revocable client-session family with rotating
   refresh tokens and family revocation on replay.
-- CLI and papercode may share only the documented Paperboat credential profile and OS
+- CLI and helper may share only the documented Paperboat credential profile and OS
   secure-store references, never private application state.
 
 ### Custom Fly Shapes
@@ -225,9 +225,9 @@ and catalog model remain compatible with future custom shapes.
 
 ## Open Blockers
 
-These block release validation, not the Phase 0 wire-contract freeze:
+These block release validation, not the wire-contract freeze:
 
-- Immutable commit links for the approved dashboard, agentunnel, papercode, server, and CLI
+- Immutable commit links for the approved dashboard, provider_route, helper, server, and CLI
   contract changes.
 - Production environment values for WorkOS, Fly, GitHub, Polar, and public origins must be
   supplied as deployment configuration or catalog seed data before release validation.

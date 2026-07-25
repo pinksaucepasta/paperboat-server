@@ -9,3 +9,6 @@ sql:
         out: "internal/db/dbsqlc"
         sql_package: "database/sql"
         emit_json_tags: false
+        initialisms:
+          - id
+          - cli

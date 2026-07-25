@@ -25,7 +25,7 @@ func TestDecodeStrictJSONRejectsTrailingContent(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodPost, "/api/auth/device/authorize", bytes.NewBufferString(tc.body))
+			req := httptest.NewRequest(http.MethodPost, "/v1/auth/device/authorize", bytes.NewBufferString(tc.body))
 			var out struct {
 				Value string `json:"value"`
 			}
@@ -51,7 +51,7 @@ func TestWriteClientDeleteErrorClassifiesOnlyMissingSessionAsNotFound(t *testing
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodDelete, "/api/auth/clients/cls_1", nil)
+			req := httptest.NewRequest(http.MethodDelete, "/v1/auth/cli-client-sessions/cls_1", nil)
 			writeClientDeleteError(rec, req, tc.err)
 			if rec.Code != tc.want {
 				t.Fatalf("status = %d, want %d", rec.Code, tc.want)
@@ -62,7 +62,7 @@ func TestWriteClientDeleteErrorClassifiesOnlyMissingSessionAsNotFound(t *testing
 
 func TestWriteDeviceErrorMapsUnknownApprovalCodeToNotFound(t *testing.T) {
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/auth/device/requests/NOPE-CODE", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/auth/device/requests/NOPE-CODE", nil)
 	if !writeDeviceError(rec, req, &auth.DeviceError{Code: "device_request_not_found"}) {
 		t.Fatal("error was not handled")
 	}
@@ -73,7 +73,7 @@ func TestWriteDeviceErrorMapsUnknownApprovalCodeToNotFound(t *testing.T) {
 
 func TestWriteDeviceErrorMapsUnauthenticatedToUnauthorized(t *testing.T) {
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/token/revoke", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/token/revoke", nil)
 	if !writeDeviceError(rec, req, auth.ErrUnauthenticated) {
 		t.Fatal("error was not handled")
 	}

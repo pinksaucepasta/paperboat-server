@@ -14,7 +14,7 @@ func TestOAuthStateExpiresServerSide(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req, err := http.NewRequest(http.MethodPost, "/api/auth/workos/callback", nil)
+	req, err := http.NewRequest(http.MethodPost, "/v1/auth/workos/callback", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

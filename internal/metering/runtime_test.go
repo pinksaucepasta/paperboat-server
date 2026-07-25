@@ -51,7 +51,7 @@ type recordingRevoker struct {
 	err   error
 }
 
-func (r *recordingRevoker) RetryPendingPapercodeRevocations(context.Context) error {
+func (r *recordingRevoker) RetryPendingHelperRevocations(context.Context) error {
 	r.calls++
 	return r.err
 }

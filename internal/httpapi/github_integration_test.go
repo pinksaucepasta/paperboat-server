@@ -30,7 +30,7 @@ func TestGitHubOAuthProvisionAndSecretRedaction(t *testing.T) {
 
 	start := httptest.NewRecorder()
 	body, _ := json.Marshal(map[string]string{"redirect_uri": "http://localhost:3000/github/callback"})
-	req := httptest.NewRequest(http.MethodPost, "/api/github/oauth/start", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/github/oauth/start", bytes.NewReader(body))
 	addCookies(req, cookies)
 	req.Header.Set(auth.CSRFHeaderName, csrf)
 	router.ServeHTTP(start, req)
@@ -42,7 +42,7 @@ func TestGitHubOAuthProvisionAndSecretRedaction(t *testing.T) {
 
 	callback := httptest.NewRecorder()
 	body, _ = json.Marshal(map[string]string{"code": "github-code", "redirect_uri": "http://localhost:3000/github/callback", "state": state})
-	req = httptest.NewRequest(http.MethodPost, "/api/github/oauth/callback", bytes.NewReader(body))
+	req = httptest.NewRequest(http.MethodPost, "/v1/github/oauth/callback", bytes.NewReader(body))
 	addCookies(req, replaceCookie(cookies, stateCookie))
 	req.Header.Set(auth.CSRFHeaderName, csrf)
 	router.ServeHTTP(callback, req)
@@ -54,7 +54,7 @@ func TestGitHubOAuthProvisionAndSecretRedaction(t *testing.T) {
 	}
 
 	provision := httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/api/github/config-repo/provision", nil)
+	req = httptest.NewRequest(http.MethodPost, "/v1/github/config-repositories/provision", nil)
 	addCookies(req, cookies)
 	req.Header.Set(auth.CSRFHeaderName, csrf)
 	req.Header.Set("Idempotency-Key", "github-provision-test")
@@ -73,7 +73,7 @@ func TestGitHubOAuthProvisionAndSecretRedaction(t *testing.T) {
 	}
 
 	retry := httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/api/github/config-repo/provision", nil)
+	req = httptest.NewRequest(http.MethodPost, "/v1/github/config-repositories/provision", nil)
 	addCookies(req, cookies)
 	req.Header.Set(auth.CSRFHeaderName, csrf)
 	req.Header.Set("Idempotency-Key", "github-provision-test")
@@ -104,7 +104,7 @@ func TestGitHubOAuthRejectsMissingRequiredScopes(t *testing.T) {
 	csrf := csrfCookie(t, cookies)
 
 	start := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/github/oauth/start", strings.NewReader(`{"redirect_uri":"http://localhost:3000/github/callback"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/github/oauth/start", strings.NewReader(`{"redirect_uri":"http://localhost:3000/github/callback"}`))
 	addCookies(req, cookies)
 	req.Header.Set(auth.CSRFHeaderName, csrf)
 	router.ServeHTTP(start, req)
@@ -112,7 +112,7 @@ func TestGitHubOAuthRejectsMissingRequiredScopes(t *testing.T) {
 	stateCookie := cookieByName(t, start.Result().Cookies(), auth.OAuthStateCookieName)
 
 	callback := httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/api/github/oauth/callback", strings.NewReader(`{"code":"github-code","redirect_uri":"http://localhost:3000/github/callback","state":"`+state+`"}`))
+	req = httptest.NewRequest(http.MethodPost, "/v1/github/oauth/callback", strings.NewReader(`{"code":"github-code","redirect_uri":"http://localhost:3000/github/callback","state":"`+state+`"}`))
 	addCookies(req, replaceCookie(cookies, stateCookie))
 	req.Header.Set(auth.CSRFHeaderName, csrf)
 	router.ServeHTTP(callback, req)
@@ -131,7 +131,7 @@ func TestGitHubOAuthRejectsIdentityLinkedToAnotherUser(t *testing.T) {
 	connectGitHub(t, router, cookiesA, csrfCookie(t, cookiesA))
 
 	start := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/github/oauth/start", strings.NewReader(`{"redirect_uri":"http://localhost:3000/github/callback"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/github/oauth/start", strings.NewReader(`{"redirect_uri":"http://localhost:3000/github/callback"}`))
 	addCookies(req, cookiesB)
 	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookiesB))
 	router.ServeHTTP(start, req)
@@ -142,7 +142,7 @@ func TestGitHubOAuthRejectsIdentityLinkedToAnotherUser(t *testing.T) {
 	stateCookie := cookieByName(t, start.Result().Cookies(), auth.OAuthStateCookieName)
 
 	callback := httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/api/github/oauth/callback", strings.NewReader(`{"code":"github-code","redirect_uri":"http://localhost:3000/github/callback","state":"`+state+`"}`))
+	req = httptest.NewRequest(http.MethodPost, "/v1/github/oauth/callback", strings.NewReader(`{"code":"github-code","redirect_uri":"http://localhost:3000/github/callback","state":"`+state+`"}`))
 	addCookies(req, replaceCookie(cookiesB, stateCookie))
 	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookiesB))
 	router.ServeHTTP(callback, req)
@@ -157,7 +157,7 @@ func TestGitHubOAuthRejectsIdentityLinkedToAnotherUser(t *testing.T) {
 func TestGitHubOAuthStartDefaultsToPublicServerCallback(t *testing.T) {
 	_, router, _ := newGitHubIntegrationRouter(t, []string{"repo"})
 	cookies := loginCookies(t, router, "workos_github_ngrok:github-ngrok@example.com:GitHub Ngrok")
-	req := httptest.NewRequest(http.MethodPost, "/api/github/oauth/start", strings.NewReader(`{}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/github/oauth/start", strings.NewReader(`{}`))
 	addCookies(req, cookies)
 	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
 	rec := httptest.NewRecorder()
@@ -176,7 +176,7 @@ func TestGitHubBrowserCallbackCompletesOAuth(t *testing.T) {
 	cookies := loginCookies(t, router, "workos_github_browser:github-browser@example.com:GitHub Browser")
 	csrf := csrfCookie(t, cookies)
 	start := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/github/oauth/start", strings.NewReader(`{}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/github/oauth/start", strings.NewReader(`{}`))
 	addCookies(req, cookies)
 	req.Header.Set(auth.CSRFHeaderName, csrf)
 	router.ServeHTTP(start, req)
@@ -184,7 +184,7 @@ func TestGitHubBrowserCallbackCompletesOAuth(t *testing.T) {
 	stateCookie := cookieByName(t, start.Result().Cookies(), auth.OAuthStateCookieName)
 
 	callback := httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/api/github/oauth/callback?code=github-code&state="+state, nil)
+	req = httptest.NewRequest(http.MethodGet, "/v1/github/oauth/callback?code=github-code&state="+state, nil)
 	addCookies(req, replaceCookie(cookies, stateCookie))
 	router.ServeHTTP(callback, req)
 	if callback.Code != http.StatusOK {
@@ -198,7 +198,7 @@ func TestGitHubBrowserCallbackCompletesOAuth(t *testing.T) {
 func TestGitHubProvisionRequiresConnection(t *testing.T) {
 	_, router, _ := newGitHubIntegrationRouter(t, []string{"repo"})
 	cookies := loginCookies(t, router, "workos_github_required:github-required@example.com:GitHub Required")
-	req := httptest.NewRequest(http.MethodPost, "/api/github/config-repo/provision", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/github/config-repositories/provision", nil)
 	addCookies(req, cookies)
 	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
 	req.Header.Set("Idempotency-Key", "github-required-test")
@@ -218,7 +218,7 @@ func TestProjectCreateRequiresGitHubAfterEntitlement(t *testing.T) {
 	userID := userIDByEmail(t, store, "project-github-required@example.com")
 	grantActiveSubscription(t, store, userID)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/projects", strings.NewReader(`{}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects", strings.NewReader(`{}`))
 	addCookies(req, cookies)
 	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
 	rec := httptest.NewRecorder()
@@ -231,7 +231,7 @@ func TestProjectCreateRequiresGitHubAfterEntitlement(t *testing.T) {
 	}
 }
 
-func TestProjectCreateValidatesGitHubScopesBeforePhase6Handler(t *testing.T) {
+func TestProjectCreateValidatesGitHubScopesBeforeHandler(t *testing.T) {
 	store, router, _ := newGitHubIntegrationRouter(t, []string{"repo"})
 	cookies := loginCookies(t, router, "workos_project_github_connected:project-github-connected@example.com:Project GitHub Connected")
 	userID := userIDByEmail(t, store, "project-github-connected@example.com")
@@ -239,7 +239,7 @@ func TestProjectCreateValidatesGitHubScopesBeforePhase6Handler(t *testing.T) {
 	csrf := csrfCookie(t, cookies)
 	connectGitHub(t, router, cookies, csrf)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/projects", strings.NewReader(`{}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects", strings.NewReader(`{}`))
 	addCookies(req, cookies)
 	req.Header.Set(auth.CSRFHeaderName, csrf)
 	rec := httptest.NewRecorder()
@@ -259,7 +259,7 @@ func TestGitHubProvisionRetriesAfterCreateFailure(t *testing.T) {
 	csrf := csrfCookie(t, cookies)
 	connectGitHub(t, router, cookies, csrf)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/github/config-repo/provision", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/github/config-repositories/provision", nil)
 	addCookies(req, cookies)
 	req.Header.Set(auth.CSRFHeaderName, csrf)
 	req.Header.Set("Idempotency-Key", "github-retry-test")
@@ -270,7 +270,7 @@ func TestGitHubProvisionRetriesAfterCreateFailure(t *testing.T) {
 	}
 
 	fake.CreateErr = nil
-	req = httptest.NewRequest(http.MethodPost, "/api/github/config-repo/provision", nil)
+	req = httptest.NewRequest(http.MethodPost, "/v1/github/config-repositories/provision", nil)
 	addCookies(req, cookies)
 	req.Header.Set(auth.CSRFHeaderName, csrf)
 	req.Header.Set("Idempotency-Key", "github-retry-test")
@@ -315,7 +315,7 @@ func newGitHubIntegrationRouter(t *testing.T, tokenScopes []string) (*db.DB, htt
 	billingService := billing.NewService(billing.NewRepository(store), billing.FakePolarClient{}, auditWriter)
 	cfg := config.Default()
 	cfg.HTTP.PublicBaseURL = "https://unified-camel-humorous.ngrok-free.app"
-	cfg.Secrets.EncryptionKey = "test-encryption-key-for-github-phase-five"
+	cfg.Secrets.EncryptionKey = "test-encryption-key-for-github-tests"
 	fake := &pbgithub.FakeClient{
 		Token: pbgithub.OAuthToken{AccessToken: "fake-gh-token", Scopes: tokenScopes},
 		User:  pbgithub.GitHubUser{Login: "paperboat-test-user"},
@@ -336,7 +336,7 @@ func newGitHubIntegrationRouter(t *testing.T, tokenScopes []string) (*db.DB, htt
 func connectGitHub(t *testing.T, router http.Handler, cookies []*http.Cookie, csrf string) {
 	t.Helper()
 	start := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/github/oauth/start", strings.NewReader(`{"redirect_uri":"http://localhost:3000/github/callback"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/github/oauth/start", strings.NewReader(`{"redirect_uri":"http://localhost:3000/github/callback"}`))
 	addCookies(req, cookies)
 	req.Header.Set(auth.CSRFHeaderName, csrf)
 	router.ServeHTTP(start, req)
@@ -346,7 +346,7 @@ func connectGitHub(t *testing.T, router http.Handler, cookies []*http.Cookie, cs
 	state := jsonField(t, start.Body.Bytes(), "state")
 	stateCookie := cookieByName(t, start.Result().Cookies(), auth.OAuthStateCookieName)
 	callback := httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/api/github/oauth/callback", strings.NewReader(`{"code":"github-code","redirect_uri":"http://localhost:3000/github/callback","state":"`+state+`"}`))
+	req = httptest.NewRequest(http.MethodPost, "/v1/github/oauth/callback", strings.NewReader(`{"code":"github-code","redirect_uri":"http://localhost:3000/github/callback","state":"`+state+`"}`))
 	addCookies(req, replaceCookie(cookies, stateCookie))
 	req.Header.Set(auth.CSRFHeaderName, csrf)
 	router.ServeHTTP(callback, req)

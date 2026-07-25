@@ -1,7 +1,6 @@
 package github
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -9,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"slices"
@@ -133,7 +131,7 @@ func NewService(store *db.DB, auditWriter *audit.Writer, client Client, cfg conf
 }
 
 func (s *Service) DefaultCallbackURL() string {
-	return strings.TrimRight(s.cfg.HTTP.PublicBaseURL, "/") + "/api/github/oauth/callback"
+	return strings.TrimRight(s.cfg.HTTP.PublicBaseURL, "/") + "/v1/github/oauth/callback"
 }
 
 func (s *Service) OAuthAuthorizeURL(state, redirectURI string) (string, error) {
@@ -229,7 +227,7 @@ func (s *Service) CompleteOAuth(ctx context.Context, userID, code, redirectURI s
 
 func (s *Service) Status(ctx context.Context, userID string) (Status, error) {
 	var status Status
-	connection, err := s.db.Queries().GetGitHubConnectionStatus(ctx, userID)
+	connection, err := s.db.Queries().GetGitHubConnectionReadiness(ctx, userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return status.normalized(), nil
 	}
@@ -308,14 +306,6 @@ func (s *Service) ProvisionConfigRepo(ctx context.Context, userID, idempotencyKe
 func githubOutcomeUncertain(err error) bool {
 	var apiErr APIError
 	return !errors.As(err, &apiErr) || apiErr.StatusCode >= http.StatusInternalServerError
-}
-
-func (s *Service) CredentialForConfigSync(ctx context.Context, userID string) ([]byte, error) {
-	token, _, err := s.githubToken(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	return secrets.Encrypt(s.cfg.Secrets.EncryptionKey, token)
 }
 
 func (s *Service) EnsureConnected(ctx context.Context, userID string) error {
@@ -720,43 +710,6 @@ func normalizeGitHubError(err error) error {
 	return APIError{StatusCode: response.Response.StatusCode, Message: response.Message, Errors: details}
 }
 
-func (c HTTPClient) doJSON(ctx context.Context, token, method, path string, payload any, target any) error {
-	var body io.Reader
-	if payload != nil {
-		b, err := json.Marshal(payload)
-		if err != nil {
-			return err
-		}
-		body = bytes.NewReader(b)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(c.BaseURL, "/")+path, body)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Authorization", "Bearer "+token)
-	if payload != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	res, err := c.httpClient().Do(req)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	if res.StatusCode == http.StatusNotFound {
-		return ErrRepoNotFound
-	}
-	if res.StatusCode < 200 || res.StatusCode > 299 {
-		return parseGitHubAPIError(res)
-	}
-	if target != nil {
-		decoder := json.NewDecoder(res.Body)
-		decoder.UseNumber()
-		return decoder.Decode(target)
-	}
-	return nil
-}
-
 type APIError struct {
 	StatusCode int
 	Message    string
@@ -775,15 +728,6 @@ type APIErrorDetail struct {
 	Field    string `json:"field"`
 	Code     string `json:"code"`
 	Message  string `json:"message"`
-}
-
-func parseGitHubAPIError(res *http.Response) error {
-	var payload struct {
-		Message string           `json:"message"`
-		Errors  []APIErrorDetail `json:"errors"`
-	}
-	_ = json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&payload)
-	return APIError{StatusCode: res.StatusCode, Message: payload.Message, Errors: payload.Errors}
 }
 
 func isAlreadyExistsValidation(err error) bool {
@@ -816,10 +760,6 @@ type githubRepoResponse struct {
 	Owner         struct {
 		Login string `json:"login"`
 	} `json:"owner"`
-}
-
-func (r githubRepoResponse) repo() Repo {
-	return Repo{ID: r.ID.String(), Owner: r.Owner.Login, Name: r.Name, DefaultBranch: r.DefaultBranch, CloneURL: r.CloneURL, HTMLURL: r.HTMLURL, Private: r.Private}
 }
 
 type FakeClient struct {
@@ -926,65 +866,7 @@ func splitScopes(raw string) []string {
 	return fields
 }
 
-func base64Encode(b []byte) string {
-	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-	if len(b) == 0 {
-		return ""
-	}
-	var out strings.Builder
-	for i := 0; i < len(b); i += 3 {
-		var chunk [3]byte
-		n := copy(chunk[:], b[i:])
-		value := uint(chunk[0])<<16 | uint(chunk[1])<<8 | uint(chunk[2])
-		out.WriteByte(alphabet[(value>>18)&63])
-		out.WriteByte(alphabet[(value>>12)&63])
-		if n > 1 {
-			out.WriteByte(alphabet[(value>>6)&63])
-		} else {
-			out.WriteByte('=')
-		}
-		if n > 2 {
-			out.WriteByte(alphabet[value&63])
-		} else {
-			out.WriteByte('=')
-		}
-	}
-	return out.String()
-}
-
-func escapePath(path string) string {
-	parts := strings.Split(path, "/")
-	for i := range parts {
-		parts[i] = url.PathEscape(parts[i])
-	}
-	return strings.Join(parts, "/")
-}
-
 type stringArray []string
-
-func (a *stringArray) Scan(src any) error {
-	switch v := src.(type) {
-	case string:
-		*a = parsePgTextArray(v)
-	case []byte:
-		*a = parsePgTextArray(string(v))
-	default:
-		return fmt.Errorf("unsupported text array source %T", src)
-	}
-	return nil
-}
-
-func parsePgTextArray(raw string) []string {
-	raw = strings.Trim(raw, "{}")
-	if raw == "" {
-		return []string{}
-	}
-	parts := strings.Split(raw, ",")
-	for i := range parts {
-		parts[i] = strings.Trim(parts[i], `"`)
-	}
-	return parts
-}
 
 func newID(prefix string) string {
 	var b [16]byte

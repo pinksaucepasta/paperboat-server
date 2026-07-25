@@ -26,23 +26,24 @@ const (
 )
 
 type Config struct {
-	Environment       Environment       `json:"environment"`
-	HelperBaseDomain  string            `json:"helper_base_domain"`
-	HTTP              HTTPConfig        `json:"http"`
-	Database          Database          `json:"database"`
-	Catalogs          Catalogs          `json:"catalogs"`
-	Billing           Billing           `json:"billing"`
-	Metering          Metering          `json:"metering"`
-	ConnectedMachines ConnectedMachines `json:"connected_machines"`
-	TerminalSessions  TerminalSessions  `json:"terminal_sessions"`
-	Preview           Preview           `json:"preview"`
-	ConfigSync        ConfigSync        `json:"config_sync"`
-	Classifier        Classifier        `json:"classifier"`
-	CLIAuth           CLIAuth           `json:"cli_auth"`
-	GitHub            GitHub            `json:"github"`
-	Fly               Fly               `json:"fly"`
-	Providers         Providers         `json:"providers"`
-	Secrets           Secrets           `json:"secrets"`
+	Environment      Environment      `json:"environment"`
+	HelperBaseDomain string           `json:"helper_base_domain"`
+	HTTP             HTTPConfig       `json:"http"`
+	Database         Database         `json:"database"`
+	Catalogs         Catalogs         `json:"catalogs"`
+	Billing          Billing          `json:"billing"`
+	Metering         Metering         `json:"metering"`
+	UserMachines     UserMachines     `json:"user_machines"`
+	TerminalSessions TerminalSessions `json:"terminal_sessions"`
+	Preview          Preview          `json:"preview"`
+	ConfigSync       ConfigSync       `json:"config_sync"`
+	Classifier       Classifier       `json:"classifier"`
+	CLIAuth          CLIAuth          `json:"cli_auth"`
+	GitHub           GitHub           `json:"github"`
+	Fly              Fly              `json:"fly"`
+	Access           Access           `json:"access"`
+	Providers        Providers        `json:"providers"`
+	Secrets          Secrets          `json:"secrets"`
 }
 
 type HTTPConfig struct {
@@ -57,7 +58,7 @@ type HTTPConfig struct {
 }
 
 // NormalizeIssuer returns the canonical server identity used in CLI
-// connection descriptors and papercode credentials. It intentionally mirrors
+// connection descriptors and helper credentials. It intentionally mirrors
 // the CLI's issuer normalization so equivalent URLs cannot fail validation.
 func NormalizeIssuer(raw string) string {
 	u, err := url.Parse(strings.TrimSpace(raw))
@@ -105,7 +106,7 @@ type Metering struct {
 	MaxKeepAliveDuration     time.Duration `json:"max_keep_alive_duration"`
 }
 
-type ConnectedMachines struct {
+type UserMachines struct {
 	PairingLifetime         time.Duration `json:"pairing_lifetime"`
 	OfflineAfter            time.Duration `json:"offline_after"`
 	AllowedPlatforms        []string      `json:"allowed_platforms"`
@@ -170,7 +171,7 @@ type Classifier struct {
 
 type CLIAuth struct {
 	VerificationURL          string        `json:"verification_url"`
-	ConnectedMachinesURL     string        `json:"connected_machines_url"`
+	UserMachinesURL          string        `json:"user_machines_url"`
 	ClientID                 string        `json:"client_id"`
 	AllowedScopes            []string      `json:"allowed_scopes"`
 	DeviceGrantLifetime      time.Duration `json:"device_grant_lifetime"`
@@ -196,68 +197,58 @@ type GitHub struct {
 }
 
 type Fly struct {
-	AppName           string   `json:"app_name"`
-	OrgSlug           string   `json:"org_slug"`
-	ImageRef          string   `json:"image_ref"`
-	VolumeNamePrefix  string   `json:"volume_name_prefix"`
-	MachineNamePrefix string   `json:"machine_name_prefix"`
-	Hostname          string   `json:"hostname"`
-	MountPath         string   `json:"mount_path"`
-	BootCommand       []string `json:"boot_command"`
-	// Deprecated secret-name fields remain decode-compatible with older
-	// configuration files. Hosted Machines do not consume them.
-	AgentunnelSecret       string        `json:"agentunnel_secret"`
-	GitHubSecret           string        `json:"github_secret"`
-	SetupScriptSecret      string        `json:"setup_script_secret"`
-	EnrollmentSecret       string        `json:"enrollment_secret"`
+	AppName                string        `json:"app_name"`
+	OrgSlug                string        `json:"org_slug"`
+	ImageRef               string        `json:"image_ref"`
+	VolumeNamePrefix       string        `json:"volume_name_prefix"`
+	MachineNamePrefix      string        `json:"machine_name_prefix"`
+	Hostname               string        `json:"hostname"`
+	MountPath              string        `json:"mount_path"`
+	BootCommand            []string      `json:"boot_command"`
 	HostedReadinessBaseURL string        `json:"hosted_readiness_base_url,omitempty"`
 	OperationTimeout       time.Duration `json:"operation_timeout"`
 	OrchestrationLease     time.Duration `json:"orchestration_lease"`
 }
 
 type Providers struct {
-	FakeMode   bool           `json:"fake_mode"`
-	WorkOS     ProviderConfig `json:"workos"`
-	Polar      ProviderConfig `json:"polar"`
-	GitHub     ProviderConfig `json:"github"`
-	Fly        ProviderConfig `json:"fly"`
-	Agentunnel ProviderConfig `json:"agentunnel"`
+	FakeMode bool           `json:"fake_mode"`
+	WorkOS   ProviderConfig `json:"workos"`
+	Polar    ProviderConfig `json:"polar"`
+	GitHub   ProviderConfig `json:"github"`
+	Fly      ProviderConfig `json:"fly"`
 }
 
 type ProviderConfig struct {
-	BaseURL              string        `json:"base_url"`
-	Ready                bool          `json:"ready"`
-	MachineMode          string        `json:"machine_mode,omitempty"`
-	PapercodeLocalURL    string        `json:"papercode_local_url,omitempty"`
-	RouteExpiresIn       time.Duration `json:"route_expires_in,omitempty"`
+	BaseURL string `json:"base_url"`
+	Ready   bool   `json:"ready"`
+}
+
+type Access struct {
 	RouteSubdomainPrefix string        `json:"route_subdomain_prefix,omitempty"`
 	ConnectReadyTimeout  time.Duration `json:"connect_ready_timeout,omitempty"`
 	ConnectPollInterval  time.Duration `json:"connect_poll_interval,omitempty"`
-	AccessPolicyID       string        `json:"access_policy_id,omitempty"`
 	UploadMaxBytes       int64         `json:"upload_max_bytes,omitempty"`
 	UploadAllowedMIMEs   []string      `json:"upload_allowed_mime_types,omitempty"`
 	UploadRetention      time.Duration `json:"upload_retention,omitempty"`
 }
 
 type Secrets struct {
-	SessionKeys            []string `json:"session_keys"`
-	EncryptionKey          string   `json:"encryption_key"`
-	WorkOSAPIKey           string   `json:"workos_api_key"`
-	WorkOSClientID         string   `json:"workos_client_id"`
-	WorkOSClientSecret     string   `json:"workos_client_secret"`
-	PolarAPIKey            string   `json:"polar_api_key"`
-	PolarWebhookSecret     string   `json:"polar_webhook_secret"`
-	GitHubClientID         string   `json:"github_client_id"`
-	GitHubClientSecret     string   `json:"github_client_secret"`
-	GitHubAppPrivateKey    string   `json:"github_app_private_key"`
-	FlyAPIToken            string   `json:"fly_api_token"`
-	AgentunnelAPIKey       string   `json:"agentunnel_api_key"`
-	AgentunnelMachineToken string   `json:"agentunnel_machine_token"`
-	EdgeControlCredential  string   `json:"edge_control_credential"`
-	PreviewIdentityKey     string   `json:"preview_identity_key"`
-	MachineActivityToken   string   `json:"machine_activity_token"`
-	MintSigningKeys        []string `json:"mint_signing_keys"`
-	ClassifierAPIKey       string   `json:"classifier_api_key"`
+	SessionKeys           []string `json:"session_keys"`
+	EncryptionKey         string   `json:"encryption_key"`
+	WorkOSAPIKey          string   `json:"workos_api_key"`
+	WorkOSClientID        string   `json:"workos_client_id"`
+	WorkOSClientSecret    string   `json:"workos_client_secret"`
+	PolarAPIKey           string   `json:"polar_api_key"`
+	PolarWebhookSecret    string   `json:"polar_webhook_secret"`
+	GitHubClientID        string   `json:"github_client_id"`
+	GitHubClientSecret    string   `json:"github_client_secret"`
+	GitHubAppPrivateKey   string   `json:"github_app_private_key"`
+	FlyAPIToken           string   `json:"fly_api_token"`
+	EdgeControlCredential string   `json:"edge_control_credential"`
+	PreviewIdentityKey    string   `json:"preview_identity_key"`
+	MachineActivityToken  string   `json:"machine_activity_token"`
+	MintSigningKeys       []string `json:"mint_signing_keys"`
+	ClassifierAPIKey      string   `json:"classifier_api_key"`
 }
 
 type LoadOptions struct {
@@ -323,9 +314,9 @@ func Default() Config {
 			MinimumStartCreditWindow: 5 * time.Minute,
 			MaxKeepAliveDuration:     12 * time.Hour,
 		},
-		HelperBaseDomain:  "localhost",
-		ConnectedMachines: ConnectedMachines{PairingLifetime: 10 * time.Minute, OfflineAfter: 2 * time.Minute, AllowedPlatforms: []string{"darwin", "linux"}, HelperListenPort: 38080},
-		TerminalSessions:  TerminalSessions{MaxActivePerProject: 32, OperationTimeout: 15 * time.Second, RetryBackoff: time.Second, WorkerInterval: time.Second, MaxAttemptsBeforeAlert: 10},
+		HelperBaseDomain: "localhost",
+		UserMachines:     UserMachines{PairingLifetime: 10 * time.Minute, OfflineAfter: 2 * time.Minute, AllowedPlatforms: []string{"darwin", "linux"}, HelperListenPort: 38080},
+		TerminalSessions: TerminalSessions{MaxActivePerProject: 32, OperationTimeout: 15 * time.Second, RetryBackoff: time.Second, WorkerInterval: time.Second, MaxAttemptsBeforeAlert: 10},
 		ConfigSync: ConfigSync{
 			Mode:              "disabled",
 			MandatoryExcludes: configsyncpolicy.MandatoryExcludes(),
@@ -341,7 +332,7 @@ func Default() Config {
 			ExcludePatterns:     []string{"**/*.db", "**/*.db-wal", "**/*.db-shm", "**/*.sqlite", "**/*.sqlite3"}},
 		CLIAuth: CLIAuth{
 			VerificationURL:          "http://localhost:3000/cli/authorize",
-			ConnectedMachinesURL:     "http://localhost:3000/dashboard/connected-machines",
+			UserMachinesURL:          "http://localhost:3000/dashboard/user-machines",
 			ClientID:                 "paperboat-cli",
 			AllowedScopes:            []string{"account:read", "clients:revoke", "projects:read", "projects:connect", "session:refresh"},
 			DeviceGrantLifetime:      10 * time.Minute,
@@ -355,21 +346,18 @@ func Default() Config {
 			MintJWKSMaxAge:           5 * time.Minute,
 			MintProofLifetime:        2 * time.Minute,
 		},
+		Access: Access{
+			RouteSubdomainPrefix: "pb",
+			ConnectReadyTimeout:  2 * time.Second,
+			ConnectPollInterval:  100 * time.Millisecond,
+			UploadMaxBytes:       10 << 20,
+			UploadAllowedMIMEs:   []string{"image/png", "image/jpeg", "image/webp"},
+			UploadRetention:      7 * 24 * time.Hour,
+		},
 		Providers: Providers{
 			FakeMode: true,
 			GitHub: ProviderConfig{
 				BaseURL: "https://api.github.com",
-			},
-			Agentunnel: ProviderConfig{
-				MachineMode:          "required",
-				PapercodeLocalURL:    "http://127.0.0.1:4099",
-				RouteExpiresIn:       30 * 24 * time.Hour,
-				RouteSubdomainPrefix: "pb",
-				ConnectReadyTimeout:  2 * time.Second,
-				ConnectPollInterval:  100 * time.Millisecond,
-				UploadMaxBytes:       10 << 20,
-				UploadAllowedMIMEs:   []string{"image/png", "image/jpeg", "image/webp"},
-				UploadRetention:      7 * 24 * time.Hour,
 			},
 		},
 		GitHub: GitHub{
@@ -387,11 +375,7 @@ func Default() Config {
 			MachineNamePrefix:  "pbvm",
 			Hostname:           "paperboat",
 			MountPath:          "/workspace",
-			BootCommand:        []string{"/usr/local/bin/paperboat-helper", "run"},
-			AgentunnelSecret:   "AGENTUNNEL_MACHINE_TOKEN",
-			GitHubSecret:       "PAPERBOAT_GITHUB_CONFIG_TOKEN",
-			SetupScriptSecret:  "PAPERBOAT_SETUP_SCRIPT",
-			EnrollmentSecret:   "PAPERBOAT_ENROLLMENT_CREDENTIAL",
+			BootCommand:        []string{"/usr/local/bin/pbh", "run"},
 			OperationTimeout:   30 * time.Second,
 			OrchestrationLease: 5 * time.Minute,
 		},
@@ -449,18 +433,18 @@ func (c Config) Validate() error {
 	if c.Metering.MaxKeepAliveDuration <= 0 {
 		errs = append(errs, fmt.Errorf("metering.max_keep_alive_duration must be positive"))
 	}
-	if c.ConnectedMachines.PairingLifetime <= 0 || c.ConnectedMachines.OfflineAfter <= 0 || len(c.ConnectedMachines.AllowedPlatforms) == 0 {
-		errs = append(errs, fmt.Errorf("connected_machines pairing lifetime, offline timeout, and allowed platforms are required"))
+	if c.UserMachines.PairingLifetime <= 0 || c.UserMachines.OfflineAfter <= 0 || len(c.UserMachines.AllowedPlatforms) == 0 {
+		errs = append(errs, fmt.Errorf("user_machines pairing lifetime, offline timeout, and allowed platforms are required"))
 	} else {
-		for _, platform := range c.ConnectedMachines.AllowedPlatforms {
+		for _, platform := range c.UserMachines.AllowedPlatforms {
 			if platform != "darwin" && platform != "linux" {
-				errs = append(errs, fmt.Errorf("connected_machines allowed platform %q is unsupported", platform))
+				errs = append(errs, fmt.Errorf("user_machines allowed platform %q is unsupported", platform))
 			}
 		}
 	}
 	if c.Environment == EnvironmentProduction {
-		if strings.TrimSpace(c.ConnectedMachines.BootstrapCommand) == "" || strings.TrimSpace(c.ConnectedMachines.HelperArtifactsJSON) == "" || strings.TrimSpace(c.ConnectedMachines.HelperArtifactPublicKey) == "" || strings.TrimSpace(c.HelperBaseDomain) == "" || c.ConnectedMachines.HelperListenPort < 1024 {
-			errs = append(errs, fmt.Errorf("connected_machines bootstrap command and signed helper artifacts are required in production"))
+		if strings.TrimSpace(c.UserMachines.BootstrapCommand) == "" || strings.TrimSpace(c.UserMachines.HelperArtifactsJSON) == "" || strings.TrimSpace(c.UserMachines.HelperArtifactPublicKey) == "" || strings.TrimSpace(c.HelperBaseDomain) == "" || c.UserMachines.HelperListenPort < 1024 {
+			errs = append(errs, fmt.Errorf("user_machines bootstrap command and signed helper artifacts are required in production"))
 		}
 		if strings.TrimSpace(c.Preview.BaseDomain) == "" || strings.TrimSpace(c.Secrets.PreviewIdentityKey) == "" {
 			errs = append(errs, fmt.Errorf("preview base domain and identity key are required in production"))
@@ -521,14 +505,14 @@ func (c Config) Validate() error {
 			errs = append(errs, err)
 		}
 	}
-	if strings.TrimSpace(c.CLIAuth.VerificationURL) == "" || strings.TrimSpace(c.CLIAuth.ConnectedMachinesURL) == "" || strings.TrimSpace(c.CLIAuth.ClientID) == "" || len(c.CLIAuth.AllowedScopes) == 0 {
-		errs = append(errs, fmt.Errorf("cli_auth verification_url, connected_machines_url, client_id, and allowed_scopes are required"))
+	if strings.TrimSpace(c.CLIAuth.VerificationURL) == "" || strings.TrimSpace(c.CLIAuth.UserMachinesURL) == "" || strings.TrimSpace(c.CLIAuth.ClientID) == "" || len(c.CLIAuth.AllowedScopes) == 0 {
+		errs = append(errs, fmt.Errorf("cli_auth verification_url, user_machines_url, client_id, and allowed_scopes are required"))
 	}
 	if verificationURL, err := url.Parse(c.CLIAuth.VerificationURL); err != nil || (verificationURL.Scheme != "http" && verificationURL.Scheme != "https") || verificationURL.Host == "" {
 		errs = append(errs, fmt.Errorf("cli_auth.verification_url must be an absolute http or https URL"))
 	}
-	if connectedMachinesURL, err := url.Parse(c.CLIAuth.ConnectedMachinesURL); err != nil || (connectedMachinesURL.Scheme != "http" && connectedMachinesURL.Scheme != "https") || connectedMachinesURL.Host == "" {
-		errs = append(errs, fmt.Errorf("cli_auth.connected_machines_url must be an absolute http or https URL"))
+	if userMachinesURL, err := url.Parse(c.CLIAuth.UserMachinesURL); err != nil || (userMachinesURL.Scheme != "http" && userMachinesURL.Scheme != "https") || userMachinesURL.Host == "" {
+		errs = append(errs, fmt.Errorf("cli_auth.user_machines_url must be an absolute http or https URL"))
 	}
 	if c.CLIAuth.DeviceGrantLifetime <= 0 || c.CLIAuth.AccessTokenLifetime <= 0 || c.CLIAuth.RefreshTokenLifetime <= 0 || c.CLIAuth.PollInterval <= 0 {
 		errs = append(errs, fmt.Errorf("cli_auth lifetimes and poll_interval must be positive"))
@@ -542,36 +526,23 @@ func (c Config) Validate() error {
 	if c.CLIAuth.MintProofLifetime <= 0 || c.CLIAuth.MintProofLifetime > 5*time.Minute {
 		errs = append(errs, fmt.Errorf("cli_auth.mint_proof_lifetime must be positive and at most five minutes"))
 	}
-	switch c.Providers.Agentunnel.MachineMode {
-	case "required", "optional":
-	default:
-		errs = append(errs, fmt.Errorf("agentunnel.machine_mode must be \"required\" or \"optional\""))
+	if strings.TrimSpace(c.Access.RouteSubdomainPrefix) == "" {
+		errs = append(errs, fmt.Errorf("access.route_subdomain_prefix is required"))
 	}
-	if strings.TrimSpace(c.Providers.Agentunnel.PapercodeLocalURL) == "" {
-		errs = append(errs, fmt.Errorf("agentunnel.papercode_local_url is required"))
-	} else if u, err := url.Parse(c.Providers.Agentunnel.PapercodeLocalURL); err != nil || u.Scheme == "" || u.Host == "" {
-		errs = append(errs, fmt.Errorf("agentunnel.papercode_local_url must be a valid absolute URL"))
+	if c.Access.ConnectReadyTimeout <= 0 {
+		errs = append(errs, fmt.Errorf("access.connect_ready_timeout must be positive"))
 	}
-	if c.Providers.Agentunnel.RouteExpiresIn <= 0 {
-		errs = append(errs, fmt.Errorf("agentunnel.route_expires_in must be positive"))
+	if c.Access.ConnectPollInterval <= 0 || c.Access.ConnectPollInterval > c.Access.ConnectReadyTimeout {
+		errs = append(errs, fmt.Errorf("access.connect_poll_interval must be positive and no greater than connect_ready_timeout"))
 	}
-	if strings.TrimSpace(c.Providers.Agentunnel.RouteSubdomainPrefix) == "" {
-		errs = append(errs, fmt.Errorf("agentunnel.route_subdomain_prefix is required"))
+	if c.Access.UploadMaxBytes <= 0 || len(c.Access.UploadAllowedMIMEs) == 0 || c.Access.UploadRetention <= 0 {
+		errs = append(errs, fmt.Errorf("access upload_max_bytes, upload_allowed_mime_types, and upload_retention are required"))
 	}
-	if c.Providers.Agentunnel.ConnectReadyTimeout <= 0 {
-		errs = append(errs, fmt.Errorf("agentunnel.connect_ready_timeout must be positive"))
-	}
-	if c.Providers.Agentunnel.ConnectPollInterval <= 0 || c.Providers.Agentunnel.ConnectPollInterval > c.Providers.Agentunnel.ConnectReadyTimeout {
-		errs = append(errs, fmt.Errorf("agentunnel.connect_poll_interval must be positive and no greater than connect_ready_timeout"))
-	}
-	if c.Providers.Agentunnel.UploadMaxBytes <= 0 || len(c.Providers.Agentunnel.UploadAllowedMIMEs) == 0 || c.Providers.Agentunnel.UploadRetention <= 0 {
-		errs = append(errs, fmt.Errorf("agentunnel upload_max_bytes, upload_allowed_mime_types, and upload_retention are required"))
-	}
-	for _, mimeType := range c.Providers.Agentunnel.UploadAllowedMIMEs {
+	for _, mimeType := range c.Access.UploadAllowedMIMEs {
 		switch mimeType {
 		case "image/png", "image/jpeg", "image/webp":
 		default:
-			errs = append(errs, fmt.Errorf("agentunnel upload MIME type %q is not supported", mimeType))
+			errs = append(errs, fmt.Errorf("access upload MIME type %q is not supported", mimeType))
 		}
 	}
 	if strings.TrimSpace(c.GitHub.OAuthAuthorizeURL) == "" || strings.TrimSpace(c.GitHub.OAuthTokenURL) == "" {
@@ -665,13 +636,6 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 			*target = v
 		}
 	}
-	lookupPreferred := func(canonical, legacy string) (string, bool, string) {
-		if value, ok := lookup(canonical); ok {
-			return value, true, canonical
-		}
-		value, ok := lookup(legacy)
-		return value, ok, legacy
-	}
 	setSecret := func(name string, target *string) error {
 		if v, ok := lookup(name); ok {
 			*target = v
@@ -702,7 +666,7 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_CLASSIFIER_REVISION", &c.Classifier.Revision)
 	setString("PAPERBOAT_CLASSIFIER_SCHEMA_MODE", &c.Classifier.SchemaMode)
 	setString("PAPERBOAT_CLI_VERIFICATION_URL", &c.CLIAuth.VerificationURL)
-	setString("PAPERBOAT_CONNECTED_MACHINES_URL", &c.CLIAuth.ConnectedMachinesURL)
+	setString("PAPERBOAT_USER_MACHINES_URL", &c.CLIAuth.UserMachinesURL)
 	setString("PAPERBOAT_CLI_CLIENT_ID", &c.CLIAuth.ClientID)
 	setString("PAPERBOAT_MINT_ACTIVE_KEY_ID", &c.CLIAuth.MintActiveKeyID)
 	setString("PAPERBOAT_GITHUB_OAUTH_AUTHORIZE_URL", &c.GitHub.OAuthAuthorizeURL)
@@ -717,58 +681,54 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_FLY_MACHINE_NAME_PREFIX", &c.Fly.MachineNamePrefix)
 	setString("PAPERBOAT_FLY_HOSTNAME", &c.Fly.Hostname)
 	setString("PAPERBOAT_FLY_MOUNT_PATH", &c.Fly.MountPath)
-	setString("PAPERBOAT_FLY_AGENTUNNEL_SECRET", &c.Fly.AgentunnelSecret)
-	setString("PAPERBOAT_FLY_GITHUB_SECRET", &c.Fly.GitHubSecret)
-	setString("PAPERBOAT_FLY_SETUP_SCRIPT_SECRET", &c.Fly.SetupScriptSecret)
-	setString("PAPERBOAT_FLY_ENROLLMENT_SECRET", &c.Fly.EnrollmentSecret)
 	setString("PAPERBOAT_HELPER_BASE_DOMAIN", &c.HelperBaseDomain)
 	setString("PAPERBOAT_FLY_HOSTED_READINESS_BASE_URL", &c.Fly.HostedReadinessBaseURL)
 	setString("PAPERBOAT_WORKOS_BASE_URL", &c.Providers.WorkOS.BaseURL)
 	setString("PAPERBOAT_POLAR_BASE_URL", &c.Providers.Polar.BaseURL)
 	setString("PAPERBOAT_GITHUB_BASE_URL", &c.Providers.GitHub.BaseURL)
 	setString("PAPERBOAT_FLY_BASE_URL", &c.Providers.Fly.BaseURL)
-	setString("PAPERBOAT_AGENTUNNEL_BASE_URL", &c.Providers.Agentunnel.BaseURL)
-	setString("PAPERBOAT_AGENTUNNEL_MACHINE_MODE", &c.Providers.Agentunnel.MachineMode)
-	setString("PAPERBOAT_AGENTUNNEL_PAPERCODE_LOCAL_URL", &c.Providers.Agentunnel.PapercodeLocalURL)
-	setString("PAPERBOAT_AGENTUNNEL_ROUTE_SUBDOMAIN_PREFIX", &c.Providers.Agentunnel.RouteSubdomainPrefix)
-	setString("PAPERBOAT_AGENTUNNEL_ACCESS_POLICY_ID", &c.Providers.Agentunnel.AccessPolicyID)
-	setString("PAPERBOAT_CONNECTED_MACHINES_BOOTSTRAP_COMMAND", &c.ConnectedMachines.BootstrapCommand)
-	setString("PAPERBOAT_CONNECTED_MACHINES_HELPER_ARTIFACTS_JSON", &c.ConnectedMachines.HelperArtifactsJSON)
-	setString("PAPERBOAT_CONNECTED_MACHINES_HELPER_ARTIFACT_PUBLIC_KEY", &c.ConnectedMachines.HelperArtifactPublicKey)
-	if value, ok := lookup("PAPERBOAT_CONNECTED_MACHINES_OFFLINE_AFTER_SECONDS"); ok {
+	setString("PAPERBOAT_PREVIEW_SUBDOMAIN_PREFIX", &c.Access.RouteSubdomainPrefix)
+	setString("PAPERBOAT_USER_MACHINES_BOOTSTRAP_COMMAND", &c.UserMachines.BootstrapCommand)
+	if err := setSecret("PAPERBOAT_USER_MACHINES_HELPER_ARTIFACTS_JSON", &c.UserMachines.HelperArtifactsJSON); err != nil {
+		return err
+	}
+	if err := setSecret("PAPERBOAT_USER_MACHINES_HELPER_ARTIFACT_PUBLIC_KEY", &c.UserMachines.HelperArtifactPublicKey); err != nil {
+		return err
+	}
+	if value, ok := lookup("PAPERBOAT_USER_MACHINES_OFFLINE_AFTER_SECONDS"); ok {
 		parsed, err := strconv.ParseInt(value, 10, 64)
 		if err != nil {
-			return fmt.Errorf("parse PAPERBOAT_CONNECTED_MACHINES_OFFLINE_AFTER_SECONDS: %w", err)
+			return fmt.Errorf("parse PAPERBOAT_USER_MACHINES_OFFLINE_AFTER_SECONDS: %w", err)
 		}
-		c.ConnectedMachines.OfflineAfter = time.Duration(parsed) * time.Second
+		c.UserMachines.OfflineAfter = time.Duration(parsed) * time.Second
 	}
-	if value, ok := lookup("PAPERBOAT_CONNECTED_MACHINES_HELPER_LISTEN_PORT"); ok {
+	if value, ok := lookup("PAPERBOAT_USER_MACHINES_HELPER_LISTEN_PORT"); ok {
 		parsed, err := strconv.ParseInt(value, 10, 32)
 		if err != nil {
-			return fmt.Errorf("parse PAPERBOAT_CONNECTED_MACHINES_HELPER_LISTEN_PORT: %w", err)
+			return fmt.Errorf("parse PAPERBOAT_USER_MACHINES_HELPER_LISTEN_PORT: %w", err)
 		}
-		c.ConnectedMachines.HelperListenPort = int32(parsed)
+		c.UserMachines.HelperListenPort = int32(parsed)
 	}
 	setString("PAPERBOAT_PREVIEW_BASE_DOMAIN", &c.Preview.BaseDomain)
 	if err := setSecret("PAPERBOAT_PREVIEW_IDENTITY_KEY", &c.Secrets.PreviewIdentityKey); err != nil {
 		return err
 	}
-	if v, ok, _ := lookupPreferred("PAPERBOAT_UPLOAD_ALLOWED_MIME_TYPES", "PAPERBOAT_AGENTUNNEL_UPLOAD_ALLOWED_MIME_TYPES"); ok {
-		c.Providers.Agentunnel.UploadAllowedMIMEs = splitCSV(v)
+	if v, ok := lookup("PAPERBOAT_UPLOAD_ALLOWED_MIME_TYPES"); ok {
+		c.Access.UploadAllowedMIMEs = splitCSV(v)
 	}
-	if v, ok, name := lookupPreferred("PAPERBOAT_UPLOAD_MAX_BYTES", "PAPERBOAT_AGENTUNNEL_UPLOAD_MAX_BYTES"); ok {
+	if v, ok := lookup("PAPERBOAT_UPLOAD_MAX_BYTES"); ok {
 		parsed, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
-			return fmt.Errorf("parse %s: %w", name, err)
+			return fmt.Errorf("parse PAPERBOAT_UPLOAD_MAX_BYTES: %w", err)
 		}
-		c.Providers.Agentunnel.UploadMaxBytes = parsed
+		c.Access.UploadMaxBytes = parsed
 	}
-	if v, ok, name := lookupPreferred("PAPERBOAT_UPLOAD_RETENTION", "PAPERBOAT_AGENTUNNEL_UPLOAD_RETENTION"); ok {
+	if v, ok := lookup("PAPERBOAT_UPLOAD_RETENTION"); ok {
 		parsed, err := time.ParseDuration(v)
 		if err != nil {
-			return fmt.Errorf("parse %s: %w", name, err)
+			return fmt.Errorf("parse PAPERBOAT_UPLOAD_RETENTION: %w", err)
 		}
-		c.Providers.Agentunnel.UploadRetention = parsed
+		c.Access.UploadRetention = parsed
 	}
 	if v, ok := lookup("PAPERBOAT_TERMINAL_SESSIONS_MAX_ATTEMPTS_BEFORE_ALERT"); ok {
 		parsed, err := strconv.Atoi(v)
@@ -921,26 +881,19 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	if v, ok := lookup("PAPERBOAT_FLY_BOOT_COMMAND"); ok {
 		c.Fly.BootCommand = splitCSV(v)
 	}
-	if v, ok := lookup("PAPERBOAT_AGENTUNNEL_ROUTE_EXPIRES_IN"); ok {
+	if v, ok := lookup("PAPERBOAT_ACCESS_CONNECT_READY_TIMEOUT"); ok {
 		parsed, err := time.ParseDuration(v)
 		if err != nil {
-			return fmt.Errorf("parse PAPERBOAT_AGENTUNNEL_ROUTE_EXPIRES_IN: %w", err)
+			return fmt.Errorf("parse PAPERBOAT_ACCESS_CONNECT_READY_TIMEOUT: %w", err)
 		}
-		c.Providers.Agentunnel.RouteExpiresIn = parsed
+		c.Access.ConnectReadyTimeout = parsed
 	}
-	if v, ok := lookup("PAPERBOAT_AGENTUNNEL_CONNECT_READY_TIMEOUT"); ok {
+	if v, ok := lookup("PAPERBOAT_ACCESS_CONNECT_POLL_INTERVAL"); ok {
 		parsed, err := time.ParseDuration(v)
 		if err != nil {
-			return fmt.Errorf("parse PAPERBOAT_AGENTUNNEL_CONNECT_READY_TIMEOUT: %w", err)
+			return fmt.Errorf("parse PAPERBOAT_ACCESS_CONNECT_POLL_INTERVAL: %w", err)
 		}
-		c.Providers.Agentunnel.ConnectReadyTimeout = parsed
-	}
-	if v, ok := lookup("PAPERBOAT_AGENTUNNEL_CONNECT_POLL_INTERVAL"); ok {
-		parsed, err := time.ParseDuration(v)
-		if err != nil {
-			return fmt.Errorf("parse PAPERBOAT_AGENTUNNEL_CONNECT_POLL_INTERVAL: %w", err)
-		}
-		c.Providers.Agentunnel.ConnectPollInterval = parsed
+		c.Access.ConnectPollInterval = parsed
 	}
 	if v, ok := lookup("PAPERBOAT_FAKE_PROVIDERS"); ok {
 		parsed, err := strconv.ParseBool(v)
@@ -1026,12 +979,6 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 		return err
 	}
 	if err := setSecret("PAPERBOAT_FLY_API_TOKEN", &c.Secrets.FlyAPIToken); err != nil {
-		return err
-	}
-	if err := setSecret("PAPERBOAT_AGENTUNNEL_API_KEY", &c.Secrets.AgentunnelAPIKey); err != nil {
-		return err
-	}
-	if err := setSecret("PAPERBOAT_AGENTUNNEL_MACHINE_TOKEN", &c.Secrets.AgentunnelMachineToken); err != nil {
 		return err
 	}
 	if err := setSecret("PAPERBOAT_EDGE_CONTROL_CREDENTIAL", &c.Secrets.EdgeControlCredential); err != nil {
