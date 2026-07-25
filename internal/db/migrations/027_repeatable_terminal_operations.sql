@@ -6,7 +6,7 @@ CREATE UNIQUE INDEX terminal_session_operations_one_pending
   WHERE state = 'pending';
 
 ALTER TABLE user_machine_terminal_session_operations
-  DROP CONSTRAINT user_machine_terminal_se_terminal_session_id_operation_key;
+  DROP CONSTRAINT user_machine_terminal_session_terminal_session_id_operation_key;
 CREATE UNIQUE INDEX user_machine_terminal_session_operations_one_pending
   ON user_machine_terminal_session_operations (terminal_session_id, operation)
   WHERE state = 'pending';
