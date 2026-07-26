@@ -74,23 +74,47 @@ WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id)
   AND state IN ('cancelled','expired','denied','failed_retryable')
 RETURNING *;
 
--- name: FailUserMachineEnrollmentForHelper :execrows
-UPDATE user_machine_enrollments e
-SET state = 'failed_retryable', updated_at = now()
-FROM user_machines m, control_helpers h
-WHERE e.id = sqlc.arg(id)
-  AND e.user_machine_id = m.id
-  AND m.environment_id = sqlc.arg(environment_id)
-  AND h.id = sqlc.arg(helper_id)
-  AND h.environment_id = m.environment_id
-  AND (sqlc.arg(helper_enrollment_id) = '' OR EXISTS (
-    SELECT 1 FROM control_helper_enrollments he
-    WHERE he.id = sqlc.arg(helper_enrollment_id)
-      AND he.helper_id = h.id
-      AND he.environment_id = h.environment_id
-  ))
-  AND h.state IN ('pending','active') AND h.revoked_at IS NULL
-  AND e.state IN ('installing','connecting');
+-- name: FailUserMachineEnrollmentForHelper :one
+WITH target AS MATERIALIZED (
+  SELECT e.id AS enrollment_id, m.id AS machine_id, h.id AS helper_id
+  FROM user_machine_enrollments e
+  JOIN user_machines m ON m.id = e.user_machine_id
+  JOIN control_helpers h ON h.environment_id = m.environment_id
+  JOIN control_helper_enrollments he ON he.helper_id = h.id AND he.environment_id = h.environment_id
+  WHERE e.id = sqlc.arg(id)
+    AND m.environment_id = sqlc.arg(environment_id)
+    AND h.id = sqlc.arg(helper_id)
+    AND he.id = sqlc.arg(helper_enrollment_id)
+    AND he.state IN ('pending','consumed') AND he.revoked_at IS NULL
+    AND h.state IN ('pending','active') AND h.revoked_at IS NULL
+    AND e.state IN ('installing','connecting')
+  FOR UPDATE OF e, m, h, he
+), failed AS (
+  UPDATE user_machine_enrollments e
+  SET state = 'failed_retryable', updated_at = now()
+  FROM target t WHERE e.id = t.enrollment_id
+  RETURNING e.id
+), released AS (
+  UPDATE user_machines m
+  SET seat_state = 'released', online = false, updated_at = now(), version = version + 1
+  FROM target t WHERE m.id = t.machine_id AND m.seat_state = 'occupied'
+  RETURNING m.id
+), revoked_helper AS (
+  UPDATE control_helpers h
+  SET state = 'revoked', revoked_at = now(), updated_at = now()
+  FROM target t WHERE h.id = t.helper_id
+  RETURNING h.id
+), revoked_grants AS (
+  UPDATE control_helper_enrollments he
+  SET state = 'revoked', revoked_at = coalesce(he.revoked_at, now())
+  FROM target t
+  WHERE he.helper_id = t.helper_id AND he.state IN ('pending','consumed') AND he.revoked_at IS NULL
+  RETURNING he.id
+)
+SELECT (SELECT count(*) FROM failed)::integer AS failed_count,
+       (SELECT count(*) FROM released)::integer AS released_count,
+       (SELECT count(*) FROM revoked_helper)::integer AS revoked_helper_count,
+       (SELECT count(*) FROM revoked_grants)::integer AS revoked_grant_count;
 
 -- name: GetUserMachineEntitlementForUpdate :one
 SELECT * FROM user_machine_entitlements
@@ -209,6 +233,13 @@ INSERT INTO user_machines (
   'offline', 'occupied', sqlc.arg(runtime_versions), now()
 ) RETURNING *;
 
+-- name: OccupyUserMachineSeat :execrows
+UPDATE user_machines
+SET seat_state = 'occupied', updated_at = now(), version = version + 1
+WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id)
+  AND seat_state = 'released' AND deleted_at IS NULL
+  AND state IN ('pending','offline');
+
 -- name: ApproveUserMachinePairing :execrows
 UPDATE user_machine_pairings
 SET state = 'approved', approved_by_user_id = sqlc.arg(user_id),
@@ -237,6 +268,55 @@ WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND deleted_at IS NULL;
 -- name: GetUserMachineForUpdate :one
 SELECT * FROM user_machines
 WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND deleted_at IS NULL FOR UPDATE;
+
+-- name: GetUserMachineAvailabilityOperation :one
+SELECT * FROM user_machine_availability_operations
+WHERE user_id = sqlc.arg(user_id) AND user_machine_id = sqlc.arg(user_machine_id)
+  AND idempotency_key = sqlc.arg(idempotency_key);
+
+-- name: CreateUserMachineAvailabilityOperation :one
+INSERT INTO user_machine_availability_operations (
+  id,user_machine_id,user_id,idempotency_key,request_hash,expected_version,resulting_version,mode,result
+) VALUES (
+  sqlc.arg(id),sqlc.arg(user_machine_id),sqlc.arg(user_id),sqlc.arg(idempotency_key),
+  sqlc.arg(request_hash),sqlc.arg(expected_version),sqlc.arg(resulting_version),sqlc.arg(mode),sqlc.arg(result)
+) RETURNING *;
+
+-- name: SetUserMachineAvailabilityPolicy :execrows
+UPDATE user_machines
+SET availability_mode=sqlc.arg(mode),
+    availability_desired_version=availability_desired_version+1,
+    availability_status='pending', availability_error_code=NULL, updated_at=now()
+WHERE id=sqlc.arg(id) AND user_id=sqlc.arg(user_id) AND deleted_at IS NULL
+  AND seat_state='occupied' AND state NOT IN ('revoked','disconnected','deleted')
+  AND availability_desired_version=sqlc.arg(expected_version);
+
+-- name: GetUserMachineAvailabilityForHelper :one
+SELECT m.* FROM user_machines m
+JOIN control_helpers h ON h.environment_id=m.environment_id
+WHERE h.id=sqlc.arg(helper_id) AND h.environment_id=sqlc.arg(environment_id)
+  AND h.state='active' AND h.revoked_at IS NULL
+  AND m.deleted_at IS NULL AND m.seat_state='occupied';
+
+-- name: RecordUserMachineAvailabilityObservation :execrows
+UPDATE user_machines
+SET availability_observed_mode=sqlc.arg(observed_mode),
+    availability_observed_version=sqlc.arg(observed_version),
+    availability_observed_at=sqlc.arg(observed_at),
+    availability_status=sqlc.arg(status),
+    availability_error_code=nullif(sqlc.arg(error_code),''),
+    host_service_version=nullif(sqlc.arg(host_service_version),''),
+    host_service_scope=nullif(sqlc.arg(host_service_scope),''),
+    host_update_rollbacks=greatest(host_update_rollbacks, sqlc.arg(update_rollbacks)), updated_at=now()
+WHERE id=sqlc.arg(id) AND environment_id=sqlc.arg(environment_id) AND deleted_at IS NULL
+  AND sqlc.arg(observed_version) <= availability_desired_version
+  AND (availability_observed_at IS NULL OR sqlc.arg(observed_version) > availability_observed_version OR (
+    sqlc.arg(observed_version) = availability_observed_version
+    AND availability_observed_mode IS NOT DISTINCT FROM sqlc.arg(observed_mode)
+    AND availability_status = sqlc.arg(status)
+    AND coalesce(availability_error_code,'') = sqlc.arg(error_code)
+    AND sqlc.arg(update_rollbacks) >= host_update_rollbacks
+  ));
 
 -- name: GetUserMachineForBandwidthUpdate :one
 SELECT * FROM user_machines
@@ -270,6 +350,30 @@ UPDATE user_machine_enrollments
 SET state = 'ready', updated_at = now()
 WHERE user_machine_id = sqlc.arg(user_machine_id)
   AND state IN ('approved','material_issued','installing','connecting');
+
+-- name: RecordUserMachineRuntimeDiagnostics :execrows
+UPDATE user_machines
+SET worker_generation = sqlc.arg(worker_generation),
+    os_boot_id = sqlc.arg(os_boot_id),
+    worker_service_scope = sqlc.arg(worker_service_scope),
+    connector_state = sqlc.arg(connector_state),
+    connector_generation = sqlc.arg(connector_generation),
+    runtime_diagnostics_observed_at = sqlc.arg(observed_at),
+    updated_at = now()
+WHERE id = sqlc.arg(id) AND environment_id = sqlc.arg(environment_id)
+  AND deleted_at IS NULL
+  AND (runtime_diagnostics_observed_at IS NULL OR runtime_diagnostics_observed_at <= sqlc.arg(observed_at));
+
+-- name: GetUserMachineRuntimeMetrics :one
+SELECT
+  count(*) FILTER (WHERE availability_status IN ('pending','error') OR availability_observed_version < availability_desired_version)::bigint AS availability_drift_depth,
+  count(*) FILTER (WHERE availability_status = 'error')::bigint AS privileged_service_error_depth,
+  count(*) FILTER (WHERE host_service_scope IS NOT NULL AND host_service_scope <> 'system')::bigint AS unsupported_host_scope_depth,
+  coalesce(max(extract(epoch FROM (now() - last_seen_at))) FILTER (WHERE last_seen_at IS NOT NULL), 0)::bigint AS heartbeat_oldest_age_seconds,
+  coalesce(sum(host_update_rollbacks), 0)::bigint AS update_rollbacks_total,
+  (SELECT count(*)::bigint FROM user_machine_enrollments WHERE state = 'failed_retryable') AS bootstrap_failure_depth
+FROM user_machines
+WHERE deleted_at IS NULL;
 
 -- name: SetUserMachineRoute :execrows
 UPDATE user_machines

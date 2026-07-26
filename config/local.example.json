@@ -27,6 +27,17 @@
     "minimum_start_credit_window": 300000000000,
     "max_keep_alive_duration": 43200000000000
   },
+  "user_machines": {
+    "pairing_lifetime": 600000000000,
+    "offline_after": 120000000000,
+    "allowed_platforms": ["darwin", "linux"],
+    "helper_listen_port": 38080,
+    "bootstrap_command": "",
+    "helper_artifacts_json": "",
+    "helper_artifact_public_key": "",
+    "privileged_bootstrap_mode": "internal",
+    "privileged_bootstrap_users": []
+  },
   "terminal_sessions": {
     "max_active_per_project": 32,
     "operation_timeout": 15000000000,
@@ -73,7 +84,7 @@
     "connect_ready_timeout": 2000000000,
     "connect_poll_interval": 100000000,
     "upload_max_bytes": 10485760,
-    "upload_allowed_mime_types": ["image/png", "image/jpeg", "image/webp"],
+    "upload_allowed_mime_types": ["image/*"],
     "upload_retention": 604800000000000
   },
   "providers": {

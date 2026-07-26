@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -107,13 +108,15 @@ type Metering struct {
 }
 
 type UserMachines struct {
-	PairingLifetime         time.Duration `json:"pairing_lifetime"`
-	OfflineAfter            time.Duration `json:"offline_after"`
-	AllowedPlatforms        []string      `json:"allowed_platforms"`
-	HelperListenPort        int32         `json:"helper_listen_port"`
-	BootstrapCommand        string        `json:"bootstrap_command"`
-	HelperArtifactsJSON     string        `json:"helper_artifacts_json"`
-	HelperArtifactPublicKey string        `json:"helper_artifact_public_key"`
+	PairingLifetime          time.Duration `json:"pairing_lifetime"`
+	OfflineAfter             time.Duration `json:"offline_after"`
+	AllowedPlatforms         []string      `json:"allowed_platforms"`
+	HelperListenPort         int32         `json:"helper_listen_port"`
+	BootstrapCommand         string        `json:"bootstrap_command"`
+	HelperArtifactsJSON      string        `json:"helper_artifacts_json"`
+	HelperArtifactPublicKey  string        `json:"helper_artifact_public_key"`
+	PrivilegedBootstrapMode  string        `json:"privileged_bootstrap_mode"`
+	PrivilegedBootstrapUsers []string      `json:"privileged_bootstrap_users"`
 }
 
 type TerminalSessions struct {
@@ -315,7 +318,7 @@ func Default() Config {
 			MaxKeepAliveDuration:     12 * time.Hour,
 		},
 		HelperBaseDomain: "localhost",
-		UserMachines:     UserMachines{PairingLifetime: 10 * time.Minute, OfflineAfter: 2 * time.Minute, AllowedPlatforms: []string{"darwin", "linux"}, HelperListenPort: 38080},
+		UserMachines:     UserMachines{PairingLifetime: 10 * time.Minute, OfflineAfter: 2 * time.Minute, AllowedPlatforms: []string{"darwin", "linux"}, HelperListenPort: 38080, PrivilegedBootstrapMode: "internal"},
 		TerminalSessions: TerminalSessions{MaxActivePerProject: 32, OperationTimeout: 15 * time.Second, RetryBackoff: time.Second, WorkerInterval: time.Second, MaxAttemptsBeforeAlert: 10},
 		ConfigSync: ConfigSync{
 			Mode:              "disabled",
@@ -351,7 +354,7 @@ func Default() Config {
 			ConnectReadyTimeout:  2 * time.Second,
 			ConnectPollInterval:  100 * time.Millisecond,
 			UploadMaxBytes:       10 << 20,
-			UploadAllowedMIMEs:   []string{"image/png", "image/jpeg", "image/webp"},
+			UploadAllowedMIMEs:   []string{"image/*"},
 			UploadRetention:      7 * 24 * time.Hour,
 		},
 		Providers: Providers{
@@ -441,6 +444,9 @@ func (c Config) Validate() error {
 				errs = append(errs, fmt.Errorf("user_machines allowed platform %q is unsupported", platform))
 			}
 		}
+	}
+	if !slices.Contains([]string{"internal", "opt_in", "required"}, c.UserMachines.PrivilegedBootstrapMode) {
+		errs = append(errs, fmt.Errorf("user_machines.privileged_bootstrap_mode must be internal, opt_in, or required"))
 	}
 	if c.Environment == EnvironmentProduction {
 		if strings.TrimSpace(c.UserMachines.BootstrapCommand) == "" || strings.TrimSpace(c.UserMachines.HelperArtifactsJSON) == "" || strings.TrimSpace(c.UserMachines.HelperArtifactPublicKey) == "" || strings.TrimSpace(c.HelperBaseDomain) == "" || c.UserMachines.HelperListenPort < 1024 {
@@ -539,9 +545,7 @@ func (c Config) Validate() error {
 		errs = append(errs, fmt.Errorf("access upload_max_bytes, upload_allowed_mime_types, and upload_retention are required"))
 	}
 	for _, mimeType := range c.Access.UploadAllowedMIMEs {
-		switch mimeType {
-		case "image/png", "image/jpeg", "image/webp":
-		default:
+		if mimeType != "image/*" && (!strings.HasPrefix(mimeType, "image/") || len(mimeType) == len("image/")) {
 			errs = append(errs, fmt.Errorf("access upload MIME type %q is not supported", mimeType))
 		}
 	}
@@ -689,6 +693,10 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_FLY_BASE_URL", &c.Providers.Fly.BaseURL)
 	setString("PAPERBOAT_PREVIEW_SUBDOMAIN_PREFIX", &c.Access.RouteSubdomainPrefix)
 	setString("PAPERBOAT_USER_MACHINES_BOOTSTRAP_COMMAND", &c.UserMachines.BootstrapCommand)
+	setString("PAPERBOAT_USER_MACHINES_PRIVILEGED_BOOTSTRAP_MODE", &c.UserMachines.PrivilegedBootstrapMode)
+	if value, ok := lookup("PAPERBOAT_USER_MACHINES_PRIVILEGED_BOOTSTRAP_USERS"); ok {
+		c.UserMachines.PrivilegedBootstrapUsers = splitCSV(value)
+	}
 	if err := setSecret("PAPERBOAT_USER_MACHINES_HELPER_ARTIFACTS_JSON", &c.UserMachines.HelperArtifactsJSON); err != nil {
 		return err
 	}

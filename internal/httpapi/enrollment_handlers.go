@@ -31,14 +31,13 @@ func helperIdentityRenew(service *controlplane.EnrollmentService) http.HandlerFu
 			writeError(w, r, http.StatusBadRequest, "validation_failed", "Request body must match the documented schema.")
 			return
 		}
-		parts := strings.Fields(r.Header.Get("Authorization"))
 		proof, proofErr := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Helper-Proof"))
-		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || len(parts[1]) > 16<<10 || proofErr != nil {
+		if proofErr != nil || len(proof) == 0 || len(proof) > 16<<10 || r.Header.Get("Authorization") != "" {
 			noStore(w)
 			writeError(w, r, http.StatusUnauthorized, "credential_invalid", "Helper identity renewal is unavailable.")
 			return
 		}
-		identity, err := service.Renew(r.Context(), parts[1], proof, body)
+		identity, err := service.Renew(r.Context(), proof, body)
 		if err != nil {
 			status, code := http.StatusUnauthorized, "credential_invalid"
 			if errors.Is(err, controlplane.ErrUsageOperationConflict) {

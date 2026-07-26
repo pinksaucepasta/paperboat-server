@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"testing"
 	"time"
 
@@ -74,6 +75,123 @@ func TestWorkerMarksStaleMachineOfflineAndHeartbeatRestoresIt(t *testing.T) {
 	}
 	if state != "online" || !online {
 		t.Fatalf("restored machine state=%s online=%v", state, online)
+	}
+}
+
+func TestAvailabilityPolicyLifecycle(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID := "usr_availability_" + suffix
+	machineID := "um_availability_" + suffix
+	environmentID := "env_availability_" + suffix
+	helperID := "helper_availability_" + suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_"+suffix, "availability-"+suffix+"@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,'Availability','linux','amd64','/home/test','online','occupied',true)`, machineID, userID, environmentID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id,desired_state) VALUES ($1,$2,$3,'active')`, environmentID, machineID, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_helpers (id,environment_id,state) VALUES ($1,$2,'active')`, helperID, environmentID); err != nil {
+		t.Fatal(err)
+	}
+	service := New(store, audit.NewWriter(store), Policy{}, nil)
+
+	resolution, err := service.ResolveAvailabilityPolicy(ctx, helperID, environmentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolution.Schema != AvailabilityPolicySchemaV1 || resolution.UserMachineID != machineID || resolution.Mode != "keep_awake" || resolution.Version != 0 {
+		t.Fatalf("default resolution = %+v", resolution)
+	}
+	if _, err := service.ResolveAvailabilityPolicy(ctx, "wrong-helper", environmentID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("wrong-helper resolution error = %v", err)
+	}
+	initialObservedAt := time.Now().UTC().Truncate(time.Microsecond)
+	initialObservation := AvailabilityObservation{Schema: AvailabilityPolicySchemaV1, Mode: "keep_awake", Version: 0, Status: "applied", ObservedAt: initialObservedAt, HostServiceVersion: "1.2.3", HostServiceScope: "system"}
+	if err := service.RecordAvailabilityObservation(ctx, environmentID, machineID, initialObservation); err != nil {
+		t.Fatalf("initial version-zero observation: %v", err)
+	}
+
+	first, err := service.SetAvailabilityPolicy(ctx, userID, machineID, "availability-first", "keep_awake", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.DesiredMode != "keep_awake" || first.DesiredVersion != 1 || first.Status != "pending" {
+		t.Fatalf("first policy = %+v", first)
+	}
+	second, err := service.SetAvailabilityPolicy(ctx, userID, machineID, "availability-second", "allow_sleep", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.DesiredMode != "allow_sleep" || second.DesiredVersion != 2 {
+		t.Fatalf("second policy = %+v", second)
+	}
+	replayed, err := service.SetAvailabilityPolicy(ctx, userID, machineID, "availability-first", "keep_awake", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(replayed, first) {
+		t.Fatalf("durable replay = %+v, want original %+v", replayed, first)
+	}
+	if _, err := service.SetAvailabilityPolicy(ctx, userID, machineID, "availability-first", "allow_sleep", 0); !errors.Is(err, ErrAvailabilityIdempotencyConflict) {
+		t.Fatalf("reused key error = %v", err)
+	}
+	if _, err := service.SetAvailabilityPolicy(ctx, userID, machineID, "availability-stale", "keep_awake", 1); !errors.Is(err, ErrAvailabilityVersionConflict) {
+		t.Fatalf("stale version error = %v", err)
+	} else {
+		var versionErr *AvailabilityVersionError
+		if !errors.As(err, &versionErr) || versionErr.CurrentVersion != 2 {
+			t.Fatalf("stale version details = %#v", err)
+		}
+	}
+
+	observedAt := time.Now().UTC().Truncate(time.Microsecond)
+	observation := AvailabilityObservation{Schema: AvailabilityPolicySchemaV1, Mode: "allow_sleep", Version: 2, Status: "applied", ObservedAt: observedAt, HostServiceVersion: "1.2.3", HostServiceScope: "system", UpdateRollbacks: 2}
+	if err := service.RecordAvailabilityObservation(ctx, environmentID, machineID, observation); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RecordAvailabilityObservation(ctx, environmentID, machineID, observation); err != nil {
+		t.Fatalf("exact observation replay: %v", err)
+	}
+	higherRollbacks := observation
+	higherRollbacks.UpdateRollbacks = 3
+	if err := service.RecordAvailabilityObservation(ctx, environmentID, machineID, higherRollbacks); err != nil {
+		t.Fatalf("new rollback observation: %v", err)
+	}
+	if err := service.RecordAvailabilityObservation(ctx, environmentID, machineID, observation); !errors.Is(err, ErrAvailabilityObservationStale) {
+		t.Fatalf("decreasing rollback observation error = %v", err)
+	}
+	for name, candidate := range map[string]AvailabilityObservation{
+		"stale":          {Schema: AvailabilityPolicySchemaV1, Mode: "keep_awake", Version: 1, Status: "applied", ObservedAt: observedAt, HostServiceVersion: "1.2.3", HostServiceScope: "system"},
+		"future":         {Schema: AvailabilityPolicySchemaV1, Mode: "allow_sleep", Version: 3, Status: "applied", ObservedAt: observedAt, HostServiceVersion: "1.2.3", HostServiceScope: "system"},
+		"same-different": {Schema: AvailabilityPolicySchemaV1, Mode: "allow_sleep", Version: 2, Status: "error", ErrorCode: "apply_failed", ObservedAt: observedAt, HostServiceVersion: "1.2.3", HostServiceScope: "system"},
+	} {
+		if err := service.RecordAvailabilityObservation(ctx, environmentID, machineID, candidate); !errors.Is(err, ErrAvailabilityObservationStale) {
+			t.Errorf("%s observation error = %v", name, err)
+		}
+	}
+
+	machine, err := store.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: machineID, UserID: userID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	availability := mapAvailability(machine)
+	if availability.Status != "applied" || availability.ObservedMode != "allow_sleep" || availability.ObservedVersion != 2 || availability.HostServiceVersion != "1.2.3" || availability.UpdateRollbacks != 3 {
+		t.Fatalf("observed availability = %+v", availability)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machines SET online=false WHERE id=$1`, machineID); err != nil {
+		t.Fatal(err)
+	}
+	machine, err = store.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: machineID, UserID: userID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offline := mapAvailability(machine); offline.Status != "offline" || offline.DesiredVersion != 2 || offline.ObservedVersion != 2 {
+		t.Fatalf("offline availability = %+v", offline)
 	}
 }
 
@@ -368,7 +486,7 @@ func TestInstallationMaterialIsSingleUseAndExpiryBound(t *testing.T) {
 	}
 }
 
-func TestInstallationFailureIsHelperBoundAndRetryPreservesMachine(t *testing.T) {
+func TestInstallationFailureRevokesIdentityReleasesSeatAndRetryIssuesNewIdentity(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
@@ -398,7 +516,7 @@ func TestInstallationFailureIsHelperBoundAndRetryPreservesMachine(t *testing.T) 
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_helper_enrollments (id,environment_id,helper_id,jti_hash,operation_key,request_hash,grant_ciphertext,state,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,'consumed',now()+interval '10 minutes')`, "henr_"+suffix, environmentID, helperID, []byte("jti_"+suffix), "op_helper_"+suffix, []byte("request_"+suffix), []byte("grant_"+suffix)); err != nil {
 		t.Fatal(err)
 	}
-	service := New(store, audit.NewWriter(store), Policy{PairingLifetime: 10 * time.Minute, AllowedPlatforms: []string{"linux"}}, nil)
+	service := New(store, audit.NewWriter(store), Policy{PairingLifetime: 10 * time.Minute, AllowedPlatforms: []string{"linux"}}, testSeatAuthorizer{})
 	service.ConfigureProvisioning(nil, "test-install-key")
 	service.ConfigureAccess(nil, "https://control.example.test", time.Minute, 0, nil, 0)
 	if err := service.ConfigureHelperRoute("example.test", 38080); err != nil {
@@ -408,7 +526,14 @@ func TestInstallationFailureIsHelperBoundAndRetryPreservesMachine(t *testing.T) 
 	grantCalls := 0
 	service.ConfigureHelperEnrollment(func(context.Context, string, string, string, time.Duration) (HelperEnrollmentGrant, error) {
 		grantCalls++
-		return HelperEnrollmentGrant{}, errors.New("unexpected helper grant")
+		newHelperID, newEnrollmentID := "helper_install_retry_"+suffix, "henr_retry_"+suffix
+		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_helpers (id,environment_id,state) VALUES ($1,$2,'pending')`, newHelperID, environmentID); err != nil {
+			return HelperEnrollmentGrant{}, err
+		}
+		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_helper_enrollments (id,environment_id,helper_id,jti_hash,operation_key,request_hash,grant_ciphertext,state,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',now()+interval '10 minutes')`, newEnrollmentID, environmentID, newHelperID, []byte("jti_retry_"+suffix), "op_helper_retry_"+suffix, []byte("request_retry_"+suffix), []byte("grant_retry_"+suffix)); err != nil {
+			return HelperEnrollmentGrant{}, err
+		}
+		return HelperEnrollmentGrant{EnrollmentID: newEnrollmentID, HelperID: newHelperID, Credential: "retry-credential", ExpiresAt: time.Now().UTC().Add(10 * time.Minute)}, nil
 	})
 	if err := service.FailInstallation(ctx, enrollmentID, environmentID, "helper_wrong", "henr_"+suffix, "service_install"); !errors.Is(err, ErrEnrollmentState) {
 		t.Fatalf("cross-helper failure report error = %v", err)
@@ -416,8 +541,18 @@ func TestInstallationFailureIsHelperBoundAndRetryPreservesMachine(t *testing.T) 
 	if err := service.FailInstallation(ctx, enrollmentID, environmentID, helperID, "henr_wrong_"+suffix, "service_install"); !errors.Is(err, ErrEnrollmentState) {
 		t.Fatalf("mismatched helper-enrollment failure report error = %v", err)
 	}
-	if err := service.FailInstallation(ctx, enrollmentID, environmentID, helperID, "", "service_install"); err != nil {
+	if err := service.FailInstallation(ctx, enrollmentID, environmentID, helperID, "", "service_install"); !errors.Is(err, ErrEnrollmentState) {
+		t.Fatalf("unbound failure report error = %v", err)
+	}
+	if err := service.FailInstallation(ctx, enrollmentID, environmentID, helperID, "henr_"+suffix, "service_install"); err != nil {
 		t.Fatal(err)
+	}
+	var failedEnrollmentState, failedMachineSeat, failedHelperState, failedGrantState string
+	if err := store.SQL().QueryRowContext(ctx, `SELECT e.state,m.seat_state,h.state,he.state FROM paperboat.user_machine_enrollments e JOIN paperboat.user_machines m ON m.id=e.user_machine_id JOIN paperboat.control_helpers h ON h.environment_id=m.environment_id JOIN paperboat.control_helper_enrollments he ON he.helper_id=h.id WHERE e.id=$1 AND h.id=$2 AND he.id=$3`, enrollmentID, helperID, "henr_"+suffix).Scan(&failedEnrollmentState, &failedMachineSeat, &failedHelperState, &failedGrantState); err != nil {
+		t.Fatal(err)
+	}
+	if failedEnrollmentState != "failed_retryable" || failedMachineSeat != "released" || failedHelperState != "revoked" || failedGrantState != "revoked" {
+		t.Fatalf("failure cleanup enrollment=%s seat=%s helper=%s grant=%s", failedEnrollmentState, failedMachineSeat, failedHelperState, failedGrantState)
 	}
 	retried, err := service.RetryEnrollment(ctx, userID, enrollmentID)
 	if err != nil {
@@ -435,7 +570,7 @@ func TestInstallationFailureIsHelperBoundAndRetryPreservesMachine(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if recoveredMachine.ID != userMachineID || recoveredMachine.EnvironmentID != environmentID || grantCalls != 0 {
+	if recoveredMachine.ID != userMachineID || recoveredMachine.EnvironmentID != environmentID || grantCalls != 1 {
 		t.Fatalf("machine=%+v helper_grant_calls=%d", recoveredMachine, grantCalls)
 	}
 	material, err := service.ConsumeInstallation(ctx, retryVerifier)
@@ -451,7 +586,7 @@ func TestInstallationFailureIsHelperBoundAndRetryPreservesMachine(t *testing.T) 
 		Credential              string `json:"enrollment_credential"`
 		HelperListenAddress     string `json:"helper_listen_address"`
 	}
-	if json.Unmarshal(material, &recoveryMaterial) != nil || recoveryMaterial.UserMachineID != userMachineID || recoveryMaterial.UserMachineEnrollmentID != enrollmentID || recoveryMaterial.EnvironmentID != environmentID || recoveryMaterial.HelperID != helperID || !recoveryMaterial.ReuseIdentity || recoveryMaterial.Credential != "" || recoveryMaterial.HelperListenAddress != "127.0.0.1:38080" {
+	if json.Unmarshal(material, &recoveryMaterial) != nil || recoveryMaterial.UserMachineID != userMachineID || recoveryMaterial.UserMachineEnrollmentID != enrollmentID || recoveryMaterial.EnvironmentID != environmentID || recoveryMaterial.HelperID != "helper_install_retry_"+suffix || recoveryMaterial.ReuseIdentity || recoveryMaterial.Credential != "retry-credential" || recoveryMaterial.HelperListenAddress != "127.0.0.1:38080" {
 		t.Fatalf("recovery material=%s", material)
 	}
 	var routeCount int
@@ -473,19 +608,25 @@ func configureSignedTestArtifact(t *testing.T, service *Service) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	digest := sha256.Sum256([]byte("helper"))
-	artifact := HelperArtifact{Schema: "paperboat.helper-artifact/v1", Version: "test", Platform: "linux", Architecture: "amd64", URL: "https://updates.example.test/paperboat-helper", ByteLength: 6, SHA256: hex.EncodeToString(digest[:])}
-	payload, _ := json.Marshal(struct {
-		Architecture string `json:"architecture"`
-		ByteLength   int64  `json:"byte_length"`
-		Platform     string `json:"platform"`
-		Schema       string `json:"schema"`
-		SHA256       string `json:"sha256"`
-		URL          string `json:"url"`
-		Version      string `json:"version"`
-	}{artifact.Architecture, artifact.ByteLength, artifact.Platform, artifact.Schema, artifact.SHA256, artifact.URL, artifact.Version})
-	artifact.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, payload))
-	encoded, _ := json.Marshal([]HelperArtifact{artifact})
+	sign := func(kind, name, body string) HelperArtifact {
+		digest := sha256.Sum256([]byte(body))
+		artifact := HelperArtifact{Schema: "paperboat.helper-artifact/v2", Kind: kind, Version: "test", Platform: "linux", Architecture: "amd64", URL: "https://updates.example.test/" + name, ByteLength: int64(len(body)), SHA256: hex.EncodeToString(digest[:])}
+		payload, _ := json.Marshal(struct {
+			Architecture string `json:"architecture"`
+			ByteLength   int64  `json:"byte_length"`
+			Kind         string `json:"kind"`
+			Platform     string `json:"platform"`
+			Schema       string `json:"schema"`
+			SHA256       string `json:"sha256"`
+			URL          string `json:"url"`
+			Version      string `json:"version"`
+		}{artifact.Architecture, artifact.ByteLength, artifact.Kind, artifact.Platform, artifact.Schema, artifact.SHA256, artifact.URL, artifact.Version})
+		artifact.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, payload))
+		return artifact
+	}
+	artifact := sign("worker", "paperboat-helper", "helper")
+	hostArtifact := sign("host_service", "paperboat-host-service", "host")
+	encoded, _ := json.Marshal([]HelperArtifact{artifact, hostArtifact})
 	if err := service.ConfigureHelperArtifacts(string(encoded), base64.RawURLEncoding.EncodeToString(publicKey)); err != nil {
 		t.Fatal(err)
 	}

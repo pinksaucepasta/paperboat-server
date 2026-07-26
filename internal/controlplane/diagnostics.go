@@ -27,6 +27,10 @@ func (s *DiagnosticsService) Metrics(ctx context.Context) (map[string]int64, err
 	if err != nil {
 		return nil, err
 	}
+	userMachines, err := s.store.Queries().GetUserMachineRuntimeMetrics(ctx)
+	if err != nil {
+		return nil, err
+	}
 	return map[string]int64{
 		"control_operation_queue_depth":                     row.OperationDepth,
 		"control_operation_oldest_age_seconds":              row.OperationOldestAgeSeconds,
@@ -57,5 +61,11 @@ func (s *DiagnosticsService) Metrics(ctx context.Context) (map[string]int64, err
 		"config_sync_pending_resolutions":                   configSync.PendingResolutions,
 		"config_sync_oldest_pending_resolution_age_seconds": configSync.OldestPendingResolutionAgeSeconds,
 		"config_sync_pending_provider_revocations":          configSync.PendingProviderRevocations,
+		"user_machine_bootstrap_failure_depth":              userMachines.BootstrapFailureDepth,
+		"user_machine_heartbeat_oldest_age_seconds":         userMachines.HeartbeatOldestAgeSeconds,
+		"user_machine_availability_drift_depth":             userMachines.AvailabilityDriftDepth,
+		"user_machine_privileged_service_error_depth":       userMachines.PrivilegedServiceErrorDepth,
+		"user_machine_unsupported_host_scope_depth":         userMachines.UnsupportedHostScopeDepth,
+		"paperboat_helper_update_rollbacks_total":           userMachines.UpdateRollbacksTotal,
 	}, nil
 }

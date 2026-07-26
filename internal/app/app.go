@@ -127,6 +127,9 @@ func New(opts Options) (*App, error) {
 	userMachineService.ConfigureAccess(credentialIssuer, normalizeHelperIssuer(opts.Config.HTTP.PublicBaseURL), opts.Config.CLIAuth.AccessTokenLifetime, opts.Config.Access.UploadMaxBytes, opts.Config.Access.UploadAllowedMIMEs, int64(opts.Config.Access.UploadRetention/time.Second))
 	userMachineService.ConfigureTerminalSessions(opts.Config.TerminalSessions.MaxActivePerProject, mintKeys, &http.Client{Timeout: opts.Config.TerminalSessions.OperationTimeout})
 	userMachineService.ConfigureBootstrapCommand(opts.Config.UserMachines.BootstrapCommand)
+	if err := userMachineService.ConfigurePrivilegedBootstrap(opts.Config.UserMachines.PrivilegedBootstrapMode, opts.Config.UserMachines.PrivilegedBootstrapUsers); err != nil {
+		return nil, err
+	}
 	if err := userMachineService.ConfigureHelperRoute(opts.Config.HelperBaseDomain, opts.Config.UserMachines.HelperListenPort); err != nil {
 		return nil, err
 	}

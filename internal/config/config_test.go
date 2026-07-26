@@ -98,6 +98,16 @@ func TestValidationRejectsInvalidHelperBaseDomain(t *testing.T) {
 	}
 }
 
+func TestDefaultUploadMIMEPolicyAllowsAllImages(t *testing.T) {
+	cfg := Default()
+	if !slices.Equal(cfg.Access.UploadAllowedMIMEs, []string{"image/*"}) {
+		t.Fatalf("default upload MIME types = %v", cfg.Access.UploadAllowedMIMEs)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("image wildcard policy rejected: %v", err)
+	}
+}
+
 func TestValidationRejectsInvalidTerminalSessionAlertThreshold(t *testing.T) {
 	cfg := Default()
 	cfg.TerminalSessions.MaxAttemptsBeforeAlert = 0

@@ -269,14 +269,20 @@ type Checkpoint struct {
 }
 
 type ActivityHeartbeat struct {
-	ProjectID            string
-	MachineID            string
-	LastActivityAt       time.Time
-	LastHeartbeatAt      time.Time
-	ReporterVersion      string
-	Signals              map[string]string
-	ConfigSync           *configsync.Status
-	ConfigSyncObservedAt time.Time
+	ProjectID             string
+	MachineID             string
+	LastActivityAt        time.Time
+	LastHeartbeatAt       time.Time
+	ReporterVersion       string
+	Signals               map[string]string
+	ConfigSync            *configsync.Status
+	ConfigSyncObservedAt  time.Time
+	WorkerGeneration      uint64
+	OSBootID              string
+	WorkerServiceScope    string
+	ConnectorState        string
+	ConnectorGeneration   uint64
+	DiagnosticsObservedAt time.Time
 }
 
 func runtimeIntervalFromOpenRow(row dbsqlc.GetOpenRuntimeIntervalRow) RuntimeInterval {
@@ -639,8 +645,18 @@ func (r *RuntimeRepository) RecordHeartbeat(ctx context.Context, heartbeat Activ
 			return err
 		}
 		if updated == 1 {
-			_, err = tx.Queries().MarkUserMachineEnrollmentReady(ctx, sql.NullString{String: heartbeat.MachineID, Valid: true})
-			return err
+			if _, err = tx.Queries().MarkUserMachineEnrollmentReady(ctx, sql.NullString{String: heartbeat.MachineID, Valid: true}); err != nil {
+				return err
+			}
+			if heartbeat.WorkerGeneration > 0 {
+				if heartbeat.DiagnosticsObservedAt.IsZero() {
+					heartbeat.DiagnosticsObservedAt = heartbeat.LastHeartbeatAt
+				}
+				if _, err = tx.Queries().RecordUserMachineRuntimeDiagnostics(ctx, dbsqlc.RecordUserMachineRuntimeDiagnosticsParams{ID: heartbeat.MachineID, EnvironmentID: heartbeat.ProjectID, WorkerGeneration: int64(heartbeat.WorkerGeneration), OsBootID: sql.NullString{String: heartbeat.OSBootID, Valid: true}, WorkerServiceScope: heartbeat.WorkerServiceScope, ConnectorState: heartbeat.ConnectorState, ConnectorGeneration: int64(heartbeat.ConnectorGeneration), ObservedAt: sql.NullTime{Time: heartbeat.DiagnosticsObservedAt, Valid: true}}); err != nil {
+					return err
+				}
+			}
+			return nil
 		}
 		if err := tx.Queries().UpsertActivityHeartbeat(ctx, dbsqlc.UpsertActivityHeartbeatParams{ProjectID: heartbeat.ProjectID, MachineID: heartbeat.MachineID, LastActivityAt: heartbeat.LastActivityAt, LastHeartbeatAt: sql.NullTime{Time: heartbeat.LastHeartbeatAt, Valid: true}, ReporterVersion: heartbeat.ReporterVersion, Signals: b}); err != nil {
 			return err

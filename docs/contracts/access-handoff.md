@@ -118,7 +118,7 @@ Frozen ready response data shape:
       "scopes": ["file:stage"]
     },
     "max_bytes": 10485760,
-    "allowed_mime_types": ["image/png", "image/jpeg", "image/webp"],
+    "allowed_mime_types": ["image/*"],
     "retention_seconds": 604800
   }
 }

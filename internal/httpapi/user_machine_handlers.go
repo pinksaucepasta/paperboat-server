@@ -396,6 +396,8 @@ func userMachinePairingApprove(service *usermachines.Service) http.HandlerFunc {
 				writeError(w, r, http.StatusGone, "user_machine_pairing_expired", "This pairing request has expired.")
 			case errors.Is(err, usermachines.ErrPairingUsed):
 				writeError(w, r, http.StatusConflict, "user_machine_pairing_used", "This pairing request has already been decided.")
+			case errors.Is(err, usermachines.ErrPrivilegedBootstrapGated):
+				writeError(w, r, http.StatusForbidden, "user_machine_privileged_bootstrap_gated", "Privileged user-machine bootstrap is not enabled for this account.")
 			default:
 				writeError(w, r, http.StatusNotFound, "user_machine_pairing_not_found", "Pairing request was not found.")
 			}

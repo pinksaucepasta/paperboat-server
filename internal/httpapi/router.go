@@ -106,6 +106,7 @@ func NewRouter(opts Options) http.Handler {
 			mux.HandleFunc("POST /v1/helper-identity-renewals", helperIdentityRenew(opts.Enrollment))
 			if opts.UserMachines != nil {
 				mux.Handle("POST /v1/user-machine-installation-failures", helperInstallationFailure(opts.Enrollment, opts.UserMachines))
+				mux.Handle("POST /v1/helper-runtime-policies/resolve", helperRuntimePolicyResolve(opts.Enrollment, opts.UserMachines))
 			}
 			if opts.Previews != nil {
 				mux.Handle("POST /v1/previews/credentials", helperPreviewCredential(opts.Enrollment))
@@ -193,6 +194,7 @@ func NewRouter(opts Options) http.Handler {
 			mux.Handle("POST /v1/user-machine-enrollments/{enrollment_id}/retry", requireAuth(opts.Auth, requireCSRF(opts.Auth, userMachineEnrollmentRetry(opts.UserMachines))))
 			mux.Handle("GET /v1/user-machines/overview", userMachineAuth("projects:read", userMachineOverview(opts.UserMachines)))
 			mux.Handle("GET /v1/user-machines/{user_machine_id}", requireAuth(opts.Auth, userMachineGet(opts.UserMachines)))
+			mux.Handle("PUT /v1/user-machines/{user_machine_id}/availability-policy", userMachineAuth("projects:connect", requireCSRF(opts.Auth, userMachineAvailabilityPolicy(opts.UserMachines))))
 			if opts.DeviceAuth != nil {
 				mux.Handle("POST /v1/user-machines/{user_machine_id}/connection-descriptor", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", userMachineConnectionDescriptor(opts.UserMachines))))
 				mux.Handle("GET /v1/user-machines/{user_machine_id}/connection-readiness", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", userMachineConnectionReadiness(opts.UserMachines))))
@@ -217,7 +219,7 @@ func NewRouter(opts Options) http.Handler {
 			mux.HandleFunc("POST /v1/webhooks/polar", polarWebhook(opts.Billing, opts.Config.Secrets.PolarWebhookSecret, opts.Config.Billing.PolarWebhookTolerance))
 		}
 		if opts.MeteringRepo != nil {
-			mux.HandleFunc("POST /v1/environment-activity-observations", activityHeartbeat(opts.MeteringRepo, opts.ActivityIdentity, opts.Config.ConfigSync.SummaryLimit))
+			mux.HandleFunc("POST /v1/environment-activity-observations", activityHeartbeat(opts.MeteringRepo, opts.ActivityIdentity, opts.Config.ConfigSync.SummaryLimit, opts.UserMachines))
 		}
 		mux.HandleFunc("/", notFound)
 		handler = mux

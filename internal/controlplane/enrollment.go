@@ -417,8 +417,8 @@ func EnrollmentExchangeRejectionClass(err error) string {
 	}
 }
 
-func (s *EnrollmentService) Renew(ctx context.Context, identityToken string, proof, body []byte) (HelperIdentity, error) {
-	claims, err := s.verifyHelperRenewalRequest(ctx, identityToken, proof, body)
+func (s *EnrollmentService) Renew(ctx context.Context, proof, body []byte) (HelperIdentity, error) {
+	claims, err := s.verifyHelperRenewalRequest(ctx, proof, body)
 	if err != nil {
 		return HelperIdentity{}, ErrHelperProof
 	}

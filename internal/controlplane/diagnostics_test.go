@@ -115,4 +115,16 @@ func TestDiagnosticsMetricsReportDurableBacklogs(t *testing.T) {
 			t.Fatalf("%s = %d, want at least %d", key, metrics[key], minimum)
 		}
 	}
+	for _, key := range []string{
+		"user_machine_bootstrap_failure_depth",
+		"user_machine_heartbeat_oldest_age_seconds",
+		"user_machine_availability_drift_depth",
+		"user_machine_privileged_service_error_depth",
+		"user_machine_unsupported_host_scope_depth",
+		"paperboat_helper_update_rollbacks_total",
+	} {
+		if _, ok := metrics[key]; !ok {
+			t.Fatalf("missing user-machine metric %s", key)
+		}
+	}
 }

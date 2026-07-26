@@ -1248,6 +1248,22 @@ type UserMachine struct {
 	Version                       int64
 	CreatedAt                     time.Time
 	UpdatedAt                     time.Time
+	AvailabilityMode              string
+	AvailabilityDesiredVersion    int64
+	AvailabilityObservedMode      sql.NullString
+	AvailabilityObservedVersion   int64
+	AvailabilityObservedAt        sql.NullTime
+	AvailabilityStatus            string
+	AvailabilityErrorCode         sql.NullString
+	HostServiceVersion            sql.NullString
+	HostServiceScope              sql.NullString
+	WorkerGeneration              int64
+	OsBootID                      sql.NullString
+	WorkerServiceScope            string
+	ConnectorState                string
+	ConnectorGeneration           int64
+	HostUpdateRollbacks           int64
+	RuntimeDiagnosticsObservedAt  sql.NullTime
 }
 
 type UserMachineAccessSession struct {
@@ -1266,6 +1282,19 @@ type UserMachineAccessSession struct {
 	ExpiresAt               time.Time
 	CreatedAt               time.Time
 	UpdatedAt               time.Time
+}
+
+type UserMachineAvailabilityOperation struct {
+	ID               string
+	UserMachineID    string
+	UserID           string
+	IdempotencyKey   string
+	RequestHash      []byte
+	ExpectedVersion  int64
+	ResultingVersion int64
+	Mode             string
+	Result           json.RawMessage
+	CreatedAt        time.Time
 }
 
 type UserMachineBandwidthPeriod struct {

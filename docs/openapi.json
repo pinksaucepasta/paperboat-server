@@ -1854,6 +1854,53 @@
           }
         }
       },
+      "AvailabilityPolicy": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schema", "desired_mode", "desired_version", "observed_version", "status", "update_rollbacks"],
+        "properties": {
+          "schema": {"const": "paperboat.availability-policy/v1"},
+          "desired_mode": {"type": "string", "enum": ["allow_sleep", "keep_awake"]},
+          "desired_version": {"type": "integer", "format": "int64", "minimum": 0},
+          "observed_mode": {"type": "string", "enum": ["allow_sleep", "keep_awake"]},
+          "observed_version": {"type": "integer", "format": "int64", "minimum": 0},
+          "observed_at": {"type": "string", "format": "date-time"},
+          "status": {"type": "string", "enum": ["applied", "pending", "offline", "unsupported", "error"]},
+          "error_code": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_]{0,63}$"},
+          "host_service_version": {"type": "string", "maxLength": 128},
+          "host_service_scope": {"const": "system"},
+          "update_rollbacks": {"type": "integer", "format": "int64", "minimum": 0}
+        }
+      },
+      "AvailabilityObservation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schema", "mode", "version", "status", "observed_at", "host_service_version", "host_service_scope", "update_rollbacks"],
+        "properties": {
+          "schema": {"const": "paperboat.availability-policy/v1"},
+          "mode": {"type": "string", "enum": ["allow_sleep", "keep_awake"]},
+          "version": {"type": "integer", "format": "int64", "minimum": 0},
+          "status": {"type": "string", "enum": ["applied", "unsupported", "error"]},
+          "observed_at": {"type": "string", "format": "date-time"},
+          "error_code": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_]{0,63}$"},
+          "host_service_version": {"type": "string", "minLength": 1, "maxLength": 128},
+          "host_service_scope": {"const": "system"},
+          "update_rollbacks": {"type": "integer", "format": "int64", "minimum": 0}
+        }
+      },
+      "UserMachineRuntimeDiagnostics": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["worker_generation", "os_boot_id", "worker_service_scope", "connector_state", "connector_generation", "observed_at"],
+        "properties": {
+          "worker_generation": {"type": "integer", "format": "int64", "minimum": 1},
+          "os_boot_id": {"type": "string", "minLength": 1, "maxLength": 256},
+          "worker_service_scope": {"type": "string", "enum": ["unknown", "user", "system"]},
+          "connector_state": {"type": "string", "enum": ["ready", "degraded", "unavailable"]},
+          "connector_generation": {"type": "integer", "format": "int64", "minimum": 0},
+          "observed_at": {"type": "string", "format": "date-time"}
+        }
+      },
       "EnvironmentActivityObservation": {
         "type": "object",
         "additionalProperties": false,
@@ -1883,6 +1930,12 @@
           },
           "config_sync": {
             "$ref": "#/components/schemas/ConfigSyncHeartbeat"
+          },
+          "availability": {
+            "$ref": "#/components/schemas/AvailabilityObservation"
+          },
+          "runtime_diagnostics": {
+            "$ref": "#/components/schemas/UserMachineRuntimeDiagnostics"
           },
           "environment_id": {
             "type": "string"
@@ -2250,12 +2303,8 @@
     "/v1/helper-identity-renewals": {
       "post": {
         "summary": "Renew a helper identity credential",
-        "description": "Requires a still-valid helper identity and an Ed25519 proof over the exact operation request. Exact operation replays return the same encrypted-at-rest result.",
-        "security": [
-          {
-            "bearerHelperIdentity": []
-          }
-        ],
+        "description": "Requires a fresh Ed25519 proof over the exact operation request. The active helper and its stored public key are resolved from the signed proof, so renewal remains available after arbitrarily long outages without an expired bearer token. Exact operation replays return the same encrypted-at-rest result.",
+        "security": [],
         "parameters": [
           {
             "name": "X-Paperboat-Helper-Proof",
@@ -2303,6 +2352,22 @@
           }
         },
         "operationId": "post_v1_helper_identity_renewals"
+      }
+    },
+    "/v1/helper-runtime-policies/resolve": {
+      "post": {
+        "summary": "Resolve the authoritative BYOD runtime availability policy",
+        "description": "Requires a current helper identity and Ed25519 proof over the exact empty-object request.",
+        "security": [{"bearerHelperIdentity": []}],
+        "parameters": [{"name": "X-Paperboat-Helper-Proof", "in": "header", "required": true, "schema": {"type": "string"}}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false}}}},
+        "responses": {
+          "200": {"description": "Current desired availability mode and version."},
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"},
+          "403": {"$ref": "#/components/responses/Error"}
+        },
+        "operationId": "post_v1_helper_runtime_policies_resolve"
       }
     },
     "/v1/user-machine-installation-failures": {
@@ -6050,6 +6115,38 @@
           }
         },
         "operationId": "post_v1_user_machines_user_machine_id_disconnect"
+      }
+    },
+    "/v1/user-machines/{user_machine_id}/availability-policy": {
+      "parameters": [
+        {"name": "user_machine_id", "in": "path", "required": true, "schema": {"type": "string"}},
+        {"$ref": "#/components/parameters/IdempotencyKey"}
+      ],
+      "put": {
+        "summary": "Set a user machine availability policy",
+        "description": "Uses optimistic expected_version and returns applied or durably pending state. keep_awake applies on battery and AC after explicit client confirmation.",
+        "security": [{"cookieSession": [], "csrfHeader": []}, {"bearerAccess": []}],
+        "x-required-bearer-scopes": ["projects:connect"],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "type": "object", "additionalProperties": false,
+            "required": ["expected_version", "mode"],
+            "properties": {
+              "expected_version": {"type": "integer", "format": "int64", "minimum": 0},
+              "mode": {"type": "string", "enum": ["allow_sleep", "keep_awake"]}
+            }
+          }}}
+        },
+        "responses": {
+          "200": {"description": "Availability policy accepted.", "content": {"application/json": {"schema": {"allOf": [{"$ref": "#/components/schemas/SuccessResponse"}], "properties": {"data": {"$ref": "#/components/schemas/AvailabilityPolicy"}}}}}},
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"},
+          "403": {"$ref": "#/components/responses/Error"},
+          "404": {"$ref": "#/components/responses/Error"},
+          "409": {"$ref": "#/components/responses/Error"}
+        },
+        "operationId": "put_v1_user_machines_user_machine_id_availability_policy"
       }
     },
     "/v1/user-machines/{user_machine_id}/connection-descriptor": {

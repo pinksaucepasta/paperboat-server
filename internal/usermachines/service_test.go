@@ -46,22 +46,28 @@ func TestConfigureHelperArtifactsVerifiesSignature(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	digest := sha256.Sum256([]byte("helper"))
-	artifact := HelperArtifact{Schema: "paperboat.helper-artifact/v1", Version: "0.0.0-development", Platform: "linux", Architecture: "amd64", URL: "https://updates.example.test/paperboat-helper", ByteLength: 6, SHA256: hex.EncodeToString(digest[:])}
-	payload, err := json.Marshal(struct {
-		Architecture string `json:"architecture"`
-		ByteLength   int64  `json:"byte_length"`
-		Platform     string `json:"platform"`
-		Schema       string `json:"schema"`
-		SHA256       string `json:"sha256"`
-		URL          string `json:"url"`
-		Version      string `json:"version"`
-	}{artifact.Architecture, artifact.ByteLength, artifact.Platform, artifact.Schema, artifact.SHA256, artifact.URL, artifact.Version})
-	if err != nil {
-		t.Fatal(err)
+	sign := func(kind, name, body string) HelperArtifact {
+		digest := sha256.Sum256([]byte(body))
+		artifact := HelperArtifact{Schema: "paperboat.helper-artifact/v2", Kind: kind, Version: "0.0.0-development", Platform: "linux", Architecture: "amd64", URL: "https://updates.example.test/" + name, ByteLength: int64(len(body)), SHA256: hex.EncodeToString(digest[:])}
+		payload, err := json.Marshal(struct {
+			Architecture string `json:"architecture"`
+			ByteLength   int64  `json:"byte_length"`
+			Kind         string `json:"kind"`
+			Platform     string `json:"platform"`
+			Schema       string `json:"schema"`
+			SHA256       string `json:"sha256"`
+			URL          string `json:"url"`
+			Version      string `json:"version"`
+		}{artifact.Architecture, artifact.ByteLength, artifact.Kind, artifact.Platform, artifact.Schema, artifact.SHA256, artifact.URL, artifact.Version})
+		if err != nil {
+			t.Fatal(err)
+		}
+		artifact.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, payload))
+		return artifact
 	}
-	artifact.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, payload))
-	encoded, err := json.Marshal([]HelperArtifact{artifact})
+	artifact := sign("worker", "paperboat-helper", "helper")
+	hostArtifact := sign("host_service", "paperboat-host-service", "host")
+	encoded, err := json.Marshal([]HelperArtifact{artifact, hostArtifact})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,9 +76,31 @@ func TestConfigureHelperArtifactsVerifiesSignature(t *testing.T) {
 		t.Fatal(err)
 	}
 	artifact.Signature = base64.RawURLEncoding.EncodeToString(make([]byte, ed25519.SignatureSize))
-	encoded, _ = json.Marshal([]HelperArtifact{artifact})
+	encoded, _ = json.Marshal([]HelperArtifact{artifact, hostArtifact})
 	if err := service.ConfigureHelperArtifacts(string(encoded), base64.RawURLEncoding.EncodeToString(publicKey)); err == nil {
 		t.Fatal("invalid artifact signature was accepted")
+	}
+}
+
+func TestPrivilegedBootstrapRolloutPhases(t *testing.T) {
+	service := &Service{}
+	if err := service.ConfigurePrivilegedBootstrap("internal", []string{"usr_internal"}); err != nil {
+		t.Fatal(err)
+	}
+	if !service.privilegedBootstrapAllowed("usr_internal") || service.privilegedBootstrapAllowed("usr_external") {
+		t.Fatal("internal phase allowlist was not enforced")
+	}
+	if err := service.ConfigurePrivilegedBootstrap("opt_in", []string{"usr_migrated"}); err != nil {
+		t.Fatal(err)
+	}
+	if !service.privilegedBootstrapAllowed("usr_migrated") || service.privilegedBootstrapAllowed("usr_internal") {
+		t.Fatal("opt-in phase allowlist was not enforced")
+	}
+	if err := service.ConfigurePrivilegedBootstrap("required", nil); err != nil || !service.privilegedBootstrapAllowed("usr_any") {
+		t.Fatal("required phase did not enable privileged bootstrap")
+	}
+	if err := service.ConfigurePrivilegedBootstrap("disabled", nil); !errors.Is(err, ErrPrivilegedBootstrapGated) {
+		t.Fatalf("invalid phase error=%v", err)
 	}
 }
 

@@ -70,18 +70,18 @@ func TestHelperEnrollmentExchangeIsSingleUseAndKeyBound(t *testing.T) {
 	if _, err := service.Exchange(ctx, grant.Credential, helperPublic); !errors.Is(err, ErrEnrollmentUsed) {
 		t.Fatalf("replay error = %v", err)
 	}
-	renewNow := now.Add(50 * time.Minute)
+	renewNow := now.Add(30 * 24 * time.Hour)
 	service.clock = func() time.Time { return renewNow }
 	renewBody := []byte(`{"operation_id":"helper-renew-operation-01"}`)
 	renewHash := sha256.Sum256(renewBody)
 	renewClaims := HelperProofClaims{HelperID: identity.HelperID, EnvironmentID: environmentID, OperationID: "helper-renew-operation-01", Method: "POST", Path: "/v1/helper-identity-renewals", BodySHA256: base64.RawURLEncoding.EncodeToString(renewHash[:]), IssuedAt: renewNow, ExpiresAt: renewNow.Add(time.Minute)}
 	renewPayload, _ := json.Marshal(renewClaims)
 	renewProof, _ := json.Marshal(helperProofEnvelope{Algorithm: "EdDSA", Payload: base64.RawURLEncoding.EncodeToString(renewPayload), Signature: base64.RawURLEncoding.EncodeToString(ed25519.Sign(helperPrivate, renewPayload))})
-	renewed, err := service.Renew(ctx, identity.Credential, renewProof, renewBody)
+	renewed, err := service.Renew(ctx, renewProof, renewBody)
 	if err != nil || renewed.Credential == identity.Credential || !renewed.ExpiresAt.After(identity.ExpiresAt) {
 		t.Fatalf("renewed identity = %#v, %v", renewed, err)
 	}
-	renewedReplay, err := service.Renew(ctx, identity.Credential, renewProof, renewBody)
+	renewedReplay, err := service.Renew(ctx, renewProof, renewBody)
 	if err != nil || renewedReplay != renewed {
 		t.Fatalf("renewal replay = %#v, %v", renewedReplay, err)
 	}

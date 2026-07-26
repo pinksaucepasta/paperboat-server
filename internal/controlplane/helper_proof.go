@@ -19,8 +19,6 @@ import (
 
 var ErrHelperProof = errors.New("helper proof is invalid")
 
-const helperIdentityRenewalExpiryGrace = 24 * time.Hour
-
 type helperProofEnvelope struct {
 	Algorithm string `json:"alg"`
 	Payload   string `json:"payload"`
@@ -42,8 +40,20 @@ func (s *EnrollmentService) VerifyHelperRequest(ctx context.Context, identityTok
 	return s.verifyHelperRequest(ctx, identityToken, proof, method, path, body, 0)
 }
 
-func (s *EnrollmentService) verifyHelperRenewalRequest(ctx context.Context, identityToken string, proof []byte, body []byte) (HelperProofClaims, error) {
-	return s.verifyHelperRequest(ctx, identityToken, proof, http.MethodPost, "/v1/helper-identity-renewals", body, helperIdentityRenewalExpiryGrace)
+func (s *EnrollmentService) verifyHelperRenewalRequest(ctx context.Context, proof []byte, body []byte) (HelperProofClaims, error) {
+	claims, err := unverifiedHelperProofClaims(proof)
+	if err != nil || claims.HelperID == "" || claims.EnvironmentID == "" {
+		return HelperProofClaims{}, ErrHelperProof
+	}
+	helper, err := s.store.Queries().GetActiveControlHelper(ctx, dbsqlc.GetActiveControlHelperParams{ID: claims.HelperID, EnvironmentID: claims.EnvironmentID})
+	if err != nil || !helper.KeyThumbprint.Valid || len(helper.PublicKey) != ed25519.PublicKeySize {
+		return HelperProofClaims{}, ErrHelperProof
+	}
+	thumbprint := sha256.Sum256(helper.PublicKey)
+	if helper.KeyThumbprint.String != "sha256:"+base64.RawURLEncoding.EncodeToString(thumbprint[:]) {
+		return HelperProofClaims{}, ErrHelperProof
+	}
+	return verifyHelperProof(ed25519.PublicKey(helper.PublicKey), proof, claims.HelperID, claims.EnvironmentID, http.MethodPost, "/v1/helper-identity-renewals", body, s.clock().UTC())
 }
 
 func (s *EnrollmentService) verifyHelperRequest(ctx context.Context, identityToken string, proof []byte, method, path string, body []byte, expiryGrace time.Duration) (HelperProofClaims, error) {
@@ -94,6 +104,25 @@ func verifyHelperProof(publicKey ed25519.PublicKey, encoded []byte, helperID, en
 	}
 	bodyHash := sha256.Sum256(body)
 	if claims.HelperID != helperID || claims.EnvironmentID != environmentID || len(claims.OperationID) < 8 || len(claims.OperationID) > 128 || claims.Method != strings.ToUpper(method) || claims.Path != path || claims.BodySHA256 != base64.RawURLEncoding.EncodeToString(bodyHash[:]) || claims.IssuedAt.IsZero() || claims.ExpiresAt.IsZero() || !claims.ExpiresAt.After(claims.IssuedAt) || claims.ExpiresAt.Sub(claims.IssuedAt) > time.Minute || claims.IssuedAt.After(now.Add(time.Minute)) || !claims.ExpiresAt.After(now) {
+		return HelperProofClaims{}, ErrHelperProof
+	}
+	return claims, nil
+}
+
+func unverifiedHelperProofClaims(encoded []byte) (HelperProofClaims, error) {
+	if len(encoded) == 0 || len(encoded) > 16*1024 {
+		return HelperProofClaims{}, ErrHelperProof
+	}
+	var envelope helperProofEnvelope
+	if strictProofJSON(encoded, &envelope) != nil || envelope.Algorithm != "EdDSA" {
+		return HelperProofClaims{}, ErrHelperProof
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(envelope.Payload)
+	if err != nil || len(payload) > 16*1024 {
+		return HelperProofClaims{}, ErrHelperProof
+	}
+	var claims HelperProofClaims
+	if strictProofJSON(payload, &claims) != nil {
 		return HelperProofClaims{}, ErrHelperProof
 	}
 	return claims, nil

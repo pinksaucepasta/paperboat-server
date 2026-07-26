@@ -43,6 +43,7 @@ var (
 	ErrInstallationExpired        = errors.New("user-machine installation pairing expired")
 	ErrInstallationUnavailable    = errors.New("user-machine installation material is unavailable")
 	ErrProvisioningUnavailable    = errors.New("user-machine canonical helper provisioning is unavailable")
+	ErrPrivilegedBootstrapGated   = errors.New("privileged user-machine bootstrap is not enabled for this user")
 	ErrEnrollmentNotFound         = errors.New("user-machine enrollment not found")
 	ErrEnrollmentState            = errors.New("user-machine enrollment state does not allow this operation")
 	ErrIdempotencyKeyRequired     = errors.New("user-machine enrollment idempotency key is required")
@@ -109,28 +110,30 @@ type Policy struct {
 	AllowedPlatforms []string
 }
 type Service struct {
-	db                *db.DB
-	audit             *audit.Writer
-	policy            Policy
-	seats             SeatAuthorizer
-	now               func() time.Time
-	provisioner       access.Client
-	encryptionKey     string
-	credentials       access.CredentialIssuer
-	issuer            string
-	ttl               time.Duration
-	uploadMaxBytes    int64
-	uploadMIMEs       []string
-	uploadRetention   int64
-	maxSessions       int
-	controlSigner     *mint.Provider
-	controlRuntime    userMachineHelperRuntime
-	bootstrapCommand  string
-	helperGrant       func(context.Context, string, string, string, time.Duration) (HelperEnrollmentGrant, error)
-	helperArtifacts   map[string]HelperArtifact
-	artifactPublicKey string
-	helperBaseDomain  string
-	helperListenPort  int32
+	db                       *db.DB
+	audit                    *audit.Writer
+	policy                   Policy
+	seats                    SeatAuthorizer
+	now                      func() time.Time
+	provisioner              access.Client
+	encryptionKey            string
+	credentials              access.CredentialIssuer
+	issuer                   string
+	ttl                      time.Duration
+	uploadMaxBytes           int64
+	uploadMIMEs              []string
+	uploadRetention          int64
+	maxSessions              int
+	controlSigner            *mint.Provider
+	controlRuntime           userMachineHelperRuntime
+	bootstrapCommand         string
+	helperGrant              func(context.Context, string, string, string, time.Duration) (HelperEnrollmentGrant, error)
+	helperArtifacts          map[string]HelperArtifact
+	artifactPublicKey        string
+	helperBaseDomain         string
+	helperListenPort         int32
+	privilegedBootstrapMode  string
+	privilegedBootstrapUsers map[string]bool
 }
 
 type userMachineHelperRuntime interface {
@@ -145,21 +148,24 @@ type HelperEnrollmentGrant struct {
 }
 
 func (s *Service) FailInstallation(ctx context.Context, enrollmentID, environmentID, helperID, helperEnrollmentID, stage string) error {
-	if strings.TrimSpace(enrollmentID) == "" || strings.TrimSpace(environmentID) == "" || strings.TrimSpace(helperID) == "" || !slices.Contains([]string{"artifact_verification", "service_install", "service_readiness"}, stage) {
+	if strings.TrimSpace(enrollmentID) == "" || strings.TrimSpace(environmentID) == "" || strings.TrimSpace(helperID) == "" || strings.TrimSpace(helperEnrollmentID) == "" || !slices.Contains([]string{"artifact_verification", "service_install", "service_readiness"}, stage) {
 		return ErrEnrollmentState
 	}
-	n, err := s.db.Queries().FailUserMachineEnrollmentForHelper(ctx, dbsqlc.FailUserMachineEnrollmentForHelperParams{ID: enrollmentID, EnvironmentID: environmentID, HelperID: helperID, HelperEnrollmentID: helperEnrollmentID})
-	if err != nil {
-		return err
-	}
-	if n != 1 {
-		return ErrEnrollmentState
-	}
-	return s.audit.Write(ctx, audit.Event{ActorType: audit.ActorSystem, EventType: "user_machine.installation_failed", ResourceType: "user_machine_enrollment", ResourceID: enrollmentID, IdempotencyKey: "user_machine.installation_failed:" + enrollmentID + ":" + stage, Metadata: map[string]any{"environment_id": environmentID, "helper_id": helperID, "stage": stage}})
+	return s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		result, err := tx.Queries().FailUserMachineEnrollmentForHelper(ctx, dbsqlc.FailUserMachineEnrollmentForHelperParams{ID: enrollmentID, EnvironmentID: environmentID, HelperID: helperID, HelperEnrollmentID: helperEnrollmentID})
+		if err != nil {
+			return err
+		}
+		if result.FailedCount != 1 || result.ReleasedCount != 1 || result.RevokedHelperCount != 1 || result.RevokedGrantCount < 1 {
+			return ErrEnrollmentState
+		}
+		return s.audit.WriteTx(ctx, tx, audit.Event{ActorType: audit.ActorSystem, EventType: "user_machine.installation_failed", ResourceType: "user_machine_enrollment", ResourceID: enrollmentID, IdempotencyKey: "user_machine.installation_failed:" + enrollmentID + ":" + stage, Metadata: map[string]any{"environment_id": environmentID, "helper_id": helperID, "stage": stage}})
+	})
 }
 
 type HelperArtifact struct {
 	Schema       string `json:"schema"`
+	Kind         string `json:"kind"`
 	Version      string `json:"version"`
 	Platform     string `json:"platform"`
 	Architecture string `json:"architecture"`
@@ -215,6 +221,26 @@ func (s *Service) ConfigureBootstrapCommand(command string) {
 	s.bootstrapCommand = strings.TrimSpace(command)
 }
 
+func (s *Service) ConfigurePrivilegedBootstrap(mode string, userIDs []string) error {
+	if !slices.Contains([]string{"internal", "opt_in", "required"}, mode) {
+		return ErrPrivilegedBootstrapGated
+	}
+	allowed := make(map[string]bool, len(userIDs))
+	for _, userID := range userIDs {
+		userID = strings.TrimSpace(userID)
+		if userID == "" || strings.ContainsAny(userID, "\x00\r\n") {
+			return ErrPrivilegedBootstrapGated
+		}
+		allowed[userID] = true
+	}
+	s.privilegedBootstrapMode, s.privilegedBootstrapUsers = mode, allowed
+	return nil
+}
+
+func (s *Service) privilegedBootstrapAllowed(userID string) bool {
+	return s.privilegedBootstrapMode == "" || s.privilegedBootstrapMode == "required" || s.privilegedBootstrapUsers[userID]
+}
+
 func (s *Service) ConfigureHelperRoute(baseDomain string, listenPort int32) error {
 	baseDomain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(baseDomain), "."))
 	if baseDomain == "" || listenPort < 1024 || listenPort > 65535 {
@@ -236,28 +262,42 @@ func (s *Service) ConfigureHelperArtifacts(encoded, publicKey string) error {
 	decoder := json.NewDecoder(strings.NewReader(encoded))
 	decoder.DisallowUnknownFields()
 	decodedPublicKey, keyErr := decodeArtifactBase64(strings.TrimSpace(publicKey))
-	if err := decoder.Decode(&artifacts); err != nil || len(artifacts) == 0 || len(artifacts) > 8 || keyErr != nil || len(decodedPublicKey) != ed25519.PublicKeySize {
+	if err := decoder.Decode(&artifacts); err != nil || len(artifacts) < 2 || len(artifacts) > 8 || len(artifacts)%2 != 0 || keyErr != nil || len(decodedPublicKey) != ed25519.PublicKeySize {
 		return errors.New("user-machine helper artifacts are invalid")
 	}
 	configured := make(map[string]HelperArtifact, len(artifacts))
 	for _, artifact := range artifacts {
-		key := artifact.Platform + "-" + artifact.Architecture
+		key := artifact.Platform + "-" + artifact.Architecture + "-" + artifact.Kind
 		parsedURL, urlErr := url.Parse(artifact.URL)
 		digest, digestErr := hex.DecodeString(artifact.SHA256)
 		signature, signatureErr := decodeArtifactBase64(artifact.Signature)
 		payload, payloadErr := json.Marshal(struct {
 			Architecture string `json:"architecture"`
 			ByteLength   int64  `json:"byte_length"`
+			Kind         string `json:"kind"`
 			Platform     string `json:"platform"`
 			Schema       string `json:"schema"`
 			SHA256       string `json:"sha256"`
 			URL          string `json:"url"`
 			Version      string `json:"version"`
-		}{artifact.Architecture, artifact.ByteLength, artifact.Platform, artifact.Schema, artifact.SHA256, artifact.URL, artifact.Version})
-		if artifact.Schema != "paperboat.helper-artifact/v1" || artifact.Version == "" || !slices.Contains([]string{"darwin", "linux"}, artifact.Platform) || !slices.Contains([]string{"amd64", "arm64"}, artifact.Architecture) || urlErr != nil || parsedURL.Scheme != "https" || parsedURL.User != nil || parsedURL.Hostname() == "" || parsedURL.RawQuery != "" || parsedURL.Fragment != "" || artifact.ByteLength < 1 || artifact.ByteLength > 256<<20 || digestErr != nil || len(digest) != sha256.Size || signatureErr != nil || len(signature) != ed25519.SignatureSize || payloadErr != nil || !ed25519.Verify(ed25519.PublicKey(decodedPublicKey), payload, signature) || configured[key].Schema != "" {
+		}{artifact.Architecture, artifact.ByteLength, artifact.Kind, artifact.Platform, artifact.Schema, artifact.SHA256, artifact.URL, artifact.Version})
+		if artifact.Schema != "paperboat.helper-artifact/v2" || !slices.Contains([]string{"worker", "host_service"}, artifact.Kind) || artifact.Version == "" || !slices.Contains([]string{"darwin", "linux"}, artifact.Platform) || !slices.Contains([]string{"amd64", "arm64"}, artifact.Architecture) || urlErr != nil || parsedURL.Scheme != "https" || parsedURL.User != nil || parsedURL.Hostname() == "" || parsedURL.RawQuery != "" || parsedURL.Fragment != "" || artifact.ByteLength < 1 || artifact.ByteLength > 256<<20 || digestErr != nil || len(digest) != sha256.Size || signatureErr != nil || len(signature) != ed25519.SignatureSize || payloadErr != nil || !ed25519.Verify(ed25519.PublicKey(decodedPublicKey), payload, signature) || configured[key].Schema != "" {
 			return errors.New("user-machine helper artifacts are invalid")
 		}
 		configured[key] = artifact
+	}
+	for _, artifact := range configured {
+		counterpartKind := "worker"
+		if artifact.Kind == "worker" {
+			counterpartKind = "host_service"
+		}
+		counterpart, ok := configured[artifact.Platform+"-"+artifact.Architecture+"-"+counterpartKind]
+		if !ok || counterpart.Version != artifact.Version {
+			return errors.New("user-machine helper artifacts are invalid")
+		}
+	}
+	if len(configured) != len(artifacts) {
+		return errors.New("user-machine helper artifacts are invalid")
 	}
 	s.helperArtifacts, s.artifactPublicKey = configured, strings.TrimSpace(publicKey)
 	return nil
@@ -475,18 +515,29 @@ func (s *Service) CreatePairing(ctx context.Context, in PairingInput) (Pairing, 
 }
 
 type UserMachine struct {
-	ID              string          `json:"id"`
-	EnvironmentID   string          `json:"environment_id"`
-	DisplayName     string          `json:"display_name"`
-	Platform        string          `json:"platform"`
-	Architecture    string          `json:"architecture"`
-	WorkspaceRoot   string          `json:"workspace_root"`
-	State           string          `json:"state"`
-	SeatState       string          `json:"seat_state"`
-	Online          bool            `json:"online"`
-	RuntimeVersions json.RawMessage `json:"runtime_versions"`
-	EnrolledAt      *time.Time      `json:"enrolled_at,omitempty"`
-	LastSeenAt      *time.Time      `json:"last_seen_at,omitempty"`
+	ID                 string             `json:"id"`
+	EnvironmentID      string             `json:"environment_id"`
+	DisplayName        string             `json:"display_name"`
+	Platform           string             `json:"platform"`
+	Architecture       string             `json:"architecture"`
+	WorkspaceRoot      string             `json:"workspace_root"`
+	State              string             `json:"state"`
+	SeatState          string             `json:"seat_state"`
+	Online             bool               `json:"online"`
+	RuntimeVersions    json.RawMessage    `json:"runtime_versions"`
+	EnrolledAt         *time.Time         `json:"enrolled_at,omitempty"`
+	LastSeenAt         *time.Time         `json:"last_seen_at,omitempty"`
+	Availability       AvailabilityPolicy `json:"availability"`
+	RuntimeDiagnostics RuntimeDiagnostics `json:"runtime_diagnostics"`
+}
+
+type RuntimeDiagnostics struct {
+	WorkerGeneration    uint64     `json:"worker_generation"`
+	OSBootID            string     `json:"os_boot_id,omitempty"`
+	WorkerServiceScope  string     `json:"worker_service_scope"`
+	ConnectorState      string     `json:"connector_state"`
+	ConnectorGeneration uint64     `json:"connector_generation"`
+	ObservedAt          *time.Time `json:"observed_at,omitempty"`
 }
 
 // Overview is the dashboard-safe accounting snapshot. Bytes are returned as
@@ -816,6 +867,9 @@ func (s *Service) terminalSession(ctx context.Context, userID, userMachineID, se
 }
 
 func (s *Service) Approve(ctx context.Context, userID, userCode string) (UserMachine, error) {
+	if !s.privilegedBootstrapAllowed(strings.TrimSpace(userID)) {
+		return UserMachine{}, ErrPrivilegedBootstrapGated
+	}
 	var out UserMachine
 	var pairingID string
 	var alreadyProvisioned bool
@@ -864,9 +918,22 @@ func (s *Service) Approve(ctx context.Context, userID, userCode string) (UserMac
 		}
 		if enrollmentErr == nil && enrollment.UserMachineID.Valid {
 			row, err := tx.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: enrollment.UserMachineID.String, UserID: userID})
-			if err != nil || row.State == "revoked" || row.State == "deleted" || row.Platform != pairing.Platform || row.Architecture != pairing.Architecture || row.WorkspaceRoot != pairing.WorkspaceRoot || row.DisplayName != pairing.RequestedDisplayName {
+			if err != nil || row.State == "revoked" || row.State == "deleted" || row.SeatState != "released" || row.Platform != pairing.Platform || row.Architecture != pairing.Architecture || row.WorkspaceRoot != pairing.WorkspaceRoot || row.DisplayName != pairing.RequestedDisplayName {
 				return ErrEnrollmentState
 			}
+			if s.seats == nil {
+				return ErrSeatUnavailable
+			}
+			if err := s.seats.ReserveUserMachineSeat(ctx, tx, userID); err != nil {
+				return err
+			}
+			if n, err := tx.Queries().OccupyUserMachineSeat(ctx, dbsqlc.OccupyUserMachineSeatParams{ID: row.ID, UserID: userID}); err != nil || n != 1 {
+				if err != nil {
+					return err
+				}
+				return ErrEnrollmentState
+			}
+			row.SeatState = "occupied"
 			if n, err := tx.Queries().ApproveUserMachinePairing(ctx, dbsqlc.ApproveUserMachinePairingParams{UserID: sql.NullString{String: userID, Valid: true}, UserMachineID: sql.NullString{String: row.ID, Valid: true}, ID: pairing.ID}); err != nil || n != 1 {
 				if err != nil {
 					return err
@@ -1023,8 +1090,9 @@ func (s *Service) provisionApprovedUserMachine(ctx context.Context, userID, pair
 	if s.helperGrant == nil {
 		return ErrProvisioningUnavailable
 	}
-	artifact, ok := s.helperArtifacts[machine.Platform+"-"+machine.Architecture]
-	if !ok || s.artifactPublicKey == "" {
+	artifact, ok := s.helperArtifacts[machine.Platform+"-"+machine.Architecture+"-worker"]
+	hostArtifact, hostOK := s.helperArtifacts[machine.Platform+"-"+machine.Architecture+"-host_service"]
+	if !ok || !hostOK || s.artifactPublicKey == "" {
 		return errors.New("user-machine helper artifact is unavailable")
 	}
 	enrollment, err := s.db.Queries().GetUserMachineEnrollmentForPairingUpdate(ctx, sql.NullString{String: pairingID, Valid: true})
@@ -1048,7 +1116,7 @@ func (s *Service) provisionApprovedUserMachine(ctx context.Context, userID, pair
 		"schema": "paperboat.byod-installation/v1", "user_machine_id": machine.ID, "user_machine_enrollment_id": enrollment.ID, "environment_id": machine.EnvironmentID,
 		"control_url": s.issuer, "helper_id": grant.HelperID, "enrollment_id": grant.EnrollmentID,
 		"enrollment_credential": grant.Credential, "reuse_identity": reuseIdentity, "expires_at": grant.ExpiresAt,
-		"artifact": artifact, "artifact_public_key": s.artifactPublicKey,
+		"artifact": artifact, "host_service_artifact": hostArtifact, "artifact_public_key": s.artifactPublicKey,
 		"helper_listen_address": fmt.Sprintf("127.0.0.1:%d", s.helperListenPort),
 	})
 	if err != nil {
@@ -1756,7 +1824,12 @@ func (s *Service) validatePairing(in PairingInput) error {
 	return nil
 }
 func mapMachine(row dbsqlc.UserMachine) UserMachine {
-	m := UserMachine{ID: row.ID, EnvironmentID: row.EnvironmentID, DisplayName: row.DisplayName, Platform: row.Platform, Architecture: row.Architecture, WorkspaceRoot: row.WorkspaceRoot, State: row.State, SeatState: row.SeatState, Online: row.Online, RuntimeVersions: row.RuntimeVersions}
+	diagnostics := RuntimeDiagnostics{WorkerGeneration: uint64(row.WorkerGeneration), OSBootID: row.OsBootID.String, WorkerServiceScope: row.WorkerServiceScope, ConnectorState: row.ConnectorState, ConnectorGeneration: uint64(row.ConnectorGeneration)}
+	if row.RuntimeDiagnosticsObservedAt.Valid {
+		observed := row.RuntimeDiagnosticsObservedAt.Time
+		diagnostics.ObservedAt = &observed
+	}
+	m := UserMachine{ID: row.ID, EnvironmentID: row.EnvironmentID, DisplayName: row.DisplayName, Platform: row.Platform, Architecture: row.Architecture, WorkspaceRoot: row.WorkspaceRoot, State: row.State, SeatState: row.SeatState, Online: row.Online, RuntimeVersions: row.RuntimeVersions, Availability: mapAvailability(row), RuntimeDiagnostics: diagnostics}
 	if row.EnrolledAt.Valid {
 		v := row.EnrolledAt.Time
 		m.EnrolledAt = &v
