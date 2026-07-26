@@ -43,7 +43,6 @@ var (
 	ErrInstallationExpired        = errors.New("user-machine installation pairing expired")
 	ErrInstallationUnavailable    = errors.New("user-machine installation material is unavailable")
 	ErrProvisioningUnavailable    = errors.New("user-machine canonical helper provisioning is unavailable")
-	ErrPrivilegedBootstrapGated   = errors.New("privileged user-machine bootstrap is not enabled for this user")
 	ErrEnrollmentNotFound         = errors.New("user-machine enrollment not found")
 	ErrEnrollmentState            = errors.New("user-machine enrollment state does not allow this operation")
 	ErrIdempotencyKeyRequired     = errors.New("user-machine enrollment idempotency key is required")
@@ -110,30 +109,28 @@ type Policy struct {
 	AllowedPlatforms []string
 }
 type Service struct {
-	db                       *db.DB
-	audit                    *audit.Writer
-	policy                   Policy
-	seats                    SeatAuthorizer
-	now                      func() time.Time
-	provisioner              access.Client
-	encryptionKey            string
-	credentials              access.CredentialIssuer
-	issuer                   string
-	ttl                      time.Duration
-	uploadMaxBytes           int64
-	uploadMIMEs              []string
-	uploadRetention          int64
-	maxSessions              int
-	controlSigner            *mint.Provider
-	controlRuntime           userMachineHelperRuntime
-	bootstrapCommand         string
-	helperGrant              func(context.Context, string, string, string, time.Duration) (HelperEnrollmentGrant, error)
-	helperArtifacts          map[string]HelperArtifact
-	artifactPublicKey        string
-	helperBaseDomain         string
-	helperListenPort         int32
-	privilegedBootstrapMode  string
-	privilegedBootstrapUsers map[string]bool
+	db                *db.DB
+	audit             *audit.Writer
+	policy            Policy
+	seats             SeatAuthorizer
+	now               func() time.Time
+	provisioner       access.Client
+	encryptionKey     string
+	credentials       access.CredentialIssuer
+	issuer            string
+	ttl               time.Duration
+	uploadMaxBytes    int64
+	uploadMIMEs       []string
+	uploadRetention   int64
+	maxSessions       int
+	controlSigner     *mint.Provider
+	controlRuntime    userMachineHelperRuntime
+	bootstrapCommand  string
+	helperGrant       func(context.Context, string, string, string, time.Duration) (HelperEnrollmentGrant, error)
+	helperArtifacts   map[string]HelperArtifact
+	artifactPublicKey string
+	helperBaseDomain  string
+	helperListenPort  int32
 }
 
 type userMachineHelperRuntime interface {
@@ -219,26 +216,6 @@ func (s *Service) ConfigureTerminalSessions(maxActive int, signer *mint.Provider
 
 func (s *Service) ConfigureBootstrapCommand(command string) {
 	s.bootstrapCommand = strings.TrimSpace(command)
-}
-
-func (s *Service) ConfigurePrivilegedBootstrap(mode string, userIDs []string) error {
-	if !slices.Contains([]string{"internal", "opt_in", "required"}, mode) {
-		return ErrPrivilegedBootstrapGated
-	}
-	allowed := make(map[string]bool, len(userIDs))
-	for _, userID := range userIDs {
-		userID = strings.TrimSpace(userID)
-		if userID == "" || strings.ContainsAny(userID, "\x00\r\n") {
-			return ErrPrivilegedBootstrapGated
-		}
-		allowed[userID] = true
-	}
-	s.privilegedBootstrapMode, s.privilegedBootstrapUsers = mode, allowed
-	return nil
-}
-
-func (s *Service) privilegedBootstrapAllowed(userID string) bool {
-	return s.privilegedBootstrapMode == "" || s.privilegedBootstrapMode == "required" || s.privilegedBootstrapUsers[userID]
 }
 
 func (s *Service) ConfigureHelperRoute(baseDomain string, listenPort int32) error {
@@ -867,9 +844,6 @@ func (s *Service) terminalSession(ctx context.Context, userID, userMachineID, se
 }
 
 func (s *Service) Approve(ctx context.Context, userID, userCode string) (UserMachine, error) {
-	if !s.privilegedBootstrapAllowed(strings.TrimSpace(userID)) {
-		return UserMachine{}, ErrPrivilegedBootstrapGated
-	}
 	var out UserMachine
 	var pairingID string
 	var alreadyProvisioned bool

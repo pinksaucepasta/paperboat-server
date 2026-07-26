@@ -34,9 +34,7 @@
     "helper_listen_port": 38080,
     "bootstrap_command": "",
     "helper_artifacts_json": "",
-    "helper_artifact_public_key": "",
-    "privileged_bootstrap_mode": "internal",
-    "privileged_bootstrap_users": []
+    "helper_artifact_public_key": ""
   },
   "terminal_sessions": {
     "max_active_per_project": 32,

@@ -82,28 +82,6 @@ func TestConfigureHelperArtifactsVerifiesSignature(t *testing.T) {
 	}
 }
 
-func TestPrivilegedBootstrapRolloutPhases(t *testing.T) {
-	service := &Service{}
-	if err := service.ConfigurePrivilegedBootstrap("internal", []string{"usr_internal"}); err != nil {
-		t.Fatal(err)
-	}
-	if !service.privilegedBootstrapAllowed("usr_internal") || service.privilegedBootstrapAllowed("usr_external") {
-		t.Fatal("internal phase allowlist was not enforced")
-	}
-	if err := service.ConfigurePrivilegedBootstrap("opt_in", []string{"usr_migrated"}); err != nil {
-		t.Fatal(err)
-	}
-	if !service.privilegedBootstrapAllowed("usr_migrated") || service.privilegedBootstrapAllowed("usr_internal") {
-		t.Fatal("opt-in phase allowlist was not enforced")
-	}
-	if err := service.ConfigurePrivilegedBootstrap("required", nil); err != nil || !service.privilegedBootstrapAllowed("usr_any") {
-		t.Fatal("required phase did not enable privileged bootstrap")
-	}
-	if err := service.ConfigurePrivilegedBootstrap("disabled", nil); !errors.Is(err, ErrPrivilegedBootstrapGated) {
-		t.Fatalf("invalid phase error=%v", err)
-	}
-}
-
 func TestConnectionDescriptorSerializesCanonicalPayload(t *testing.T) {
 	expires := time.Now().UTC().Add(time.Minute)
 	response := ConnectionDescriptor{
