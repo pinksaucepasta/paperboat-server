@@ -14,7 +14,7 @@ import (
 
 const applyProjectRuntimeConfig = `-- name: ApplyProjectRuntimeConfig :exec
 UPDATE project_runtime_configs SET applied_storage_gb=$2,applied_machine_type_version_id=machine_type_version_id,
-applied_preset_version_ids=preset_version_ids,applied_setup_script_ref=setup_script_ref,applied_idle_timeout_option_id=idle_timeout_option_id,
+applied_preset_version_ids=preset_version_ids,applied_setup_script_ref=setup_script_ref,
 applied_region_id=region_id,applied_config_hash=desired_config_hash,pending_restart_apply=false,version=version+1,updated_at=now() WHERE project_id=$1
 `
 
@@ -252,12 +252,12 @@ func (q *Queries) GetLatestGitHubTokenCiphertext(ctx context.Context, userID str
 const getOrchestrationProjectIntent = `-- name: GetOrchestrationProjectIntent :one
 SELECT p.id,p.user_id,pr.source_url,pr.default_branch,psa.assigned_gb,mt.code AS machine_type_code,mtv.vcpu,mtv.memory_mb,rg.code AS region_code,
 coalesce(json_agg(vp.code ORDER BY vp.code) FILTER (WHERE vp.code IS NOT NULL),'[]'::json) AS preset_codes,
-ito.code AS idle_timeout_code,prc.setup_script_ref,prc.desired_config_hash,prc.pending_restart_apply
+prc.setup_script_ref,prc.desired_config_hash,prc.pending_restart_apply
 FROM projects p JOIN project_repositories pr ON pr.project_id=p.id JOIN project_storage_allocations psa ON psa.project_id=p.id
 JOIN project_runtime_configs prc ON prc.project_id=p.id JOIN machine_type_versions mtv ON mtv.id=prc.machine_type_version_id
-JOIN machine_types mt ON mt.id=mtv.machine_type_id JOIN regions rg ON rg.id=prc.region_id JOIN idle_timeout_options ito ON ito.id=prc.idle_timeout_option_id
+JOIN machine_types mt ON mt.id=mtv.machine_type_id JOIN regions rg ON rg.id=prc.region_id
 LEFT JOIN vm_preset_versions vpv ON vpv.id=ANY(prc.preset_version_ids) LEFT JOIN vm_presets vp ON vp.id=vpv.preset_id
-WHERE p.id=$1 GROUP BY p.id,pr.project_id,psa.project_id,prc.project_id,mt.code,mtv.vcpu,mtv.memory_mb,rg.code,ito.code
+WHERE p.id=$1 GROUP BY p.id,pr.project_id,psa.project_id,prc.project_id,mt.code,mtv.vcpu,mtv.memory_mb,rg.code
 `
 
 type GetOrchestrationProjectIntentRow struct {
@@ -271,7 +271,6 @@ type GetOrchestrationProjectIntentRow struct {
 	MemoryMb            int32
 	RegionCode          string
 	PresetCodes         interface{}
-	IdleTimeoutCode     string
 	SetupScriptRef      string
 	DesiredConfigHash   string
 	PendingRestartApply bool
@@ -291,7 +290,6 @@ func (q *Queries) GetOrchestrationProjectIntent(ctx context.Context, id string) 
 		&i.MemoryMb,
 		&i.RegionCode,
 		&i.PresetCodes,
-		&i.IdleTimeoutCode,
 		&i.SetupScriptRef,
 		&i.DesiredConfigHash,
 		&i.PendingRestartApply,

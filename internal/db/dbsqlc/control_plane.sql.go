@@ -3195,9 +3195,16 @@ JOIN control_helpers h ON h.id = c.helper_id AND h.environment_id = c.environmen
 LEFT JOIN control_previews p ON p.route_id = r.id
 WHERE c.edge_node_id = $1
   AND r.desired_state IN ('attached','replacing')
-  AND c.state IN ('pending','admitted') AND h.state = 'active'
+  AND c.state IN ('pending','admitted')
+  AND (c.expires_at IS NULL OR c.expires_at > $2)
+  AND h.state = 'active'
 ORDER BY r.id
 `
+
+type ListControlRoutesForNodeParams struct {
+	EdgeNodeID sql.NullString
+	Now        sql.NullTime
+}
 
 type ListControlRoutesForNodeRow struct {
 	RouteID             string
@@ -3213,8 +3220,8 @@ type ListControlRoutesForNodeRow struct {
 	PreviewReason       string
 }
 
-func (q *Queries) ListControlRoutesForNode(ctx context.Context, edgeNodeID sql.NullString) ([]ListControlRoutesForNodeRow, error) {
-	rows, err := q.db.QueryContext(ctx, listControlRoutesForNode, edgeNodeID)
+func (q *Queries) ListControlRoutesForNode(ctx context.Context, arg ListControlRoutesForNodeParams) ([]ListControlRoutesForNodeRow, error) {
+	rows, err := q.db.QueryContext(ctx, listControlRoutesForNode, arg.EdgeNodeID, arg.Now)
 	if err != nil {
 		return nil, err
 	}

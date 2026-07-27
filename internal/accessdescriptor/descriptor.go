@@ -13,7 +13,6 @@ const (
 	CapabilityHerdr    = "herdr"
 	CapabilityUpload   = "upload"
 	CapabilityPreview  = "preview"
-	CapabilityActivity = "activity"
 )
 
 type Descriptor struct {
@@ -62,6 +61,7 @@ type Terminal struct {
 	ThreadID     string `json:"thread_id"`
 	TerminalID   string `json:"terminal_id"`
 	CWD          string `json:"cwd"`
+	Mode         string `json:"terminal_mode"`
 }
 
 type Upload struct {

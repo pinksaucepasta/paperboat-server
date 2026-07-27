@@ -3,6 +3,8 @@ package controlplane
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +13,32 @@ import (
 
 	"github.com/pinksaucepasta/paperboat-server/internal/observability"
 )
+
+func TestUsageErrorResponseClassifiesPermanentAndRetryableFailures(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       error
+		status    int
+		code      string
+		retryable bool
+	}{
+		{name: "invalid report", err: fmt.Errorf("wrapped: %w", ErrInvalidUsageReport), status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "invalid signature", err: ErrUsageSignature, status: http.StatusBadRequest, code: "credential_invalid"},
+		{name: "operation conflict", err: ErrUsageOperationConflict, status: http.StatusConflict, code: "operation_conflict"},
+		{name: "storage failure", err: errors.New("database unavailable"), status: http.StatusServiceUnavailable, code: "control_unavailable", retryable: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status, code, retryable, retryAfterMS := usageErrorResponse(tt.err)
+			if status != tt.status || code != tt.code || retryable != tt.retryable {
+				t.Fatalf("response = (%d, %q, %t), want (%d, %q, %t)", status, code, retryable, tt.status, tt.code, tt.retryable)
+			}
+			if (retryAfterMS > 0) != retryable {
+				t.Fatalf("retry_after_ms = %d, retryable = %t", retryAfterMS, retryable)
+			}
+		})
+	}
+}
 
 func TestEdgeHandlerRejectsUnauthorizedAndUnknownRoutes(t *testing.T) {
 	service := NewEdgeService(nil, "edge-control-credential-01234567890123456789")

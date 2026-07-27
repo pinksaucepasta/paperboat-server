@@ -56,7 +56,6 @@ version or a `version` field in the JSON body. Stale writes fail with `version_c
 - `GET /v1/catalog/plans`
 - `GET /v1/catalog/machine-types`
 - `GET /v1/catalog/presets`
-- `GET /v1/catalog/idle-timeouts`
 - `GET /v1/catalog/regions`
 - `GET /v1/github/status`
 - `GET /v1/projects`
@@ -94,7 +93,7 @@ Supported list query parameters:
   descending order.
 
 Catalog values are database/config driven. Dashboard clients must not hardcode plans,
-machine types, presets, idle timeouts, regions, credit weights, or storage limits.
+machine types, presets, regions, credit weights, or storage limits.
 
 ## Dashboard Writes
 
@@ -115,8 +114,6 @@ machine types, presets, idle timeouts, regions, credit weights, or storage limit
 - `POST /v1/projects/{project_id}/start`
 - `POST /v1/projects/{project_id}/stop`
 - `POST /v1/projects/{project_id}/restart`
-- `POST /v1/projects/{project_id}/keep-alive`
-- `POST /v1/projects/{project_id}/activity`
 
 Project create returns `201` for a new idempotency key and `200` for a matching retry.
 Project lifecycle writes return accepted state and enqueue provider work; clients should
@@ -216,8 +213,6 @@ Documented public codes currently emitted by the handlers include:
 - `tunnel_not_ready`
 - `credential_issuer_unavailable`
 - `github_config_not_ready`
-- `invalid_activity_source`
-- `invalid_keep_alive`
 - `invalid_pagination`
 - `invalid_sort`
 - `invalid_version`

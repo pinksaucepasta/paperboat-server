@@ -591,24 +591,6 @@ func (q *Queries) UpsertPreviewURLRecord(ctx context.Context, arg UpsertPreviewU
 	return err
 }
 
-const upsertProjectActivity = `-- name: UpsertProjectActivity :exec
-INSERT INTO project_activity_markers (project_id,last_activity_at,source,metadata)
-VALUES ($1,now(),$2,$3::jsonb)
-ON CONFLICT (project_id) DO UPDATE SET last_activity_at=greatest(project_activity_markers.last_activity_at,EXCLUDED.last_activity_at),
-source=EXCLUDED.source,metadata=EXCLUDED.metadata,updated_at=now()
-`
-
-type UpsertProjectActivityParams struct {
-	ProjectID string
-	Source    string
-	Metadata  json.RawMessage
-}
-
-func (q *Queries) UpsertProjectActivity(ctx context.Context, arg UpsertProjectActivityParams) error {
-	_, err := q.db.ExecContext(ctx, upsertProjectActivity, arg.ProjectID, arg.Source, arg.Metadata)
-	return err
-}
-
 const upsertProviderRouteCleanupOutbox = `-- name: UpsertProviderRouteCleanupOutbox :exec
 INSERT INTO provider_route_cleanup_outbox (id,project_id,action,reason)
 VALUES ($1,$2,$3,$4)

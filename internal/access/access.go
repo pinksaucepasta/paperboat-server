@@ -419,7 +419,7 @@ func connectionState(connectable bool, status, state string) string {
 
 func setCanonicalCLIIdentity(response *ConnectionDescriptor, project projects.Project) {
 	response.Schema = accessdescriptor.SchemaV1
-	response.Capabilities = []string{accessdescriptor.CapabilityTerminal, accessdescriptor.CapabilityHerdr, accessdescriptor.CapabilityUpload, accessdescriptor.CapabilityPreview, accessdescriptor.CapabilityActivity}
+	response.Capabilities = []string{accessdescriptor.CapabilityTerminal, accessdescriptor.CapabilityHerdr, accessdescriptor.CapabilityUpload, accessdescriptor.CapabilityPreview}
 	response.Environment = map[string]any{
 		"id": project.ID, "kind": accessdescriptor.EnvironmentHosted, "resource_id": project.ID,
 		"display_name": project.Name, "state": connectionState(response.Connectable, response.Status, project.State), "root": "/workspace",
@@ -666,10 +666,6 @@ func (s *Service) Connect(ctx context.Context, input DescriptorRequest) (Connect
 		_ = s.audit.Write(ctx, audit.Event{ActorUserID: input.UserID, ActorType: audit.ActorUser, EventType: "access.credentials_minted", ResourceType: "project", ResourceID: input.ProjectID, IdempotencyKey: "access.credentials_minted:" + credentials.TerminalSessionID, Metadata: map[string]any{"environment_id": input.ProjectID, "cli_client_session_id": input.CLIClientSessionID, "terminal_session_id": credentials.TerminalSessionID, "file_session_id": credentials.FileSessionID}})
 		observability.CredentialsMinted()
 	}
-	_ = s.repo.RecordActivity(ctx, input.ProjectID, "provider_route_connection", map[string]any{
-		"kind": input.Kind, "status": status.Status, "environment_id": project.ID,
-		"provider_route_tunnel_id": resource.TunnelID, "provider_route_client_id": resource.ClientID,
-	})
 	response := buildResponse(input.Kind, project, resource, expires, credentials, s.uploadMaxBytes, s.uploadAllowedMIMEs, s.uploadRetentionSeconds, terminalSession.ThreadID, terminalSession.TerminalID, terminalSession.LaunchCwd)
 	if input.Kind == DescriptorForCLI {
 		response.Issuer = s.issuer
@@ -698,7 +694,6 @@ func (s *Service) Connect(ctx context.Context, input DescriptorRequest) (Connect
 		"access_session_id": session.ID, "provider_route_tunnel_id": resource.TunnelID,
 		"provider_route_client_id": resource.ClientID,
 	}
-	_ = s.repo.RecordActivity(ctx, input.ProjectID, "connect_session", correlation)
 	_ = s.repo.RecordConnectionEvent(ctx, input.UserID, input.ProjectID, session.ID, "approved", "", correlation)
 	_ = s.audit.Write(ctx, audit.Event{ActorUserID: input.UserID, ActorType: audit.ActorUser, EventType: "access.connect_approved", ResourceType: "project", ResourceID: input.ProjectID, IdempotencyKey: "access.connect_approved:" + session.ID, Metadata: correlation})
 	observability.ConnectApproved()
@@ -761,7 +756,7 @@ func (s *Service) connectCanonicalHosted(ctx context.Context, input DescriptorRe
 	setCanonicalCLIIdentity(&response, project)
 	response.Terminal = map[string]any{
 		"endpoint": "wss://" + route.PublicHost + "/v1/runtime", "session_id": terminalSession.ID,
-		"thread_id": terminalSession.ThreadID, "terminal_id": terminalSession.TerminalID, "cwd": terminalSession.LaunchCwd,
+		"thread_id": terminalSession.ThreadID, "terminal_id": terminalSession.TerminalID, "cwd": terminalSession.LaunchCwd, "terminal_mode": terminalSession.TerminalMode,
 		"auth": map[string]any{"method": "bearer", "token": terminalToken, "expires_at": expires, "scopes": []string{"terminal:operate"}},
 	}
 	response.HelperUpload = map[string]any{
@@ -1243,7 +1238,7 @@ func buildResponse(kind DescriptorKind, project projects.Project, resource Resou
 			"endpoint":           resource.WebSocketBaseURL,
 			"http_endpoint":      resource.HTTPBaseURL,
 			"session_id":         threadID,
-			"kind":               "paperboat_terminal_v1",
+			"kind":               "paperboat_terminal_v2",
 			"http_base_url":      resource.HTTPBaseURL,
 			"websocket_base_url": resource.WebSocketBaseURL,
 			"thread_id":          threadID,
@@ -1333,7 +1328,7 @@ func terminalStatusDescriptor(status TunnelStatus, terminalSession dbsqlc.Projec
 		return nil
 	}
 	return map[string]any{
-		"kind":               "paperboat_terminal_v1",
+		"kind":               "paperboat_terminal_v2",
 		"http_base_url":      status.HTTPBaseURL,
 		"websocket_base_url": status.WebSocketBaseURL,
 		"thread_id":          terminalSession.ThreadID,
@@ -1643,33 +1638,6 @@ func (r *Repository) RecordConnectionEvent(ctx context.Context, userID, projectI
 		return err
 	}
 	return r.db.Queries().RecordConnectionEvent(ctx, dbsqlc.RecordConnectionEventParams{ID: newID("cev"), UserID: userID, ProjectID: projectID, AccessSessionID: accessSessionID, Result: result, FailureReason: reason, Metadata: b})
-}
-
-func (r *Repository) RecordActivity(ctx context.Context, projectID, source string, metadata map[string]any) error {
-	source = strings.TrimSpace(source)
-	if source == "" {
-		return fmt.Errorf("activity source is required")
-	}
-	if !validActivitySource(source) {
-		return fmt.Errorf("activity source %q is not accepted", source)
-	}
-	if metadata == nil {
-		metadata = map[string]any{}
-	}
-	b, err := json.Marshal(metadata)
-	if err != nil {
-		return err
-	}
-	return r.db.Queries().UpsertProjectActivity(ctx, dbsqlc.UpsertProjectActivityParams{ProjectID: projectID, Source: source, Metadata: b})
-}
-
-func validActivitySource(source string) bool {
-	switch source {
-	case "connect_session", "provider_route_connection", "helper_activity", "cli_activity", "vm_heartbeat":
-		return true
-	default:
-		return false
-	}
 }
 
 func newID(prefix string) string {

@@ -34,8 +34,8 @@ func TestProvisionProjectIsIdempotentAndLeavesMachineStopped(t *testing.T) {
 		MachineTypeCode: "standard-1x",
 		RegionCode:      "iad",
 		PresetCodes:     []string{"codex"},
-		IdleTimeoutCode: "15m",
-		SetupScript:     "echo setup from revision",
+
+		SetupScript: "echo setup from revision",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -102,7 +102,7 @@ func TestProviderOperationPersistsReplayConflictAndUncertainOutcome(t *testing.T
 	project, _, err := projects.NewService(store, audit.NewWriter(store), orchestratorTestConfig()).Create(ctx, projects.CreateInput{
 		UserID: "usr_provider_operation", IdempotencyKey: "provider-operation-project",
 		RepositoryURL: "https://github.com/paperboat/example.git", StorageGB: 10,
-		MachineTypeCode: "standard-1x", RegionCode: "iad", IdleTimeoutCode: "15m",
+		MachineTypeCode: "standard-1x", RegionCode: "iad",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -195,7 +195,7 @@ func TestProvisionRecoversUncertainVolumeCreateByTaggedObservation(t *testing.T)
 	project, _, err := projectService.Create(ctx, projects.CreateInput{
 		UserID: "usr_uncertain_volume", IdempotencyKey: "uncertain-volume-project",
 		RepositoryURL: "https://github.com/paperboat/example.git", StorageGB: 10,
-		MachineTypeCode: "standard-1x", RegionCode: "iad", IdleTimeoutCode: "15m",
+		MachineTypeCode: "standard-1x", RegionCode: "iad",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -239,7 +239,7 @@ func TestStartRecoversUncertainMutationByMachineStateObservation(t *testing.T) {
 	project, _, err := projectService.Create(ctx, projects.CreateInput{
 		UserID: "usr_uncertain_start", IdempotencyKey: "uncertain-start-project",
 		RepositoryURL: "https://github.com/paperboat/example.git", StorageGB: 10,
-		MachineTypeCode: "standard-1x", RegionCode: "iad", IdleTimeoutCode: "15m",
+		MachineTypeCode: "standard-1x", RegionCode: "iad",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -289,7 +289,6 @@ func TestProvisionAdoptsExistingProviderResourcesBeforeCreate(t *testing.T) {
 		MachineTypeCode: "standard-1x",
 		RegionCode:      "iad",
 		PresetCodes:     []string{"codex"},
-		IdleTimeoutCode: "15m",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -336,7 +335,6 @@ func TestHostedProvisionDoesNotDependOnProviderRoute(t *testing.T) {
 		MachineTypeCode: "standard-1x",
 		RegionCode:      "iad",
 		PresetCodes:     []string{"codex"},
-		IdleTimeoutCode: "15m",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -388,7 +386,6 @@ func TestClaimNextJobSkipsStaleCreateForDeletedProject(t *testing.T) {
 		MachineTypeCode: "standard-1x",
 		RegionCode:      "iad",
 		PresetCodes:     []string{"codex"},
-		IdleTimeoutCode: "15m",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -404,7 +401,6 @@ func TestClaimNextJobSkipsStaleCreateForDeletedProject(t *testing.T) {
 		MachineTypeCode: "standard-1x",
 		RegionCode:      "iad",
 		PresetCodes:     []string{"codex"},
-		IdleTimeoutCode: "15m",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -462,7 +458,6 @@ func TestRestartAppliesPendingConfigExactlyOnce(t *testing.T) {
 		MachineTypeCode: "standard-1x",
 		RegionCode:      "iad",
 		PresetCodes:     []string{"codex"},
-		IdleTimeoutCode: "15m",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -514,7 +509,7 @@ func TestRestartDoesNotAdvanceAppliedConfigBeforeReadiness(t *testing.T) {
 	project, _, err := projectService.Create(ctx, projects.CreateInput{
 		UserID: "usr_orch_restart_readiness", IdempotencyKey: "orch-restart-readiness",
 		RepositoryURL: "https://github.com/paperboat/example.git", StorageGB: 8,
-		MachineTypeCode: "standard-1x", RegionCode: "iad", IdleTimeoutCode: "15m",
+		MachineTypeCode: "standard-1x", RegionCode: "iad",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -566,7 +561,7 @@ func TestStopSnapshotsBeforeProviderStopAndDoesNotBlockOnSnapshotFailure(t *test
 	project, _, err := projectService.Create(ctx, projects.CreateInput{
 		UserID: "usr_orch_stop_snapshot", IdempotencyKey: "orch-stop-snapshot",
 		RepositoryURL: "https://github.com/paperboat/example.git", StorageGB: 8,
-		MachineTypeCode: "standard-1x", RegionCode: "iad", PresetCodes: []string{"codex"}, IdleTimeoutCode: "15m",
+		MachineTypeCode: "standard-1x", RegionCode: "iad", PresetCodes: []string{"codex"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -603,7 +598,7 @@ func TestRestartSnapshotsBeforeProviderStop(t *testing.T) {
 	project, _, err := projectService.Create(ctx, projects.CreateInput{
 		UserID: "usr_orch_restart_snapshot", IdempotencyKey: "orch-restart-snapshot",
 		RepositoryURL: "https://github.com/paperboat/example.git", StorageGB: 8,
-		MachineTypeCode: "standard-1x", RegionCode: "iad", PresetCodes: []string{"codex"}, IdleTimeoutCode: "15m",
+		MachineTypeCode: "standard-1x", RegionCode: "iad", PresetCodes: []string{"codex"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -642,7 +637,6 @@ func TestStartReconcilesServerManagedSpecDrift(t *testing.T) {
 		MachineTypeCode: "standard-1x",
 		RegionCode:      "iad",
 		PresetCodes:     []string{"codex"},
-		IdleTimeoutCode: "15m",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -706,7 +700,6 @@ func TestStartAndRestartRecreateMissingMachineOnExistingVolume(t *testing.T) {
 		MachineTypeCode: "standard-1x",
 		RegionCode:      "iad",
 		PresetCodes:     []string{"codex"},
-		IdleTimeoutCode: "15m",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -803,8 +796,8 @@ func TestDeleteReleasesStorageAfterProviderCleanup(t *testing.T) {
 		MachineTypeCode: "standard-1x",
 		RegionCode:      "iad",
 		PresetCodes:     []string{"codex"},
-		IdleTimeoutCode: "15m",
-		SetupScript:     "echo delete setup",
+
+		SetupScript: "echo delete setup",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -852,7 +845,6 @@ func TestDeleteContinuesToVolumeWhenMachineAlreadyGone(t *testing.T) {
 		StorageGB:       8,
 		MachineTypeCode: "standard-1x",
 		RegionCode:      "iad",
-		IdleTimeoutCode: "15m",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -907,7 +899,7 @@ func TestDeleteRetriesEveryProviderCleanupMutationBeforeStorageRelease(t *testin
 			projectService := projects.NewService(store, audit.NewWriter(store), cfg)
 			project, _, err := projectService.Create(ctx, projects.CreateInput{
 				UserID: userID, IdempotencyKey: "orch-delete-failure", RepositoryURL: "https://github.com/paperboat/example.git",
-				StorageGB: 8, MachineTypeCode: "standard-1x", RegionCode: "iad", IdleTimeoutCode: "15m",
+				StorageGB: 8, MachineTypeCode: "standard-1x", RegionCode: "iad",
 				SetupScript: "echo delete failure setup",
 			})
 			if err != nil {
@@ -975,8 +967,8 @@ func TestProvisionUsesHostedBootstrapWithoutMachineSecrets(t *testing.T) {
 		MachineTypeCode: "standard-1x",
 		RegionCode:      "iad",
 		PresetCodes:     []string{"codex"},
-		IdleTimeoutCode: "15m",
-		SetupScript:     "echo setup from revision",
+
+		SetupScript: "echo setup from revision",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1078,7 +1070,6 @@ func TestRestartBlocksPendingStorageResizeUntilPolicyApproved(t *testing.T) {
 		MachineTypeCode: "standard-1x",
 		RegionCode:      "iad",
 		PresetCodes:     []string{"codex"},
-		IdleTimeoutCode: "15m",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1164,7 +1155,7 @@ func TestReconcileRecordsMachineStateImageAndConfigDriftWithoutPromotingProject(
 	project, _, err := projects.NewService(store, audit.NewWriter(store), cfg).Create(ctx, projects.CreateInput{
 		UserID: "usr_reconcile_drift", IdempotencyKey: "reconcile-drift-project",
 		RepositoryURL: "https://github.com/paperboat/example.git", StorageGB: 10,
-		MachineTypeCode: "standard-1x", RegionCode: "iad", IdleTimeoutCode: "15m",
+		MachineTypeCode: "standard-1x", RegionCode: "iad",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1362,9 +1353,6 @@ ON CONFLICT DO NOTHING`, versionID, "mt_"+row.code, row.vcpu, row.memoryMB, row.
 		}
 	}
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.regions (id, code, name, enabled) VALUES ('reg_iad', 'iad', 'IAD', true)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.idle_timeout_options (id, code, duration_seconds, active) VALUES ('ito_15m', '15m', 900, true)`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.vm_presets (id, code, name, active, current_version_id) VALUES ('preset_codex', 'codex', 'Codex', true, 'presetv_codex')`); err != nil {

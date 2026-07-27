@@ -281,13 +281,14 @@ func userMachineTerminalSessionsCreate(service *usermachines.Service) http.Handl
 			return
 		}
 		var body struct {
-			Name string `json:"name"`
+			Name         string `json:"name"`
+			TerminalMode string `json:"terminal_mode"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON.")
 			return
 		}
-		item, err := service.CreateConfiguredTerminalSession(r.Context(), p.User.ID, r.PathValue("user_machine_id"), body.Name, r.Header.Get("Idempotency-Key"))
+		item, err := service.CreateConfiguredTerminalSessionWithMode(r.Context(), p.User.ID, r.PathValue("user_machine_id"), body.Name, body.TerminalMode, r.Header.Get("Idempotency-Key"))
 		if userMachineTerminalSessionError(w, r, err) {
 			return
 		}
@@ -372,6 +373,8 @@ func userMachineTerminalSessionError(w http.ResponseWriter, r *http.Request, err
 		writeError(w, r, http.StatusConflict, "terminal_session_name_conflict", "A terminal session already uses that name.")
 	case errors.Is(err, usermachines.ErrTerminalSessionInvalidName):
 		writeError(w, r, http.StatusBadRequest, "invalid_terminal_session_name", "Terminal session name is invalid.")
+	case errors.Is(err, usermachines.ErrTerminalSessionInvalidMode):
+		writeError(w, r, http.StatusBadRequest, "invalid_terminal_mode", "Terminal mode must be herdr or shell.")
 	case errors.Is(err, usermachines.ErrTerminalSessionIdempotency):
 		writeError(w, r, http.StatusBadRequest, "idempotency_key_required", "Idempotency-Key is required.")
 	default:

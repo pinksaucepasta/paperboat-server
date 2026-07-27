@@ -37,8 +37,6 @@ var (
 	ErrNotFound               = errors.New("project not found")
 	ErrDeleted                = errors.New("project is deleted")
 	ErrInvalidState           = errors.New("project state does not allow this operation")
-	ErrInvalidKeepAlive       = errors.New("keep alive duration is outside configured bounds")
-	ErrInvalidActivitySource  = errors.New("activity source is not accepted")
 	ErrInsufficientStorage    = metering.ErrInsufficientStorage
 	ErrInsufficientCredits    = errors.New("insufficient credits to start project")
 )
@@ -47,7 +45,6 @@ type Service struct {
 	repo                     *Repository
 	audit                    *audit.Writer
 	minimumStartCreditWindow time.Duration
-	maxKeepAliveDuration     time.Duration
 }
 
 func NewService(store *db.DB, auditWriter *audit.Writer, cfg config.Config) *Service {
@@ -55,7 +52,6 @@ func NewService(store *db.DB, auditWriter *audit.Writer, cfg config.Config) *Ser
 		repo:                     NewRepository(store, cfg.Secrets.EncryptionKey),
 		audit:                    auditWriter,
 		minimumStartCreditWindow: cfg.Metering.MinimumStartCreditWindow,
-		maxKeepAliveDuration:     cfg.Metering.MaxKeepAliveDuration,
 	}
 }
 
@@ -69,7 +65,6 @@ type CreateInput struct {
 	MachineTypeCode string
 	RegionCode      string
 	PresetCodes     []string
-	IdleTimeoutCode string
 	SetupScript     string
 }
 
@@ -81,16 +76,7 @@ type UpdateInput struct {
 	MachineTypeCode *string
 	RegionCode      *string
 	PresetCodes     *[]string
-	IdleTimeoutCode *string
 	SetupScript     *string
-}
-
-type ActivityInput struct {
-	UserID     string
-	ProjectID  string
-	Source     string
-	ObservedAt time.Time
-	Metadata   map[string]any
 }
 
 type Project struct {
@@ -125,7 +111,6 @@ type Config struct {
 	MachineTypeCode string   `json:"machine_type_code"`
 	RegionCode      string   `json:"region_code"`
 	PresetCodes     []string `json:"preset_codes"`
-	IdleTimeoutCode string   `json:"idle_timeout_code"`
 	SetupScriptRef  string   `json:"setup_script_ref,omitempty"`
 	ConfigHash      string   `json:"config_hash"`
 }
@@ -157,7 +142,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Project, bool,
 	if existing, ok, err := s.repo.FindByIdempotencyKey(ctx, input.UserID, input.IdempotencyKey, requestHash); err != nil || ok {
 		return existing, ok, err
 	}
-	refs, err := s.repo.ResolveCatalog(ctx, normalized.MachineTypeCode, normalized.RegionCode, normalized.PresetCodes, normalized.IdleTimeoutCode)
+	refs, err := s.repo.ResolveCatalog(ctx, normalized.MachineTypeCode, normalized.RegionCode, normalized.PresetCodes)
 	if err != nil {
 		return Project{}, false, err
 	}
@@ -230,7 +215,6 @@ func (s *Service) Start(ctx context.Context, userID, projectID string) (Project,
 	if err != nil {
 		return Project{}, err
 	}
-	_ = s.repo.RecordActivity(ctx, projectID, time.Now().UTC(), "connect_session", map[string]any{"trigger": "project.start"})
 	_ = s.audit.Write(ctx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "project.start_requested", ResourceType: "project", ResourceID: projectID, IdempotencyKey: "project.start_requested:" + projectID + ":" + project.UpdatedAt.Format(time.RFC3339Nano)})
 	return project, nil
 }
@@ -252,70 +236,12 @@ func (s *Service) Restart(ctx context.Context, userID, projectID string) (Projec
 	if err != nil {
 		return Project{}, err
 	}
-	_ = s.repo.RecordActivity(ctx, projectID, time.Now().UTC(), "connect_session", map[string]any{"trigger": "project.restart"})
 	_ = s.audit.Write(ctx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "project.restart_requested", ResourceType: "project", ResourceID: projectID, IdempotencyKey: "project.restart_requested:" + projectID + ":" + project.UpdatedAt.Format(time.RFC3339Nano)})
 	return project, nil
 }
 
 func (s *Service) Events(ctx context.Context, userID, projectID string) ([]Event, error) {
 	return s.repo.Events(ctx, userID, projectID)
-}
-
-func (s *Service) RecordClientActivity(ctx context.Context, input ActivityInput) (Project, error) {
-	source := strings.TrimSpace(input.Source)
-	switch source {
-	case "helper_activity", "cli_activity":
-	default:
-		return Project{}, ErrInvalidActivitySource
-	}
-	project, err := s.repo.Get(ctx, input.UserID, input.ProjectID)
-	if err != nil {
-		return Project{}, err
-	}
-	if project.State == "deleted" || project.State == "deleting" {
-		return Project{}, ErrDeleted
-	}
-	metadata := input.Metadata
-	if metadata == nil {
-		metadata = map[string]any{}
-	}
-	if !input.ObservedAt.IsZero() {
-		metadata["client_observed_at"] = input.ObservedAt.UTC().Format(time.RFC3339Nano)
-	}
-	if err := s.repo.RecordActivity(ctx, input.ProjectID, time.Now().UTC(), source, metadata); err != nil {
-		return Project{}, err
-	}
-	return project, nil
-}
-
-func (s *Service) SetKeepAlive(ctx context.Context, userID, projectID string, duration time.Duration) (Project, *time.Time, error) {
-	if duration < 0 || duration > s.maxKeepAliveDuration {
-		return Project{}, nil, ErrInvalidKeepAlive
-	}
-	project, err := s.repo.Get(ctx, userID, projectID)
-	if err != nil {
-		return Project{}, nil, err
-	}
-	if project.State == "deleted" || project.State == "deleting" {
-		return Project{}, nil, ErrDeleted
-	}
-	var until *time.Time
-	if duration > 0 {
-		t := time.Now().UTC().Add(duration)
-		until = &t
-	}
-	if err := s.repo.SetKeepAlive(ctx, userID, projectID, until); err != nil {
-		return Project{}, nil, err
-	}
-	eventType := "project.keep_alive_cleared"
-	metadata := map[string]any{}
-	if until != nil {
-		eventType = "project.keep_alive_set"
-		metadata["keep_alive_until"] = until.UTC().Format(time.RFC3339Nano)
-		metadata["duration_seconds"] = int(duration.Seconds())
-	}
-	_ = s.audit.Write(ctx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: eventType, ResourceType: "project", ResourceID: projectID, IdempotencyKey: eventType + ":" + projectID + ":" + time.Now().UTC().Format(time.RFC3339Nano), Metadata: metadata})
-	return project, until, nil
 }
 
 func (s *Service) buildDesiredChange(ctx context.Context, current Project, input UpdateInput) (desiredChange, error) {
@@ -338,10 +264,6 @@ func (s *Service) buildDesiredChange(ctx context.Context, current Project, input
 	if input.PresetCodes != nil {
 		presets = normalizeCodes(*input.PresetCodes)
 	}
-	idle := current.DesiredConfig.IdleTimeoutCode
-	if input.IdleTimeoutCode != nil {
-		idle = strings.TrimSpace(*input.IdleTimeoutCode)
-	}
 	var script *setupScript
 	if input.SetupScript != nil {
 		normalized := strings.TrimRight(*input.SetupScript, "\n")
@@ -352,11 +274,11 @@ func (s *Service) buildDesiredChange(ctx context.Context, current Project, input
 			script = &setupScript{plain: normalized, sha256: sha256Hex(normalized)}
 		}
 	}
-	refs, err := s.repo.ResolveCatalog(ctx, machine, region, presets, idle)
+	refs, err := s.repo.ResolveCatalog(ctx, machine, region, presets)
 	if err != nil {
 		return desiredChange{}, err
 	}
-	desired := configHashInput{StorageGB: storageGB, MachineVersionID: refs.machineTypeVersionID, RegionID: refs.regionID, PresetVersionIDs: refs.presetVersionIDs, IdleTimeoutID: refs.idleTimeoutID}
+	desired := configHashInput{StorageGB: storageGB, MachineVersionID: refs.machineTypeVersionID, RegionID: refs.regionID, PresetVersionIDs: refs.presetVersionIDs}
 	if script != nil {
 		desired.SetupScriptSHA256 = script.sha256
 	} else {
@@ -383,7 +305,6 @@ func validateCreateInput(input CreateInput) (CreateInput, error) {
 	}
 	input.MachineTypeCode = strings.TrimSpace(input.MachineTypeCode)
 	input.RegionCode = strings.TrimSpace(input.RegionCode)
-	input.IdleTimeoutCode = strings.TrimSpace(input.IdleTimeoutCode)
 	input.PresetCodes = normalizeCodes(input.PresetCodes)
 	input.DefaultBranch = strings.TrimSpace(input.DefaultBranch)
 	return input, nil
@@ -446,7 +367,6 @@ func createRequestHash(input CreateInput) string {
 		MachineTypeCode: input.MachineTypeCode,
 		RegionCode:      input.RegionCode,
 		PresetCodes:     input.PresetCodes,
-		IdleTimeoutCode: input.IdleTimeoutCode,
 		SetupScriptSHA:  setupSHA,
 	})
 	sum := sha256.Sum256(b)
@@ -482,7 +402,6 @@ type catalogRefs struct {
 	machineTypeVersionID string
 	regionID             string
 	presetVersionIDs     []string
-	idleTimeoutID        string
 }
 
 type setupScript struct {
@@ -503,7 +422,6 @@ type configHashInput struct {
 	MachineVersionID  string   `json:"machine_type_version_id"`
 	RegionID          string   `json:"region_id"`
 	PresetVersionIDs  []string `json:"preset_version_ids"`
-	IdleTimeoutID     string   `json:"idle_timeout_id"`
 	SetupScriptRef    string   `json:"setup_script_ref,omitempty"`
 	SetupScriptSHA256 string   `json:"setup_script_sha256,omitempty"`
 }
@@ -516,7 +434,6 @@ type createRequestHashInput struct {
 	MachineTypeCode string   `json:"machine_type_code"`
 	RegionCode      string   `json:"region_code"`
 	PresetCodes     []string `json:"preset_codes"`
-	IdleTimeoutCode string   `json:"idle_timeout_code"`
 	SetupScriptSHA  string   `json:"setup_script_sha256,omitempty"`
 }
 
@@ -544,9 +461,9 @@ func (r *Repository) FindByIdempotencyKey(ctx context.Context, userID, key, requ
 	return project, true, err
 }
 
-func (r *Repository) ResolveCatalog(ctx context.Context, machineTypeCode, regionCode string, presetCodes []string, idleTimeoutCode string) (catalogRefs, error) {
+func (r *Repository) ResolveCatalog(ctx context.Context, machineTypeCode, regionCode string, presetCodes []string) (catalogRefs, error) {
 	refs := catalogRefs{presetVersionIDs: []string{}}
-	if machineTypeCode == "" || regionCode == "" || idleTimeoutCode == "" {
+	if machineTypeCode == "" || regionCode == "" {
 		return refs, ErrCatalogUnavailable
 	}
 	machineVersion, err := r.db.Queries().GetActiveMachineTypeVersion(ctx, machineTypeCode)
@@ -558,13 +475,6 @@ func (r *Repository) ResolveCatalog(ctx context.Context, machineTypeCode, region
 	}
 	refs.machineTypeVersionID = machineVersion.String
 	refs.regionID, err = r.db.Queries().GetEnabledRegionID(ctx, regionCode)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return refs, ErrCatalogUnavailable
-		}
-		return refs, err
-	}
-	refs.idleTimeoutID, err = r.db.Queries().GetActiveIdleTimeoutID(ctx, idleTimeoutCode)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return refs, ErrCatalogUnavailable
@@ -617,7 +527,7 @@ func (r *Repository) createIntentOnce(ctx context.Context, input CreateInput, re
 			setupSHA = sha256Hex(strings.TrimRight(input.SetupScript, "\n"))
 			setupRef = newID("pss")
 		}
-		hash := hashConfig(configHashInput{StorageGB: input.StorageGB, MachineVersionID: refs.machineTypeVersionID, RegionID: refs.regionID, PresetVersionIDs: refs.presetVersionIDs, IdleTimeoutID: refs.idleTimeoutID, SetupScriptRef: setupRef, SetupScriptSHA256: setupSHA})
+		hash := hashConfig(configHashInput{StorageGB: input.StorageGB, MachineVersionID: refs.machineTypeVersionID, RegionID: refs.regionID, PresetVersionIDs: refs.presetVersionIDs, SetupScriptRef: setupRef, SetupScriptSHA256: setupSHA})
 		if err := q.InsertProject(ctx, dbsqlc.InsertProjectParams{ID: projectID, UserID: input.UserID, Name: input.Name, IdempotencyKey: input.IdempotencyKey, CreateRequestHash: createRequestHash(input)}); err != nil {
 			return err
 		}
@@ -633,7 +543,7 @@ func (r *Repository) createIntentOnce(ctx context.Context, input CreateInput, re
 		if err := reserveStorageTx(ctx, tx, accountID, projectID, input.StorageGB, "project.storage.allocate:"+projectID); err != nil {
 			return err
 		}
-		if err := q.InsertProjectRuntimeConfig(ctx, dbsqlc.InsertProjectRuntimeConfigParams{ProjectID: projectID, MachineTypeVersionID: sql.NullString{String: refs.machineTypeVersionID, Valid: true}, PresetVersionIds: refs.presetVersionIDs, SetupScriptRef: setupRef, IdleTimeoutOptionID: sql.NullString{String: refs.idleTimeoutID, Valid: true}, RegionID: sql.NullString{String: refs.regionID, Valid: true}, DesiredConfigHash: hash}); err != nil {
+		if err := q.InsertProjectRuntimeConfig(ctx, dbsqlc.InsertProjectRuntimeConfigParams{ProjectID: projectID, MachineTypeVersionID: sql.NullString{String: refs.machineTypeVersionID, Valid: true}, PresetVersionIds: refs.presetVersionIDs, SetupScriptRef: setupRef, RegionID: sql.NullString{String: refs.regionID, Valid: true}, DesiredConfigHash: hash}); err != nil {
 			return err
 		}
 		if err := q.CreateDefaultTerminalSession(ctx, dbsqlc.CreateDefaultTerminalSessionParams{ID: newID("pts"), ProjectID: projectID}); err != nil {
@@ -762,7 +672,7 @@ func (r *Repository) updateDesiredConfigOnce(ctx context.Context, userID, projec
 			}
 		}
 		q := tx.Queries()
-		if err := q.UpdateProjectDesiredRuntimeConfig(ctx, dbsqlc.UpdateProjectDesiredRuntimeConfigParams{ProjectID: projectID, UserID: userID, MachineTypeVersionID: sql.NullString{String: change.refs.machineTypeVersionID, Valid: true}, PresetVersionIds: change.refs.presetVersionIDs, IdleTimeoutOptionID: sql.NullString{String: change.refs.idleTimeoutID, Valid: true}, RegionID: sql.NullString{String: change.refs.regionID, Valid: true}, DesiredConfigHash: change.configHash}); err != nil {
+		if err := q.UpdateProjectDesiredRuntimeConfig(ctx, dbsqlc.UpdateProjectDesiredRuntimeConfigParams{ProjectID: projectID, UserID: userID, MachineTypeVersionID: sql.NullString{String: change.refs.machineTypeVersionID, Valid: true}, PresetVersionIds: change.refs.presetVersionIDs, RegionID: sql.NullString{String: change.refs.regionID, Valid: true}, DesiredConfigHash: change.configHash}); err != nil {
 			return err
 		}
 		if err := q.UpdateProjectAssignedStorage(ctx, dbsqlc.UpdateProjectAssignedStorageParams{ProjectID: projectID, UserID: userID, AssignedGb: int32(change.storageGB)}); err != nil {
@@ -958,60 +868,6 @@ func (r *Repository) EnsureStartCredits(ctx context.Context, userID, projectID s
 	return nil
 }
 
-func (r *Repository) RecordActivity(ctx context.Context, projectID string, at time.Time, source string, metadata map[string]any) error {
-	source = strings.TrimSpace(source)
-	if source == "" {
-		return fmt.Errorf("activity source is required")
-	}
-	if !validActivitySource(source) {
-		return fmt.Errorf("activity source %q is not accepted", source)
-	}
-	if metadata == nil {
-		metadata = map[string]any{}
-	}
-	b, err := json.Marshal(metadata)
-	if err != nil {
-		return err
-	}
-	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		return tx.Queries().UpsertProjectActivityRecord(ctx, dbsqlc.UpsertProjectActivityRecordParams{ProjectID: projectID, LastActivityAt: at, Source: source, Metadata: b})
-	})
-}
-
-func (r *Repository) SetKeepAlive(ctx context.Context, userID, projectID string, until *time.Time) error {
-	if _, err := r.Get(ctx, userID, projectID); err != nil {
-		return err
-	}
-	var value sql.NullTime
-	eventType := "project.keep_alive_cleared"
-	message := "Project keep-alive pin was cleared."
-	metadata := map[string]any{}
-	if until != nil {
-		value = sql.NullTime{Time: until.UTC(), Valid: true}
-		eventType = "project.keep_alive_set"
-		message = "Project keep-alive pin was set."
-		metadata["keep_alive_until"] = until.UTC().Format(time.RFC3339Nano)
-	} else {
-		value = sql.NullTime{}
-	}
-	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		err := tx.Queries().UpsertProjectKeepAlive(ctx, dbsqlc.UpsertProjectKeepAliveParams{ProjectID: projectID, KeepAliveUntil: value})
-		if err != nil {
-			return err
-		}
-		return insertEvent(ctx, tx, projectID, eventType, message, metadata)
-	})
-}
-
-func validActivitySource(source string) bool {
-	switch source {
-	case "connect_session", "provider_route_connection", "helper_activity", "cli_activity", "vm_heartbeat":
-		return true
-	default:
-		return false
-	}
-}
-
 func (r *Repository) Events(ctx context.Context, userID, projectID string) ([]Event, error) {
 	if _, err := r.Get(ctx, userID, projectID); err != nil {
 		return nil, err
@@ -1035,8 +891,8 @@ func (r *Repository) Events(ctx context.Context, userID, projectID string) ([]Ev
 func projectFromRow(row dbsqlc.GetProjectRow) Project {
 	p := Project{ID: row.ID, Version: row.Version, Name: row.Name, State: row.State, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 		Repository:          Repo{Provider: row.Provider, SourceURL: row.SourceUrl, DefaultBranch: row.DefaultBranch},
-		DesiredConfig:       Config{StorageGB: int(row.AssignedGb), MachineTypeCode: row.MachineTypeCode.String, RegionCode: row.RegionCode.String, IdleTimeoutCode: row.IdleTimeoutCode.String, SetupScriptRef: row.SetupScriptRef, ConfigHash: row.DesiredConfigHash},
-		CurrentConfig:       Config{StorageGB: int(row.AppliedStorageGb), MachineTypeCode: row.AppliedMachineTypeCode, RegionCode: row.AppliedRegionCode, IdleTimeoutCode: row.AppliedIdleTimeoutCode, SetupScriptRef: row.AppliedSetupScriptRef, ConfigHash: row.AppliedConfigHash},
+		DesiredConfig:       Config{StorageGB: int(row.AssignedGb), MachineTypeCode: row.MachineTypeCode.String, RegionCode: row.RegionCode.String, SetupScriptRef: row.SetupScriptRef, ConfigHash: row.DesiredConfigHash},
+		CurrentConfig:       Config{StorageGB: int(row.AppliedStorageGb), MachineTypeCode: row.AppliedMachineTypeCode, RegionCode: row.AppliedRegionCode, SetupScriptRef: row.AppliedSetupScriptRef, ConfigHash: row.AppliedConfigHash},
 		PendingRestartApply: row.PendingRestartApply, SetupScriptRevisions: int(row.SetupScriptRevisions)}
 	presetCodes := databaseText(row.PresetCodes)
 	if presetCodes != "" {

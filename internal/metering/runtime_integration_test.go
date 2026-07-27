@@ -8,17 +8,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
 	"github.com/pinksaucepasta/paperboat-server/internal/orchestrator"
-	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 )
 
-func TestUserMachineHeartbeatCommitsServerReceiptTime(t *testing.T) {
+func TestUserMachineRuntimeObservationCommitsServerReceiptTime(t *testing.T) {
 	store := openRuntimeTestDB(t)
 	ctx := context.Background()
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
@@ -30,7 +28,7 @@ func TestUserMachineHeartbeatCommitsServerReceiptTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	started := time.Now().UTC().Add(-time.Second)
-	if err := metering.NewRuntimeRepository(store, "").RecordHeartbeat(ctx, metering.ActivityHeartbeat{ProjectID: environmentID, MachineID: machineID, LastActivityAt: time.Unix(1, 0), LastHeartbeatAt: time.Unix(1, 0), ReporterVersion: "test"}); err != nil {
+	if err := metering.NewRuntimeRepository(store, "").RecordRuntimeObservation(ctx, metering.RuntimeObservation{ProjectID: environmentID, MachineID: machineID, ObservedAt: time.Unix(1, 0), ReporterVersion: "test"}); err != nil {
 		t.Fatal(err)
 	}
 	var state string
@@ -48,8 +46,8 @@ func TestRuntimeMeteringDebitsWeightedConcurrentMachines(t *testing.T) {
 	store := openRuntimeTestDB(t)
 	ctx := context.Background()
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
-	userID := seedMeteredProject(t, store, suffix, "a", "mach_a_"+suffix, "standard-1x", "1", 3600)
-	seedMeteredProjectForUser(t, store, suffix, userID, "b", "mach_b_"+suffix, "standard-2x", "2", 3600)
+	userID := seedMeteredProject(t, store, suffix, "a", "mach_a_"+suffix, "standard-1x", "1")
+	seedMeteredProjectForUser(t, store, suffix, userID, "b", "mach_b_"+suffix, "standard-2x", "2")
 	billingRepo := billing.NewRepository(store)
 	if err := billingRepo.GrantCredits(ctx, userID, "grant_"+suffix, "grant-"+suffix, "test", suffix, "10", nil); err != nil {
 		t.Fatal(err)
@@ -87,7 +85,7 @@ func TestRuntimeMeteringTreatsFlyStartedAsRunning(t *testing.T) {
 	store := openRuntimeTestDB(t)
 	ctx := context.Background()
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
-	userID := seedMeteredProject(t, store, suffix, "started", "mach_started_"+suffix, "standard-1x", "1", 7200)
+	userID := seedMeteredProject(t, store, suffix, "started", "mach_started_"+suffix, "standard-1x", "1")
 	billingRepo := billing.NewRepository(store)
 	if err := billingRepo.GrantCredits(ctx, userID, "grant_started_"+suffix, "grant-started-"+suffix, "test", suffix, "10", nil); err != nil {
 		t.Fatal(err)
@@ -123,7 +121,7 @@ func TestRuntimeMeteringCheckpointIsIdempotent(t *testing.T) {
 	store := openRuntimeTestDB(t)
 	ctx := context.Background()
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
-	userID := seedMeteredProject(t, store, suffix, "idem", "mach_idem_"+suffix, "standard-1x", "1", 3600)
+	userID := seedMeteredProject(t, store, suffix, "idem", "mach_idem_"+suffix, "standard-1x", "1")
 	billingRepo := billing.NewRepository(store)
 	if err := billingRepo.GrantCredits(ctx, userID, "grant_idem_"+suffix, "grant-idem-"+suffix, "test", suffix, "10", nil); err != nil {
 		t.Fatal(err)
@@ -156,7 +154,7 @@ func TestRuntimeMeteringRecoversCreatedCheckpointWithoutOverlap(t *testing.T) {
 	store := openRuntimeTestDB(t)
 	ctx := context.Background()
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
-	userID := seedMeteredProject(t, store, suffix, "recover", "mach_recover_"+suffix, "standard-1x", "1", 3600)
+	userID := seedMeteredProject(t, store, suffix, "recover", "mach_recover_"+suffix, "standard-1x", "1")
 	billingRepo := billing.NewRepository(store)
 	if err := billingRepo.GrantCredits(ctx, userID, "grant_recover_"+suffix, "grant-recover-"+suffix, "test", suffix, "10", nil); err != nil {
 		t.Fatal(err)
@@ -209,7 +207,7 @@ func TestRuntimeMeteringQueuesStopOnCreditExhaustion(t *testing.T) {
 	store := openRuntimeTestDB(t)
 	ctx := context.Background()
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
-	userID := seedMeteredProject(t, store, suffix, "poor", "mach_poor_"+suffix, "standard-2x", "2", 3600)
+	userID := seedMeteredProject(t, store, suffix, "poor", "mach_poor_"+suffix, "standard-2x", "2")
 	billingRepo := billing.NewRepository(store)
 	if err := billingRepo.GrantCredits(ctx, userID, "grant_poor_"+suffix, "grant-poor-"+suffix, "test", suffix, "1", nil); err != nil {
 		t.Fatal(err)
@@ -252,7 +250,7 @@ func TestRuntimeMeteringClosesIntervalOnStoppedProviderState(t *testing.T) {
 	store := openRuntimeTestDB(t)
 	ctx := context.Background()
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
-	userID := seedMeteredProject(t, store, suffix, "state", "mach_state_"+suffix, "standard-1x", "1", 3600)
+	userID := seedMeteredProject(t, store, suffix, "state", "mach_state_"+suffix, "standard-1x", "1")
 	billingRepo := billing.NewRepository(store)
 	if err := billingRepo.GrantCredits(ctx, userID, "grant_state_"+suffix, "grant-state-"+suffix, "test", suffix, "10", nil); err != nil {
 		t.Fatal(err)
@@ -304,7 +302,7 @@ func TestRuntimeMeteringCreatesTailCheckpointWhenPendingIntervalStops(t *testing
 	store := openRuntimeTestDB(t)
 	ctx := context.Background()
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
-	userID := seedMeteredProject(t, store, suffix, "tail", "mach_tail_"+suffix, "standard-1x", "1", 3600)
+	userID := seedMeteredProject(t, store, suffix, "tail", "mach_tail_"+suffix, "standard-1x", "1")
 	billingRepo := billing.NewRepository(store)
 	if err := billingRepo.GrantCredits(ctx, userID, "grant_tail_"+suffix, "grant-tail-"+suffix, "test", suffix, "10", nil); err != nil {
 		t.Fatal(err)
@@ -354,150 +352,11 @@ VALUES ($1, $2, $3, $4, $5, $6, 3600, 1, 1, $7, 'created')`,
 	}
 }
 
-func TestRuntimeMeteringQueuesIdleStop(t *testing.T) {
-	store := openRuntimeTestDB(t)
-	ctx := context.Background()
-	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
-	userID := seedMeteredProject(t, store, suffix, "idle", "mach_idle_"+suffix, "standard-1x", "1", 60)
-	billingRepo := billing.NewRepository(store)
-	if err := billingRepo.GrantCredits(ctx, userID, "grant_idle_"+suffix, "grant-idle-"+suffix, "test", suffix, "10", nil); err != nil {
-		t.Fatal(err)
-	}
-	flyClient := fly.NewFakeClient()
-	flyClient.Machines["mach_idle_"+suffix] = fly.Machine{ID: "mach_idle_" + suffix, State: "running"}
-	service := metering.NewRuntimeService(store, flyClient, billingRepo)
-	start := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
-	service.SetClock(func() time.Time { return start })
-	if err := service.RunOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	service.SetClock(func() time.Time { return start.Add(61 * time.Second) })
-	if err := service.RunOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	assertQueuedStop(t, store, "prj_idle_"+suffix, "project.stop.idle_timeout:prj_idle_"+suffix)
-	processMeteringStop(t, store, flyClient, "prj_idle_"+suffix)
-	assertProjectStateAndStorage(t, store, "prj_idle_"+suffix, userID, "stopped", 10)
-	if err := service.RunOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	var stopJobs int
-	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.orchestration_jobs WHERE idempotency_key=$1`, "project.stop.idle_timeout:prj_idle_"+suffix).Scan(&stopJobs); err != nil {
-		t.Fatal(err)
-	}
-	if stopJobs != 1 {
-		t.Fatalf("idle stop jobs after repeated enforcement = %d, want 1", stopJobs)
-	}
-
-	cfg := config.Default()
-	cfg.Secrets.EncryptionKey = "metering-lifecycle-test-key"
-	projectService := projects.NewService(store, audit.NewWriter(store), cfg)
-	if _, err := projectService.Start(ctx, userID, "prj_idle_"+suffix); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.orchestration_jobs SET state='succeeded', updated_at=now() WHERE state='queued' AND aggregate_id<>$1`, "prj_idle_"+suffix); err != nil {
-		t.Fatal(err)
-	}
-	if err := orchestrator.NewService(store, flyClient, cfg).RunOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	assertProjectStateAndStorage(t, store, "prj_idle_"+suffix, userID, "running", 10)
-}
-
-func TestRuntimeMeteringIdleWarningWithoutMarkerIsEmittedOnce(t *testing.T) {
-	store := openRuntimeTestDB(t)
-	ctx := context.Background()
-	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
-	userID := seedMeteredProject(t, store, suffix, "warn", "mach_warn_"+suffix, "standard-1x", "1", 60)
-	billingRepo := billing.NewRepository(store)
-	if err := billingRepo.GrantCredits(ctx, userID, "grant_warn_"+suffix, "grant-warn-"+suffix, "test", suffix, "10", nil); err != nil {
-		t.Fatal(err)
-	}
-	flyClient := fly.NewFakeClient()
-	flyClient.Machines["mach_warn_"+suffix] = fly.Machine{ID: "mach_warn_" + suffix, State: "running"}
-	service := metering.NewRuntimeService(store, flyClient, billingRepo)
-	service.SetEnforcementConfig(metering.EnforcementConfig{IdleWarningLead: 30 * time.Second})
-	start := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
-	service.SetClock(func() time.Time { return start })
-	if err := service.RunOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	warningAt := start.Add(31 * time.Second)
-	service.SetClock(func() time.Time { return warningAt })
-	if err := service.RunOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := service.RunOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	var warningEvents int
-	if err := store.SQL().QueryRowContext(ctx, `
-SELECT count(*) FROM paperboat.project_events
-WHERE project_id = $1 AND event_type = 'project.idle_stop_warning'`, "prj_warn_"+suffix).Scan(&warningEvents); err != nil {
-		t.Fatal(err)
-	}
-	if warningEvents != 1 {
-		t.Fatalf("idle warning events = %d, want 1", warningEvents)
-	}
-	var markerWarnings int
-	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.project_activity_markers WHERE project_id = $1 AND idle_warning_sent_at IS NOT NULL`, "prj_warn_"+suffix).Scan(&markerWarnings); err != nil {
-		t.Fatal(err)
-	}
-	if markerWarnings != 1 {
-		t.Fatalf("warning marker rows = %d, want 1", markerWarnings)
-	}
-}
-
-func TestRuntimeMeteringKeepAliveSuppressesIdleStopUntilExpiry(t *testing.T) {
-	store := openRuntimeTestDB(t)
-	ctx := context.Background()
-	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
-	userID := seedMeteredProject(t, store, suffix, "pin", "mach_pin_"+suffix, "standard-1x", "1", 60)
-	billingRepo := billing.NewRepository(store)
-	if err := billingRepo.GrantCredits(ctx, userID, "grant_pin_"+suffix, "grant-pin-"+suffix, "test", suffix, "10", nil); err != nil {
-		t.Fatal(err)
-	}
-	flyClient := fly.NewFakeClient()
-	flyClient.Machines["mach_pin_"+suffix] = fly.Machine{ID: "mach_pin_" + suffix, State: "running"}
-	service := metering.NewRuntimeService(store, flyClient, billingRepo)
-	start := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
-	service.SetClock(func() time.Time { return start })
-	if err := service.RunOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := metering.NewRuntimeRepository(store, "").RecordActivity(ctx, "prj_pin_"+suffix, start, "vm_heartbeat", nil); err != nil {
-		t.Fatal(err)
-	}
-	keepAliveUntil := start.Add(10 * time.Minute)
-	if _, err := store.SQL().ExecContext(ctx, `
-UPDATE paperboat.project_activity_markers
-SET keep_alive_until = $2
-WHERE project_id = $1`, "prj_pin_"+suffix, keepAliveUntil); err != nil {
-		t.Fatal(err)
-	}
-	service.SetClock(func() time.Time { return start.Add(2 * time.Minute) })
-	if err := service.RunOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	var queued int
-	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.orchestration_jobs WHERE idempotency_key = $1`, "project.stop.idle_timeout:prj_pin_"+suffix).Scan(&queued); err != nil {
-		t.Fatal(err)
-	}
-	if queued != 0 {
-		t.Fatalf("idle stop queued while keep-alive pin active")
-	}
-	service.SetClock(func() time.Time { return keepAliveUntil.Add(time.Second) })
-	if err := service.RunOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	assertQueuedStop(t, store, "prj_pin_"+suffix, "project.stop.idle_timeout:prj_pin_"+suffix)
-}
-
 func TestRuntimeMeteringQueuesStopOnEntitlementLoss(t *testing.T) {
 	store := openRuntimeTestDB(t)
 	ctx := context.Background()
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
-	userID := seedMeteredProject(t, store, suffix, "entitlement", "mach_entitlement_"+suffix, "standard-1x", "1", 600)
+	userID := seedMeteredProject(t, store, suffix, "entitlement", "mach_entitlement_"+suffix, "standard-1x", "1")
 	if _, err := store.SQL().ExecContext(ctx, `
 UPDATE paperboat.subscriptions SET state = 'canceled', current_period_end = $2 WHERE user_id = $1`, userID, time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
@@ -561,7 +420,7 @@ WHERE id = $1`, sessionID).Scan(&state, &revoked, &descriptor); err != nil {
 	}
 }
 
-func seedMeteredProject(t *testing.T, store *db.DB, suffix, label, machineID, machineCode, weight string, idleSeconds int) string {
+func seedMeteredProject(t *testing.T, store *db.DB, suffix, label, machineID, machineCode, weight string) string {
 	t.Helper()
 	userID := "usr_meter_" + suffix
 	if _, err := store.SQL().ExecContext(context.Background(), `INSERT INTO paperboat.users (id, workos_subject, primary_email, status) VALUES ($1, $2, $3, 'active')`, userID, "workos_meter_"+suffix, "meter-"+suffix+"@example.com"); err != nil {
@@ -572,25 +431,21 @@ INSERT INTO paperboat.subscriptions (id, user_id, provider, provider_subscriptio
 VALUES ($1, $2, 'polar', $3, 'active', NULL)`, "sub_seed_"+label+"_"+suffix, userID, "sub-seed-"+label+"-"+suffix); err != nil {
 		t.Fatal(err)
 	}
-	seedMeteredProjectForUser(t, store, suffix, userID, label, machineID, machineCode, weight, idleSeconds)
+	seedMeteredProjectForUser(t, store, suffix, userID, label, machineID, machineCode, weight)
 	return userID
 }
 
-func seedMeteredProjectForUser(t *testing.T, store *db.DB, suffix, userID, label, machineID, machineCode, weight string, idleSeconds int) {
+func seedMeteredProjectForUser(t *testing.T, store *db.DB, suffix, userID, label, machineID, machineCode, weight string) {
 	t.Helper()
 	ctx := context.Background()
 	projectID := "prj_" + label + "_" + suffix
 	machineTypeID := "mt_" + label + "_" + suffix
 	machineTypeVersionID := "mtv_" + label + "_" + suffix
-	idleID := "idle_" + label + "_" + suffix
 	regionID := "reg_" + label + "_" + suffix
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.machine_types (id, code, name, vcpu, memory_mb, credit_weight, active, current_version_id) VALUES ($1, $2, $3, 4, 8192, $4::numeric, true, $5)`, machineTypeID, machineCode+"-"+label+"-"+suffix, machineCode, weight, machineTypeVersionID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.machine_type_versions (id, machine_type_id, version_number, vcpu, memory_mb, credit_weight) VALUES ($1, $2, 1, 4, 8192, $3::numeric)`, machineTypeVersionID, machineTypeID, weight); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.idle_timeout_options (id, code, duration_seconds, active) VALUES ($1, $2, $3, true)`, idleID, "idle-"+label+"-"+suffix, idleSeconds); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.regions (id, code, name, enabled) VALUES ($1, $2, 'Test Region', true)`, regionID, "iad-"+label+"-"+suffix); err != nil {
@@ -617,8 +472,8 @@ func seedMeteredProjectForUser(t *testing.T, store *db.DB, suffix, userID, label
 	}
 	if _, err := store.SQL().ExecContext(ctx, `
 INSERT INTO paperboat.project_runtime_configs
-	(project_id, machine_type_version_id, idle_timeout_option_id, region_id, desired_config_hash, applied_storage_gb, applied_machine_type_version_id, applied_idle_timeout_option_id, applied_region_id, applied_config_hash)
-VALUES ($1, $2, $3, $4, 'hash', 10, $2, $3, $4, 'hash')`, projectID, machineTypeVersionID, idleID, regionID); err != nil {
+	(project_id, machine_type_version_id, region_id, desired_config_hash, applied_storage_gb, applied_machine_type_version_id, applied_region_id, applied_config_hash)
+VALUES ($1, $2, $3, 'hash', 10, $2, $3, 'hash')`, projectID, machineTypeVersionID, regionID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.fly_machines (id, project_id, fly_machine_id, state, image_ref, region) VALUES ($1, $2, $3, 'running', 'image', 'iad')`, "flm_"+label+"_"+suffix, projectID, machineID); err != nil {

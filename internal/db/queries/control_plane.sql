@@ -979,7 +979,9 @@ JOIN control_helpers h ON h.id = c.helper_id AND h.environment_id = c.environmen
 LEFT JOIN control_previews p ON p.route_id = r.id
 WHERE c.edge_node_id = sqlc.arg(edge_node_id)
   AND r.desired_state IN ('attached','replacing')
-  AND c.state IN ('pending','admitted') AND h.state = 'active'
+  AND c.state IN ('pending','admitted')
+  AND (c.expires_at IS NULL OR c.expires_at > sqlc.arg(now))
+  AND h.state = 'active'
 ORDER BY r.id;
 
 -- name: ListControlRoutesForEnvironmentAdmission :many

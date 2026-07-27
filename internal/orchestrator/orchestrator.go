@@ -468,13 +468,10 @@ func (s *Service) machineSpec(intent ProjectIntent, volumeID string) fly.Machine
 		"PAPERBOAT_REPOSITORY_URL":                   intent.RepositoryURL,
 		"PAPERBOAT_DEFAULT_BRANCH":                   intent.DefaultBranch,
 		"PAPERBOAT_PRESET_CODES":                     strings.Join(intent.PresetCodes, ","),
-		"PAPERBOAT_IDLE_TIMEOUT_CODE":                intent.IdleTimeoutCode,
 		"PAPERBOAT_SETUP_SCRIPT_REF":                 intent.SetupScriptRef,
 		"PAPERBOAT_DESIRED_CONFIG_SHA":               intent.DesiredConfigHash,
-		"PAPERBOAT_ACTIVITY_ENDPOINT":                strings.TrimRight(s.cfg.HTTP.PublicBaseURL, "/") + "/v1/environment-activity-observations",
 		"PAPERBOAT_CONFIG_SHUTDOWN_DEADLINE_SECONDS": fmt.Sprint(flushSeconds),
 		"PAPERBOAT_CONFIG_SHUTDOWN_GRACE_SECONDS":    fmt.Sprint(graceSeconds),
-		"PAPERBOAT_ACTIVITY_SHUTDOWN_REPORT_SECONDS": fmt.Sprint(reportSeconds),
 	}
 	spec := fly.MachineSpec{
 		Name:        machineName,
@@ -743,7 +740,6 @@ type ProjectIntent struct {
 	MemoryMB            int
 	RegionCode          string
 	PresetCodes         []string
-	IdleTimeoutCode     string
 	SetupScriptRef      string
 	DesiredConfigHash   string
 	PendingRestartApply bool
@@ -873,7 +869,7 @@ func (r *Repository) ProjectIntent(ctx context.Context, projectID string) (Proje
 	if err != nil {
 		return ProjectIntent{}, err
 	}
-	intent := ProjectIntent{ID: row.ID, UserID: row.UserID, RepositoryURL: row.SourceUrl, DefaultBranch: row.DefaultBranch, StorageGB: int(row.AssignedGb), MachineTypeCode: row.MachineTypeCode, VCPU: int(row.Vcpu), MemoryMB: int(row.MemoryMb), RegionCode: row.RegionCode, IdleTimeoutCode: row.IdleTimeoutCode, SetupScriptRef: row.SetupScriptRef, DesiredConfigHash: row.DesiredConfigHash, PendingRestartApply: row.PendingRestartApply}
+	intent := ProjectIntent{ID: row.ID, UserID: row.UserID, RepositoryURL: row.SourceUrl, DefaultBranch: row.DefaultBranch, StorageGB: int(row.AssignedGb), MachineTypeCode: row.MachineTypeCode, VCPU: int(row.Vcpu), MemoryMB: int(row.MemoryMb), RegionCode: row.RegionCode, SetupScriptRef: row.SetupScriptRef, DesiredConfigHash: row.DesiredConfigHash, PendingRestartApply: row.PendingRestartApply}
 	_ = json.Unmarshal(databaseBytes(row.PresetCodes), &intent.PresetCodes)
 	return intent, nil
 }

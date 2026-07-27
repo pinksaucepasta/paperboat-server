@@ -7,9 +7,6 @@ SELECT current_version_id FROM machine_types WHERE code=$1 AND active AND curren
 -- name: GetEnabledRegionID :one
 SELECT id FROM regions WHERE code=$1 AND enabled;
 
--- name: GetActiveIdleTimeoutID :one
-SELECT id FROM idle_timeout_options WHERE code=$1 AND active;
-
 -- name: GetActivePresetVersion :one
 SELECT current_version_id FROM vm_presets WHERE code=$1 AND active AND current_version_id IS NOT NULL;
 
@@ -23,8 +20,8 @@ INSERT INTO project_repositories (project_id,provider,source_url,default_branch)
 INSERT INTO project_storage_allocations (project_id,storage_account_id,assigned_gb) VALUES ($1,$2,$3);
 
 -- name: InsertProjectRuntimeConfig :exec
-INSERT INTO project_runtime_configs (project_id,machine_type_version_id,preset_version_ids,setup_script_ref,idle_timeout_option_id,region_id,pending_restart_apply,desired_config_hash)
-VALUES (sqlc.arg(project_id),sqlc.arg(machine_type_version_id),sqlc.arg(preset_version_ids),sqlc.arg(setup_script_ref),sqlc.arg(idle_timeout_option_id),sqlc.arg(region_id),true,sqlc.arg(desired_config_hash));
+INSERT INTO project_runtime_configs (project_id,machine_type_version_id,preset_version_ids,setup_script_ref,region_id,pending_restart_apply,desired_config_hash)
+VALUES (sqlc.arg(project_id),sqlc.arg(machine_type_version_id),sqlc.arg(preset_version_ids),sqlc.arg(setup_script_ref),sqlc.arg(region_id),true,sqlc.arg(desired_config_hash));
 
 -- name: InsertProjectSetupScriptRevision :exec
 INSERT INTO project_setup_script_revisions (id,project_id,revision_number,script_sha256,script_ciphertext,guidance,created_by_user_id)
@@ -45,21 +42,21 @@ SELECT p.id,p.version,p.name,p.state,p.created_at,p.updated_at,
 pr.provider,pr.source_url,pr.default_branch,psa.assigned_gb,
 mt.code AS machine_type_code,r.code AS region_code,
 coalesce(string_agg(DISTINCT vp.code,',' ORDER BY vp.code) FILTER (WHERE vp.code IS NOT NULL),'') AS preset_codes,
-ito.code AS idle_timeout_code,prc.setup_script_ref,prc.pending_restart_apply,prc.desired_config_hash,prc.applied_config_hash,
+prc.setup_script_ref,prc.pending_restart_apply,prc.desired_config_hash,prc.applied_config_hash,
 prc.applied_storage_gb,coalesce(amt.code,'') AS applied_machine_type_code,coalesce(ar.code,'') AS applied_region_code,
 coalesce(string_agg(DISTINCT avp.code,',' ORDER BY avp.code) FILTER (WHERE avp.code IS NOT NULL),'') AS applied_preset_codes,
-coalesce(aito.code,'') AS applied_idle_timeout_code,prc.applied_setup_script_ref,
+prc.applied_setup_script_ref,
 (SELECT count(*) FROM project_setup_script_revisions psr WHERE psr.project_id=p.id) AS setup_script_revisions
 FROM projects p JOIN project_repositories pr ON pr.project_id=p.id JOIN project_storage_allocations psa ON psa.project_id=p.id
 JOIN project_runtime_configs prc ON prc.project_id=p.id
 LEFT JOIN machine_type_versions mtv ON mtv.id=prc.machine_type_version_id LEFT JOIN machine_types mt ON mt.id=mtv.machine_type_id
-LEFT JOIN regions r ON r.id=prc.region_id LEFT JOIN idle_timeout_options ito ON ito.id=prc.idle_timeout_option_id
+LEFT JOIN regions r ON r.id=prc.region_id
 LEFT JOIN vm_preset_versions vpv ON vpv.id=ANY(prc.preset_version_ids) LEFT JOIN vm_presets vp ON vp.id=vpv.preset_id
 LEFT JOIN machine_type_versions amtv ON amtv.id=prc.applied_machine_type_version_id LEFT JOIN machine_types amt ON amt.id=amtv.machine_type_id
-LEFT JOIN regions ar ON ar.id=prc.applied_region_id LEFT JOIN idle_timeout_options aito ON aito.id=prc.applied_idle_timeout_option_id
+LEFT JOIN regions ar ON ar.id=prc.applied_region_id
 LEFT JOIN vm_preset_versions avpv ON avpv.id=ANY(prc.applied_preset_version_ids) LEFT JOIN vm_presets avp ON avp.id=avpv.preset_id
 WHERE p.id=$1 AND p.user_id=$2
-GROUP BY p.id,pr.project_id,psa.project_id,prc.project_id,mt.code,r.code,ito.code,amt.code,ar.code,aito.code;
+GROUP BY p.id,pr.project_id,psa.project_id,prc.project_id,mt.code,r.code,amt.code,ar.code;
 
 -- name: NextProjectSetupScriptRevision :one
 SELECT coalesce(max(revision_number),0)::integer+1 FROM project_setup_script_revisions WHERE project_id=$1;
@@ -69,7 +66,7 @@ UPDATE project_runtime_configs SET setup_script_ref=$2 WHERE project_id=$1;
 
 -- name: UpdateProjectDesiredRuntimeConfig :exec
 UPDATE project_runtime_configs SET machine_type_version_id=sqlc.arg(machine_type_version_id),preset_version_ids=sqlc.arg(preset_version_ids),
-idle_timeout_option_id=sqlc.arg(idle_timeout_option_id),region_id=sqlc.arg(region_id),pending_restart_apply=true,
+region_id=sqlc.arg(region_id),pending_restart_apply=true,
 desired_config_hash=sqlc.arg(desired_config_hash),version=version+1,updated_at=now()
 WHERE project_id=sqlc.arg(project_id) AND EXISTS (SELECT 1 FROM projects WHERE id=sqlc.arg(project_id) AND user_id=sqlc.arg(user_id));
 
@@ -132,16 +129,6 @@ SELECT coalesce(ca.balance,0)::numeric >= ((((sqlc.arg(window_seconds)::bigint):
 FROM projects p JOIN project_runtime_configs prc ON prc.project_id=p.id
 JOIN machine_type_versions mtv ON mtv.id=CASE WHEN sqlc.arg(use_desired_config)::boolean THEN prc.machine_type_version_id ELSE prc.applied_machine_type_version_id END
 LEFT JOIN credit_accounts ca ON ca.user_id=p.user_id WHERE p.id=sqlc.arg(project_id) AND p.user_id=sqlc.arg(user_id);
-
--- name: UpsertProjectActivityRecord :exec
-INSERT INTO project_activity_markers (project_id,last_activity_at,source,metadata)
-VALUES (sqlc.arg(project_id),sqlc.arg(last_activity_at),sqlc.arg(source),sqlc.arg(metadata)::jsonb)
-ON CONFLICT (project_id) DO UPDATE SET last_activity_at=greatest(project_activity_markers.last_activity_at,EXCLUDED.last_activity_at),source=EXCLUDED.source,metadata=EXCLUDED.metadata,updated_at=now();
-
--- name: UpsertProjectKeepAlive :exec
-INSERT INTO project_activity_markers (project_id,last_activity_at,source,metadata,keep_alive_until,idle_warning_sent_at)
-VALUES (sqlc.arg(project_id),now(),'connect_session','{}'::jsonb,sqlc.narg(keep_alive_until),NULL)
-ON CONFLICT (project_id) DO UPDATE SET keep_alive_until=EXCLUDED.keep_alive_until,idle_warning_sent_at=NULL,updated_at=now();
 
 -- name: ListProjectEvents :many
 SELECT id,event_type,message,metadata,created_at FROM project_events WHERE project_id=$1 ORDER BY created_at ASC;

@@ -4,7 +4,10 @@
   "http": {
     "address": "127.0.0.1:8080",
     "public_base_url": "http://127.0.0.1:8080",
-    "allowed_origins": ["http://localhost:3000", "http://127.0.0.1:3000"],
+    "allowed_origins": [
+      "http://localhost:3000",
+      "http://127.0.0.1:3000"
+    ],
     "read_header_timeout": 5000000000,
     "request_timeout": 15000000000,
     "shutdown_timeout": 10000000000,
@@ -24,13 +27,15 @@
     "checkout_reservation_ttl": 1800000000000
   },
   "metering": {
-    "minimum_start_credit_window": 300000000000,
-    "max_keep_alive_duration": 43200000000000
+    "minimum_start_credit_window": 300000000000
   },
   "user_machines": {
     "pairing_lifetime": 600000000000,
     "offline_after": 120000000000,
-    "allowed_platforms": ["darwin", "linux"],
+    "allowed_platforms": [
+      "darwin",
+      "linux"
+    ],
     "helper_listen_port": 38080,
     "bootstrap_command": "",
     "helper_artifacts_json": "",
@@ -46,7 +51,13 @@
   "cli_auth": {
     "verification_url": "http://localhost:3000/cli/authorize",
     "client_id": "paperboat-cli",
-    "allowed_scopes": ["account:read", "clients:revoke", "projects:read", "projects:connect", "session:refresh"],
+    "allowed_scopes": [
+      "account:read",
+      "clients:revoke",
+      "projects:read",
+      "projects:connect",
+      "session:refresh"
+    ],
     "mint_active_key_id": "",
     "mint_jwks_max_age": 300000000000,
     "mint_proof_lifetime": 120000000000,
@@ -62,7 +73,9 @@
   "github": {
     "oauth_authorize_url": "https://github.com/login/oauth/authorize",
     "oauth_token_url": "https://github.com/login/oauth/access_token",
-    "oauth_scopes": ["repo"],
+    "oauth_scopes": [
+      "repo"
+    ],
     "config_repo_name": "paperboat-config",
     "config_repo_branch": "main"
   },
@@ -73,7 +86,10 @@
     "volume_name_prefix": "pbvol",
     "machine_name_prefix": "pbvm",
     "mount_path": "/workspace",
-    "boot_command": ["/usr/local/bin/pbh", "run"],
+    "boot_command": [
+      "/usr/local/bin/pbh",
+      "run"
+    ],
     "operation_timeout": 30000000000,
     "orchestration_lease": 300000000000
   },
@@ -82,7 +98,9 @@
     "connect_ready_timeout": 2000000000,
     "connect_poll_interval": 100000000,
     "upload_max_bytes": 10485760,
-    "upload_allowed_mime_types": ["image/*"],
+    "upload_allowed_mime_types": [
+      "image/*"
+    ],
     "upload_retention": 604800000000000
   },
   "providers": {
@@ -93,7 +111,9 @@
     }
   },
   "secrets": {
-    "session_keys": ["development-session-key-change-me"],
+    "session_keys": [
+      "development-session-key-change-me"
+    ],
     "encryption_key": "development-encryption-key-change-me"
   }
 }

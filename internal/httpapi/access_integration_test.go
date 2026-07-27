@@ -104,29 +104,6 @@ func TestConnectionReadinessWaitsForTerminalSessionReconciliation(t *testing.T) 
 	}
 }
 
-func TestConnectionReadinessDoesNotRecordActivity(t *testing.T) {
-	store, router, projectID := newAccessIntegrationRouter(t, "status-no-activity@example.com")
-	cookies := loginCookies(t, router, "workos_seed_status-no-activity@example.com:status-no-activity@example.com:Status No Activity")
-	if _, err := store.SQL().ExecContext(context.Background(), `DELETE FROM paperboat.project_activity_markers WHERE project_id = $1`, projectID); err != nil {
-		t.Fatal(err)
-	}
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/v1/projects/"+projectID+"/connection-readiness", nil)
-	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status code = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	var markers int
-	if err := store.SQL().QueryRowContext(context.Background(), `SELECT count(*) FROM paperboat.project_activity_markers WHERE project_id = $1`, projectID).Scan(&markers); err != nil {
-		t.Fatal(err)
-	}
-	if markers != 0 {
-		t.Fatalf("activity markers = %d, want 0", markers)
-	}
-}
-
 func TestConnectionReadinessSurfacesLatestStopReason(t *testing.T) {
 	store, router, projectID := newAccessIntegrationRouter(t, "status-stop-reason@example.com")
 	insertAccessResource(t, store, projectID)
@@ -136,7 +113,7 @@ func TestConnectionReadinessSurfacesLatestStopReason(t *testing.T) {
 	}
 	if _, err := store.SQL().ExecContext(context.Background(), `
 INSERT INTO paperboat.project_events (id, project_id, event_type, message, metadata)
-VALUES ($2, $1, 'project.stop_queued.idle_timeout', 'stopped for test', '{}'::jsonb)`, projectID, "pevt_stop_reason_"+projectID); err != nil {
+VALUES ($2, $1, 'project.stop_queued.credit_exhausted', 'stopped for test', '{}'::jsonb)`, projectID, "pevt_stop_reason_"+projectID); err != nil {
 		t.Fatal(err)
 	}
 	rec := httptest.NewRecorder()
@@ -146,20 +123,20 @@ VALUES ($2, $1, 'project.stop_queued.idle_timeout', 'stopped for test', '{}'::js
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status code = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"connectable":false`) || !strings.Contains(rec.Body.String(), `"reason":"idle_timeout"`) {
-		t.Fatalf("expected idle stop reason in status, body = %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"connectable":false`) || !strings.Contains(rec.Body.String(), `"reason":"credit_exhausted"`) {
+		t.Fatalf("expected credit stop reason in status, body = %s", rec.Body.String())
 	}
 }
 
-func TestEnvironmentActivityObservationRequiresProjectMachineCredential(t *testing.T) {
+func TestRuntimeObservationRequiresProjectMachineCredential(t *testing.T) {
 	store, router, projectID := newAccessIntegrationRouter(t, "heartbeat@example.com")
 	const machineID = "fly_machine_heartbeat"
 	const machineToken = "project-scoped-machine-token"
 	seedHeartbeatMachineCredential(t, store, projectID, machineID, machineToken)
 
-	body := `{"environment_id":"` + projectID + `","resource_id":"` + machineID + `","last_activity_at":"2026-07-06T12:00:00Z","sampled_at":"2026-07-06T12:00:05Z","reporter_version":"test","signals":{"input":"2026-07-06T12:00:00Z"},"config_sync":{"state":"warning","last_attempt_at":"2026-07-06T12:00:04Z","last_successful_sync_at":"2026-07-06T11:59:00Z","remote_commit":"abc123","pending_path_count":3,"skipped":[{"path":".config/a","bytes":6,"reason":"max_file_bytes"},{"path":".config/b","bytes":7,"reason":"max_file_bytes"},{"path":".config/c","bytes":8,"reason":"max_file_bytes"}],"conflicts":[],"error_code":"","error_message":"","max_file_bytes":10,"max_batch_bytes":20,"policy_revision":"test-policy","updated_at":"2026-07-06T12:00:04Z"}}`
+	body := `{"environment_id":"` + projectID + `","resource_id":"` + machineID + `","sampled_at":"2026-07-06T12:00:05Z","reporter_version":"test","config_sync":{"state":"warning","last_attempt_at":"2026-07-06T12:00:04Z","last_successful_sync_at":"2026-07-06T11:59:00Z","remote_commit":"abc123","pending_path_count":3,"skipped":[{"path":".config/a","bytes":6,"reason":"max_file_bytes"},{"path":".config/b","bytes":7,"reason":"max_file_bytes"},{"path":".config/c","bytes":8,"reason":"max_file_bytes"}],"conflicts":[],"error_code":"","error_message":"","max_file_bytes":10,"max_batch_bytes":20,"policy_revision":"test-policy","updated_at":"2026-07-06T12:00:04Z"}}`
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/environment-activity-observations", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer wrong-token")
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(rec, req)
@@ -169,7 +146,7 @@ func TestEnvironmentActivityObservationRequiresProjectMachineCredential(t *testi
 
 	otherProjectBody := strings.Replace(body, projectID, "other-project", 1)
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/v1/environment-activity-observations", strings.NewReader(otherProjectBody))
+	req = httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(otherProjectBody))
 	req.Header.Set("Authorization", "Bearer "+machineToken)
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(rec, req)
@@ -179,7 +156,7 @@ func TestEnvironmentActivityObservationRequiresProjectMachineCredential(t *testi
 
 	wrongMachineBody := strings.Replace(body, machineID, "stale-machine", 1)
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/v1/environment-activity-observations", strings.NewReader(wrongMachineBody))
+	req = httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(wrongMachineBody))
 	req.Header.Set("Authorization", "Bearer "+machineToken)
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(rec, req)
@@ -188,19 +165,12 @@ func TestEnvironmentActivityObservationRequiresProjectMachineCredential(t *testi
 	}
 
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/v1/environment-activity-observations", strings.NewReader(body))
+	req = httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+machineToken)
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("valid heartbeat status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	var recordedMachine string
-	if err := store.SQL().QueryRowContext(context.Background(), `SELECT machine_id FROM paperboat.project_activity_markers WHERE project_id = $1`, projectID).Scan(&recordedMachine); err != nil {
-		t.Fatal(err)
-	}
-	if recordedMachine != machineID {
-		t.Fatalf("recorded machine = %q, want %q", recordedMachine, machineID)
 	}
 	var syncState, policyRevision string
 	var pending, skippedCount int
@@ -218,7 +188,7 @@ func TestEnvironmentActivityObservationRequiresProjectMachineCredential(t *testi
 	older = strings.Replace(older, `"updated_at":"2026-07-06T12:00:04Z"`, `"updated_at":"2026-07-06T11:00:04Z"`, 1)
 	older = strings.Replace(older, `"state":"warning"`, `"state":"healthy"`, 1)
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/v1/environment-activity-observations", strings.NewReader(older))
+	req = httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(older))
 	req.Header.Set("Authorization", "Bearer "+machineToken)
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(rec, req)
@@ -242,7 +212,7 @@ func TestEnvironmentActivityObservationRequiresProjectMachineCredential(t *testi
 	corrected = strings.Replace(corrected, `"updated_at":"2026-07-06T12:00:04Z"`, `"updated_at":"2026-07-06T12:01:04Z"`, 1)
 	corrected = strings.Replace(corrected, `"state":"warning"`, `"state":"healthy"`, 1)
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/v1/environment-activity-observations", strings.NewReader(corrected))
+	req = httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(corrected))
 	req.Header.Set("Authorization", "Bearer "+machineToken)
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(rec, req)
@@ -306,141 +276,6 @@ func TestConfigSyncStatusEndpointAuthorizationAndEntitlement(t *testing.T) {
 	router.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusForbidden || !strings.Contains(recorder.Body.String(), `"code":"insufficient_scope"`) {
 		t.Fatalf("missing account:read status = %d %s", recorder.Code, recorder.Body.String())
-	}
-}
-
-func TestProjectActivityCallbackRecordsHelperAndCLIActivity(t *testing.T) {
-	store, router, projectID := newAccessIntegrationRouter(t, "client-activity@example.com")
-	cookies := loginCookies(t, router, "workos_seed_client-activity@example.com:client-activity@example.com:Client Activity")
-	body := `{"source":"helper_activity","observed_at":"2026-07-06T12:03:00Z","metadata":{"event":"editor_input"}}`
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/activity", strings.NewReader(body))
-	addCookies(req, cookies)
-	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
-	req.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("activity status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	var source string
-	var metadata string
-	if err := store.SQL().QueryRowContext(context.Background(), `SELECT source, metadata::text FROM paperboat.project_activity_markers WHERE project_id = $1`, projectID).Scan(&source, &metadata); err != nil {
-		t.Fatal(err)
-	}
-	if source != "helper_activity" {
-		t.Fatalf("activity source = %q, want helper_activity", source)
-	}
-	if !strings.Contains(metadata, "client_observed_at") {
-		t.Fatalf("metadata did not preserve client observed time: %s", metadata)
-	}
-
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/activity", strings.NewReader(`{"source":"cli_activity","metadata":{"event":"terminal_input"}}`))
-	addCookies(req, cookies)
-	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
-	req.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("cli activity status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	if err := store.SQL().QueryRowContext(context.Background(), `SELECT source FROM paperboat.project_activity_markers WHERE project_id = $1`, projectID).Scan(&source); err != nil {
-		t.Fatal(err)
-	}
-	if source != "cli_activity" {
-		t.Fatalf("activity source = %q, want cli_activity", source)
-	}
-
-	tokens := authorizeCLI(t, router, cookies)
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/activity", strings.NewReader(`{"source":"cli_activity","metadata":{"event":"agent_output"}}`))
-	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
-	req.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("bearer CLI activity status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestProjectActivityCallbackRequiresCSRF(t *testing.T) {
-	_, router, projectID := newAccessIntegrationRouter(t, "activity-csrf@example.com")
-	cookies := loginCookies(t, router, "workos_seed_activity-csrf@example.com:activity-csrf@example.com:Activity CSRF")
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/activity", strings.NewReader(`{"source":"helper_activity"}`))
-	addCookies(req, cookies)
-	req.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("activity without csrf status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestProjectActivityCallbackRejectsUnapprovedSource(t *testing.T) {
-	_, router, projectID := newAccessIntegrationRouter(t, "bad-activity@example.com")
-	cookies := loginCookies(t, router, "workos_seed_bad-activity@example.com:bad-activity@example.com:Bad Activity")
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/activity", strings.NewReader(`{"source":"browser_ping"}`))
-	addCookies(req, cookies)
-	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
-	req.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("activity status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "invalid_activity_source") {
-		t.Fatalf("expected invalid_activity_source, body = %s", rec.Body.String())
-	}
-}
-
-func TestProjectKeepAliveRequiresCSRF(t *testing.T) {
-	_, router, projectID := newAccessIntegrationRouter(t, "keepalive-csrf@example.com")
-	cookies := loginCookies(t, router, "workos_seed_keepalive-csrf@example.com:keepalive-csrf@example.com:Keepalive CSRF")
-	body := `{"duration_seconds":3600}`
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/keep-alive", strings.NewReader(body))
-	addCookies(req, cookies)
-	req.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("missing csrf status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/keep-alive", strings.NewReader(body))
-	addCookies(req, cookies)
-	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
-	req.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("with csrf status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestProjectKeepAliveRejectsZeroDurationUnlessClear(t *testing.T) {
-	_, router, projectID := newAccessIntegrationRouter(t, "keepalive-zero@example.com")
-	cookies := loginCookies(t, router, "workos_seed_keepalive-zero@example.com:keepalive-zero@example.com:Keepalive Zero")
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/keep-alive", strings.NewReader(`{"duration_seconds":0}`))
-	addCookies(req, cookies)
-	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
-	req.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("zero duration status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/keep-alive", strings.NewReader(`{"clear":true}`))
-	addCookies(req, cookies)
-	req.Header.Set(auth.CSRFHeaderName, csrfCookie(t, cookies))
-	req.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("clear status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -1266,7 +1101,6 @@ func newAccessIntegrationRouterWithService(t *testing.T, email string, client ac
 		MachineTypeCode: "standard-1x",
 		RegionCode:      "iad",
 		PresetCodes:     []string{"codex"},
-		IdleTimeoutCode: "15m",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1312,9 +1146,6 @@ func seedAccessCatalogs(t *testing.T, store *db.DB) {
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.regions (id, code, name, enabled) VALUES ('region_iad', 'iad', 'Ashburn', true)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.idle_timeout_options (id, code, duration_seconds, active) VALUES ('idle_15m', '15m', 900, true)`); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func grantAccessCreditsAndStorage(t *testing.T, store *db.DB, userID string) {
@@ -1336,7 +1167,6 @@ SET applied_config_hash = desired_config_hash,
     applied_machine_type_version_id = machine_type_version_id,
     applied_preset_version_ids = preset_version_ids,
     applied_setup_script_ref = setup_script_ref,
-    applied_idle_timeout_option_id = idle_timeout_option_id,
     applied_region_id = region_id,
     pending_restart_apply = false
 WHERE project_id = $1`, projectID); err != nil {

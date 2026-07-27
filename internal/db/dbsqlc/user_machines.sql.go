@@ -555,8 +555,8 @@ func (q *Queries) CreateUserMachinePairing(ctx context.Context, arg CreateUserMa
 }
 
 const createUserMachineTerminalSession = `-- name: CreateUserMachineTerminalSession :exec
-INSERT INTO user_machine_terminal_sessions (id,user_machine_id,terminal_id,name,auto_name_ordinal,idempotency_key,launch_cwd)
-VALUES ($1,$2,$3,$4,nullif($5,0),$6,$7)
+INSERT INTO user_machine_terminal_sessions (id,user_machine_id,terminal_id,name,auto_name_ordinal,idempotency_key,launch_cwd,terminal_mode)
+VALUES ($1,$2,$3,$4,nullif($5,0),$6,$7,$8)
 `
 
 type CreateUserMachineTerminalSessionParams struct {
@@ -567,6 +567,7 @@ type CreateUserMachineTerminalSessionParams struct {
 	AutoNameOrdinal interface{}
 	IdempotencyKey  sql.NullString
 	LaunchCwd       string
+	TerminalMode    string
 }
 
 func (q *Queries) CreateUserMachineTerminalSession(ctx context.Context, arg CreateUserMachineTerminalSessionParams) error {
@@ -578,6 +579,7 @@ func (q *Queries) CreateUserMachineTerminalSession(ctx context.Context, arg Crea
 		arg.AutoNameOrdinal,
 		arg.IdempotencyKey,
 		arg.LaunchCwd,
+		arg.TerminalMode,
 	)
 	return err
 }
@@ -782,7 +784,7 @@ func (q *Queries) GetActiveUserMachineSeatQuantity(ctx context.Context, userID s
 }
 
 const getDefaultUserMachineTerminalSession = `-- name: GetDefaultUserMachineTerminalSession :one
-SELECT s.id, s.user_machine_id, s.terminal_id, s.thread_id, s.name, s.idempotency_key, s.is_default, s.auto_name_ordinal, s.launch_cwd, s.desired_state, s.runtime_state, s.last_activity_at, s.last_runtime_sync_at, s.last_runtime_sequence, s.deleted_at, s.version, s.created_at, s.updated_at FROM user_machine_terminal_sessions s
+SELECT s.id, s.user_machine_id, s.terminal_id, s.thread_id, s.name, s.idempotency_key, s.is_default, s.auto_name_ordinal, s.launch_cwd, s.desired_state, s.runtime_state, s.last_activity_at, s.last_runtime_sync_at, s.last_runtime_sequence, s.deleted_at, s.version, s.created_at, s.updated_at, s.terminal_mode FROM user_machine_terminal_sessions s
 JOIN user_machines m ON m.id=s.user_machine_id
 WHERE s.user_machine_id=$1 AND m.user_id=$2
   AND m.deleted_at IS NULL AND s.is_default AND s.deleted_at IS NULL
@@ -815,6 +817,7 @@ func (q *Queries) GetDefaultUserMachineTerminalSession(ctx context.Context, arg 
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TerminalMode,
 	)
 	return i, err
 }
@@ -1481,7 +1484,7 @@ func (q *Queries) GetUserMachineRuntimeMetrics(ctx context.Context) (GetUserMach
 }
 
 const getUserMachineTerminalSession = `-- name: GetUserMachineTerminalSession :one
-SELECT s.id, s.user_machine_id, s.terminal_id, s.thread_id, s.name, s.idempotency_key, s.is_default, s.auto_name_ordinal, s.launch_cwd, s.desired_state, s.runtime_state, s.last_activity_at, s.last_runtime_sync_at, s.last_runtime_sequence, s.deleted_at, s.version, s.created_at, s.updated_at FROM user_machine_terminal_sessions s
+SELECT s.id, s.user_machine_id, s.terminal_id, s.thread_id, s.name, s.idempotency_key, s.is_default, s.auto_name_ordinal, s.launch_cwd, s.desired_state, s.runtime_state, s.last_activity_at, s.last_runtime_sync_at, s.last_runtime_sequence, s.deleted_at, s.version, s.created_at, s.updated_at, s.terminal_mode FROM user_machine_terminal_sessions s
 JOIN user_machines m ON m.id=s.user_machine_id
 WHERE s.id=$1 AND s.user_machine_id=$2
   AND m.user_id=$3 AND m.deleted_at IS NULL AND s.deleted_at IS NULL
@@ -1515,12 +1518,13 @@ func (q *Queries) GetUserMachineTerminalSession(ctx context.Context, arg GetUser
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TerminalMode,
 	)
 	return i, err
 }
 
 const getUserMachineTerminalSessionByIdempotencyKey = `-- name: GetUserMachineTerminalSessionByIdempotencyKey :one
-SELECT s.id, s.user_machine_id, s.terminal_id, s.thread_id, s.name, s.idempotency_key, s.is_default, s.auto_name_ordinal, s.launch_cwd, s.desired_state, s.runtime_state, s.last_activity_at, s.last_runtime_sync_at, s.last_runtime_sequence, s.deleted_at, s.version, s.created_at, s.updated_at FROM user_machine_terminal_sessions s
+SELECT s.id, s.user_machine_id, s.terminal_id, s.thread_id, s.name, s.idempotency_key, s.is_default, s.auto_name_ordinal, s.launch_cwd, s.desired_state, s.runtime_state, s.last_activity_at, s.last_runtime_sync_at, s.last_runtime_sequence, s.deleted_at, s.version, s.created_at, s.updated_at, s.terminal_mode FROM user_machine_terminal_sessions s
 JOIN user_machines m ON m.id=s.user_machine_id
 WHERE s.user_machine_id=$1 AND m.user_id=$2
   AND s.idempotency_key=$3 AND s.deleted_at IS NULL
@@ -1554,6 +1558,7 @@ func (q *Queries) GetUserMachineTerminalSessionByIdempotencyKey(ctx context.Cont
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TerminalMode,
 	)
 	return i, err
 }
@@ -1858,7 +1863,7 @@ func (q *Queries) ListRevokedUserMachineEnvironmentsForUser(ctx context.Context,
 }
 
 const listUserMachineTerminalSessions = `-- name: ListUserMachineTerminalSessions :many
-SELECT s.id, s.user_machine_id, s.terminal_id, s.thread_id, s.name, s.idempotency_key, s.is_default, s.auto_name_ordinal, s.launch_cwd, s.desired_state, s.runtime_state, s.last_activity_at, s.last_runtime_sync_at, s.last_runtime_sequence, s.deleted_at, s.version, s.created_at, s.updated_at FROM user_machine_terminal_sessions s
+SELECT s.id, s.user_machine_id, s.terminal_id, s.thread_id, s.name, s.idempotency_key, s.is_default, s.auto_name_ordinal, s.launch_cwd, s.desired_state, s.runtime_state, s.last_activity_at, s.last_runtime_sync_at, s.last_runtime_sequence, s.deleted_at, s.version, s.created_at, s.updated_at, s.terminal_mode FROM user_machine_terminal_sessions s
 JOIN user_machines m ON m.id=s.user_machine_id
 WHERE s.user_machine_id=$1 AND m.user_id=$2
   AND m.deleted_at IS NULL AND s.deleted_at IS NULL
@@ -1898,6 +1903,7 @@ func (q *Queries) ListUserMachineTerminalSessions(ctx context.Context, arg ListU
 			&i.Version,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.TerminalMode,
 		); err != nil {
 			return nil, err
 		}

@@ -32,7 +32,7 @@ func TestHelperProfilesDoNotGrantHostedLifecycleToBYOD(t *testing.T) {
 	}
 	readJSON(t, "helper/profiles.json", &profiles)
 	byod := profiles.Profiles["byod"]
-	if !contains(byod.Required, "terminal.v1") || !contains(byod.Forbidden, "hosted.lifecycle.v1") {
+	if !contains(byod.Required, "terminal.v2") || !contains(byod.Forbidden, "hosted.lifecycle.v1") {
 		t.Fatalf("unsafe BYOD profile: %#v", byod)
 	}
 	if byod.Conditional["config.apply.v1"] == "" {
@@ -83,7 +83,7 @@ func TestCredentialClassesAreNonInterchangeable(t *testing.T) {
 			seenAuthority[key] = class.ID
 		}
 	}
-	for _, required := range []string{"cli_session", "helper_enrollment", "helper_identity", "connector_admission", "terminal_operation", "image_stage", "preview_registration", "activity_report", "config_sync", "signed_update", "edge_control", "usage_report"} {
+	for _, required := range []string{"cli_session", "helper_enrollment", "helper_identity", "connector_admission", "terminal_operation", "image_stage", "preview_registration", "config_sync", "signed_update", "edge_control", "usage_report"} {
 		if !seenID[required] {
 			t.Errorf("missing credential class %q", required)
 		}

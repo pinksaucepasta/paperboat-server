@@ -5,7 +5,7 @@ Status: implemented contract baseline, pending production provider values.
 ## Dynamic Catalog Rule
 
 Plans, credits, storage amounts, machine types, machine weights, presets,
-idle-timeout options, regions, billing products, endpoint URLs, domain names, webhook
+regions, billing products, endpoint URLs, domain names, webhook
 mappings, and feature switches must be dynamic configuration or database seed records.
 They must not be hardcoded into production logic.
 
@@ -141,7 +141,6 @@ Production deployment must seed these catalogs from approved dynamic sources:
 - `plan_versions`
 - `machine_types`
 - `vm_presets`
-- `idle_timeout_options`
 - `regions`
 - `billing_products`
 - `feature_flags`

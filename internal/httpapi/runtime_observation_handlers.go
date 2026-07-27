@@ -18,19 +18,19 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/usermachines"
 )
 
-type activityHeartbeatRepository interface {
+type runtimeObservationRepository interface {
 	VerifyHeartbeatCredential(context.Context, string, string, string) error
-	RecordHeartbeat(context.Context, metering.ActivityHeartbeat) error
+	RecordRuntimeObservation(context.Context, metering.RuntimeObservation) error
 }
 
-type activityIdentityVerifier interface {
-	VerifyActivityHeartbeat(context.Context, string, []byte, []byte, string, string) error
+type runtimeIdentityVerifier interface {
+	VerifyRuntimeObservation(context.Context, string, []byte, []byte, string, string) error
 }
 type availabilityObservationRepository interface {
 	RecordAvailabilityObservation(context.Context, string, string, usermachines.AvailabilityObservation) error
 }
 
-func activityHeartbeat(repo activityHeartbeatRepository, identities activityIdentityVerifier, summaryLimit int, availabilityObservers ...availabilityObservationRepository) http.HandlerFunc {
+func runtimeObservation(repo runtimeObservationRepository, identities runtimeIdentityVerifier, summaryLimit int, availabilityObservers ...availabilityObservationRepository) http.HandlerFunc {
 	var availability availabilityObservationRepository
 	if len(availabilityObservers) > 0 {
 		availability = availabilityObservers[0]
@@ -39,8 +39,6 @@ func activityHeartbeat(repo activityHeartbeatRepository, identities activityIden
 		var req struct {
 			EnvironmentID      string                                `json:"environment_id"`
 			ResourceID         string                                `json:"resource_id"`
-			LastActivityAt     time.Time                             `json:"last_activity_at"`
-			Signals            map[string]string                     `json:"signals"`
 			ReporterVersion    string                                `json:"reporter_version"`
 			SampledAt          time.Time                             `json:"sampled_at"`
 			ConfigSync         *configsync.Status                    `json:"config_sync"`
@@ -60,8 +58,8 @@ func activityHeartbeat(repo activityHeartbeatRepository, identities activityIden
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "Heartbeat payload is invalid JSON.")
 			return
 		}
-		if req.EnvironmentID == "" || req.ResourceID == "" || req.LastActivityAt.IsZero() || req.SampledAt.IsZero() {
-			writeError(w, r, http.StatusBadRequest, "invalid_request", "Heartbeat payload is missing required fields.")
+		if req.EnvironmentID == "" || req.ResourceID == "" || req.SampledAt.IsZero() {
+			writeError(w, r, http.StatusBadRequest, "invalid_request", "Runtime observation is missing required fields.")
 			return
 		}
 		if req.RuntimeDiagnostics != nil && (req.RuntimeDiagnostics.WorkerGeneration < 1 || req.RuntimeDiagnostics.OSBootID == "" || len(req.RuntimeDiagnostics.OSBootID) > 256 || strings.ContainsAny(req.RuntimeDiagnostics.OSBootID, "\x00\r\n") || !slices.Contains([]string{"unknown", "user", "system"}, req.RuntimeDiagnostics.WorkerServiceScope) || !slices.Contains([]string{"ready", "degraded", "unavailable"}, req.RuntimeDiagnostics.ConnectorState) || req.RuntimeDiagnostics.ObservedAt.IsZero()) {
@@ -73,14 +71,14 @@ func activityHeartbeat(repo activityHeartbeatRepository, identities activityIden
 		if identities != nil && r.Header.Get("X-Paperboat-Helper-Proof") != "" {
 			proof, proofErr := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Helper-Proof"))
 			if proofErr == nil {
-				authErr = identities.VerifyActivityHeartbeat(r.Context(), got, proof, body, req.EnvironmentID, req.ResourceID)
+				authErr = identities.VerifyRuntimeObservation(r.Context(), got, proof, body, req.EnvironmentID, req.ResourceID)
 			}
 		} else {
 			authErr = repo.VerifyHeartbeatCredential(r.Context(), req.EnvironmentID, req.ResourceID, got)
 		}
 		if authErr != nil {
 			if errors.Is(authErr, metering.ErrInvalidHeartbeatCredential) || errors.Is(authErr, controlplane.ErrHelperProof) {
-				writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Environment activity credential is invalid.")
+				writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Runtime observation credential is invalid.")
 				return
 			}
 			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
@@ -97,7 +95,7 @@ func activityHeartbeat(repo activityHeartbeatRepository, identities activityIden
 			if !validOrder {
 				normalized.State = "error"
 				normalized.ErrorCode = "status_clock_invalid"
-				normalized.ErrorMessage = "Config sync status timestamp is newer than its activity sample."
+				normalized.ErrorMessage = "Config sync status timestamp is newer than its runtime observation."
 			}
 			normalized.UpdatedAt = statusUpdated
 			req.ConfigSync = &normalized
@@ -125,25 +123,23 @@ func activityHeartbeat(repo activityHeartbeatRepository, identities activityIden
 				return
 			}
 		}
-		heartbeat := metering.ActivityHeartbeat{
+		observation := metering.RuntimeObservation{
 			ProjectID:            req.EnvironmentID,
 			MachineID:            req.ResourceID,
-			LastActivityAt:       req.LastActivityAt.UTC(),
-			LastHeartbeatAt:      req.SampledAt.UTC(),
+			ObservedAt:           req.SampledAt.UTC(),
 			ReporterVersion:      req.ReporterVersion,
-			Signals:              req.Signals,
 			ConfigSync:           req.ConfigSync,
 			ConfigSyncObservedAt: req.ConfigSyncObservedAt,
 		}
 		if req.RuntimeDiagnostics != nil {
-			heartbeat.WorkerGeneration = req.RuntimeDiagnostics.WorkerGeneration
-			heartbeat.OSBootID = req.RuntimeDiagnostics.OSBootID
-			heartbeat.WorkerServiceScope = req.RuntimeDiagnostics.WorkerServiceScope
-			heartbeat.ConnectorState = req.RuntimeDiagnostics.ConnectorState
-			heartbeat.ConnectorGeneration = req.RuntimeDiagnostics.ConnectorGeneration
-			heartbeat.DiagnosticsObservedAt = req.RuntimeDiagnostics.ObservedAt.UTC()
+			observation.WorkerGeneration = req.RuntimeDiagnostics.WorkerGeneration
+			observation.OSBootID = req.RuntimeDiagnostics.OSBootID
+			observation.WorkerServiceScope = req.RuntimeDiagnostics.WorkerServiceScope
+			observation.ConnectorState = req.RuntimeDiagnostics.ConnectorState
+			observation.ConnectorGeneration = req.RuntimeDiagnostics.ConnectorGeneration
+			observation.DiagnosticsObservedAt = req.RuntimeDiagnostics.ObservedAt.UTC()
 		}
-		if err := repo.RecordHeartbeat(r.Context(), heartbeat); err != nil {
+		if err := repo.RecordRuntimeObservation(r.Context(), observation); err != nil {
 			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
 			return
 		}

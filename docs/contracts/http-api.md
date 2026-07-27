@@ -128,9 +128,9 @@ CLI project reads and connects use scoped Paperboat bearer access tokens.
   `/v1/config/conflict-resolutions/acknowledge` require helper proof and the current
   assignment-bound config credential. A helper sees only its active binding and acknowledges
   only after the selected result lands.
-- `POST /v1/environment-activity-observations` accepts the existing authenticated activity payload
+- `POST /v1/runtime-observations` accepts authenticated runtime availability and diagnostics
   plus an optional validated `config_sync` object. Its required `updated_at` timestamp tracks the
-  freshness of the sync daemon independently from the activity reporter. A status timestamp newer
+  freshness of the sync daemon independently. A status timestamp newer
   than its enclosing sample is persisted as a sanitized `status_clock_invalid` error at sample time,
   allowing later clock-corrected status to replace it. Paths and errors are sanitized and bounded;
   file contents, credentials, and raw command output are never accepted or persisted.
@@ -140,7 +140,6 @@ CLI project reads and connects use scoped Paperboat bearer access tokens.
 - `GET /v1/catalog/plans`
 - `GET /v1/catalog/machine-types`
 - `GET /v1/catalog/presets`
-- `GET /v1/catalog/idle-timeouts`
 - `GET /v1/catalog/regions`
 
 ### GitHub
@@ -160,7 +159,6 @@ CLI project reads and connects use scoped Paperboat bearer access tokens.
 - `POST /v1/projects/{project_id}/start`
 - `POST /v1/projects/{project_id}/stop`
 - `POST /v1/projects/{project_id}/restart`
-- `POST /v1/projects/{project_id}/activity`
 - `GET /v1/projects/{project_id}/events`
 - `GET /v1/projects/{project_id}/usage`
 
@@ -202,7 +200,6 @@ Initial contract:
 - `tunnel_unavailable`
 - `credential_issuer_unavailable`
 - `github_config_not_ready`
-- `invalid_activity_source`
 - `invalid_pagination`
 - `invalid_sort`
 - `invalid_version`

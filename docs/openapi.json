@@ -590,7 +590,8 @@
               }
             }
           }
-        ]
+        ],
+        "required": []
       },
       "StagedImageUpload": {
         "type": "object",
@@ -945,7 +946,8 @@
               }
             }
           }
-        ]
+        ],
+        "required": []
       },
       "JSONWebKeySet": {
         "type": "object",
@@ -1092,7 +1094,6 @@
           "machine_type_code",
           "region_code",
           "preset_codes",
-          "idle_timeout_code",
           "config_hash"
         ],
         "properties": {
@@ -1110,9 +1111,6 @@
             "items": {
               "type": "string"
             }
-          },
-          "idle_timeout_code": {
-            "type": "string"
           },
           "setup_script_ref": {
             "type": "string"
@@ -1145,14 +1143,12 @@
               "type": "string"
             }
           },
-          "idle_timeout_code": {
-            "type": "string"
-          },
           "setup_script": {
             "type": "string"
           }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "required": []
       },
       "ProjectEvent": {
         "type": "object",
@@ -1621,29 +1617,6 @@
           }
         }
       },
-      "CatalogIdleTimeout": {
-        "type": "object",
-        "required": [
-          "code",
-          "duration_seconds",
-          "active",
-          "version"
-        ],
-        "properties": {
-          "code": {
-            "type": "string"
-          },
-          "duration_seconds": {
-            "type": "integer"
-          },
-          "active": {
-            "type": "boolean"
-          },
-          "version": {
-            "type": "integer"
-          }
-        }
-      },
       "CatalogRegion": {
         "type": "object",
         "required": [
@@ -1857,70 +1830,192 @@
       "AvailabilityPolicy": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["schema", "desired_mode", "desired_version", "observed_version", "status", "update_rollbacks"],
+        "required": [
+          "schema",
+          "desired_mode",
+          "desired_version",
+          "observed_version",
+          "status",
+          "update_rollbacks"
+        ],
         "properties": {
-          "schema": {"const": "paperboat.availability-policy/v1"},
-          "desired_mode": {"type": "string", "enum": ["allow_sleep", "keep_awake"]},
-          "desired_version": {"type": "integer", "format": "int64", "minimum": 0},
-          "observed_mode": {"type": "string", "enum": ["allow_sleep", "keep_awake"]},
-          "observed_version": {"type": "integer", "format": "int64", "minimum": 0},
-          "observed_at": {"type": "string", "format": "date-time"},
-          "status": {"type": "string", "enum": ["applied", "pending", "offline", "unsupported", "error"]},
-          "error_code": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_]{0,63}$"},
-          "host_service_version": {"type": "string", "maxLength": 128},
-          "host_service_scope": {"const": "system"},
-          "update_rollbacks": {"type": "integer", "format": "int64", "minimum": 0}
+          "schema": {
+            "const": "paperboat.availability-policy/v1"
+          },
+          "desired_mode": {
+            "type": "string",
+            "enum": [
+              "allow_sleep",
+              "keep_awake"
+            ]
+          },
+          "desired_version": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "observed_mode": {
+            "type": "string",
+            "enum": [
+              "allow_sleep",
+              "keep_awake"
+            ]
+          },
+          "observed_version": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "pending",
+              "offline",
+              "unsupported",
+              "error"
+            ]
+          },
+          "error_code": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9_]{0,63}$"
+          },
+          "host_service_version": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "host_service_scope": {
+            "const": "system"
+          },
+          "update_rollbacks": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
         }
       },
       "AvailabilityObservation": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["schema", "mode", "version", "status", "observed_at", "host_service_version", "host_service_scope", "update_rollbacks"],
+        "required": [
+          "schema",
+          "mode",
+          "version",
+          "status",
+          "observed_at",
+          "host_service_version",
+          "host_service_scope",
+          "update_rollbacks"
+        ],
         "properties": {
-          "schema": {"const": "paperboat.availability-policy/v1"},
-          "mode": {"type": "string", "enum": ["allow_sleep", "keep_awake"]},
-          "version": {"type": "integer", "format": "int64", "minimum": 0},
-          "status": {"type": "string", "enum": ["applied", "unsupported", "error"]},
-          "observed_at": {"type": "string", "format": "date-time"},
-          "error_code": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_]{0,63}$"},
-          "host_service_version": {"type": "string", "minLength": 1, "maxLength": 128},
-          "host_service_scope": {"const": "system"},
-          "update_rollbacks": {"type": "integer", "format": "int64", "minimum": 0}
+          "schema": {
+            "const": "paperboat.availability-policy/v1"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "allow_sleep",
+              "keep_awake"
+            ]
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "unsupported",
+              "error"
+            ]
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "error_code": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9_]{0,63}$"
+          },
+          "host_service_version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "host_service_scope": {
+            "const": "system"
+          },
+          "update_rollbacks": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
         }
       },
       "UserMachineRuntimeDiagnostics": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["worker_generation", "os_boot_id", "worker_service_scope", "connector_state", "connector_generation", "observed_at"],
+        "required": [
+          "worker_generation",
+          "os_boot_id",
+          "worker_service_scope",
+          "connector_state",
+          "connector_generation",
+          "observed_at"
+        ],
         "properties": {
-          "worker_generation": {"type": "integer", "format": "int64", "minimum": 1},
-          "os_boot_id": {"type": "string", "minLength": 1, "maxLength": 256},
-          "worker_service_scope": {"type": "string", "enum": ["unknown", "user", "system"]},
-          "connector_state": {"type": "string", "enum": ["ready", "degraded", "unavailable"]},
-          "connector_generation": {"type": "integer", "format": "int64", "minimum": 0},
-          "observed_at": {"type": "string", "format": "date-time"}
+          "worker_generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "os_boot_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "worker_service_scope": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "user",
+              "system"
+            ]
+          },
+          "connector_state": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "degraded",
+              "unavailable"
+            ]
+          },
+          "connector_generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time"
+          }
         }
       },
-      "EnvironmentActivityObservation": {
+      "RuntimeObservation": {
         "type": "object",
         "additionalProperties": false,
         "required": [
           "environment_id",
           "resource_id",
-          "last_activity_at",
           "sampled_at"
         ],
         "properties": {
-          "last_activity_at": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "signals": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "string"
-            }
-          },
           "reporter_version": {
             "type": "string"
           },
@@ -2358,16 +2453,94 @@
       "post": {
         "summary": "Resolve the authoritative BYOD runtime availability policy",
         "description": "Requires a current helper identity and Ed25519 proof over the exact empty-object request.",
-        "security": [{"bearerHelperIdentity": []}],
-        "parameters": [{"name": "X-Paperboat-Helper-Proof", "in": "header", "required": true, "schema": {"type": "string"}}],
-        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false}}}},
+        "security": [
+          {
+            "bearerHelperIdentity": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-Paperboat-Helper-Proof",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false
+              }
+            }
+          }
+        },
         "responses": {
-          "200": {"description": "Current desired availability mode and version."},
-          "400": {"$ref": "#/components/responses/Error"},
-          "401": {"$ref": "#/components/responses/Error"},
-          "403": {"$ref": "#/components/responses/Error"}
+          "200": {
+            "description": "Current desired availability mode and version."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          }
         },
         "operationId": "post_v1_helper_runtime_policies_resolve"
+      }
+    },
+    "/v1/helper-trust/revocations": {
+      "post": {
+        "summary": "Fetch active terminal credential revocations",
+        "description": "Requires a current helper identity and Ed25519 proof over the exact empty-object request. Returns only revoked credential JTIs needed by helpers to terminate active terminal streams.",
+        "security": [
+          {
+            "bearerHelperIdentity": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-Paperboat-Helper-Proof",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Current revoked terminal credential JTIs."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "post_v1_helper_trust_revocations"
       }
     },
     "/v1/user-machine-installation-failures": {
@@ -4779,35 +4952,6 @@
         "operationId": "get_v1_catalog_presets"
       }
     },
-    "/v1/catalog/idle-timeouts": {
-      "get": {
-        "summary": "Idle timeout catalog",
-        "security": [
-          {
-            "cookieSession": []
-          },
-          {
-            "bearerAccess": []
-          }
-        ],
-        "x-required-bearer-scopes": [
-          "projects:read"
-        ],
-        "responses": {
-          "200": {
-            "description": "Idle timeouts.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse"
-                }
-              }
-            }
-          }
-        },
-        "operationId": "get_v1_catalog_idle_timeouts"
-      }
-    },
     "/v1/catalog/regions": {
       "get": {
         "summary": "Region catalog",
@@ -5345,77 +5489,6 @@
           }
         },
         "operationId": "post_v1_projects_project_id_restart"
-      }
-    },
-    "/v1/projects/{project_id}/keep-alive": {
-      "parameters": [
-        {
-          "$ref": "#/components/parameters/ProjectID"
-        }
-      ],
-      "post": {
-        "summary": "Temporarily prevent idle stop",
-        "security": [
-          {
-            "cookieSession": []
-          },
-          {
-            "csrfHeader": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Keep-alive updated.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/Error"
-          }
-        },
-        "operationId": "post_v1_projects_project_id_keep_alive"
-      }
-    },
-    "/v1/projects/{project_id}/activity": {
-      "parameters": [
-        {
-          "$ref": "#/components/parameters/ProjectID"
-        }
-      ],
-      "post": {
-        "summary": "Record helper or CLI activity",
-        "security": [
-          {
-            "cookieSession": []
-          },
-          {
-            "bearerAccess": []
-          }
-        ],
-        "x-required-bearer-scopes": [
-          "projects:connect"
-        ],
-        "responses": {
-          "202": {
-            "description": "Activity accepted.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/Error"
-          }
-        },
-        "operationId": "post_v1_projects_project_id_activity"
       }
     },
     "/v1/projects/{project_id}/events": {
@@ -6119,32 +6192,97 @@
     },
     "/v1/user-machines/{user_machine_id}/availability-policy": {
       "parameters": [
-        {"name": "user_machine_id", "in": "path", "required": true, "schema": {"type": "string"}},
-        {"$ref": "#/components/parameters/IdempotencyKey"}
+        {
+          "name": "user_machine_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "$ref": "#/components/parameters/IdempotencyKey"
+        }
       ],
       "put": {
         "summary": "Set a user machine availability policy",
         "description": "Uses optimistic expected_version and returns applied or durably pending state. keep_awake applies on battery and AC after explicit client confirmation.",
-        "security": [{"cookieSession": [], "csrfHeader": []}, {"bearerAccess": []}],
-        "x-required-bearer-scopes": ["projects:connect"],
+        "security": [
+          {
+            "cookieSession": [],
+            "csrfHeader": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
         "requestBody": {
           "required": true,
-          "content": {"application/json": {"schema": {
-            "type": "object", "additionalProperties": false,
-            "required": ["expected_version", "mode"],
-            "properties": {
-              "expected_version": {"type": "integer", "format": "int64", "minimum": 0},
-              "mode": {"type": "string", "enum": ["allow_sleep", "keep_awake"]}
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "expected_version",
+                  "mode"
+                ],
+                "properties": {
+                  "expected_version": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 0
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "allow_sleep",
+                      "keep_awake"
+                    ]
+                  }
+                }
+              }
             }
-          }}}
+          }
         },
         "responses": {
-          "200": {"description": "Availability policy accepted.", "content": {"application/json": {"schema": {"allOf": [{"$ref": "#/components/schemas/SuccessResponse"}], "properties": {"data": {"$ref": "#/components/schemas/AvailabilityPolicy"}}}}}},
-          "400": {"$ref": "#/components/responses/Error"},
-          "401": {"$ref": "#/components/responses/Error"},
-          "403": {"$ref": "#/components/responses/Error"},
-          "404": {"$ref": "#/components/responses/Error"},
-          "409": {"$ref": "#/components/responses/Error"}
+          "200": {
+            "description": "Availability policy accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    }
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AvailabilityPolicy"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
         },
         "operationId": "put_v1_user_machines_user_machine_id_availability_policy"
       }
@@ -6383,7 +6521,7 @@
         "operationId": "post_v1_user_machines_user_machine_id_terminal_sessions_session_id_close"
       }
     },
-    "/v1/environment-activity-observations": {
+    "/v1/runtime-observations": {
       "post": {
         "summary": "VM heartbeat callback",
         "description": "Authenticated with the project-machine bearer credential. Config sync summaries are sanitized and retained up to the configured server limit.",
@@ -6393,7 +6531,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/EnvironmentActivityObservation"
+                "$ref": "#/components/schemas/RuntimeObservation"
               }
             }
           }
@@ -6416,7 +6554,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "operationId": "post_v1_environment_activity_observations"
+        "operationId": "post_v1_runtime_observations"
       }
     },
     "/v1/admin/users/{user_id}/adjust-credits": {

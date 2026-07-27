@@ -68,10 +68,6 @@ The descriptor's `environment` object includes both `environment_id` (the stable
 identity) and `project_id` (the owning Paperboat project). These identifiers are distinct;
 clients bind the environment to `project_id` and do not infer one from the other.
 
-`POST /v1/projects/{project_id}/activity` accepts either the dashboard cookie plus CSRF
-header or a Paperboat bearer session with `projects:connect`; CLI activity uses the latter
-and sends `source: "cli_activity"` with the event name in metadata.
-
 Purpose:
 
 - Return CLI-safe connection metadata for terminal attach and image paste upload.
@@ -95,7 +91,7 @@ Frozen ready response data shape:
     "project_root": "/workspace/project"
   },
   "terminal": {
-    "kind": "paperboat_terminal_v1",
+    "kind": "paperboat_terminal_v2",
     "websocket_base_url": "wss://...",
     "auth": {
       "method": "websocket_ticket",
@@ -244,37 +240,6 @@ unauthenticated and returns public signing keys with `kty=OKP`, `crv=Ed25519`, `
 `use=sig`, `kid`, and `x`. Cache lifetime and rotation overlap are dynamic configuration.
 Private key material is never exposed or stored in VM configuration.
 
-## `POST /v1/projects/{project_id}/activity`
-
-Purpose:
-
-- Let authenticated helper and paperboat-cli clients report user/agent activity that
-  should reset the server-owned idle detector.
-
-Request data shape:
-
-```json
-{
-  "source": "helper_activity",
-  "observed_at": "2026-07-05T12:00:00Z",
-  "metadata": {
-    "event": "editor_input"
-  }
-}
-```
-
-Approved client sources:
-
-- `helper_activity`
-- `cli_activity`
-
-Rules:
-
-- The endpoint requires an authenticated, entitled project owner.
-- `observed_at` is optional; the server records receipt time when it is omitted.
-- The endpoint rejects `connect_session`, `provider_route_connection`, and `vm_heartbeat`
-  because those are server/provider-owned sources.
-- Metadata is diagnostic only and must not contain secrets or billing totals.
 
 ## provider_route Adapter Boundary
 

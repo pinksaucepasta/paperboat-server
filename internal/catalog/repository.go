@@ -14,7 +14,6 @@ type Reader interface {
 	ListPlans(context.Context) ([]PlanRecord, error)
 	ListMachineTypes(context.Context) ([]MachineTypeRecord, error)
 	ListPresets(context.Context) ([]PresetRecord, error)
-	ListIdleTimeouts(context.Context) ([]IdleTimeoutRecord, error)
 	ListRegions(context.Context) ([]RegionRecord, error)
 }
 
@@ -55,14 +54,6 @@ type PresetRecord struct {
 	Active           bool
 	CurrentVersionID string
 	Version          int64
-}
-
-type IdleTimeoutRecord struct {
-	ID              string
-	Code            string
-	DurationSeconds int
-	Active          bool
-	Version         int64
 }
 
 type RegionRecord struct {
@@ -114,18 +105,6 @@ func (r *Repository) ListPresets(ctx context.Context) ([]PresetRecord, error) {
 	out := make([]PresetRecord, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, PresetRecord{ID: row.ID, Code: row.Code, Name: row.Name, Description: row.Description, Active: row.Active, CurrentVersionID: row.CurrentVersionID.String, Version: row.Version})
-	}
-	return out, nil
-}
-
-func (r *Repository) ListIdleTimeouts(ctx context.Context) ([]IdleTimeoutRecord, error) {
-	rows, err := r.q.ListIdleTimeouts(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list idle timeouts: %w", err)
-	}
-	out := make([]IdleTimeoutRecord, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, IdleTimeoutRecord{ID: row.ID, Code: row.Code, DurationSeconds: int(row.DurationSeconds), Active: row.Active, Version: row.Version})
 	}
 	return out, nil
 }

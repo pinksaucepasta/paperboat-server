@@ -29,8 +29,8 @@ func TestCreateProjectPersistsIntentAllocatesStorageAndIsIdempotent(t *testing.T
 		MachineTypeCode: "standard-1x",
 		RegionCode:      "iad",
 		PresetCodes:     []string{"codex"},
-		IdleTimeoutCode: "15m",
-		SetupScript:     "echo setup",
+
+		SetupScript: "echo setup",
 	}
 	project, existed, err := service.Create(ctx, input)
 	if err != nil {
@@ -87,7 +87,6 @@ SET applied_config_hash = desired_config_hash,
     applied_machine_type_version_id = machine_type_version_id,
     applied_preset_version_ids = preset_version_ids,
     applied_setup_script_ref = setup_script_ref,
-    applied_idle_timeout_option_id = idle_timeout_option_id,
     applied_region_id = region_id,
     pending_restart_apply = false
 WHERE project_id = $1`, project.ID, input.StorageGB); err != nil {
@@ -103,7 +102,6 @@ WHERE project_id = $1`, project.ID, input.StorageGB); err != nil {
 	if applied.CurrentConfig.StorageGB != applied.DesiredConfig.StorageGB ||
 		applied.CurrentConfig.MachineTypeCode != applied.DesiredConfig.MachineTypeCode ||
 		applied.CurrentConfig.RegionCode != applied.DesiredConfig.RegionCode ||
-		applied.CurrentConfig.IdleTimeoutCode != applied.DesiredConfig.IdleTimeoutCode ||
 		strings.Join(applied.CurrentConfig.PresetCodes, ",") != strings.Join(applied.DesiredConfig.PresetCodes, ",") {
 		t.Fatalf("current config was not hydrated from applied desired config: current=%#v desired=%#v", applied.CurrentConfig, applied.DesiredConfig)
 	}
@@ -151,7 +149,6 @@ func TestCreateProjectRejectsDisabledCatalogAndOverAllocation(t *testing.T) {
 		MachineTypeCode: "standard-1x",
 		RegionCode:      "iad",
 		PresetCodes:     []string{"disabled"},
-		IdleTimeoutCode: "15m",
 	}
 	if _, _, err := service.Create(ctx, input); !errors.Is(err, ErrCatalogUnavailable) {
 		t.Fatalf("disabled catalog error = %v, want ErrCatalogUnavailable", err)
@@ -180,7 +177,6 @@ func TestUpdateDesiredConfigMarksRestartRequiredAndDeleteQueuesIntent(t *testing
 		MachineTypeCode: "standard-1x",
 		RegionCode:      "iad",
 		PresetCodes:     []string{"codex"},
-		IdleTimeoutCode: "15m",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -192,7 +188,6 @@ SET applied_config_hash = desired_config_hash,
     applied_machine_type_version_id = machine_type_version_id,
     applied_preset_version_ids = preset_version_ids,
     applied_setup_script_ref = setup_script_ref,
-    applied_idle_timeout_option_id = idle_timeout_option_id,
     applied_region_id = region_id,
     pending_restart_apply = false
 WHERE project_id = $1`, project.ID, 8); err != nil {
@@ -315,7 +310,7 @@ WHERE project_id = $1`, project.ID, 8); err != nil {
 	}
 }
 
-func TestStartRequiresMinimumCreditsAndRecordsActivity(t *testing.T) {
+func TestStartRequiresMinimumCredits(t *testing.T) {
 	store := newProjectTestDB(t)
 	ctx := context.Background()
 	seedProjectCatalogs(t, store)
@@ -332,7 +327,6 @@ func TestStartRequiresMinimumCreditsAndRecordsActivity(t *testing.T) {
 		MachineTypeCode: "standard-1x",
 		RegionCode:      "iad",
 		PresetCodes:     []string{"codex"},
-		IdleTimeoutCode: "15m",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -347,7 +341,6 @@ SET applied_config_hash = desired_config_hash,
     applied_machine_type_version_id = machine_type_version_id,
     applied_preset_version_ids = preset_version_ids,
     applied_setup_script_ref = setup_script_ref,
-    applied_idle_timeout_option_id = idle_timeout_option_id,
     applied_region_id = region_id,
     pending_restart_apply = false
 WHERE project_id = $1`, project.ID, 8); err != nil {
@@ -373,13 +366,6 @@ WHERE project_id = $1`, project.ID, 8); err != nil {
 	if started.State != "starting" {
 		t.Fatalf("started state = %q, want starting", started.State)
 	}
-	var source string
-	if err := store.SQL().QueryRowContext(ctx, `SELECT source FROM paperboat.project_activity_markers WHERE project_id = $1`, project.ID).Scan(&source); err != nil {
-		t.Fatal(err)
-	}
-	if source != "connect_session" {
-		t.Fatalf("activity source = %q, want connect_session", source)
-	}
 }
 
 func TestRestartRequiresCreditsForDesiredMachineType(t *testing.T) {
@@ -399,7 +385,6 @@ func TestRestartRequiresCreditsForDesiredMachineType(t *testing.T) {
 		MachineTypeCode: "standard-1x",
 		RegionCode:      "iad",
 		PresetCodes:     []string{"codex"},
-		IdleTimeoutCode: "15m",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -414,7 +399,6 @@ SET applied_config_hash = desired_config_hash,
     applied_machine_type_version_id = machine_type_version_id,
     applied_preset_version_ids = preset_version_ids,
     applied_setup_script_ref = setup_script_ref,
-    applied_idle_timeout_option_id = idle_timeout_option_id,
     applied_region_id = region_id,
     pending_restart_apply = false
 WHERE project_id = $1`, project.ID, 8); err != nil {
@@ -549,9 +533,6 @@ func seedProjectCatalogs(t *testing.T, store *db.DB) {
 		}
 	}
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.regions (id, code, name, enabled) VALUES ('region_iad', 'iad', 'Ashburn', true)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.idle_timeout_options (id, code, duration_seconds, active) VALUES ('idle_15m', '15m', 900, true)`); err != nil {
 		t.Fatal(err)
 	}
 }

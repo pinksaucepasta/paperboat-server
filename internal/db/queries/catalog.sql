@@ -14,11 +14,6 @@ SELECT id, code, name, description, active, current_version_id, version
 FROM vm_presets
 ORDER BY code;
 
--- name: ListIdleTimeouts :many
-SELECT id, code, duration_seconds, active, version
-FROM idle_timeout_options
-ORDER BY duration_seconds;
-
 -- name: ListRegions :many
 SELECT id, code, name, enabled, version
 FROM regions

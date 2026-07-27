@@ -1,12 +1,3 @@
--- name: UpsertIdleTimeout :exec
-INSERT INTO idle_timeout_options (id, code, duration_seconds, active)
-VALUES ('ito_' || sqlc.arg(code), sqlc.arg(code), sqlc.arg(duration_seconds), sqlc.arg(active))
-ON CONFLICT (code) DO UPDATE SET
-	duration_seconds = EXCLUDED.duration_seconds,
-	active = EXCLUDED.active,
-	version = CASE WHEN (idle_timeout_options.duration_seconds, idle_timeout_options.active) IS DISTINCT FROM (EXCLUDED.duration_seconds, EXCLUDED.active) THEN idle_timeout_options.version + 1 ELSE idle_timeout_options.version END,
-	updated_at = CASE WHEN (idle_timeout_options.duration_seconds, idle_timeout_options.active) IS DISTINCT FROM (EXCLUDED.duration_seconds, EXCLUDED.active) THEN now() ELSE idle_timeout_options.updated_at END;
-
 -- name: UpsertCatalogRegion :exec
 INSERT INTO regions (id, code, name, enabled, placement_policy)
 VALUES ('reg_' || sqlc.arg(code), sqlc.arg(code), sqlc.arg(name), sqlc.arg(enabled), sqlc.arg(placement_policy)::jsonb)

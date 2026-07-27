@@ -16,6 +16,36 @@ func TestControlTunnelNodeStaleAfterAllowsNormalHeartbeatCadence(t *testing.T) {
 	}
 }
 
+func TestRoutesExcludeExpiredConnectorAssignments(t *testing.T) {
+	store := openControlPlaneTestDB(t)
+	ctx := context.Background()
+	suffix := "expired_routes_" + time.Now().Format("150405.000000000")
+	seedUsageScope(t, store, suffix)
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	environmentID, nodeID, helperID := "env_"+suffix, "node_"+suffix, "hlp_"+suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_helpers (id,environment_id,key_thumbprint,public_key,state) VALUES ($1,$2,'sha256:test',$3,'active')`, helperID, environmentID, make([]byte, 32)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_connector_generations (environment_id,helper_id,generation,edge_pool,edge_node_id,state,expires_at) VALUES ($1,$2,1,'default',$3,'admitted',$4)`, environmentID, helperID, nodeID, now.Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	service := NewEdgeService(store, "test")
+	service.SetClock(func() time.Time { return now })
+	if routes, err := service.Routes(ctx, nodeID); err != nil {
+		t.Fatal(err)
+	} else if len(routes) != 0 {
+		t.Fatalf("expired connector routes = %d, want 0", len(routes))
+	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.control_connector_generations SET expires_at=$2 WHERE environment_id=$1`, environmentID, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if routes, err := service.Routes(ctx, nodeID); err != nil {
+		t.Fatal(err)
+	} else if len(routes) != 1 || routes[0].EnvironmentID != environmentID {
+		t.Fatalf("active connector routes = %+v, want environment %s", routes, environmentID)
+	}
+}
+
 func TestReconcileStaleNodesFencesConnectorAndAdvancesRoute(t *testing.T) {
 	store := openControlPlaneTestDB(t)
 	ctx := context.Background()

@@ -20,6 +20,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/pinksaucepasta/paperboat-server/internal/access"
 	"github.com/pinksaucepasta/paperboat-server/internal/accessdescriptor"
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
@@ -52,9 +54,13 @@ var (
 	ErrTerminalSessionConflict    = errors.New("user-machine terminal session name conflict")
 	ErrTerminalSessionInvalidName = errors.New("invalid user-machine terminal session name")
 	ErrTerminalSessionIdempotency = errors.New("terminal session idempotency key is required")
+	ErrTerminalSessionInvalidMode = errors.New("invalid user-machine terminal session mode")
 )
 
-var terminalSessionNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+var (
+	terminalSessionNamePattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	automaticTerminalNamePattern = regexp.MustCompile(`^shell-[0-9]+$`)
+)
 
 type SeatAuthorizer interface {
 	ReserveUserMachineSeat(context.Context, *db.Tx, string) error
@@ -583,6 +589,7 @@ type TerminalSession struct {
 	LastActiveAt  *time.Time `json:"last_active_at,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
 	UpdatedAt     time.Time  `json:"updated_at"`
+	TerminalMode  string     `json:"terminal_mode"`
 }
 
 // BandwidthReservation is a trusted capacity grant. A data-plane relay must
@@ -674,7 +681,7 @@ func machineConnectionState(connectable bool, state string) string {
 
 func setCanonicalMachineIdentity(response *ConnectionDescriptor, row dbsqlc.UserMachine) {
 	response.Schema = accessdescriptor.SchemaV1
-	response.Capabilities = []string{accessdescriptor.CapabilityTerminal, accessdescriptor.CapabilityHerdr, accessdescriptor.CapabilityUpload, accessdescriptor.CapabilityPreview, accessdescriptor.CapabilityActivity}
+	response.Capabilities = []string{accessdescriptor.CapabilityTerminal, accessdescriptor.CapabilityHerdr, accessdescriptor.CapabilityUpload, accessdescriptor.CapabilityPreview}
 	response.Environment = map[string]any{"id": row.EnvironmentID, "kind": accessdescriptor.EnvironmentBYOD, "resource_id": row.ID, "display_name": row.DisplayName, "state": machineConnectionState(response.Connectable, row.State), "root": row.WorkspaceRoot}
 }
 
@@ -762,7 +769,7 @@ func (s *Service) ConnectTerminalSession(ctx context.Context, userID, userMachin
 	}
 	response.Connectable, response.Status, response.Reason, response.RetryAfterSeconds = true, "ready", "ready", 0
 	setCanonicalMachineIdentity(&response, row)
-	response.Terminal = map[string]any{"endpoint": websocketBaseURL + "/v1/runtime", "session_id": terminalSession.ID, "thread_id": terminalSession.ThreadID, "terminal_id": terminalSession.TerminalID, "cwd": terminalSession.LaunchCwd, "auth": credentials.TerminalAuth}
+	response.Terminal = map[string]any{"endpoint": websocketBaseURL + "/v1/runtime", "session_id": terminalSession.ID, "thread_id": terminalSession.ThreadID, "terminal_id": terminalSession.TerminalID, "cwd": terminalSession.LaunchCwd, "terminal_mode": terminalSession.TerminalMode, "auth": credentials.TerminalAuth}
 	response.Upload = map[string]any{"endpoint": httpBaseURL + "/v1/uploads", "max_bytes": s.uploadMaxBytes, "allowed_mime_types": s.uploadMIMEs, "retention_seconds": s.uploadRetention, "auth": credentials.UploadAuth}
 	return response, nil
 }
@@ -1133,15 +1140,17 @@ func (s *Service) ReserveBandwidth(ctx context.Context, userMachineID string, re
 		if err != nil {
 			return err
 		}
-		reservation, err = s.reserveBandwidthForMachineTx(ctx, tx, machine, requestedBytes, s.now().UTC())
+		reservation, err = s.reserveBandwidthForMachineTx(ctx, tx, machine, requestedBytes, s.now().UTC(), true)
 		return err
 	})
 	return reservation, err
 }
 
 // DebitEnvironmentBandwidthTx reconciles trusted edge usage against a BYOD
-// environment inside the caller's transaction. Hosted environments return a
-// zero, non-exhausted result because they do not use the BYOD entitlement.
+// environment inside the caller's transaction. Trusted reports are charged at
+// the time their interval ended and remain chargeable after a machine disconnects
+// or releases its seat. Hosted environments return a zero, non-exhausted result
+// because they do not use the BYOD entitlement.
 func (s *Service) DebitEnvironmentBandwidthTx(ctx context.Context, tx *db.Tx, environmentID string, bytes int64, now time.Time) (int64, bool, error) {
 	if tx == nil || strings.TrimSpace(environmentID) == "" || bytes <= 0 {
 		return 0, false, ErrInvalidBandwidth
@@ -1153,12 +1162,12 @@ func (s *Service) DebitEnvironmentBandwidthTx(ctx context.Context, tx *db.Tx, en
 	if err != nil {
 		return 0, false, err
 	}
-	reservation, err := s.reserveBandwidthForMachineTx(ctx, tx, machine, bytes, now.UTC())
+	reservation, err := s.reserveBandwidthForMachineTx(ctx, tx, machine, bytes, now.UTC(), false)
 	return reservation.GrantedBytes, reservation.Exhausted, err
 }
 
-func (s *Service) reserveBandwidthForMachineTx(ctx context.Context, tx *db.Tx, machine dbsqlc.UserMachine, requestedBytes int64, now time.Time) (BandwidthReservation, error) {
-	if machine.State != "online" || machine.SeatState != "occupied" {
+func (s *Service) reserveBandwidthForMachineTx(ctx context.Context, tx *db.Tx, machine dbsqlc.UserMachine, requestedBytes int64, now time.Time, requireActiveMachine bool) (BandwidthReservation, error) {
+	if requireActiveMachine && (machine.State != "online" || machine.SeatState != "occupied") {
 		return BandwidthReservation{}, ErrBandwidthDenied
 	}
 	period, err := s.ensureCurrentBandwidthPeriodAt(ctx, tx, machine, now)
@@ -1289,17 +1298,31 @@ func (s *Service) ListTerminalSessions(ctx context.Context, userID, userMachineI
 }
 
 func (s *Service) CreateTerminalSession(ctx context.Context, userID, userMachineID, name, idempotencyKey string, maxActive int) (TerminalSession, error) {
-	name = strings.ToLower(strings.TrimSpace(name))
-	if !terminalSessionNamePattern.MatchString(name) || name == "default" {
+	return s.CreateTerminalSessionWithMode(ctx, userID, userMachineID, name, "herdr", idempotencyKey, maxActive)
+}
+
+func (s *Service) CreateTerminalSessionWithMode(ctx context.Context, userID, userMachineID, name, terminalMode, idempotencyKey string, maxActive int) (TerminalSession, error) {
+	requestedName := strings.ToLower(strings.TrimSpace(name))
+	if requestedName != "" && !validUserMachineTerminalSessionName(requestedName) {
 		return TerminalSession{}, ErrTerminalSessionInvalidName
 	}
 	if strings.TrimSpace(idempotencyKey) == "" {
 		return TerminalSession{}, ErrTerminalSessionIdempotency
 	}
+	terminalMode = strings.TrimSpace(terminalMode)
+	if terminalMode == "" {
+		terminalMode = "herdr"
+	}
+	if terminalMode != "herdr" && terminalMode != "shell" {
+		return TerminalSession{}, ErrTerminalSessionInvalidMode
+	}
 	if maxActive <= 0 {
 		return TerminalSession{}, ErrTerminalSessionLimit
 	}
 	if existing, err := s.db.Queries().GetUserMachineTerminalSessionByIdempotencyKey(ctx, dbsqlc.GetUserMachineTerminalSessionByIdempotencyKeyParams{UserMachineID: userMachineID, UserID: userID, IdempotencyKey: sql.NullString{String: idempotencyKey, Valid: true}}); err == nil {
+		if existing.TerminalMode != terminalMode {
+			return TerminalSession{}, ErrTerminalSessionConflict
+		}
 		return mapTerminalSession(existing), nil
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return TerminalSession{}, err
@@ -1320,6 +1343,9 @@ func (s *Service) CreateTerminalSession(ctx context.Context, userID, userMachine
 			return err
 		}
 		if existing, err := tx.Queries().GetUserMachineTerminalSessionByIdempotencyKey(ctx, dbsqlc.GetUserMachineTerminalSessionByIdempotencyKeyParams{UserMachineID: userMachineID, UserID: userID, IdempotencyKey: sql.NullString{String: idempotencyKey, Valid: true}}); err == nil {
+			if existing.TerminalMode != terminalMode {
+				return ErrTerminalSessionConflict
+			}
 			id, terminalID = existing.ID, existing.TerminalID
 			return nil
 		} else if !errors.Is(err, sql.ErrNoRows) {
@@ -1332,13 +1358,31 @@ func (s *Service) CreateTerminalSession(ctx context.Context, userID, userMachine
 		if int(count) >= maxActive {
 			return ErrTerminalSessionLimit
 		}
-		ordinal, err := tx.Queries().NextUserMachineTerminalSessionOrdinal(ctx, userMachineID)
-		if err != nil {
-			return err
+		sessionName := requestedName
+		ordinal := int32(0)
+		if sessionName == "" {
+			ordinal, err = tx.Queries().NextUserMachineTerminalSessionOrdinal(ctx, userMachineID)
+			if err != nil {
+				return err
+			}
+			sessionName = fmt.Sprintf("shell-%d", ordinal)
 		}
-		return tx.Queries().CreateUserMachineTerminalSession(ctx, dbsqlc.CreateUserMachineTerminalSessionParams{ID: id, UserMachineID: userMachineID, TerminalID: terminalID, Name: name, AutoNameOrdinal: ordinal, IdempotencyKey: sql.NullString{String: idempotencyKey, Valid: true}, LaunchCwd: machine.WorkspaceRoot})
+		return tx.Queries().CreateUserMachineTerminalSession(ctx, dbsqlc.CreateUserMachineTerminalSessionParams{ID: id, UserMachineID: userMachineID, TerminalID: terminalID, Name: sessionName, AutoNameOrdinal: ordinal, IdempotencyKey: sql.NullString{String: idempotencyKey, Valid: true}, LaunchCwd: machine.WorkspaceRoot, TerminalMode: terminalMode})
 	})
 	if err != nil {
+		if userMachineTerminalSessionUniqueViolation(err) {
+			existing, lookupErr := s.db.Queries().GetUserMachineTerminalSessionByIdempotencyKey(ctx, dbsqlc.GetUserMachineTerminalSessionByIdempotencyKeyParams{UserMachineID: userMachineID, UserID: userID, IdempotencyKey: sql.NullString{String: idempotencyKey, Valid: true}})
+			if lookupErr == nil {
+				if existing.TerminalMode != terminalMode {
+					return TerminalSession{}, ErrTerminalSessionConflict
+				}
+				return mapTerminalSession(existing), nil
+			}
+			if !errors.Is(lookupErr, sql.ErrNoRows) {
+				return TerminalSession{}, lookupErr
+			}
+			return TerminalSession{}, ErrTerminalSessionConflict
+		}
 		return TerminalSession{}, err
 	}
 	row, err := s.db.Queries().GetUserMachineTerminalSession(ctx, dbsqlc.GetUserMachineTerminalSessionParams{ID: id, UserMachineID: userMachineID, UserID: userID})
@@ -1348,13 +1392,22 @@ func (s *Service) CreateTerminalSession(ctx context.Context, userID, userMachine
 	return mapTerminalSession(row), nil
 }
 
+func userMachineTerminalSessionUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
 func (s *Service) CreateConfiguredTerminalSession(ctx context.Context, userID, userMachineID, name, idempotencyKey string) (TerminalSession, error) {
 	return s.CreateTerminalSession(ctx, userID, userMachineID, name, idempotencyKey, s.maxSessions)
 }
 
+func (s *Service) CreateConfiguredTerminalSessionWithMode(ctx context.Context, userID, userMachineID, name, terminalMode, idempotencyKey string) (TerminalSession, error) {
+	return s.CreateTerminalSessionWithMode(ctx, userID, userMachineID, name, terminalMode, idempotencyKey, s.maxSessions)
+}
+
 func (s *Service) RenameTerminalSession(ctx context.Context, userID, userMachineID, id, name string) (TerminalSession, error) {
 	name = strings.ToLower(strings.TrimSpace(name))
-	if !terminalSessionNamePattern.MatchString(name) || name == "default" {
+	if !validUserMachineTerminalSessionName(name) {
 		return TerminalSession{}, ErrTerminalSessionInvalidName
 	}
 	n, err := s.db.Queries().RenameUserMachineTerminalSession(ctx, dbsqlc.RenameUserMachineTerminalSessionParams{UserMachineID: userMachineID, ID: id, Name: name})
@@ -1379,6 +1432,10 @@ func (s *Service) RenameTerminalSession(ctx context.Context, userID, userMachine
 		return TerminalSession{}, err
 	}
 	return mapTerminalSession(row), nil
+}
+
+func validUserMachineTerminalSessionName(name string) bool {
+	return name != "default" && !automaticTerminalNamePattern.MatchString(name) && terminalSessionNamePattern.MatchString(name)
 }
 
 // CloseTerminalSession queues a signed Helper control operation. It returns
@@ -1535,7 +1592,7 @@ func minInt(left, right int) int {
 }
 
 func mapTerminalSession(row dbsqlc.UserMachineTerminalSession) TerminalSession {
-	session := TerminalSession{ID: row.ID, Name: row.Name, IsDefault: row.IsDefault, State: row.DesiredState, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+	session := TerminalSession{ID: row.ID, Name: row.Name, IsDefault: row.IsDefault, State: row.DesiredState, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, TerminalMode: row.TerminalMode}
 	if row.LastActivityAt.Valid {
 		value := row.LastActivityAt.Time
 		session.LastActiveAt = &value

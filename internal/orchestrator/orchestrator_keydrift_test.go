@@ -32,7 +32,6 @@ func TestDeleteCompletesWhenSecretsAreUndecryptable(t *testing.T) {
 		MachineTypeCode: "standard-1x",
 		RegionCode:      "iad",
 		PresetCodes:     []string{"codex"},
-		IdleTimeoutCode: "15m",
 	})
 	if err != nil {
 		t.Fatal(err)

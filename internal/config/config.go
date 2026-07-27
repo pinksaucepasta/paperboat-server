@@ -103,7 +103,6 @@ type Billing struct {
 
 type Metering struct {
 	MinimumStartCreditWindow time.Duration `json:"minimum_start_credit_window"`
-	MaxKeepAliveDuration     time.Duration `json:"max_keep_alive_duration"`
 }
 
 type UserMachines struct {
@@ -246,7 +245,6 @@ type Secrets struct {
 	FlyAPIToken           string   `json:"fly_api_token"`
 	EdgeControlCredential string   `json:"edge_control_credential"`
 	PreviewIdentityKey    string   `json:"preview_identity_key"`
-	MachineActivityToken  string   `json:"machine_activity_token"`
 	MintSigningKeys       []string `json:"mint_signing_keys"`
 	ClassifierAPIKey      string   `json:"classifier_api_key"`
 }
@@ -312,7 +310,6 @@ func Default() Config {
 		},
 		Metering: Metering{
 			MinimumStartCreditWindow: 5 * time.Minute,
-			MaxKeepAliveDuration:     12 * time.Hour,
 		},
 		HelperBaseDomain: "localhost",
 		UserMachines:     UserMachines{PairingLifetime: 10 * time.Minute, OfflineAfter: 2 * time.Minute, AllowedPlatforms: []string{"darwin", "linux"}, HelperListenPort: 38080},
@@ -429,9 +426,6 @@ func (c Config) Validate() error {
 	}
 	if c.Metering.MinimumStartCreditWindow <= 0 {
 		errs = append(errs, fmt.Errorf("metering.minimum_start_credit_window must be positive"))
-	}
-	if c.Metering.MaxKeepAliveDuration <= 0 {
-		errs = append(errs, fmt.Errorf("metering.max_keep_alive_duration must be positive"))
 	}
 	if c.UserMachines.PairingLifetime <= 0 || c.UserMachines.OfflineAfter <= 0 || len(c.UserMachines.AllowedPlatforms) == 0 {
 		errs = append(errs, fmt.Errorf("user_machines pairing lifetime, offline timeout, and allowed platforms are required"))
@@ -914,13 +908,6 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 		}
 		c.Metering.MinimumStartCreditWindow = parsed
 	}
-	if v, ok := lookup("PAPERBOAT_MAX_KEEP_ALIVE_DURATION"); ok {
-		parsed, err := time.ParseDuration(v)
-		if err != nil {
-			return fmt.Errorf("PAPERBOAT_MAX_KEEP_ALIVE_DURATION: %w", err)
-		}
-		c.Metering.MaxKeepAliveDuration = parsed
-	}
 	if v, ok := lookup("PAPERBOAT_MAX_BODY_BYTES"); ok {
 		parsed, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
@@ -980,9 +967,6 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 		return err
 	}
 	if err := setSecret("PAPERBOAT_EDGE_CONTROL_CREDENTIAL", &c.Secrets.EdgeControlCredential); err != nil {
-		return err
-	}
-	if err := setSecret("PAPERBOAT_MACHINE_ACTIVITY_TOKEN", &c.Secrets.MachineActivityToken); err != nil {
 		return err
 	}
 	if err := setSecret("PAPERBOAT_CLASSIFIER_API_KEY", &c.Secrets.ClassifierAPIKey); err != nil {

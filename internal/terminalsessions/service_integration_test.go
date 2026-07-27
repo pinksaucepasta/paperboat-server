@@ -273,7 +273,7 @@ func createTerminalSessionTestProject(t *testing.T, store *db.DB, userID string)
 	cfg := config.Default()
 	cfg.Secrets.EncryptionKey = "terminal-session-test-encryption-key"
 	service := projects.NewService(store, audit.NewWriter(store), cfg)
-	project, _, err := service.Create(ctx, projects.CreateInput{UserID: userID, IdempotencyKey: "project-" + userID, RepositoryURL: "https://github.com/paperboat/terminal-sessions.git", StorageGB: 8, MachineTypeCode: "standard-1x", RegionCode: "iad", PresetCodes: []string{"codex"}, IdleTimeoutCode: "15m"})
+	project, _, err := service.Create(ctx, projects.CreateInput{UserID: userID, IdempotencyKey: "project-" + userID, RepositoryURL: "https://github.com/paperboat/terminal-sessions.git", StorageGB: 8, MachineTypeCode: "standard-1x", RegionCode: "iad", PresetCodes: []string{"codex"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +289,6 @@ func seedTerminalSessionCatalog(t *testing.T, store *db.DB) {
 		`INSERT INTO paperboat.vm_presets (id, code, name, active, current_version_id) VALUES ('preset_codex', 'codex', 'Codex', true, 'presetv_codex')`,
 		`INSERT INTO paperboat.vm_preset_versions (id, preset_id, version_number, manifest) VALUES ('presetv_codex', 'preset_codex', 1, '{}'::jsonb)`,
 		`INSERT INTO paperboat.regions (id, code, name, enabled) VALUES ('region_iad', 'iad', 'Ashburn', true)`,
-		`INSERT INTO paperboat.idle_timeout_options (id, code, duration_seconds, active) VALUES ('idle_15m', '15m', 900, true)`,
 	}
 	for _, statement := range statements {
 		if _, err := store.SQL().ExecContext(ctx, statement); err != nil {

@@ -12,47 +12,47 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
 )
 
-type fakeHeartbeatRepository struct {
+type fakeRuntimeObservationRepository struct {
 	verifyErr error
 	recordErr error
-	recorded  *metering.ActivityHeartbeat
+	recorded  *metering.RuntimeObservation
 }
 
-type fakeActivityIdentity struct {
+type fakeRuntimeIdentity struct {
 	token, projectID, machineID string
 	proof, body                 []byte
 	err                         error
 }
 
-func (f *fakeActivityIdentity) VerifyActivityHeartbeat(_ context.Context, token string, proof, body []byte, projectID, machineID string) error {
+func (f *fakeRuntimeIdentity) VerifyRuntimeObservation(_ context.Context, token string, proof, body []byte, projectID, machineID string) error {
 	f.token, f.proof, f.body, f.projectID, f.machineID = token, append([]byte(nil), proof...), append([]byte(nil), body...), projectID, machineID
 	return f.err
 }
 
-func (f *fakeHeartbeatRepository) VerifyHeartbeatCredential(context.Context, string, string, string) error {
+func (f *fakeRuntimeObservationRepository) VerifyHeartbeatCredential(context.Context, string, string, string) error {
 	return f.verifyErr
 }
 
-func (f *fakeHeartbeatRepository) RecordHeartbeat(_ context.Context, heartbeat metering.ActivityHeartbeat) error {
-	f.recorded = &heartbeat
+func (f *fakeRuntimeObservationRepository) RecordRuntimeObservation(_ context.Context, observation metering.RuntimeObservation) error {
+	f.recorded = &observation
 	return f.recordErr
 }
 
-func TestActivityHeartbeatValidatesSanitizesAndBoundsConfigStatus(t *testing.T) {
-	repository := &fakeHeartbeatRepository{}
+func TestRuntimeObservationValidatesSanitizesAndBoundsConfigStatus(t *testing.T) {
+	repository := &fakeRuntimeObservationRepository{}
 	body := `{
 		"environment_id":"prj_test","resource_id":"machine_test",
-		"last_activity_at":"2026-07-14T01:00:00Z","sampled_at":"2026-07-14T01:00:01Z",
-		"reporter_version":"test","signals":{},
+		"sampled_at":"2026-07-14T01:00:01Z",
+		"reporter_version":"test",
 		"config_sync":{"state":"error","pending_path_count":3,
 		"skipped":[{"path":".config/a","bytes":6,"reason":"Too Large"},{"path":".config/b","bytes":7,"reason":"Too Large"},{"path":".config/c","bytes":8,"reason":"Too Large"}],
 		"conflicts":[],"error_code":"Git Auth Failed!","error_message":"request https://example.test/?token=secret failed",
 		"max_file_bytes":10,"max_batch_bytes":20,"policy_revision":"revision-one","updated_at":"2026-07-14T01:00:00Z"}
 	}`
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/v1/environment-activity-observations", strings.NewReader(body))
+	request := httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer machine-token")
-	activityHeartbeat(repository, nil, 2).ServeHTTP(recorder, request)
+	runtimeObservation(repository, nil, 2).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
@@ -65,71 +65,71 @@ func TestActivityHeartbeatValidatesSanitizesAndBoundsConfigStatus(t *testing.T) 
 	}
 }
 
-func TestActivityHeartbeatUsesProofBoundHelperIdentity(t *testing.T) {
-	repository := &fakeHeartbeatRepository{verifyErr: errors.New("legacy verifier must not run")}
-	identity := &fakeActivityIdentity{}
-	body := `{"environment_id":"prj_test","resource_id":"machine_test","last_activity_at":"2026-07-14T01:00:00Z","sampled_at":"2026-07-14T01:00:01Z","signals":{}}`
-	request := httptest.NewRequest(http.MethodPost, "/v1/environment-activity-observations", strings.NewReader(body))
+func TestRuntimeObservationUsesProofBoundHelperIdentity(t *testing.T) {
+	repository := &fakeRuntimeObservationRepository{verifyErr: errors.New("legacy verifier must not run")}
+	identity := &fakeRuntimeIdentity{}
+	body := `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-07-14T01:00:01Z"}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer helper-identity")
 	request.Header.Set("X-Paperboat-Helper-Proof", "cHJvb2Y")
 	recorder := httptest.NewRecorder()
-	activityHeartbeat(repository, identity, 10).ServeHTTP(recorder, request)
+	runtimeObservation(repository, identity, 10).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusAccepted || identity.token != "helper-identity" || string(identity.proof) != "proof" || string(identity.body) != body || identity.projectID != "prj_test" || identity.machineID != "machine_test" {
 		t.Fatalf("status=%d identity=%#v", recorder.Code, identity)
 	}
 }
 
-func TestActivityHeartbeatRejectsUnsafeSummaryAndWrongCredential(t *testing.T) {
-	validPrefix := `{"environment_id":"prj_test","resource_id":"machine_test","last_activity_at":"2026-07-14T01:00:00Z","sampled_at":"2026-07-14T01:00:01Z","config_sync":`
+func TestRuntimeObservationRejectsUnsafeSummaryAndWrongCredential(t *testing.T) {
+	validPrefix := `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-07-14T01:00:01Z","config_sync":`
 	missingTimestamp := validPrefix + `{"state":"healthy","pending_path_count":0,"max_file_bytes":10,"max_batch_bytes":20,"policy_revision":"1"}}`
-	repository := &fakeHeartbeatRepository{}
+	repository := &fakeRuntimeObservationRepository{}
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/v1/environment-activity-observations", strings.NewReader(missingTimestamp))
+	request := httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(missingTimestamp))
 	request.Header.Set("Authorization", "Bearer machine-token")
-	activityHeartbeat(repository, nil, 10).ServeHTTP(recorder, request)
+	runtimeObservation(repository, nil, 10).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest || repository.recorded != nil {
 		t.Fatalf("missing status timestamp = %d recorded=%v", recorder.Code, repository.recorded != nil)
 	}
 
 	unsafe := validPrefix + `{"state":"warning","pending_path_count":1,"skipped":[{"path":"../secret","reason":"unsafe"}],"conflicts":[],"max_file_bytes":10,"max_batch_bytes":20,"policy_revision":"1","updated_at":"2026-07-14T01:00:00Z"}}`
-	repository = &fakeHeartbeatRepository{}
+	repository = &fakeRuntimeObservationRepository{}
 	recorder = httptest.NewRecorder()
-	request = httptest.NewRequest(http.MethodPost, "/v1/environment-activity-observations", strings.NewReader(unsafe))
+	request = httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(unsafe))
 	request.Header.Set("Authorization", "Bearer machine-token")
-	activityHeartbeat(repository, nil, 10).ServeHTTP(recorder, request)
+	runtimeObservation(repository, nil, 10).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest || repository.recorded != nil {
 		t.Fatalf("unsafe summary status = %d recorded=%v", recorder.Code, repository.recorded != nil)
 	}
 
-	repository = &fakeHeartbeatRepository{verifyErr: metering.ErrInvalidHeartbeatCredential}
+	repository = &fakeRuntimeObservationRepository{verifyErr: metering.ErrInvalidHeartbeatCredential}
 	recorder = httptest.NewRecorder()
-	request = httptest.NewRequest(http.MethodPost, "/v1/environment-activity-observations", strings.NewReader(strings.TrimSuffix(validPrefix, `"config_sync":`)+`"signals":{}}`))
+	request = httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(strings.TrimSuffix(validPrefix, `"config_sync":`)+`"signals":{}}`))
 	request.Header.Set("Authorization", "Bearer wrong")
-	activityHeartbeat(repository, nil, 10).ServeHTTP(recorder, request)
+	runtimeObservation(repository, nil, 10).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("wrong credential status = %d", recorder.Code)
 	}
 }
 
-func TestActivityHeartbeatRepositoryFailureIsInternalError(t *testing.T) {
-	repository := &fakeHeartbeatRepository{recordErr: errors.New("database unavailable")}
-	body := `{"environment_id":"prj_test","resource_id":"machine_test","last_activity_at":"2026-07-14T01:00:00Z","sampled_at":"2026-07-14T01:00:01Z","signals":{}}`
+func TestRuntimeObservationRepositoryFailureIsInternalError(t *testing.T) {
+	repository := &fakeRuntimeObservationRepository{recordErr: errors.New("database unavailable")}
+	body := `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-07-14T01:00:01Z"}`
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/v1/environment-activity-observations", strings.NewReader(body))
+	request := httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer machine-token")
-	activityHeartbeat(repository, nil, 10).ServeHTTP(recorder, request)
+	runtimeObservation(repository, nil, 10).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("repository failure status = %d", recorder.Code)
 	}
 }
 
-func TestActivityHeartbeatReportsConfigStatusNewerThanItsSample(t *testing.T) {
-	repository := &fakeHeartbeatRepository{}
-	body := `{"environment_id":"prj_test","resource_id":"machine_test","last_activity_at":"2026-07-14T01:00:00Z","sampled_at":"2026-07-14T01:00:01Z","signals":{},"config_sync":{"state":"healthy","pending_path_count":0,"max_file_bytes":10,"max_batch_bytes":20,"policy_revision":"1","updated_at":"2026-07-14T02:00:00Z"}}`
+func TestRuntimeObservationReportsConfigStatusNewerThanItsSample(t *testing.T) {
+	repository := &fakeRuntimeObservationRepository{}
+	body := `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-07-14T01:00:01Z","config_sync":{"state":"healthy","pending_path_count":0,"max_file_bytes":10,"max_batch_bytes":20,"policy_revision":"1","updated_at":"2026-07-14T02:00:00Z"}}`
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/v1/environment-activity-observations", strings.NewReader(body))
+	request := httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer machine-token")
-	activityHeartbeat(repository, nil, 10).ServeHTTP(recorder, request)
+	runtimeObservation(repository, nil, 10).ServeHTTP(recorder, request)
 	sampledAt := time.Date(2026, 7, 14, 1, 0, 1, 0, time.UTC)
 	if recorder.Code != http.StatusAccepted || repository.recorded == nil || repository.recorded.ConfigSync == nil || repository.recorded.ConfigSync.State != "error" || repository.recorded.ConfigSync.ErrorCode != "status_clock_invalid" || repository.recorded.ConfigSync.UpdatedAt.After(sampledAt) {
 		t.Fatalf("future config status = %d recorded=%#v", recorder.Code, repository.recorded)

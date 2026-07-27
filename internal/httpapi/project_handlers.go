@@ -23,7 +23,6 @@ func projectsCreate(service *projects.Service) http.HandlerFunc {
 		MachineTypeCode string   `json:"machine_type_code"`
 		RegionCode      string   `json:"region_code"`
 		PresetCodes     []string `json:"preset_codes"`
-		IdleTimeoutCode string   `json:"idle_timeout_code"`
 		SetupScript     string   `json:"setup_script"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -47,7 +46,6 @@ func projectsCreate(service *projects.Service) http.HandlerFunc {
 			MachineTypeCode: body.MachineTypeCode,
 			RegionCode:      body.RegionCode,
 			PresetCodes:     body.PresetCodes,
-			IdleTimeoutCode: body.IdleTimeoutCode,
 			SetupScript:     body.SetupScript,
 		})
 		if writeProjectError(w, r, err) {
@@ -58,79 +56,6 @@ func projectsCreate(service *projects.Service) http.HandlerFunc {
 			status = http.StatusOK
 		}
 		writeJSON(w, status, SuccessResponse{Data: project})
-	}
-}
-
-func projectsKeepAlive(service *projects.Service) http.HandlerFunc {
-	type request struct {
-		DurationSeconds int  `json:"duration_seconds"`
-		Clear           bool `json:"clear"`
-	}
-	return func(w http.ResponseWriter, r *http.Request) {
-		p, ok := principalFromContext(r.Context())
-		if !ok {
-			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
-			return
-		}
-		var body request
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			writeError(w, r, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON.")
-			return
-		}
-		if !body.Clear && body.DurationSeconds <= 0 {
-			writeError(w, r, http.StatusBadRequest, "invalid_keep_alive", "Keep-alive duration must be positive unless clear is true.")
-			return
-		}
-		duration := time.Duration(body.DurationSeconds) * time.Second
-		if body.Clear {
-			duration = 0
-		}
-		project, until, err := service.SetKeepAlive(r.Context(), p.User.ID, r.PathValue("project_id"), duration)
-		if writeProjectError(w, r, err) {
-			return
-		}
-		writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]any{
-			"project":          project,
-			"keep_alive_until": until,
-		}})
-	}
-}
-
-func projectsActivity(service *projects.Service) http.HandlerFunc {
-	type request struct {
-		Source     string         `json:"source"`
-		ObservedAt *time.Time     `json:"observed_at"`
-		Metadata   map[string]any `json:"metadata"`
-	}
-	return func(w http.ResponseWriter, r *http.Request) {
-		p, ok := principalFromContext(r.Context())
-		if !ok {
-			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
-			return
-		}
-		var body request
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			writeError(w, r, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON.")
-			return
-		}
-		var observedAt time.Time
-		if body.ObservedAt != nil {
-			observedAt = body.ObservedAt.UTC()
-		}
-		project, err := service.RecordClientActivity(r.Context(), projects.ActivityInput{
-			UserID:     p.User.ID,
-			ProjectID:  r.PathValue("project_id"),
-			Source:     body.Source,
-			ObservedAt: observedAt,
-			Metadata:   body.Metadata,
-		})
-		if writeProjectError(w, r, err) {
-			return
-		}
-		writeJSON(w, http.StatusAccepted, SuccessResponse{Data: map[string]any{
-			"accepted": true,
-			"project":  project,
-		}})
 	}
 }
 
@@ -199,7 +124,6 @@ func projectsUpdate(service *projects.Service) http.HandlerFunc {
 		MachineTypeCode *string   `json:"machine_type_code"`
 		RegionCode      *string   `json:"region_code"`
 		PresetCodes     *[]string `json:"preset_codes"`
-		IdleTimeoutCode *string   `json:"idle_timeout_code"`
 		SetupScript     *string   `json:"setup_script"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -225,7 +149,6 @@ func projectsUpdate(service *projects.Service) http.HandlerFunc {
 			MachineTypeCode: body.MachineTypeCode,
 			RegionCode:      body.RegionCode,
 			PresetCodes:     body.PresetCodes,
-			IdleTimeoutCode: body.IdleTimeoutCode,
 			SetupScript:     body.SetupScript,
 		})
 		if writeProjectError(w, r, err) {
@@ -353,10 +276,6 @@ func writeProjectError(w http.ResponseWriter, r *http.Request, err error) bool {
 		writeError(w, r, http.StatusConflict, "project_deleted", "Deleted projects cannot be changed.")
 	case errors.Is(err, projects.ErrInvalidState):
 		writeError(w, r, http.StatusConflict, "invalid_project_state", "Project state does not allow this operation.")
-	case errors.Is(err, projects.ErrInvalidKeepAlive):
-		writeError(w, r, http.StatusBadRequest, "invalid_keep_alive", "Keep-alive duration is outside the configured bounds.")
-	case errors.Is(err, projects.ErrInvalidActivitySource):
-		writeError(w, r, http.StatusBadRequest, "invalid_activity_source", "Activity source is not accepted for this endpoint.")
 	default:
 		writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
 	}

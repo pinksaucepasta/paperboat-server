@@ -193,7 +193,6 @@ func TestOpenAPIDocumentCoversPublicAndFrozenTargetPaths(t *testing.T) {
 		"/v1/catalog/plans":                                                        {"get"},
 		"/v1/catalog/machine-types":                                                {"get"},
 		"/v1/catalog/presets":                                                      {"get"},
-		"/v1/catalog/idle-timeouts":                                                {"get"},
 		"/v1/catalog/regions":                                                      {"get"},
 		"/v1/github/status":                                                        {"get"},
 		"/v1/github/repositories":                                                  {"get"},
@@ -206,8 +205,6 @@ func TestOpenAPIDocumentCoversPublicAndFrozenTargetPaths(t *testing.T) {
 		"/v1/projects/{project_id}/start":                                          {"post"},
 		"/v1/projects/{project_id}/stop":                                           {"post"},
 		"/v1/projects/{project_id}/restart":                                        {"post"},
-		"/v1/projects/{project_id}/keep-alive":                                     {"post"},
-		"/v1/projects/{project_id}/activity":                                       {"post"},
 		"/v1/projects/{project_id}/events":                                         {"get"},
 		"/v1/projects/{project_id}/connection-descriptor":                          {"post"},
 		"/v1/projects/{project_id}/connection-readiness":                           {"get"},
@@ -230,7 +227,7 @@ func TestOpenAPIDocumentCoversPublicAndFrozenTargetPaths(t *testing.T) {
 		"/v1/user-machines/pairings":                                               {"post"},
 		"/v1/user-machines/pairings/{user_code}/approve":                           {"post"},
 		"/v1/user-machines/pairings/{user_code}/deny":                              {"post"},
-		"/v1/environment-activity-observations":                                    {"post"},
+		"/v1/runtime-observations":                                                 {"post"},
 		"/v1/admin/users/{user_id}/adjust-credits":                                 {"post"},
 		"/v1/admin/users/{user_id}/adjust-storage":                                 {"post"},
 	}
@@ -247,7 +244,7 @@ func TestOpenAPIDocumentCoversPublicAndFrozenTargetPaths(t *testing.T) {
 	}
 }
 
-func TestOpenAPIFreezesConfigSyncHeartbeatAndStatusSchemas(t *testing.T) {
+func TestOpenAPIFreezesConfigSyncRuntimeObservationAndStatusSchemas(t *testing.T) {
 	raw, err := os.ReadFile("../../docs/openapi.json")
 	if err != nil {
 		t.Fatal(err)
@@ -261,13 +258,13 @@ func TestOpenAPIFreezesConfigSyncHeartbeatAndStatusSchemas(t *testing.T) {
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatal(err)
 	}
-	for _, schema := range []string{"ConfigSyncPathSummary", "ConfigSyncHeartbeat", "EnvironmentActivityObservation", "ConfigSyncStatus"} {
+	for _, schema := range []string{"ConfigSyncPathSummary", "ConfigSyncHeartbeat", "RuntimeObservation", "ConfigSyncStatus"} {
 		if doc.Components.Schemas[schema] == nil {
 			t.Fatalf("OpenAPI missing %s", schema)
 		}
 	}
-	heartbeat := objectValue(t, doc.Components.Schemas["EnvironmentActivityObservation"]["properties"], "EnvironmentActivityObservation.properties")
-	configStatus := objectValue(t, heartbeat["config_sync"], "EnvironmentActivityObservation.config_sync")
+	heartbeat := objectValue(t, doc.Components.Schemas["RuntimeObservation"]["properties"], "RuntimeObservation.properties")
+	configStatus := objectValue(t, heartbeat["config_sync"], "RuntimeObservation.config_sync")
 	if configStatus["$ref"] != "#/components/schemas/ConfigSyncHeartbeat" {
 		t.Fatalf("config_sync ref = %v", configStatus["$ref"])
 	}
@@ -433,7 +430,7 @@ func TestOpenAPIFreezesCLIContractSchemas(t *testing.T) {
 	assertRequiredBearerScope(t, objectValue(t, configAssignment["get"], "GET config assignment"), "projects:read", "GET config assignment")
 	assertRequiredBearerScope(t, objectValue(t, configAssignment["put"], "PUT config assignment"), "projects:connect", "PUT config assignment")
 	assertRequiredBearerScope(t, objectValue(t, configAssignment["delete"], "DELETE config assignment"), "projects:connect", "DELETE config assignment")
-	for _, path := range []string{"/v1/catalog/machine-types", "/v1/catalog/presets", "/v1/catalog/idle-timeouts", "/v1/catalog/regions"} {
+	for _, path := range []string{"/v1/catalog/machine-types", "/v1/catalog/presets", "/v1/catalog/regions"} {
 		operation := objectValue(t, doc.Paths[path]["get"], "GET "+path)
 		assertRequiredBearerScope(t, operation, "projects:read", "GET "+path)
 	}

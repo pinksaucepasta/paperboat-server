@@ -380,7 +380,10 @@ func (s *EdgeService) Assignment(ctx context.Context, environment, helper string
 }
 
 func (s *EdgeService) Routes(ctx context.Context, nodeID string) ([]dbsqlc.ListControlRoutesForNodeRow, error) {
-	return s.store.Queries().ListControlRoutesForNode(ctx, sql.NullString{String: nodeID, Valid: nodeID != ""})
+	return s.store.Queries().ListControlRoutesForNode(ctx, dbsqlc.ListControlRoutesForNodeParams{
+		EdgeNodeID: sql.NullString{String: nodeID, Valid: nodeID != ""},
+		Now:        sql.NullTime{Time: s.clock().UTC(), Valid: true},
+	})
 }
 
 func (s *EdgeService) Usage(ctx context.Context, r edgeUsageRequest) (UsageReceipt, error) {
@@ -559,18 +562,27 @@ func (s *EdgeService) handleUsage(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.Usage(r.Context(), input)
 	if err != nil {
-		status := http.StatusBadRequest
-		code := "invalid_request"
-		if errors.Is(err, ErrUsageOperationConflict) {
-			status = http.StatusConflict
-			code = "operation_conflict"
-		} else if errors.Is(err, ErrUsageSignature) {
-			code = "credential_invalid"
+		status, code, retryable, retryAfterMS := usageErrorResponse(err)
+		if retryable {
+			slog.ErrorContext(r.Context(), "control usage reconciliation failed", "error", err)
 		}
-		writeEdgeError(w, r, status, code, false, 0)
+		writeEdgeError(w, r, status, code, retryable, retryAfterMS)
 		return
 	}
 	writeEdgeJSON(w, http.StatusOK, map[string]any{"delta": result.DeltaBytes})
+}
+
+func usageErrorResponse(err error) (status int, code string, retryable bool, retryAfterMS int) {
+	switch {
+	case errors.Is(err, ErrUsageOperationConflict):
+		return http.StatusConflict, "operation_conflict", false, 0
+	case errors.Is(err, ErrUsageSignature):
+		return http.StatusBadRequest, "credential_invalid", false, 0
+	case errors.Is(err, ErrInvalidUsageReport):
+		return http.StatusBadRequest, "invalid_request", false, 0
+	default:
+		return http.StatusServiceUnavailable, "control_unavailable", true, 1000
+	}
 }
 
 func writeEdgeJSON(w http.ResponseWriter, status int, value any) {

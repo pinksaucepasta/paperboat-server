@@ -95,7 +95,7 @@ func reconcileUsage(ctx context.Context, store *db.DB, report UsageReport, now t
 			return fmt.Errorf("persist usage receipt: %w", err)
 		}
 		if debiter != nil && delta > 0 {
-			_, exhausted, err := debiter.DebitEnvironmentBandwidthTx(ctx, tx, report.EnvironmentID, delta, now)
+			_, exhausted, err := debiter.DebitEnvironmentBandwidthTx(ctx, tx, report.EnvironmentID, delta, report.IntervalEnd)
 			if err != nil {
 				return fmt.Errorf("debit bandwidth: %w", err)
 			}

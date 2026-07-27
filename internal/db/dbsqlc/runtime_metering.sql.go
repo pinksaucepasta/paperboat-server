@@ -43,16 +43,6 @@ func (q *Queries) CalculateRuntimeCredits(ctx context.Context, arg CalculateRunt
 	return column_1, err
 }
 
-const clearRecoveredReporterLoss = `-- name: ClearRecoveredReporterLoss :exec
-UPDATE project_activity_markers SET reporter_lost_since=NULL,updated_at=now()
-WHERE reporter_lost_since IS NOT NULL AND last_heartbeat_at>$1
-`
-
-func (q *Queries) ClearRecoveredReporterLoss(ctx context.Context, cutoff sql.NullTime) error {
-	_, err := q.db.ExecContext(ctx, clearRecoveredReporterLoss, cutoff)
-	return err
-}
-
 const closeRuntimeInterval = `-- name: CloseRuntimeInterval :exec
 UPDATE machine_runtime_intervals SET stopped_at=$2,observed_state=$3,observation_source=$4,confidence=$5,updated_at=now()
 WHERE project_id=$1 AND stopped_at IS NULL
@@ -75,25 +65,6 @@ func (q *Queries) CloseRuntimeInterval(ctx context.Context, arg CloseRuntimeInte
 		arg.Confidence,
 	)
 	return err
-}
-
-const emitIdleWarning = `-- name: EmitIdleWarning :execrows
-INSERT INTO project_activity_markers (project_id,last_activity_at,source,metadata,idle_warning_sent_at)
-VALUES ($1,$2,'server','{}'::jsonb,now()) ON CONFLICT (project_id) DO UPDATE SET idle_warning_sent_at=now(),updated_at=now()
-WHERE project_activity_markers.idle_warning_sent_at IS NULL
-`
-
-type EmitIdleWarningParams struct {
-	ProjectID      string
-	LastActivityAt time.Time
-}
-
-func (q *Queries) EmitIdleWarning(ctx context.Context, arg EmitIdleWarningParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, emitIdleWarning, arg.ProjectID, arg.LastActivityAt)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
 }
 
 const getHeartbeatMachineTokenCiphertext = `-- name: GetHeartbeatMachineTokenCiphertext :one
@@ -430,53 +401,10 @@ func (q *Queries) ListEntitlementLostProjectsForUpdate(ctx context.Context, now 
 	return items, nil
 }
 
-const listIdleProjectsForUpdate = `-- name: ListIdleProjectsForUpdate :many
-SELECT p.id AS project_id,coalesce(pam.last_activity_at,mri.started_at) AS last_activity_at,ito.duration_seconds,pam.keep_alive_until
-FROM projects p JOIN machine_runtime_intervals mri ON mri.project_id=p.id AND mri.stopped_at IS NULL
-JOIN project_runtime_configs prc ON prc.project_id=p.id JOIN idle_timeout_options ito ON ito.id=prc.applied_idle_timeout_option_id
-LEFT JOIN project_activity_markers pam ON pam.project_id=p.id
-WHERE p.state='running' AND (pam.keep_alive_until IS NULL OR pam.keep_alive_until<=$1) FOR UPDATE OF p SKIP LOCKED
-`
-
-type ListIdleProjectsForUpdateRow struct {
-	ProjectID       string
-	LastActivityAt  time.Time
-	DurationSeconds int32
-	KeepAliveUntil  sql.NullTime
-}
-
-func (q *Queries) ListIdleProjectsForUpdate(ctx context.Context, now sql.NullTime) ([]ListIdleProjectsForUpdateRow, error) {
-	rows, err := q.db.QueryContext(ctx, listIdleProjectsForUpdate, now)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListIdleProjectsForUpdateRow
-	for rows.Next() {
-		var i ListIdleProjectsForUpdateRow
-		if err := rows.Scan(
-			&i.ProjectID,
-			&i.LastActivityAt,
-			&i.DurationSeconds,
-			&i.KeepAliveUntil,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listMeterableMachines = `-- name: ListMeterableMachines :many
-SELECT p.id AS project_id,p.user_id,fm.fly_machine_id,prc.applied_machine_type_version_id,mtv.credit_weight::text AS credit_weight,ito.duration_seconds
+SELECT p.id AS project_id,p.user_id,fm.fly_machine_id,prc.applied_machine_type_version_id,mtv.credit_weight::text AS credit_weight
 FROM projects p JOIN fly_machines fm ON fm.project_id=p.id JOIN project_runtime_configs prc ON prc.project_id=p.id
-JOIN machine_type_versions mtv ON mtv.id=prc.applied_machine_type_version_id JOIN idle_timeout_options ito ON ito.id=prc.applied_idle_timeout_option_id
+JOIN machine_type_versions mtv ON mtv.id=prc.applied_machine_type_version_id
 WHERE p.state IN ('ready','running','starting','stopping','restarting','suspended') AND prc.applied_machine_type_version_id IS NOT NULL
 `
 
@@ -486,7 +414,6 @@ type ListMeterableMachinesRow struct {
 	FlyMachineID                string
 	AppliedMachineTypeVersionID sql.NullString
 	CreditWeight                string
-	DurationSeconds             int32
 }
 
 func (q *Queries) ListMeterableMachines(ctx context.Context) ([]ListMeterableMachinesRow, error) {
@@ -504,7 +431,6 @@ func (q *Queries) ListMeterableMachines(ctx context.Context) ([]ListMeterableMac
 			&i.FlyMachineID,
 			&i.AppliedMachineTypeVersionID,
 			&i.CreditWeight,
-			&i.DurationSeconds,
 		); err != nil {
 			return nil, err
 		}
@@ -558,41 +484,6 @@ func (q *Queries) ListPendingMeteringCheckpoints(ctx context.Context) ([]ListPen
 			&i.CreditsDebited,
 			&i.IdempotencyKey,
 		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listReporterLostProjectsForUpdate = `-- name: ListReporterLostProjectsForUpdate :many
-SELECT p.id AS project_id,pam.last_heartbeat_at,pam.reporter_lost_since FROM projects p
-JOIN machine_runtime_intervals mri ON mri.project_id=p.id AND mri.stopped_at IS NULL LEFT JOIN project_activity_markers pam ON pam.project_id=p.id
-WHERE p.state='running' AND pam.last_heartbeat_at IS NOT NULL AND pam.last_heartbeat_at<=$1 FOR UPDATE OF p SKIP LOCKED
-`
-
-type ListReporterLostProjectsForUpdateRow struct {
-	ProjectID         string
-	LastHeartbeatAt   sql.NullTime
-	ReporterLostSince sql.NullTime
-}
-
-func (q *Queries) ListReporterLostProjectsForUpdate(ctx context.Context, cutoff sql.NullTime) ([]ListReporterLostProjectsForUpdateRow, error) {
-	rows, err := q.db.QueryContext(ctx, listReporterLostProjectsForUpdate, cutoff)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListReporterLostProjectsForUpdateRow
-	for rows.Next() {
-		var i ListReporterLostProjectsForUpdateRow
-		if err := rows.Scan(&i.ProjectID, &i.LastHeartbeatAt, &i.ReporterLostSince); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -677,20 +568,6 @@ func (q *Queries) RevokeProjectSessionsForEnforcement(ctx context.Context, arg R
 	return err
 }
 
-const setReporterLostSince = `-- name: SetReporterLostSince :exec
-UPDATE project_activity_markers SET reporter_lost_since=$2,updated_at=now() WHERE project_id=$1
-`
-
-type SetReporterLostSinceParams struct {
-	ProjectID         string
-	ReporterLostSince sql.NullTime
-}
-
-func (q *Queries) SetReporterLostSince(ctx context.Context, arg SetReporterLostSinceParams) error {
-	_, err := q.db.ExecContext(ctx, setReporterLostSince, arg.ProjectID, arg.ReporterLostSince)
-	return err
-}
-
 const updateObservedFlyMachineState = `-- name: UpdateObservedFlyMachineState :exec
 UPDATE fly_machines SET state=$2,version=version+1,updated_at=now() WHERE project_id=$1
 `
@@ -717,58 +594,5 @@ type UpdateObservedProjectStateParams struct {
 
 func (q *Queries) UpdateObservedProjectState(ctx context.Context, arg UpdateObservedProjectStateParams) error {
 	_, err := q.db.ExecContext(ctx, updateObservedProjectState, arg.ID, arg.State)
-	return err
-}
-
-const upsertActivityHeartbeat = `-- name: UpsertActivityHeartbeat :exec
-INSERT INTO project_activity_markers (project_id,machine_id,last_activity_at,source,metadata,last_heartbeat_at,reporter_version,signals)
-VALUES ($1,$2,$3,'vm_heartbeat','{}'::jsonb,$4,$5,$6::jsonb)
-ON CONFLICT (project_id) DO UPDATE SET machine_id=EXCLUDED.machine_id,last_activity_at=greatest(project_activity_markers.last_activity_at,EXCLUDED.last_activity_at),
-source=EXCLUDED.source,last_heartbeat_at=greatest(coalesce(project_activity_markers.last_heartbeat_at,'-infinity'::timestamptz),EXCLUDED.last_heartbeat_at),
-reporter_version=EXCLUDED.reporter_version,signals=EXCLUDED.signals,reporter_lost_since=NULL,
-idle_warning_sent_at=CASE WHEN EXCLUDED.last_activity_at>project_activity_markers.last_activity_at THEN NULL ELSE project_activity_markers.idle_warning_sent_at END,updated_at=now()
-`
-
-type UpsertActivityHeartbeatParams struct {
-	ProjectID       string
-	MachineID       string
-	LastActivityAt  time.Time
-	LastHeartbeatAt sql.NullTime
-	ReporterVersion string
-	Signals         json.RawMessage
-}
-
-func (q *Queries) UpsertActivityHeartbeat(ctx context.Context, arg UpsertActivityHeartbeatParams) error {
-	_, err := q.db.ExecContext(ctx, upsertActivityHeartbeat,
-		arg.ProjectID,
-		arg.MachineID,
-		arg.LastActivityAt,
-		arg.LastHeartbeatAt,
-		arg.ReporterVersion,
-		arg.Signals,
-	)
-	return err
-}
-
-const upsertMeteringActivity = `-- name: UpsertMeteringActivity :exec
-INSERT INTO project_activity_markers (project_id,last_activity_at,source,metadata)
-VALUES ($1,$2,$3,coalesce($4::jsonb,'{}'::jsonb))
-ON CONFLICT (project_id) DO UPDATE SET last_activity_at=greatest(project_activity_markers.last_activity_at,EXCLUDED.last_activity_at),source=EXCLUDED.source,metadata=EXCLUDED.metadata,updated_at=now()
-`
-
-type UpsertMeteringActivityParams struct {
-	ProjectID      string
-	LastActivityAt time.Time
-	Source         string
-	Metadata       json.RawMessage
-}
-
-func (q *Queries) UpsertMeteringActivity(ctx context.Context, arg UpsertMeteringActivityParams) error {
-	_, err := q.db.ExecContext(ctx, upsertMeteringActivity,
-		arg.ProjectID,
-		arg.LastActivityAt,
-		arg.Source,
-		arg.Metadata,
-	)
 	return err
 }

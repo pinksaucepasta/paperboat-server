@@ -19,10 +19,22 @@
           "price_monthly_usd": 0,
           "tagline": "Seven days, then converts to Sailor",
           "features": [
-            { "label": "1 active project", "icon": "projects" },
-            { "label": "1 region", "icon": "regions" },
-            { "label": "Secure terminal access", "icon": "terminal" },
-            { "label": "Community support", "icon": "support" }
+            {
+              "label": "1 active project",
+              "icon": "projects"
+            },
+            {
+              "label": "1 region",
+              "icon": "regions"
+            },
+            {
+              "label": "Secure terminal access",
+              "icon": "terminal"
+            },
+            {
+              "label": "Community support",
+              "icon": "support"
+            }
           ]
         }
       }
@@ -35,15 +47,31 @@
       "active": true,
       "metadata": {
         "decision_status": "approved",
-        "billing": { "rank": 1, "storage_unit_gb": 10, "storage_seat_offset": 1 },
+        "billing": {
+          "rank": 1,
+          "storage_unit_gb": 10,
+          "storage_seat_offset": 1
+        },
         "presentation": {
           "price_monthly_usd": 20,
           "tagline": "For solo builders getting started",
           "features": [
-            { "label": "Up to 5 active projects", "icon": "projects" },
-            { "label": "Limited region access", "icon": "regions" },
-            { "label": "Secure terminal access", "icon": "terminal" },
-            { "label": "General support", "icon": "support" }
+            {
+              "label": "Up to 5 active projects",
+              "icon": "projects"
+            },
+            {
+              "label": "Limited region access",
+              "icon": "regions"
+            },
+            {
+              "label": "Secure terminal access",
+              "icon": "terminal"
+            },
+            {
+              "label": "General support",
+              "icon": "support"
+            }
           ]
         }
       }
@@ -56,16 +84,32 @@
       "active": true,
       "metadata": {
         "decision_status": "approved",
-        "billing": { "rank": 2, "storage_unit_gb": 10, "storage_seat_offset": 1 },
+        "billing": {
+          "rank": 2,
+          "storage_unit_gb": 10,
+          "storage_seat_offset": 1
+        },
         "presentation": {
           "price_monthly_usd": 60,
           "tagline": "For daily drivers who ship constantly",
           "most_popular": true,
           "features": [
-            { "label": "Up to 20 active projects", "icon": "projects" },
-            { "label": "Access to all regions", "icon": "regions" },
-            { "label": "Secure terminal access", "icon": "terminal" },
-            { "label": "Priority support", "icon": "support" }
+            {
+              "label": "Up to 20 active projects",
+              "icon": "projects"
+            },
+            {
+              "label": "Access to all regions",
+              "icon": "regions"
+            },
+            {
+              "label": "Secure terminal access",
+              "icon": "terminal"
+            },
+            {
+              "label": "Priority support",
+              "icon": "support"
+            }
           ]
         }
       }
@@ -78,15 +122,31 @@
       "active": true,
       "metadata": {
         "decision_status": "approved",
-        "billing": { "rank": 3, "storage_unit_gb": 10, "storage_seat_offset": 1 },
+        "billing": {
+          "rank": 3,
+          "storage_unit_gb": 10,
+          "storage_seat_offset": 1
+        },
         "presentation": {
           "price_monthly_usd": 200,
           "tagline": "For teams and heavy workloads",
           "features": [
-            { "label": "Up to 100 active projects", "icon": "projects" },
-            { "label": "Access to all regions", "icon": "regions" },
-            { "label": "Secure terminal access", "icon": "terminal" },
-            { "label": "Priority support", "icon": "support" }
+            {
+              "label": "Up to 100 active projects",
+              "icon": "projects"
+            },
+            {
+              "label": "Access to all regions",
+              "icon": "regions"
+            },
+            {
+              "label": "Secure terminal access",
+              "icon": "terminal"
+            },
+            {
+              "label": "Priority support",
+              "icon": "support"
+            }
           ]
         }
       }
@@ -235,18 +295,6 @@
         "version": 1,
         "files": []
       }
-    }
-  ],
-  "idle_timeouts": [
-    {
-      "code": "15m",
-      "duration_seconds": 900,
-      "active": true
-    },
-    {
-      "code": "30m",
-      "duration_seconds": 1800,
-      "active": true
     }
   ],
   "regions": [

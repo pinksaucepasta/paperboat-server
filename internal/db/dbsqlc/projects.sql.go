@@ -35,17 +35,6 @@ func (q *Queries) FindProjectByIdempotencyKey(ctx context.Context, arg FindProje
 	return i, err
 }
 
-const getActiveIdleTimeoutID = `-- name: GetActiveIdleTimeoutID :one
-SELECT id FROM idle_timeout_options WHERE code=$1 AND active
-`
-
-func (q *Queries) GetActiveIdleTimeoutID(ctx context.Context, code string) (string, error) {
-	row := q.db.QueryRowContext(ctx, getActiveIdleTimeoutID, code)
-	var id string
-	err := row.Scan(&id)
-	return id, err
-}
-
 const getActiveMachineTypeVersion = `-- name: GetActiveMachineTypeVersion :one
 SELECT current_version_id FROM machine_types WHERE code=$1 AND active AND current_version_id IS NOT NULL
 `
@@ -118,21 +107,21 @@ SELECT p.id,p.version,p.name,p.state,p.created_at,p.updated_at,
 pr.provider,pr.source_url,pr.default_branch,psa.assigned_gb,
 mt.code AS machine_type_code,r.code AS region_code,
 coalesce(string_agg(DISTINCT vp.code,',' ORDER BY vp.code) FILTER (WHERE vp.code IS NOT NULL),'') AS preset_codes,
-ito.code AS idle_timeout_code,prc.setup_script_ref,prc.pending_restart_apply,prc.desired_config_hash,prc.applied_config_hash,
+prc.setup_script_ref,prc.pending_restart_apply,prc.desired_config_hash,prc.applied_config_hash,
 prc.applied_storage_gb,coalesce(amt.code,'') AS applied_machine_type_code,coalesce(ar.code,'') AS applied_region_code,
 coalesce(string_agg(DISTINCT avp.code,',' ORDER BY avp.code) FILTER (WHERE avp.code IS NOT NULL),'') AS applied_preset_codes,
-coalesce(aito.code,'') AS applied_idle_timeout_code,prc.applied_setup_script_ref,
+prc.applied_setup_script_ref,
 (SELECT count(*) FROM project_setup_script_revisions psr WHERE psr.project_id=p.id) AS setup_script_revisions
 FROM projects p JOIN project_repositories pr ON pr.project_id=p.id JOIN project_storage_allocations psa ON psa.project_id=p.id
 JOIN project_runtime_configs prc ON prc.project_id=p.id
 LEFT JOIN machine_type_versions mtv ON mtv.id=prc.machine_type_version_id LEFT JOIN machine_types mt ON mt.id=mtv.machine_type_id
-LEFT JOIN regions r ON r.id=prc.region_id LEFT JOIN idle_timeout_options ito ON ito.id=prc.idle_timeout_option_id
+LEFT JOIN regions r ON r.id=prc.region_id
 LEFT JOIN vm_preset_versions vpv ON vpv.id=ANY(prc.preset_version_ids) LEFT JOIN vm_presets vp ON vp.id=vpv.preset_id
 LEFT JOIN machine_type_versions amtv ON amtv.id=prc.applied_machine_type_version_id LEFT JOIN machine_types amt ON amt.id=amtv.machine_type_id
-LEFT JOIN regions ar ON ar.id=prc.applied_region_id LEFT JOIN idle_timeout_options aito ON aito.id=prc.applied_idle_timeout_option_id
+LEFT JOIN regions ar ON ar.id=prc.applied_region_id
 LEFT JOIN vm_preset_versions avpv ON avpv.id=ANY(prc.applied_preset_version_ids) LEFT JOIN vm_presets avp ON avp.id=avpv.preset_id
 WHERE p.id=$1 AND p.user_id=$2
-GROUP BY p.id,pr.project_id,psa.project_id,prc.project_id,mt.code,r.code,ito.code,amt.code,ar.code,aito.code
+GROUP BY p.id,pr.project_id,psa.project_id,prc.project_id,mt.code,r.code,amt.code,ar.code
 `
 
 type GetProjectParams struct {
@@ -154,7 +143,6 @@ type GetProjectRow struct {
 	MachineTypeCode        sql.NullString
 	RegionCode             sql.NullString
 	PresetCodes            interface{}
-	IdleTimeoutCode        sql.NullString
 	SetupScriptRef         string
 	PendingRestartApply    bool
 	DesiredConfigHash      string
@@ -163,7 +151,6 @@ type GetProjectRow struct {
 	AppliedMachineTypeCode string
 	AppliedRegionCode      string
 	AppliedPresetCodes     interface{}
-	AppliedIdleTimeoutCode string
 	AppliedSetupScriptRef  string
 	SetupScriptRevisions   int64
 }
@@ -185,7 +172,6 @@ func (q *Queries) GetProject(ctx context.Context, arg GetProjectParams) (GetProj
 		&i.MachineTypeCode,
 		&i.RegionCode,
 		&i.PresetCodes,
-		&i.IdleTimeoutCode,
 		&i.SetupScriptRef,
 		&i.PendingRestartApply,
 		&i.DesiredConfigHash,
@@ -194,7 +180,6 @@ func (q *Queries) GetProject(ctx context.Context, arg GetProjectParams) (GetProj
 		&i.AppliedMachineTypeCode,
 		&i.AppliedRegionCode,
 		&i.AppliedPresetCodes,
-		&i.AppliedIdleTimeoutCode,
 		&i.AppliedSetupScriptRef,
 		&i.SetupScriptRevisions,
 	)
@@ -455,8 +440,8 @@ func (q *Queries) InsertProjectRepository(ctx context.Context, arg InsertProject
 }
 
 const insertProjectRuntimeConfig = `-- name: InsertProjectRuntimeConfig :exec
-INSERT INTO project_runtime_configs (project_id,machine_type_version_id,preset_version_ids,setup_script_ref,idle_timeout_option_id,region_id,pending_restart_apply,desired_config_hash)
-VALUES ($1,$2,$3,$4,$5,$6,true,$7)
+INSERT INTO project_runtime_configs (project_id,machine_type_version_id,preset_version_ids,setup_script_ref,region_id,pending_restart_apply,desired_config_hash)
+VALUES ($1,$2,$3,$4,$5,true,$6)
 `
 
 type InsertProjectRuntimeConfigParams struct {
@@ -464,7 +449,6 @@ type InsertProjectRuntimeConfigParams struct {
 	MachineTypeVersionID sql.NullString
 	PresetVersionIds     []string
 	SetupScriptRef       string
-	IdleTimeoutOptionID  sql.NullString
 	RegionID             sql.NullString
 	DesiredConfigHash    string
 }
@@ -475,7 +459,6 @@ func (q *Queries) InsertProjectRuntimeConfig(ctx context.Context, arg InsertProj
 		arg.MachineTypeVersionID,
 		pq.Array(arg.PresetVersionIds),
 		arg.SetupScriptRef,
-		arg.IdleTimeoutOptionID,
 		arg.RegionID,
 		arg.DesiredConfigHash,
 	)
@@ -737,15 +720,14 @@ func (q *Queries) UpdateProjectAssignedStorage(ctx context.Context, arg UpdatePr
 
 const updateProjectDesiredRuntimeConfig = `-- name: UpdateProjectDesiredRuntimeConfig :exec
 UPDATE project_runtime_configs SET machine_type_version_id=$1,preset_version_ids=$2,
-idle_timeout_option_id=$3,region_id=$4,pending_restart_apply=true,
-desired_config_hash=$5,version=version+1,updated_at=now()
-WHERE project_id=$6 AND EXISTS (SELECT 1 FROM projects WHERE id=$6 AND user_id=$7)
+region_id=$3,pending_restart_apply=true,
+desired_config_hash=$4,version=version+1,updated_at=now()
+WHERE project_id=$5 AND EXISTS (SELECT 1 FROM projects WHERE id=$5 AND user_id=$6)
 `
 
 type UpdateProjectDesiredRuntimeConfigParams struct {
 	MachineTypeVersionID sql.NullString
 	PresetVersionIds     []string
-	IdleTimeoutOptionID  sql.NullString
 	RegionID             sql.NullString
 	DesiredConfigHash    string
 	ProjectID            string
@@ -756,7 +738,6 @@ func (q *Queries) UpdateProjectDesiredRuntimeConfig(ctx context.Context, arg Upd
 	_, err := q.db.ExecContext(ctx, updateProjectDesiredRuntimeConfig,
 		arg.MachineTypeVersionID,
 		pq.Array(arg.PresetVersionIds),
-		arg.IdleTimeoutOptionID,
 		arg.RegionID,
 		arg.DesiredConfigHash,
 		arg.ProjectID,
@@ -777,45 +758,6 @@ type UpdateProjectLifecycleStateParams struct {
 
 func (q *Queries) UpdateProjectLifecycleState(ctx context.Context, arg UpdateProjectLifecycleStateParams) error {
 	_, err := q.db.ExecContext(ctx, updateProjectLifecycleState, arg.ID, arg.UserID, arg.State)
-	return err
-}
-
-const upsertProjectActivityRecord = `-- name: UpsertProjectActivityRecord :exec
-INSERT INTO project_activity_markers (project_id,last_activity_at,source,metadata)
-VALUES ($1,$2,$3,$4::jsonb)
-ON CONFLICT (project_id) DO UPDATE SET last_activity_at=greatest(project_activity_markers.last_activity_at,EXCLUDED.last_activity_at),source=EXCLUDED.source,metadata=EXCLUDED.metadata,updated_at=now()
-`
-
-type UpsertProjectActivityRecordParams struct {
-	ProjectID      string
-	LastActivityAt time.Time
-	Source         string
-	Metadata       json.RawMessage
-}
-
-func (q *Queries) UpsertProjectActivityRecord(ctx context.Context, arg UpsertProjectActivityRecordParams) error {
-	_, err := q.db.ExecContext(ctx, upsertProjectActivityRecord,
-		arg.ProjectID,
-		arg.LastActivityAt,
-		arg.Source,
-		arg.Metadata,
-	)
-	return err
-}
-
-const upsertProjectKeepAlive = `-- name: UpsertProjectKeepAlive :exec
-INSERT INTO project_activity_markers (project_id,last_activity_at,source,metadata,keep_alive_until,idle_warning_sent_at)
-VALUES ($1,now(),'connect_session','{}'::jsonb,$2,NULL)
-ON CONFLICT (project_id) DO UPDATE SET keep_alive_until=EXCLUDED.keep_alive_until,idle_warning_sent_at=NULL,updated_at=now()
-`
-
-type UpsertProjectKeepAliveParams struct {
-	ProjectID      string
-	KeepAliveUntil sql.NullTime
-}
-
-func (q *Queries) UpsertProjectKeepAlive(ctx context.Context, arg UpsertProjectKeepAliveParams) error {
-	_, err := q.db.ExecContext(ctx, upsertProjectKeepAlive, arg.ProjectID, arg.KeepAliveUntil)
 	return err
 }
 

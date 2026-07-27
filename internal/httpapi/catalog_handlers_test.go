@@ -13,12 +13,11 @@ import (
 )
 
 type fakeCatalogReader struct {
-	plans        []catalog.PlanRecord
-	machines     []catalog.MachineTypeRecord
-	presets      []catalog.PresetRecord
-	idleTimeouts []catalog.IdleTimeoutRecord
-	regions      []catalog.RegionRecord
-	err          error
+	plans    []catalog.PlanRecord
+	machines []catalog.MachineTypeRecord
+	presets  []catalog.PresetRecord
+	regions  []catalog.RegionRecord
+	err      error
 }
 
 func (f fakeCatalogReader) ListPlans(context.Context) ([]catalog.PlanRecord, error) {
@@ -31,10 +30,6 @@ func (f fakeCatalogReader) ListMachineTypes(context.Context) ([]catalog.MachineT
 
 func (f fakeCatalogReader) ListPresets(context.Context) ([]catalog.PresetRecord, error) {
 	return f.presets, f.err
-}
-
-func (f fakeCatalogReader) ListIdleTimeouts(context.Context) ([]catalog.IdleTimeoutRecord, error) {
-	return f.idleTimeouts, f.err
 }
 
 func (f fakeCatalogReader) ListRegions(context.Context) ([]catalog.RegionRecord, error) {

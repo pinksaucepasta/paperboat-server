@@ -161,6 +161,7 @@ func TestReconcileUsageDebitsBYODBandwidthAndSuspendsOnExhaustion(t *testing.T) 
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
 	seedUsageScope(t, store, suffix)
 	userID, machineID := "usage_bw_user_"+suffix, "usage_bw_machine_"+suffix
+	cleanupUsageBandwidthScope(t, store, userID, machineID, "ent_"+suffix)
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_"+suffix, suffix+"@example.test"); err != nil {
 		t.Fatal(err)
 	}
@@ -195,6 +196,51 @@ func TestReconcileUsageDebitsBYODBandwidthAndSuspendsOnExhaustion(t *testing.T) 
 	if desired != "suspended" {
 		t.Fatalf("environment desired state = %q, want suspended", desired)
 	}
+}
+
+func TestReconcileDelayedUsageAfterMachineDisconnect(t *testing.T) {
+	store := openControlPlaneTestDB(t)
+	ctx := context.Background()
+	intervalEnd := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	receivedAt := intervalEnd.Add(2 * time.Hour)
+	suffix := fmt.Sprintf("delayed_%d", time.Now().UnixNano())
+	seedUsageScope(t, store, suffix)
+	userID, machineID := "usage_bw_user_"+suffix, "usage_bw_machine_"+suffix
+	cleanupUsageBandwidthScope(t, store, userID, machineID, "ent_"+suffix)
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_"+suffix, suffix+"@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machine_entitlements (id,user_id,provider_subscription_id,product_code,state,seat_quantity,allowance_bytes,current_period_start,current_period_end) VALUES ($1,$2,$3,'byod-test','active',1,1000,$4,$5)`, "ent_"+suffix, userID, "sub_"+suffix, intervalEnd.Add(-time.Hour), intervalEnd.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,$4,'linux','amd64','/home/test','offline','released',false)`, machineID, userID, "env_"+suffix, "Usage "+suffix); err != nil {
+		t.Fatal(err)
+	}
+	debit := usermachines.New(store, audit.NewWriter(store), usermachines.Policy{}, nil)
+	report := usageReport("op_bw_"+suffix, "epoch_bw_"+suffix, 125, intervalEnd)
+	report.EdgeNodeID, report.EnvironmentID, report.RouteID = "node_"+suffix, "env_"+suffix, "route_"+suffix
+	receipt, err := ReconcileUsageWithBandwidth(ctx, store, report, receivedAt, debit)
+	if err != nil || receipt.DeltaBytes != 125 {
+		t.Fatalf("delayed receipt = %#v, %v", receipt, err)
+	}
+	var consumed int64
+	if err := store.SQL().QueryRowContext(ctx, `SELECT consumed_included_bytes FROM paperboat.user_machine_bandwidth_periods WHERE user_machine_id=$1`, machineID).Scan(&consumed); err != nil {
+		t.Fatal(err)
+	}
+	if consumed != 125 {
+		t.Fatalf("consumed delayed bandwidth = %d, want 125", consumed)
+	}
+}
+
+func cleanupUsageBandwidthScope(t *testing.T, store *db.DB, userID, machineID, entitlementID string) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx := context.Background()
+		_, _ = store.SQL().ExecContext(ctx, `DELETE FROM paperboat.user_machine_bandwidth_periods WHERE user_machine_id=$1`, machineID)
+		_, _ = store.SQL().ExecContext(ctx, `DELETE FROM paperboat.user_machines WHERE id=$1`, machineID)
+		_, _ = store.SQL().ExecContext(ctx, `DELETE FROM paperboat.user_machine_entitlements WHERE id=$1`, entitlementID)
+		_, _ = store.SQL().ExecContext(ctx, `DELETE FROM paperboat.users WHERE id=$1`, userID)
+	})
 }
 
 func usageReport(operationID, epoch string, bytes int64, now time.Time) UsageReport {

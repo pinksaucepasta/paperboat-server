@@ -303,7 +303,7 @@ func New(opts Options) (*App, error) {
 		TerminalSessions:       terminalSessionService,
 		EnvironmentAccess:      accessService,
 		MeteringRepo:           metering.NewRuntimeRepository(store, opts.Config.Secrets.EncryptionKey),
-		ActivityIdentity:       enrollmentService,
+		RuntimeIdentity:        enrollmentService,
 		ConfigSync:             configSyncRepo,
 		Classifier:             classificationController,
 		UserMachines:           userMachineService,

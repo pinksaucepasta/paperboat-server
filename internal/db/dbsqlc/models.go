@@ -830,16 +830,6 @@ type HostedReadinessObservation struct {
 	CreatedAt          time.Time
 }
 
-type IdleTimeoutOption struct {
-	ID              string
-	Code            string
-	DurationSeconds int32
-	Active          bool
-	Version         int64
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-}
-
 type MachineRuntimeInterval struct {
 	ID                   string
 	ProjectID            string
@@ -973,22 +963,6 @@ type Project struct {
 	UpdatedAt         time.Time
 }
 
-type ProjectActivityMarker struct {
-	ProjectID         string
-	LastActivityAt    time.Time
-	Source            string
-	Metadata          json.RawMessage
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	MachineID         string
-	LastHeartbeatAt   sql.NullTime
-	ReporterVersion   string
-	Signals           json.RawMessage
-	KeepAliveUntil    sql.NullTime
-	ReporterLostSince sql.NullTime
-	IdleWarningSentAt sql.NullTime
-}
-
 type ProjectCredential struct {
 	ID             string
 	ProjectID      string
@@ -1024,7 +998,6 @@ type ProjectRuntimeConfig struct {
 	MachineTypeVersionID        sql.NullString
 	PresetVersionIds            []string
 	SetupScriptRef              string
-	IdleTimeoutOptionID         sql.NullString
 	RegionID                    sql.NullString
 	PendingRestartApply         bool
 	DesiredConfigHash           string
@@ -1032,7 +1005,6 @@ type ProjectRuntimeConfig struct {
 	AppliedMachineTypeVersionID sql.NullString
 	AppliedPresetVersionIds     []string
 	AppliedSetupScriptRef       string
-	AppliedIdleTimeoutOptionID  sql.NullString
 	AppliedRegionID             sql.NullString
 	AppliedConfigHash           string
 	Version                     int64
@@ -1080,6 +1052,7 @@ type ProjectTerminalSession struct {
 	Version             int64
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
+	TerminalMode        string
 }
 
 type ProviderEvent struct {
@@ -1398,6 +1371,7 @@ type UserMachineTerminalSession struct {
 	Version             int64
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
+	TerminalMode        string
 }
 
 type UserMachineTerminalSessionOperation struct {

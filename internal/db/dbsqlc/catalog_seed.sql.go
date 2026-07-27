@@ -429,24 +429,3 @@ func (q *Queries) UpsertFeatureFlag(ctx context.Context, arg UpsertFeatureFlagPa
 	_, err := q.db.ExecContext(ctx, upsertFeatureFlag, arg.Code, arg.Enabled, arg.Config)
 	return err
 }
-
-const upsertIdleTimeout = `-- name: UpsertIdleTimeout :exec
-INSERT INTO idle_timeout_options (id, code, duration_seconds, active)
-VALUES ('ito_' || $1, $1, $2, $3)
-ON CONFLICT (code) DO UPDATE SET
-	duration_seconds = EXCLUDED.duration_seconds,
-	active = EXCLUDED.active,
-	version = CASE WHEN (idle_timeout_options.duration_seconds, idle_timeout_options.active) IS DISTINCT FROM (EXCLUDED.duration_seconds, EXCLUDED.active) THEN idle_timeout_options.version + 1 ELSE idle_timeout_options.version END,
-	updated_at = CASE WHEN (idle_timeout_options.duration_seconds, idle_timeout_options.active) IS DISTINCT FROM (EXCLUDED.duration_seconds, EXCLUDED.active) THEN now() ELSE idle_timeout_options.updated_at END
-`
-
-type UpsertIdleTimeoutParams struct {
-	Code            string
-	DurationSeconds int32
-	Active          bool
-}
-
-func (q *Queries) UpsertIdleTimeout(ctx context.Context, arg UpsertIdleTimeoutParams) error {
-	_, err := q.db.ExecContext(ctx, upsertIdleTimeout, arg.Code, arg.DurationSeconds, arg.Active)
-	return err
-}

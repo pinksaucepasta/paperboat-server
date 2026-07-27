@@ -11,49 +11,6 @@ import (
 	"encoding/json"
 )
 
-const listIdleTimeouts = `-- name: ListIdleTimeouts :many
-SELECT id, code, duration_seconds, active, version
-FROM idle_timeout_options
-ORDER BY duration_seconds
-`
-
-type ListIdleTimeoutsRow struct {
-	ID              string
-	Code            string
-	DurationSeconds int32
-	Active          bool
-	Version         int64
-}
-
-func (q *Queries) ListIdleTimeouts(ctx context.Context) ([]ListIdleTimeoutsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listIdleTimeouts)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListIdleTimeoutsRow
-	for rows.Next() {
-		var i ListIdleTimeoutsRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.Code,
-			&i.DurationSeconds,
-			&i.Active,
-			&i.Version,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listMachineTypes = `-- name: ListMachineTypes :many
 SELECT id, code, name, vcpu, memory_mb, credit_weight::text, custom_shape_allowed, active, current_version_id, version
 FROM machine_types

@@ -37,13 +37,6 @@ type catalogPresetResponse struct {
 	Version     int64  `json:"version"`
 }
 
-type catalogIdleTimeoutResponse struct {
-	Code            string `json:"code"`
-	DurationSeconds int    `json:"duration_seconds"`
-	Active          bool   `json:"active"`
-	Version         int64  `json:"version"`
-}
-
 type catalogRegionResponse struct {
 	Code    string `json:"code"`
 	Name    string `json:"name"`
@@ -113,26 +106,6 @@ func catalogPresets(reader catalog.Reader) http.Handler {
 				Description: record.Description,
 				Active:      record.Active,
 				Version:     record.Version,
-			})
-		}
-		writeJSON(w, http.StatusOK, SuccessResponse{Data: out})
-	})
-}
-
-func catalogIdleTimeouts(reader catalog.Reader) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		records, err := reader.ListIdleTimeouts(r.Context())
-		if err != nil {
-			writeError(w, r, http.StatusInternalServerError, "internal_error", "Catalog idle timeouts could not be loaded.")
-			return
-		}
-		out := make([]catalogIdleTimeoutResponse, 0, len(records))
-		for _, record := range records {
-			out = append(out, catalogIdleTimeoutResponse{
-				Code:            record.Code,
-				DurationSeconds: record.DurationSeconds,
-				Active:          record.Active,
-				Version:         record.Version,
 			})
 		}
 		writeJSON(w, http.StatusOK, SuccessResponse{Data: out})

@@ -129,9 +129,3 @@ WHERE project_id=sqlc.arg(project_id) AND propagated_at IS NULL;
 -- name: RecordConnectionEvent :exec
 INSERT INTO connection_events (id,user_id,project_id,access_session_id,result,failure_reason,metadata)
 VALUES (sqlc.arg(id),nullif(sqlc.arg(user_id),''),nullif(sqlc.arg(project_id),''),nullif(sqlc.arg(access_session_id),''),sqlc.arg(result),sqlc.arg(failure_reason),sqlc.arg(metadata)::jsonb);
-
--- name: UpsertProjectActivity :exec
-INSERT INTO project_activity_markers (project_id,last_activity_at,source,metadata)
-VALUES (sqlc.arg(project_id),now(),sqlc.arg(source),sqlc.arg(metadata)::jsonb)
-ON CONFLICT (project_id) DO UPDATE SET last_activity_at=greatest(project_activity_markers.last_activity_at,EXCLUDED.last_activity_at),
-source=EXCLUDED.source,metadata=EXCLUDED.metadata,updated_at=now();

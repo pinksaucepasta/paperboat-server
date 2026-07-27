@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -19,8 +18,8 @@ import (
 )
 
 const (
-	protocolVersion = "1.0"
-	subprotocol     = "paperboat.helper.v1"
+	protocolVersion = "2.0"
+	subprotocol     = "paperboat.terminal.v2"
 	maxFrameBytes   = 64 << 10
 )
 
@@ -104,7 +103,7 @@ func (c Client) Terminal(ctx context.Context, route, credential, action, session
 	}
 	helloPayload, _ := json.Marshal(map[string]any{
 		"min_version": protocolVersion, "max_version": protocolVersion,
-		"capabilities": []string{"terminal.v1", "health.v1"},
+		"capabilities": []string{"terminal.v2", "health.v1"},
 	})
 	if err := writeFrame(ctx, connection, frame{Type: "hello", RequestID: helloID, Version: protocolVersion, Payload: helloPayload}); err != nil {
 		return Snapshot{}, err
@@ -120,7 +119,7 @@ func (c Client) Terminal(ctx context.Context, route, credential, action, session
 		Version      string   `json:"version"`
 		Capabilities []string `json:"capabilities"`
 	}
-	if decodeStrict(welcome.Payload, &negotiated) != nil || negotiated.Version != protocolVersion || !contains(negotiated.Capabilities, "terminal.v1") || !contains(negotiated.Capabilities, "health.v1") {
+	if decodeStrict(welcome.Payload, &negotiated) != nil || negotiated.Version != protocolVersion || !contains(negotiated.Capabilities, "terminal.v2") || !contains(negotiated.Capabilities, "health.v1") {
 		return Snapshot{}, errors.New("helper runtime did not negotiate required capabilities")
 	}
 
@@ -139,7 +138,7 @@ func (c Client) Terminal(ctx context.Context, route, credential, action, session
 			deadline = uint32(milliseconds)
 		}
 	}
-	request := frame{Type: "request", RequestID: requestID, Version: protocolVersion, OperationID: operationID, Capability: "terminal.v1", DeadlineMS: deadline, Payload: payload}
+	request := frame{Type: "request", RequestID: requestID, Version: protocolVersion, OperationID: operationID, Capability: "terminal.v2", DeadlineMS: deadline, Payload: payload}
 	if err := writeFrame(ctx, connection, request); err != nil {
 		return Snapshot{}, err
 	}
@@ -208,10 +207,7 @@ func writeFrame(ctx context.Context, connection *websocket.Conn, value frame) er
 	if err != nil || len(encoded) == 0 || len(encoded) > maxFrameBytes {
 		return errors.New("invalid helper runtime frame")
 	}
-	message := make([]byte, 4+len(encoded))
-	binary.BigEndian.PutUint32(message[:4], uint32(len(encoded)))
-	copy(message[4:], encoded)
-	return connection.Write(ctx, websocket.MessageText, message)
+	return connection.Write(ctx, websocket.MessageText, encoded)
 }
 
 func readFrame(ctx context.Context, connection *websocket.Conn) (frame, error) {
@@ -219,11 +215,11 @@ func readFrame(ctx context.Context, connection *websocket.Conn) (frame, error) {
 	if err != nil {
 		return frame{}, err
 	}
-	if typ != websocket.MessageText || len(data) < 5 || int(binary.BigEndian.Uint32(data[:4])) != len(data)-4 || len(data)-4 > maxFrameBytes {
+	if typ != websocket.MessageText || len(data) == 0 || len(data) > maxFrameBytes {
 		return frame{}, errors.New("invalid helper runtime frame")
 	}
 	var value frame
-	if decodeStrict(data[4:], &value) != nil || value.Version != protocolVersion || value.Type == "" || value.RequestID == "" {
+	if decodeStrict(data, &value) != nil || value.Version != protocolVersion || value.Type == "" || value.RequestID == "" {
 		return frame{}, errors.New("invalid helper runtime frame")
 	}
 	return value, nil

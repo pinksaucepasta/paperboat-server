@@ -25,7 +25,6 @@ type Seed struct {
 	Plans           []Plan           `json:"plans"`
 	MachineTypes    []MachineType    `json:"machine_types"`
 	Presets         []Preset         `json:"presets"`
-	IdleTimeouts    []IdleTimeout    `json:"idle_timeouts"`
 	Regions         []Region         `json:"regions"`
 	BillingProducts []BillingProduct `json:"billing_products"`
 	FeatureFlags    []FeatureFlag    `json:"feature_flags"`
@@ -57,12 +56,6 @@ type Preset struct {
 	Description string          `json:"description"`
 	Active      bool            `json:"active"`
 	Manifest    json.RawMessage `json:"manifest"`
-}
-
-type IdleTimeout struct {
-	Code            string `json:"code"`
-	DurationSeconds int    `json:"duration_seconds"`
-	Active          bool   `json:"active"`
 }
 
 type Region struct {
@@ -162,12 +155,6 @@ func (s Seed) Validate() error {
 			errs = append(errs, fmt.Errorf("preset %q manifest must be valid JSON object", preset.Code))
 		}
 	}
-	for _, timeout := range s.IdleTimeouts {
-		checkCode("idle timeout", timeout.Code)
-		if timeout.DurationSeconds <= 0 {
-			errs = append(errs, fmt.Errorf("idle timeout %q duration_seconds must be positive", timeout.Code))
-		}
-	}
 	for _, region := range s.Regions {
 		checkCode("region", region.Code)
 		if strings.TrimSpace(region.Name) == "" {
@@ -221,11 +208,6 @@ func Apply(ctx context.Context, store *db.DB, seed Seed) error {
 		for _, preset := range seed.Presets {
 			if err := upsertPreset(ctx, tx, preset); err != nil {
 				return err
-			}
-		}
-		for _, timeout := range seed.IdleTimeouts {
-			if err := q.UpsertIdleTimeout(ctx, dbsqlc.UpsertIdleTimeoutParams{Code: timeout.Code, DurationSeconds: int32(timeout.DurationSeconds), Active: timeout.Active}); err != nil {
-				return fmt.Errorf("upsert idle timeout %s: %w", timeout.Code, err)
 			}
 		}
 		for _, region := range seed.Regions {

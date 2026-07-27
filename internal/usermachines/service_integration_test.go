@@ -78,6 +78,58 @@ func TestWorkerMarksStaleMachineOfflineAndHeartbeatRestoresIt(t *testing.T) {
 	}
 }
 
+func TestCreateTerminalSessionMapsDuplicateNameToConflict(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID, machineID := "usr_um_session_"+suffix, "um_session_"+suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_"+suffix, "session-"+suffix+"@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,'Sessions','linux','amd64','/home/test','online','occupied',true)`, machineID, userID, "env_session_"+suffix); err != nil {
+		t.Fatal(err)
+	}
+	service := New(store, audit.NewWriter(store), Policy{}, nil)
+	if _, err := service.CreateTerminalSessionWithMode(ctx, userID, machineID, "benchmark", "shell", "create-one", 4); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.CreateTerminalSessionWithMode(ctx, userID, machineID, "benchmark", "shell", "create-two", 4); !errors.Is(err, ErrTerminalSessionConflict) {
+		t.Fatalf("duplicate name error = %v, want %v", err, ErrTerminalSessionConflict)
+	}
+}
+
+func TestCreateTerminalSessionAllocatesNameWhenOmitted(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID, machineID := "usr_um_auto_session_"+suffix, "um_auto_session_"+suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_"+suffix, "auto-session-"+suffix+"@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,'Auto Sessions','linux','amd64','/home/test','online','occupied',true)`, machineID, userID, "env_auto_session_"+suffix); err != nil {
+		t.Fatal(err)
+	}
+	service := New(store, audit.NewWriter(store), Policy{}, nil)
+	first, err := service.CreateTerminalSessionWithMode(ctx, userID, machineID, "", "shell", "create-auto-one", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Name != "shell-2" || first.TerminalMode != "shell" {
+		t.Fatalf("first session = %+v", first)
+	}
+	replay, err := service.CreateTerminalSessionWithMode(ctx, userID, machineID, "", "shell", "create-auto-one", 4)
+	if err != nil || replay.ID != first.ID || replay.Name != first.Name {
+		t.Fatalf("idempotent replay = %+v, %v", replay, err)
+	}
+	second, err := service.CreateTerminalSessionWithMode(ctx, userID, machineID, "", "shell", "create-auto-two", 4)
+	if err != nil || second.Name != "shell-3" {
+		t.Fatalf("second session = %+v, %v", second, err)
+	}
+	if _, err := service.CreateTerminalSessionWithMode(ctx, userID, machineID, "shell-4", "shell", "create-reserved", 4); !errors.Is(err, ErrTerminalSessionInvalidName) {
+		t.Fatalf("reserved automatic name error = %v", err)
+	}
+}
+
 func TestAvailabilityPolicyLifecycle(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()

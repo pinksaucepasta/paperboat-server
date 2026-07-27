@@ -102,8 +102,8 @@ func (s *EnrollmentService) EnsureBootGrant(ctx context.Context, actorID, operat
 	return s.Issue(ctx, actorID, fmt.Sprintf("%s:%d", operationPrefix, now.Unix()), environmentID, lifetime)
 }
 
-func (s *EnrollmentService) VerifyActivityHeartbeat(ctx context.Context, identityToken string, proof, body []byte, environmentID, machineID string) error {
-	claims, err := s.VerifyHelperRequest(ctx, identityToken, proof, http.MethodPost, "/v1/environment-activity-observations", body)
+func (s *EnrollmentService) VerifyRuntimeObservation(ctx context.Context, identityToken string, proof, body []byte, environmentID, machineID string) error {
+	claims, err := s.VerifyHelperRequest(ctx, identityToken, proof, http.MethodPost, "/v1/runtime-observations", body)
 	if err != nil || claims.EnvironmentID != environmentID {
 		return ErrHelperProof
 	}

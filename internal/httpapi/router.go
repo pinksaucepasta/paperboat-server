@@ -52,7 +52,7 @@ type Options struct {
 	TerminalSessions       *terminalsessions.Service
 	EnvironmentAccess      *access.Service
 	MeteringRepo           *metering.RuntimeRepository
-	ActivityIdentity       *controlplane.EnrollmentService
+	RuntimeIdentity        *controlplane.EnrollmentService
 	ConfigSync             *configsync.Repository
 	Classifier             *classifier.Controller
 	UserMachines           *usermachines.Service
@@ -104,6 +104,9 @@ func NewRouter(opts Options) http.Handler {
 			mux.HandleFunc("POST /v1/helper-enrollments", helperEnrollmentExchange(opts.Enrollment, opts.Logger))
 			mux.HandleFunc("POST /v1/hosted-helper-enrollments", hostedHelperEnrollmentExchange(opts.Enrollment, opts.Logger))
 			mux.HandleFunc("POST /v1/helper-identity-renewals", helperIdentityRenew(opts.Enrollment))
+			if opts.EdgeControlAdmin != nil {
+				mux.HandleFunc("POST /v1/helper-trust/revocations", helperRevocations(opts.EdgeControlAdmin, opts.Enrollment))
+			}
 			if opts.UserMachines != nil {
 				mux.Handle("POST /v1/user-machine-installation-failures", helperInstallationFailure(opts.Enrollment, opts.UserMachines))
 				mux.Handle("POST /v1/helper-runtime-policies/resolve", helperRuntimePolicyResolve(opts.Enrollment, opts.UserMachines))
@@ -219,7 +222,7 @@ func NewRouter(opts Options) http.Handler {
 			mux.HandleFunc("POST /v1/webhooks/polar", polarWebhook(opts.Billing, opts.Config.Secrets.PolarWebhookSecret, opts.Config.Billing.PolarWebhookTolerance))
 		}
 		if opts.MeteringRepo != nil {
-			mux.HandleFunc("POST /v1/environment-activity-observations", activityHeartbeat(opts.MeteringRepo, opts.ActivityIdentity, opts.Config.ConfigSync.SummaryLimit, opts.UserMachines))
+			mux.HandleFunc("POST /v1/runtime-observations", runtimeObservation(opts.MeteringRepo, opts.RuntimeIdentity, opts.Config.ConfigSync.SummaryLimit, opts.UserMachines))
 		}
 		mux.HandleFunc("/", notFound)
 		handler = mux
@@ -375,13 +378,11 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 		mux.Handle("GET /v1/catalog/plans", userAuth("account:read", catalogPlans(opts.Catalog)))
 		mux.Handle("GET /v1/catalog/machine-types", userAuth("projects:read", catalogMachineTypes(opts.Catalog)))
 		mux.Handle("GET /v1/catalog/presets", userAuth("projects:read", catalogPresets(opts.Catalog)))
-		mux.Handle("GET /v1/catalog/idle-timeouts", userAuth("projects:read", catalogIdleTimeouts(opts.Catalog)))
 		mux.Handle("GET /v1/catalog/regions", userAuth("projects:read", catalogRegions(opts.Catalog, opts.Fly, opts.CatalogWriter)))
 	} else {
 		mux.Handle("GET /v1/catalog/plans", requireAuth(opts.Auth, http.HandlerFunc(dependencyUnavailable)))
 		mux.Handle("GET /v1/catalog/machine-types", requireAuth(opts.Auth, http.HandlerFunc(dependencyUnavailable)))
 		mux.Handle("GET /v1/catalog/presets", requireAuth(opts.Auth, http.HandlerFunc(dependencyUnavailable)))
-		mux.Handle("GET /v1/catalog/idle-timeouts", requireAuth(opts.Auth, http.HandlerFunc(dependencyUnavailable)))
 		mux.Handle("GET /v1/catalog/regions", requireAuth(opts.Auth, http.HandlerFunc(dependencyUnavailable)))
 	}
 	if opts.GitHub != nil {
@@ -400,8 +401,6 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 			mux.Handle("POST /v1/projects/{project_id}/start", requireAuth(opts.Auth, requireEntitlement(opts.Auth, requireCSRF(opts.Auth, projectsStart(opts.Projects)))))
 			mux.Handle("POST /v1/projects/{project_id}/stop", requireAuth(opts.Auth, requireEntitlement(opts.Auth, requireCSRF(opts.Auth, projectsStop(opts.Projects, opts.EnvironmentAccess)))))
 			mux.Handle("POST /v1/projects/{project_id}/restart", requireAuth(opts.Auth, requireEntitlement(opts.Auth, requireCSRF(opts.Auth, projectsRestart(opts.Projects)))))
-			mux.Handle("POST /v1/projects/{project_id}/keep-alive", requireAuth(opts.Auth, requireEntitlement(opts.Auth, requireCSRF(opts.Auth, projectsKeepAlive(opts.Projects)))))
-			mux.Handle("POST /v1/projects/{project_id}/activity", userAuth("projects:connect", requireEntitlement(opts.Auth, projectsActivity(opts.Projects))))
 			mux.Handle("GET /v1/projects/{project_id}/events", requireAuth(opts.Auth, requireEntitlement(opts.Auth, projectsEvents(opts.Projects))))
 			if opts.EnvironmentAccess != nil {
 				if opts.TerminalSessions != nil {

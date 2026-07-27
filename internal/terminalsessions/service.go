@@ -29,6 +29,7 @@ var (
 	ErrConflict               = errors.New("terminal session name conflict")
 	ErrInvalidName            = errors.New("invalid terminal session name")
 	ErrIdempotencyKeyRequired = errors.New("idempotency key is required")
+	ErrInvalidMode            = errors.New("invalid terminal session mode")
 )
 
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
@@ -217,6 +218,7 @@ type Session struct {
 	LastActiveAt  *time.Time `json:"last_active_at"`
 	CreatedAt     time.Time  `json:"created_at"`
 	UpdatedAt     time.Time  `json:"updated_at"`
+	TerminalMode  string     `json:"terminal_mode"`
 }
 
 func (s *Service) List(ctx context.Context, userID, projectID string) ([]Session, error) {
@@ -321,6 +323,10 @@ func (s *Service) updateRuntime(ctx context.Context, sessionID string, observed 
 }
 
 func (s *Service) Create(ctx context.Context, userID, projectID, name, idempotencyKey string) (Session, error) {
+	return s.CreateWithMode(ctx, userID, projectID, name, "herdr", idempotencyKey)
+}
+
+func (s *Service) CreateWithMode(ctx context.Context, userID, projectID, name, terminalMode, idempotencyKey string) (Session, error) {
 	if _, err := s.projects.Get(ctx, userID, projectID); err != nil {
 		return Session{}, err
 	}
@@ -328,7 +334,17 @@ func (s *Service) Create(ctx context.Context, userID, projectID, name, idempoten
 	if idempotencyKey == "" {
 		return Session{}, ErrIdempotencyKeyRequired
 	}
+	terminalMode = strings.TrimSpace(terminalMode)
+	if terminalMode == "" {
+		terminalMode = "herdr"
+	}
+	if terminalMode != "herdr" && terminalMode != "shell" {
+		return Session{}, ErrInvalidMode
+	}
 	if existing, err := s.db.Queries().GetTerminalSessionByIdempotencyKey(ctx, dbsqlc.GetTerminalSessionByIdempotencyKeyParams{ProjectID: projectID, IdempotencyKey: sql.NullString{String: idempotencyKey, Valid: true}}); err == nil {
+		if existing.TerminalMode != terminalMode {
+			return Session{}, ErrConflict
+		}
 		return mapSession(existing), nil
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return Session{}, err
@@ -360,7 +376,7 @@ func (s *Service) Create(ctx context.Context, userID, projectID, name, idempoten
 			sessionName = fmt.Sprintf("shell-%d", ordinal)
 		}
 		id = newID("pts")
-		return q.CreateTerminalSession(ctx, dbsqlc.CreateTerminalSessionParams{ID: id, ProjectID: projectID, TerminalID: newID("term"), Name: sessionName, AutoNameOrdinal: ordinal, IdempotencyKey: sql.NullString{String: idempotencyKey, Valid: true}})
+		return q.CreateTerminalSession(ctx, dbsqlc.CreateTerminalSessionParams{ID: id, ProjectID: projectID, TerminalID: newID("term"), Name: sessionName, AutoNameOrdinal: ordinal, IdempotencyKey: sql.NullString{String: idempotencyKey, Valid: true}, TerminalMode: terminalMode})
 	})
 	if err != nil {
 		if unique(err) {
@@ -487,7 +503,7 @@ func mapSession(row dbsqlc.ProjectTerminalSession) Session {
 		value := row.LastActivityAt.Time
 		active = &value
 	}
-	return Session{ID: row.ID, Name: row.Name, IsDefault: row.IsDefault, State: row.RuntimeState, LastActiveAt: active, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+	return Session{ID: row.ID, Name: row.Name, IsDefault: row.IsDefault, State: row.RuntimeState, LastActiveAt: active, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, TerminalMode: row.TerminalMode}
 }
 
 func validName(name string) bool {

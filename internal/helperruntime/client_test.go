@@ -26,7 +26,7 @@ func TestTerminalCloseRequiresMatchingCanonicalHelperAcknowledgement(t *testing.
 		if err != nil {
 			return
 		}
-		welcome, _ := json.Marshal(map[string]any{"version": protocolVersion, "capabilities": []string{"terminal.v1", "health.v1"}})
+		welcome, _ := json.Marshal(map[string]any{"version": protocolVersion, "capabilities": []string{"terminal.v2", "health.v1"}})
 		if writeFrame(request.Context(), connection, frame{Type: "welcome", RequestID: hello.RequestID, Version: protocolVersion, Payload: welcome}) != nil {
 			return
 		}
@@ -48,7 +48,7 @@ func TestTerminalCloseRequiresMatchingCanonicalHelperAcknowledgement(t *testing.
 		t.Fatalf("observed = %#v", observed)
 	}
 	operation := <-requests
-	if operation.Type != "request" || operation.Capability != "terminal.v1" || operation.OperationID != "tso_00000001" {
+	if operation.Type != "request" || operation.Capability != "terminal.v2" || operation.OperationID != "tso_00000001" {
 		t.Fatalf("operation = %#v", operation)
 	}
 	var payload struct {
@@ -68,7 +68,7 @@ func TestTerminalRejectsMismatchedAcknowledgement(t *testing.T) {
 		}
 		defer connection.Close(websocket.StatusNormalClosure, "complete")
 		hello, _ := readFrame(request.Context(), connection)
-		welcome, _ := json.Marshal(map[string]any{"version": protocolVersion, "capabilities": []string{"terminal.v1", "health.v1"}})
+		welcome, _ := json.Marshal(map[string]any{"version": protocolVersion, "capabilities": []string{"terminal.v2", "health.v1"}})
 		_ = writeFrame(request.Context(), connection, frame{Type: "welcome", RequestID: hello.RequestID, Version: protocolVersion, Payload: welcome})
 		operation, _ := readFrame(request.Context(), connection)
 		payload := json.RawMessage(`{"result":{"id":"pts_other","name":"agent","cwd":"/workspace","dimensions":{"columns":80,"rows":24},"state":"closed","generation":1,"earliest_sequence":0,"latest_sequence":0,"exit":{"code":0,"exited_at":"2026-07-22T16:00:00Z"}},"replay":false}`)

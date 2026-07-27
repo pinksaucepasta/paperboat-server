@@ -125,7 +125,7 @@ Decision:
 - Machines and volumes are tagged with `managed_by=paperboat-server` and
   `paperboat_project_id=<project_id>`.
 - Region placement is selected from the enabled `regions` catalog.
-- Pending machine type, preset, setup script, and idle-timeout changes apply on restart.
+- Pending machine type, preset, and setup script changes apply on restart.
 - Project storage resize remains blocked until an explicit Fly volume resize/replacement
   policy is approved; storage changes keep `pending_restart_apply` intact.
 

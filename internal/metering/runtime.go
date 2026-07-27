@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
@@ -25,18 +24,11 @@ type RuntimeService struct {
 	fly        fly.Client
 	billing    *billing.Repository
 	now        func() time.Time
-	cfg        EnforcementConfig
 	downstream ProjectSessionRevoker
 }
 
 type ProjectSessionRevoker interface {
 	RetryPendingHelperRevocations(context.Context) error
-}
-
-type EnforcementConfig struct {
-	HeartbeatGrace        time.Duration
-	ReporterLostStopGrace time.Duration
-	IdleWarningLead       time.Duration
 }
 
 var ErrInvalidHeartbeatCredential = errors.New("invalid heartbeat credential")
@@ -47,29 +39,12 @@ func NewRuntimeService(store *db.DB, flyClient fly.Client, billingRepo *billing.
 		fly:     flyClient,
 		billing: billingRepo,
 		now:     func() time.Time { return time.Now().UTC() },
-		cfg: EnforcementConfig{
-			HeartbeatGrace:        2 * time.Minute,
-			ReporterLostStopGrace: 10 * time.Minute,
-			IdleWarningLead:       5 * time.Minute,
-		},
 	}
 }
 
 func (s *RuntimeService) SetClock(now func() time.Time) {
 	if now != nil {
 		s.now = now
-	}
-}
-
-func (s *RuntimeService) SetEnforcementConfig(cfg EnforcementConfig) {
-	if cfg.HeartbeatGrace > 0 {
-		s.cfg.HeartbeatGrace = cfg.HeartbeatGrace
-	}
-	if cfg.ReporterLostStopGrace > 0 {
-		s.cfg.ReporterLostStopGrace = cfg.ReporterLostStopGrace
-	}
-	if cfg.IdleWarningLead > 0 {
-		s.cfg.IdleWarningLead = cfg.IdleWarningLead
 	}
 }
 
@@ -95,15 +70,13 @@ func (s *RuntimeService) RunOnce(ctx context.Context) (runErr error) {
 			errs = append(errs, ctx.Err())
 			return errors.Join(errs...)
 		}
-		// A single machine's poll/observe failure (e.g. a transient Fly API
-		// error) must not abort the run: idle and reporter-loss enforcement
-		// below still has to happen for every other project, or idle machines
-		// would never be stopped. Collect the error and keep going.
+		// A single provider observation failure must not abort the remaining
+		// machines or entitlement enforcement.
 		if err := s.observeMachine(ctx, machine, now); err != nil {
 			errs = append(errs, fmt.Errorf("observe machine %s: %w", machine.FlyMachineID, err))
 		}
 	}
-	if err := s.repo.EnforceIdleAndReporterState(ctx, now, s.cfg); err != nil {
+	if err := s.repo.EnforceEntitlementState(ctx, now); err != nil {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
@@ -240,7 +213,6 @@ type MeterableMachine struct {
 	FlyMachineID         string
 	MachineTypeVersionID string
 	CreditWeight         string
-	IdleTimeoutSeconds   int
 }
 
 type RuntimeInterval struct {
@@ -268,13 +240,11 @@ type Checkpoint struct {
 	IdempotencyKey    string
 }
 
-type ActivityHeartbeat struct {
+type RuntimeObservation struct {
 	ProjectID             string
 	MachineID             string
-	LastActivityAt        time.Time
-	LastHeartbeatAt       time.Time
+	ObservedAt            time.Time
 	ReporterVersion       string
-	Signals               map[string]string
 	ConfigSync            *configsync.Status
 	ConfigSyncObservedAt  time.Time
 	WorkerGeneration      uint64
@@ -304,7 +274,7 @@ func (r *RuntimeRepository) MeterableMachines(ctx context.Context) ([]MeterableM
 	}
 	out := make([]MeterableMachine, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, MeterableMachine{ProjectID: row.ProjectID, UserID: row.UserID, FlyMachineID: row.FlyMachineID, MachineTypeVersionID: row.AppliedMachineTypeVersionID.String, CreditWeight: row.CreditWeight, IdleTimeoutSeconds: int(row.DurationSeconds)})
+		out = append(out, MeterableMachine{ProjectID: row.ProjectID, UserID: row.UserID, FlyMachineID: row.FlyMachineID, MachineTypeVersionID: row.AppliedMachineTypeVersionID.String, CreditWeight: row.CreditWeight})
 	}
 	return out, nil
 }
@@ -518,39 +488,9 @@ func (r *RuntimeRepository) RecordObservedProjectState(ctx context.Context, proj
 	})
 }
 
-func (r *RuntimeRepository) EnforceIdleAndReporterState(ctx context.Context, now time.Time, cfg EnforcementConfig) error {
+func (r *RuntimeRepository) EnforceEntitlementState(ctx context.Context, now time.Time) error {
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		rows, err := tx.Queries().ListIdleProjectsForUpdate(ctx, sql.NullTime{Time: now, Valid: true})
-		if err != nil {
-			return err
-		}
-		for _, stop := range rows {
-			deadline := stop.LastActivityAt.Add(time.Duration(stop.DurationSeconds) * time.Second)
-			if cfg.IdleWarningLead > 0 && now.Before(deadline) && !now.Before(deadline.Add(-cfg.IdleWarningLead)) {
-				if err := emitIdleWarningTx(ctx, tx, stop.ProjectID, stop.LastActivityAt, deadline); err != nil {
-					return err
-				}
-				continue
-			}
-			if now.Before(deadline) {
-				continue
-			}
-			if err := queueSystemStopTx(ctx, tx, stop.ProjectID, "idle_timeout", map[string]any{
-				"last_activity_at":     stop.LastActivityAt.UTC().Format(time.RFC3339Nano),
-				"idle_timeout_seconds": int(stop.DurationSeconds),
-			}); err != nil {
-				return err
-			}
-		}
-		if cfg.HeartbeatGrace > 0 && cfg.ReporterLostStopGrace > 0 {
-			if err := r.enforceReporterLossTx(ctx, tx, now, cfg); err != nil {
-				return err
-			}
-		}
-		if err := r.enforceEntitlementLossTx(ctx, tx, now); err != nil {
-			return err
-		}
-		return nil
+		return r.enforceEntitlementLossTx(ctx, tx, now)
 	})
 }
 
@@ -569,133 +509,64 @@ func (r *RuntimeRepository) enforceEntitlementLossTx(ctx context.Context, tx *db
 	return nil
 }
 
-func (r *RuntimeRepository) enforceReporterLossTx(ctx context.Context, tx *db.Tx, now time.Time, cfg EnforcementConfig) error {
-	q := tx.Queries()
-	rows, err := q.ListReporterLostProjectsForUpdate(ctx, sql.NullTime{Time: now.Add(-cfg.HeartbeatGrace), Valid: true})
-	if err != nil {
-		return err
-	}
-	for _, item := range rows {
-		heartbeat := item.LastHeartbeatAt.Time
-		lostSince := heartbeat.Add(cfg.HeartbeatGrace)
-		if item.ReporterLostSince.Valid {
-			lostSince = item.ReporterLostSince.Time
-		} else if err := q.SetReporterLostSince(ctx, dbsqlc.SetReporterLostSinceParams{ProjectID: item.ProjectID, ReporterLostSince: sql.NullTime{Time: lostSince, Valid: true}}); err != nil {
-			return err
-		}
-		if !now.Before(lostSince.Add(cfg.ReporterLostStopGrace)) {
-			if err := queueSystemStopTx(ctx, tx, item.ProjectID, "activity_reporter_lost", map[string]any{
-				"last_heartbeat_at": heartbeat.UTC().Format(time.RFC3339Nano),
-				"lost_since":        lostSince.UTC().Format(time.RFC3339Nano),
-			}); err != nil {
-				return err
-			}
-		}
-	}
-	return q.ClearRecoveredReporterLoss(ctx, sql.NullTime{Time: now.Add(-cfg.HeartbeatGrace), Valid: true})
-}
-
-func (r *RuntimeRepository) RecordActivity(ctx context.Context, projectID string, at time.Time, source string, metadata map[string]any) error {
-	source = strings.TrimSpace(source)
-	if source == "" {
-		return fmt.Errorf("activity source is required")
-	}
-	if !validActivitySource(source) {
-		return fmt.Errorf("activity source %q is not accepted", source)
-	}
-	if metadata == nil {
-		metadata = map[string]any{}
-	}
-	b, err := json.Marshal(metadata)
-	if err != nil {
-		return err
+func (r *RuntimeRepository) RecordRuntimeObservation(ctx context.Context, observation RuntimeObservation) error {
+	if observation.ObservedAt.IsZero() {
+		observation.ObservedAt = time.Now().UTC()
 	}
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		return tx.Queries().UpsertMeteringActivity(ctx, dbsqlc.UpsertMeteringActivityParams{ProjectID: projectID, LastActivityAt: at, Source: source, Metadata: b})
-	})
-}
-
-func validActivitySource(source string) bool {
-	switch source {
-	case "connect_session", "provider_route_connection", "helper_activity", "cli_activity", "vm_heartbeat":
-		return true
-	default:
-		return false
-	}
-}
-
-func (r *RuntimeRepository) RecordHeartbeat(ctx context.Context, heartbeat ActivityHeartbeat) error {
-	if heartbeat.LastHeartbeatAt.IsZero() {
-		heartbeat.LastHeartbeatAt = time.Now().UTC()
-	}
-	if heartbeat.LastActivityAt.IsZero() {
-		heartbeat.LastActivityAt = heartbeat.LastHeartbeatAt
-	}
-	signals := heartbeat.Signals
-	if signals == nil {
-		signals = map[string]string{}
-	}
-	b, err := json.Marshal(signals)
-	if err != nil {
-		return err
-	}
-	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		updated, err := tx.Queries().MarkUserMachineOnlineFromHelper(ctx, dbsqlc.MarkUserMachineOnlineFromHelperParams{ID: heartbeat.MachineID, EnvironmentID: heartbeat.ProjectID})
+		updated, err := tx.Queries().MarkUserMachineOnlineFromHelper(ctx, dbsqlc.MarkUserMachineOnlineFromHelperParams{ID: observation.MachineID, EnvironmentID: observation.ProjectID})
 		if err != nil {
 			return err
 		}
 		if updated == 1 {
-			if _, err = tx.Queries().MarkUserMachineEnrollmentReady(ctx, sql.NullString{String: heartbeat.MachineID, Valid: true}); err != nil {
+			if _, err = tx.Queries().MarkUserMachineEnrollmentReady(ctx, sql.NullString{String: observation.MachineID, Valid: true}); err != nil {
 				return err
 			}
-			if heartbeat.WorkerGeneration > 0 {
-				if heartbeat.DiagnosticsObservedAt.IsZero() {
-					heartbeat.DiagnosticsObservedAt = heartbeat.LastHeartbeatAt
+			if observation.WorkerGeneration > 0 {
+				if observation.DiagnosticsObservedAt.IsZero() {
+					observation.DiagnosticsObservedAt = observation.ObservedAt
 				}
-				if _, err = tx.Queries().RecordUserMachineRuntimeDiagnostics(ctx, dbsqlc.RecordUserMachineRuntimeDiagnosticsParams{ID: heartbeat.MachineID, EnvironmentID: heartbeat.ProjectID, WorkerGeneration: int64(heartbeat.WorkerGeneration), OsBootID: sql.NullString{String: heartbeat.OSBootID, Valid: true}, WorkerServiceScope: heartbeat.WorkerServiceScope, ConnectorState: heartbeat.ConnectorState, ConnectorGeneration: int64(heartbeat.ConnectorGeneration), ObservedAt: sql.NullTime{Time: heartbeat.DiagnosticsObservedAt, Valid: true}}); err != nil {
+				if _, err = tx.Queries().RecordUserMachineRuntimeDiagnostics(ctx, dbsqlc.RecordUserMachineRuntimeDiagnosticsParams{ID: observation.MachineID, EnvironmentID: observation.ProjectID, WorkerGeneration: int64(observation.WorkerGeneration), OsBootID: sql.NullString{String: observation.OSBootID, Valid: true}, WorkerServiceScope: observation.WorkerServiceScope, ConnectorState: observation.ConnectorState, ConnectorGeneration: int64(observation.ConnectorGeneration), ObservedAt: sql.NullTime{Time: observation.DiagnosticsObservedAt, Valid: true}}); err != nil {
 					return err
 				}
 			}
 			return nil
 		}
-		if err := tx.Queries().UpsertActivityHeartbeat(ctx, dbsqlc.UpsertActivityHeartbeatParams{ProjectID: heartbeat.ProjectID, MachineID: heartbeat.MachineID, LastActivityAt: heartbeat.LastActivityAt, LastHeartbeatAt: sql.NullTime{Time: heartbeat.LastHeartbeatAt, Valid: true}, ReporterVersion: heartbeat.ReporterVersion, Signals: b}); err != nil {
-			return err
-		}
-		if heartbeat.ConfigSync == nil {
+		if observation.ConfigSync == nil {
 			return nil
 		}
-		if heartbeat.ConfigSyncObservedAt.IsZero() {
-			heartbeat.ConfigSyncObservedAt = heartbeat.ConfigSync.UpdatedAt.UTC()
+		if observation.ConfigSyncObservedAt.IsZero() {
+			observation.ConfigSyncObservedAt = observation.ConfigSync.UpdatedAt.UTC()
 		}
-		skipped, err := json.Marshal(heartbeat.ConfigSync.Skipped)
+		skipped, err := json.Marshal(observation.ConfigSync.Skipped)
 		if err != nil {
 			return err
 		}
-		conflicts, err := json.Marshal(heartbeat.ConfigSync.Conflicts)
+		conflicts, err := json.Marshal(observation.ConfigSync.Conflicts)
 		if err != nil {
 			return err
 		}
-		classifierPending, err := json.Marshal(heartbeat.ConfigSync.ClassifierPending)
+		classifierPending, err := json.Marshal(observation.ConfigSync.ClassifierPending)
 		if err != nil {
 			return err
 		}
 		if err := tx.Queries().UpsertConfigSyncStatus(ctx, dbsqlc.UpsertConfigSyncStatusParams{
-			ProjectID: heartbeat.ProjectID, MachineID: heartbeat.MachineID, State: heartbeat.ConfigSync.State,
-			LastAttemptAt: nullableTime(heartbeat.ConfigSync.LastAttemptAt), LastSuccessfulSyncAt: nullableTime(heartbeat.ConfigSync.LastSuccessfulAt),
-			RemoteCommit: heartbeat.ConfigSync.RemoteCommit, PendingPathCount: int32(heartbeat.ConfigSync.PendingPathCount),
-			Skipped: skipped, Conflicts: conflicts, ClassifierPending: classifierPending, ErrorCode: heartbeat.ConfigSync.ErrorCode, ErrorMessage: heartbeat.ConfigSync.ErrorMessage,
-			MaxFileBytes: heartbeat.ConfigSync.MaxFileBytes, MaxBatchBytes: heartbeat.ConfigSync.MaxBatchBytes,
-			PolicyRevision: heartbeat.ConfigSync.PolicyRevision, ClassifierPolicyRevision: heartbeat.ConfigSync.ClassifierPolicyRevision,
-			ClassifierModelRevision: heartbeat.ConfigSync.ClassifierModelRevision, ClassifierHealth: heartbeat.ConfigSync.ClassifierHealth, StatusUpdatedAt: heartbeat.ConfigSync.UpdatedAt.UTC(),
-			EncryptionKeyVersion: int32(heartbeat.ConfigSync.EncryptionKeyVersion),
-			StatusObservedAt:     heartbeat.ConfigSyncObservedAt.UTC(), HeartbeatAt: heartbeat.LastHeartbeatAt,
+			ProjectID: observation.ProjectID, MachineID: observation.MachineID, State: observation.ConfigSync.State,
+			LastAttemptAt: nullableTime(observation.ConfigSync.LastAttemptAt), LastSuccessfulSyncAt: nullableTime(observation.ConfigSync.LastSuccessfulAt),
+			RemoteCommit: observation.ConfigSync.RemoteCommit, PendingPathCount: int32(observation.ConfigSync.PendingPathCount),
+			Skipped: skipped, Conflicts: conflicts, ClassifierPending: classifierPending, ErrorCode: observation.ConfigSync.ErrorCode, ErrorMessage: observation.ConfigSync.ErrorMessage,
+			MaxFileBytes: observation.ConfigSync.MaxFileBytes, MaxBatchBytes: observation.ConfigSync.MaxBatchBytes,
+			PolicyRevision: observation.ConfigSync.PolicyRevision, ClassifierPolicyRevision: observation.ConfigSync.ClassifierPolicyRevision,
+			ClassifierModelRevision: observation.ConfigSync.ClassifierModelRevision, ClassifierHealth: observation.ConfigSync.ClassifierHealth, StatusUpdatedAt: observation.ConfigSync.UpdatedAt.UTC(),
+			EncryptionKeyVersion: int32(observation.ConfigSync.EncryptionKeyVersion),
+			StatusObservedAt:     observation.ConfigSyncObservedAt.UTC(), HeartbeatAt: observation.ObservedAt,
 		}); err != nil {
 			return err
 		}
 		return tx.Queries().TouchConfigSyncStatusReceipt(ctx, dbsqlc.TouchConfigSyncStatusReceiptParams{
-			HeartbeatAt: heartbeat.LastHeartbeatAt,
-			ProjectID:   heartbeat.ProjectID,
-			MachineID:   heartbeat.MachineID,
+			HeartbeatAt: observation.ObservedAt,
+			ProjectID:   observation.ProjectID,
+			MachineID:   observation.MachineID,
 		})
 	})
 }
@@ -735,20 +606,6 @@ func (r *RuntimeRepository) VerifyHeartbeatCredential(ctx context.Context, proje
 	return nil
 }
 
-func emitIdleWarningTx(ctx context.Context, tx *db.Tx, projectID string, lastActivity, deadline time.Time) error {
-	rows, err := tx.Queries().EmitIdleWarning(ctx, dbsqlc.EmitIdleWarningParams{ProjectID: projectID, LastActivityAt: lastActivity})
-	if err != nil {
-		return err
-	}
-	if rows == 0 {
-		return nil
-	}
-	return insertEvent(ctx, tx, projectID, "project.idle_stop_warning", "Project is approaching its configured idle timeout.", map[string]any{
-		"last_activity_at": lastActivity.UTC().Format(time.RFC3339Nano),
-		"idle_deadline":    deadline.UTC().Format(time.RFC3339Nano),
-	})
-}
-
 func queueSystemStopTx(ctx context.Context, tx *db.Tx, projectID, reason string, metadata map[string]any) error {
 	q := tx.Queries()
 	if err := q.MarkProjectStoppingForEnforcement(ctx, projectID); err != nil {
@@ -775,14 +632,8 @@ func queueSystemStopTx(ctx context.Context, tx *db.Tx, projectID, reason string,
 		return nil
 	}
 	message := "Project stop was queued by metering enforcement."
-	if reason == "idle_timeout" {
-		message = "Project was idle past its configured timeout; stop was queued."
-	}
 	if reason == "credit_exhausted" {
 		message = "Project credits were exhausted; stop was queued."
-	}
-	if reason == "activity_reporter_lost" {
-		message = "Project activity reporter stopped heartbeating; stop was queued."
 	}
 	if reason == "entitlement_lost" {
 		message = "Project entitlement is inactive; stop was queued."

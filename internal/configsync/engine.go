@@ -60,7 +60,7 @@ func ConfigFromEnv() (Config, error) {
 			return Config{}, err
 		}
 	}
-	activityTokenEnv := env("PAPERBOAT_ACTIVITY_TOKEN_ENV", "PAPERBOAT_MACHINE_ACTIVITY_TOKEN")
+	machineCredentialEnv := env("PAPERBOAT_MACHINE_CREDENTIAL_ENV", "PAPERBOAT_MACHINE_CREDENTIAL")
 	return Config{
 		Home:               home,
 		Workspace:          env("PAPERBOAT_WORKSPACE", "/workspace"),
@@ -77,7 +77,7 @@ func ConfigFromEnv() (Config, error) {
 		AgeKeyVersion:      int(envInt("PAPERBOAT_CONFIG_AGE_KEY_VERSION", 1)),
 		RequireEncryption:  envBool("PAPERBOAT_CONFIG_REQUIRE_ENCRYPTION", false),
 		ClassifierEndpoint: strings.TrimSpace(os.Getenv("PAPERBOAT_CONFIG_CLASSIFY_ENDPOINT")),
-		MachineCredential:  strings.TrimSpace(os.Getenv(activityTokenEnv)),
+		MachineCredential:  strings.TrimSpace(os.Getenv(machineCredentialEnv)),
 		GitToken:           strings.TrimSpace(os.Getenv("PAPERBOAT_GITHUB_CONFIG_TOKEN")),
 		PendingJournalPath: env("PAPERBOAT_CONFIG_PENDING_JOURNAL", filepath.Join(env("PAPERBOAT_WORKSPACE", "/workspace"), ".paperboat", "system", "config-sync-pending.json")),
 		Policy:             PolicyFromEnv(),

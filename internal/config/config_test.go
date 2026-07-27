@@ -252,13 +252,6 @@ func TestProductionValidationRejectsFakeProvidersAndWeakSecrets(t *testing.T) {
 	}
 }
 
-func TestProductionValidationDoesNotRequireMachineActivityToken(t *testing.T) {
-	cfg := validProductionConfig()
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate() error = %v", err)
-	}
-}
-
 func validProductionConfig() Config {
 	cfg := Default()
 	cfg.Environment = EnvironmentProduction
@@ -277,7 +270,6 @@ func validProductionConfig() Config {
 	cfg.Secrets.FlyAPIToken = "fly-api-token"
 	cfg.Secrets.EdgeControlCredential = "edge-control-credential-0123456789"
 	cfg.Secrets.ClassifierAPIKey = "classifier-api-key"
-	cfg.Secrets.MachineActivityToken = ""
 	cfg.Fly.ImageRef = "registry.example.test/paperboat/project-vm@sha256:" + strings.Repeat("a", 64)
 	cfg.UserMachines.BootstrapCommand = "pbh bootstrap --server https://pb.example.test"
 	cfg.UserMachines.HelperArtifactsJSON = `[{"schema":"paperboat.helper-artifact/v1"}]`
