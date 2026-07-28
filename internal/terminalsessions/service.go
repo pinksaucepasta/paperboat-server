@@ -52,7 +52,9 @@ type helperRuntime interface {
 
 func New(store *db.DB, projectService *projects.Service, maxActivePerProject int, retryBackoff time.Duration, maxAttemptsBeforeAlert int) *Service {
 	if maxActivePerProject <= 0 {
-		maxActivePerProject = 32
+		maxActivePerProject = 20
+	} else if maxActivePerProject > 20 {
+		maxActivePerProject = 20
 	}
 	if retryBackoff <= 0 {
 		retryBackoff = time.Second
@@ -210,15 +212,16 @@ func minInt(a, b int) int {
 }
 
 type Session struct {
-	ID            string     `json:"id"`
-	Name          string     `json:"name"`
-	IsDefault     bool       `json:"is_default"`
-	State         string     `json:"state"`
-	AttachedCount *int       `json:"attached_count"`
-	LastActiveAt  *time.Time `json:"last_active_at"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
-	TerminalMode  string     `json:"terminal_mode"`
+	ID             string     `json:"id"`
+	Name           string     `json:"name"`
+	IsDefault      bool       `json:"is_default"`
+	State          string     `json:"state"`
+	AttachedCount  *int       `json:"attached_count"`
+	LastActiveAt   *time.Time `json:"last_active_at"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	TerminalMode   string     `json:"terminal_mode"`
+	EvictedSession *Session   `json:"evicted_session,omitempty"`
 }
 
 func (s *Service) List(ctx context.Context, userID, projectID string) ([]Session, error) {
@@ -354,6 +357,7 @@ func (s *Service) CreateWithMode(ctx context.Context, userID, projectID, name, t
 		return Session{}, ErrInvalidName
 	}
 	var id string
+	var evictedSession *Session
 	err := s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		q := tx.Queries()
 		sessionName := requestedName
@@ -365,7 +369,21 @@ func (s *Service) CreateWithMode(ctx context.Context, userID, projectID, name, t
 			return err
 		}
 		if count >= int32(s.maxActivePerProject) {
-			return ErrLimit
+			evicted, selectErr := q.SelectTerminalSessionForEviction(ctx, projectID)
+			if selectErr != nil {
+				if errors.Is(selectErr, sql.ErrNoRows) {
+					return ErrLimit
+				}
+				return selectErr
+			}
+			if _, err = q.DeleteTerminalSession(ctx, dbsqlc.DeleteTerminalSessionParams{ProjectID: projectID, ID: evicted.ID}); err != nil {
+				return err
+			}
+			mapped := mapSession(evicted)
+			evictedSession = &mapped
+			if err = q.QueueTerminalSessionOperation(ctx, dbsqlc.QueueTerminalSessionOperationParams{ID: newID("tso"), ProjectID: projectID, TerminalSessionID: evicted.ID, Operation: "delete_history"}); err != nil {
+				return err
+			}
 		}
 		ordinal := int32(0)
 		if sessionName == "" {
@@ -393,6 +411,7 @@ func (s *Service) CreateWithMode(ctx context.Context, userID, projectID, name, t
 	}
 	created, err := s.get(ctx, projectID, id)
 	if err == nil {
+		created.EvictedSession = evictedSession
 		observability.TerminalSessionCreated()
 	}
 	return created, err

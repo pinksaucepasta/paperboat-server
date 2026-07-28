@@ -493,6 +493,44 @@ func (q *Queries) RetryTerminalSessionOperation(ctx context.Context, arg RetryTe
 	return err
 }
 
+const selectTerminalSessionForEviction = `-- name: SelectTerminalSessionForEviction :one
+SELECT project_terminal_sessions.id, project_terminal_sessions.project_id, project_terminal_sessions.terminal_id, project_terminal_sessions.thread_id, project_terminal_sessions.name, project_terminal_sessions.idempotency_key, project_terminal_sessions.is_default, project_terminal_sessions.auto_name_ordinal, project_terminal_sessions.launch_cwd, project_terminal_sessions.desired_state, project_terminal_sessions.runtime_state, project_terminal_sessions.last_activity_at, project_terminal_sessions.last_runtime_sync_at, project_terminal_sessions.last_runtime_sequence, project_terminal_sessions.deleted_at, project_terminal_sessions.version, project_terminal_sessions.created_at, project_terminal_sessions.updated_at, project_terminal_sessions.terminal_mode
+FROM project_terminal_sessions
+WHERE project_id=$1 AND deleted_at IS NULL AND NOT is_default
+ORDER BY (desired_state='closed') DESC,
+         coalesce(last_activity_at,updated_at,created_at) ASC,
+         created_at ASC,
+         id ASC
+LIMIT 1 FOR UPDATE
+`
+
+func (q *Queries) SelectTerminalSessionForEviction(ctx context.Context, projectID string) (ProjectTerminalSession, error) {
+	row := q.db.QueryRowContext(ctx, selectTerminalSessionForEviction, projectID)
+	var i ProjectTerminalSession
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.TerminalID,
+		&i.ThreadID,
+		&i.Name,
+		&i.IdempotencyKey,
+		&i.IsDefault,
+		&i.AutoNameOrdinal,
+		&i.LaunchCwd,
+		&i.DesiredState,
+		&i.RuntimeState,
+		&i.LastActivityAt,
+		&i.LastRuntimeSyncAt,
+		&i.LastRuntimeSequence,
+		&i.DeletedAt,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.TerminalMode,
+	)
+	return i, err
+}
+
 const supersedeProjectTerminalSessionOperations = `-- name: SupersedeProjectTerminalSessionOperations :exec
 UPDATE terminal_session_operations
 SET state='superseded',completed_at=now(),last_error='hosted provider resources destroyed',updated_at=now()

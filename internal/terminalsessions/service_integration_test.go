@@ -68,7 +68,7 @@ func TestCatalogCreatesDefaultAndAllocatesMonotonicNames(t *testing.T) {
 	}
 }
 
-func TestCatalogSerializesConcurrentAutomaticCreationAndEnforcesLimit(t *testing.T) {
+func TestCatalogSerializesConcurrentAutomaticCreationAndEvictsAtLimit(t *testing.T) {
 	store := newTerminalSessionTestDB(t)
 	projectService, project := createTerminalSessionTestProject(t, store, "usr_terminal_concurrency")
 	service := New(store, projectService, 5, 1, 3) // default plus four named sessions
@@ -103,8 +103,26 @@ func TestCatalogSerializesConcurrentAutomaticCreationAndEnforcesLimit(t *testing
 	if strings.Join(got, ",") != "shell-2,shell-3,shell-4,shell-5" {
 		t.Fatalf("concurrent names = %v", got)
 	}
-	if _, err := service.Create(ctx, "usr_terminal_concurrency", project.ID, "overflow", "overflow-key"); !errors.Is(err, ErrLimit) {
-		t.Fatalf("limit error = %v, want ErrLimit", err)
+	overflow, err := service.Create(ctx, "usr_terminal_concurrency", project.ID, "overflow", "overflow-key")
+	if err != nil {
+		t.Fatalf("create at limit: %v", err)
+	}
+	if overflow.EvictedSession == nil || overflow.EvictedSession.IsDefault {
+		t.Fatalf("evicted session = %#v", overflow.EvictedSession)
+	}
+	sessions, err := service.List(ctx, "usr_terminal_concurrency", project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 5 {
+		t.Fatalf("retained sessions = %d, want 5", len(sessions))
+	}
+	var queued int
+	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.terminal_session_operations WHERE project_id=$1 AND operation='delete_history'`, project.ID).Scan(&queued); err != nil {
+		t.Fatal(err)
+	}
+	if queued != 1 {
+		t.Fatalf("queued evictions = %d, want 1", queued)
 	}
 }
 

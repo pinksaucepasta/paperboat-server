@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
 )
@@ -35,6 +36,8 @@ func helperPreviewOperation(previews *controlplane.PreviewService, identities *c
 			TargetHost        string `json:"target_host,omitempty"`
 			TargetPort        int32  `json:"target_port,omitempty"`
 			AcknowledgePublic bool   `json:"public_acknowledgement,omitempty"`
+			DurationSeconds   int64  `json:"duration_seconds,omitempty"`
+			Indefinite        bool   `json:"indefinite,omitempty"`
 		}
 		decoder := json.NewDecoder(bytes.NewReader(body))
 		decoder.DisallowUnknownFields()
@@ -58,7 +61,7 @@ func helperPreviewOperation(previews *controlplane.PreviewService, identities *c
 			if input.TargetHost == "" {
 				input.TargetHost = "127.0.0.1"
 			}
-			item, operationErr := previews.CreateOrUpdateForHelper(r.Context(), claims.HelperID, claims.OperationID, claims.EnvironmentID, input.LogicalName, input.TargetHost, input.TargetPort, input.AcknowledgePublic)
+			item, operationErr := previews.CreateOrUpdateForHelper(r.Context(), claims.HelperID, claims.OperationID, claims.EnvironmentID, input.LogicalName, input.TargetHost, input.TargetPort, input.AcknowledgePublic, time.Duration(input.DurationSeconds)*time.Second, input.Indefinite)
 			if operationErr != nil {
 				previewHelperError(w, r, operationErr)
 				return
@@ -90,6 +93,10 @@ func previewHelperError(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, r, http.StatusNotFound, "not_found_or_forbidden", "Preview was not found.")
 	case errors.Is(err, controlplane.ErrPreviewConflict):
 		writeError(w, r, http.StatusConflict, "operation_conflict", "Preview operation conflicts with an earlier request.")
+	case errors.Is(err, controlplane.ErrPreviewLimit):
+		writeError(w, r, http.StatusConflict, "preview_limit_reached", "This environment already has 20 indefinite previews. Remove one before creating another.")
+	case errors.Is(err, controlplane.ErrPreviewLifetime):
+		writeError(w, r, http.StatusBadRequest, "invalid_preview_lifetime", "Preview duration must be positive and no longer than 365 days, or use indefinite.")
 	default:
 		writeError(w, r, http.StatusBadRequest, "validation_failed", "Preview operation is invalid.")
 	}

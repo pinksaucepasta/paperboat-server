@@ -211,7 +211,7 @@ func (s *Service) ConfigureAccess(credentials access.CredentialIssuer, issuer st
 
 func (s *Service) ConfigureTerminalSessions(maxActive int, signer *mint.Provider, client *http.Client) {
 	if maxActive > 0 {
-		s.maxSessions = maxActive
+		s.maxSessions = min(maxActive, 20)
 	}
 	s.controlSigner = signer
 	if client == nil {
@@ -297,7 +297,7 @@ func New(store *db.DB, auditWriter *audit.Writer, policy Policy, seats SeatAutho
 	if policy.OfflineAfter <= 0 {
 		policy.OfflineAfter = 2 * time.Minute
 	}
-	return &Service{db: store, audit: auditWriter, policy: policy, seats: seats, now: time.Now, maxSessions: 32}
+	return &Service{db: store, audit: auditWriter, policy: policy, seats: seats, now: time.Now, maxSessions: 20}
 }
 
 type PairingInput struct {
@@ -581,15 +581,16 @@ func entitlementActive(state string, periodEnd, now time.Time) bool {
 }
 
 type TerminalSession struct {
-	ID            string     `json:"id"`
-	Name          string     `json:"name"`
-	IsDefault     bool       `json:"is_default"`
-	State         string     `json:"state"`
-	AttachedCount *int       `json:"attached_count,omitempty"`
-	LastActiveAt  *time.Time `json:"last_active_at,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
-	TerminalMode  string     `json:"terminal_mode"`
+	ID             string           `json:"id"`
+	Name           string           `json:"name"`
+	IsDefault      bool             `json:"is_default"`
+	State          string           `json:"state"`
+	AttachedCount  *int             `json:"attached_count,omitempty"`
+	LastActiveAt   *time.Time       `json:"last_active_at,omitempty"`
+	CreatedAt      time.Time        `json:"created_at"`
+	UpdatedAt      time.Time        `json:"updated_at"`
+	TerminalMode   string           `json:"terminal_mode"`
+	EvictedSession *TerminalSession `json:"evicted_session,omitempty"`
 }
 
 // BandwidthReservation is a trusted capacity grant. A data-plane relay must
@@ -1335,6 +1336,7 @@ func (s *Service) CreateTerminalSessionWithMode(ctx context.Context, userID, use
 		return TerminalSession{}, err
 	}
 	id, terminalID := newID("umts"), newID("term")
+	var evictedSession *TerminalSession
 	err = s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		if _, err := tx.Queries().LockUserMachineTerminalSessions(ctx, dbsqlc.LockUserMachineTerminalSessionsParams{UserMachineID: userMachineID, UserID: userID}); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -1356,7 +1358,21 @@ func (s *Service) CreateTerminalSessionWithMode(ctx context.Context, userID, use
 			return err
 		}
 		if int(count) >= maxActive {
-			return ErrTerminalSessionLimit
+			evicted, selectErr := tx.Queries().SelectUserMachineTerminalSessionForEviction(ctx, userMachineID)
+			if selectErr != nil {
+				if errors.Is(selectErr, sql.ErrNoRows) {
+					return ErrTerminalSessionLimit
+				}
+				return selectErr
+			}
+			if _, err = tx.Queries().DeleteUserMachineTerminalSession(ctx, dbsqlc.DeleteUserMachineTerminalSessionParams{UserMachineID: userMachineID, ID: evicted.ID}); err != nil {
+				return err
+			}
+			mapped := mapTerminalSession(evicted)
+			evictedSession = &mapped
+			if err = tx.Queries().QueueUserMachineTerminalSessionOperation(ctx, dbsqlc.QueueUserMachineTerminalSessionOperationParams{ID: newID("umtso"), UserMachineID: userMachineID, TerminalSessionID: evicted.ID, Operation: "delete_history"}); err != nil {
+				return err
+			}
 		}
 		sessionName := requestedName
 		ordinal := int32(0)
@@ -1389,7 +1405,9 @@ func (s *Service) CreateTerminalSessionWithMode(ctx context.Context, userID, use
 	if err != nil {
 		return TerminalSession{}, err
 	}
-	return mapTerminalSession(row), nil
+	created := mapTerminalSession(row)
+	created.EvictedSession = evictedSession
+	return created, nil
 }
 
 func userMachineTerminalSessionUniqueViolation(err error) bool {

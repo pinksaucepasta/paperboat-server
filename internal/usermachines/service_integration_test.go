@@ -98,6 +98,44 @@ func TestCreateTerminalSessionMapsDuplicateNameToConflict(t *testing.T) {
 	}
 }
 
+func TestCreateTerminalSessionEvictsClosedSessionAtRetentionLimit(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID, machineID := "usr_um_limit_"+suffix, "um_limit_"+suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_"+suffix, "limit-"+suffix+"@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,'Limit','linux','amd64','/home/test','online','occupied',true)`, machineID, userID, "env_limit_"+suffix); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Queries().CreateDefaultUserMachineTerminalSession(ctx, dbsqlc.CreateDefaultUserMachineTerminalSessionParams{ID: "umts_default_" + suffix, UserMachineID: machineID, LaunchCwd: "/home/test"}); err != nil {
+		t.Fatal(err)
+	}
+	service := New(store, audit.NewWriter(store), Policy{}, nil)
+	first, err := service.CreateTerminalSessionWithMode(ctx, userID, machineID, "first", "shell", "limit-first", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.CreateTerminalSessionWithMode(ctx, userID, machineID, "second", "shell", "limit-second", 3); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machine_terminal_sessions SET desired_state='closed',updated_at=now()-interval '1 day' WHERE id=$1`, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.CreateTerminalSessionWithMode(ctx, userID, machineID, "third", "shell", "limit-third", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.EvictedSession == nil || created.EvictedSession.ID != first.ID {
+		t.Fatalf("evicted session = %#v, want %s", created.EvictedSession, first.ID)
+	}
+	items, err := service.ListTerminalSessions(ctx, userID, machineID)
+	if err != nil || len(items) != 3 {
+		t.Fatalf("retained sessions = %d, %v", len(items), err)
+	}
+}
+
 func TestCreateTerminalSessionAllocatesNameWhenOmitted(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()

@@ -21,9 +21,16 @@ var (
 	ErrPreviewConflict       = errors.New("preview operation conflicts with an earlier request")
 	ErrPreviewAcknowledgment = errors.New("public preview acknowledgement is required")
 	ErrPreviewRemoved        = errors.New("preview identity has been removed")
+	ErrPreviewLimit          = errors.New("preview limit reached")
+	ErrPreviewLifetime       = errors.New("invalid preview lifetime")
 )
 
-const previewRetention = 30 * 24 * time.Hour
+const (
+	previewRetention          = 30 * 24 * time.Hour
+	defaultPreviewLifetime    = 24 * time.Hour
+	maxPreviewLifetime        = 365 * 24 * time.Hour
+	maxPreviewsPerEnvironment = 20
+)
 
 type PreviewService struct {
 	store       *db.DB
@@ -136,18 +143,18 @@ func (s *PreviewService) RevokeOwned(ctx context.Context, userID, operationKey, 
 	return s.Remove(ctx, userID, operationKey, preview.EnvironmentID, preview.LogicalName)
 }
 
-func (s *PreviewService) CreateOrUpdate(ctx context.Context, userID, operationKey, environmentID, logicalName, targetHost string, targetPort int32, acknowledgePublic bool) (dbsqlc.ControlPreview, error) {
-	return s.createOrUpdate(ctx, userID, operationKey, environmentID, logicalName, targetHost, targetPort, acknowledgePublic, true)
+func (s *PreviewService) CreateOrUpdate(ctx context.Context, userID, operationKey, environmentID, logicalName, targetHost string, targetPort int32, acknowledgePublic bool, lifetime time.Duration, indefinite bool) (dbsqlc.ControlPreview, error) {
+	return s.createOrUpdate(ctx, userID, operationKey, environmentID, logicalName, targetHost, targetPort, acknowledgePublic, lifetime, indefinite, true)
 }
 
-func (s *PreviewService) CreateOrUpdateForHelper(ctx context.Context, helperID, operationID, environmentID, logicalName, targetHost string, targetPort int32, acknowledgePublic bool) (dbsqlc.ControlPreview, error) {
+func (s *PreviewService) CreateOrUpdateForHelper(ctx context.Context, helperID, operationID, environmentID, logicalName, targetHost string, targetPort int32, acknowledgePublic bool, lifetime time.Duration, indefinite bool) (dbsqlc.ControlPreview, error) {
 	if strings.TrimSpace(operationID) == "" || !s.helperOwnsEnvironment(ctx, helperID, environmentID) {
 		return dbsqlc.ControlPreview{}, ErrPreviewDenied
 	}
-	return s.createOrUpdate(ctx, helperID, "helper-preview:"+helperID+":"+operationID, environmentID, logicalName, targetHost, targetPort, acknowledgePublic, false)
+	return s.createOrUpdate(ctx, helperID, "helper-preview:"+helperID+":"+operationID, environmentID, logicalName, targetHost, targetPort, acknowledgePublic, lifetime, indefinite, false)
 }
 
-func (s *PreviewService) createOrUpdate(ctx context.Context, actorID, operationKey, environmentID, logicalName, targetHost string, targetPort int32, acknowledgePublic, enforceUserOwnership bool) (dbsqlc.ControlPreview, error) {
+func (s *PreviewService) createOrUpdate(ctx context.Context, actorID, operationKey, environmentID, logicalName, targetHost string, targetPort int32, acknowledgePublic bool, lifetime time.Duration, indefinite, enforceUserOwnership bool) (dbsqlc.ControlPreview, error) {
 	logicalName = strings.TrimSpace(logicalName)
 	if actorID == "" || operationKey == "" || environmentID == "" || logicalName == "" || targetHost != "127.0.0.1" && targetHost != "::1" || targetPort < 1 || targetPort > 65535 {
 		return dbsqlc.ControlPreview{}, ErrPreviewInvalid
@@ -155,7 +162,18 @@ func (s *PreviewService) createOrUpdate(ctx context.Context, actorID, operationK
 	if enforceUserOwnership && !s.ownsEnvironment(ctx, actorID, environmentID) {
 		return dbsqlc.ControlPreview{}, ErrPreviewDenied
 	}
-	hash := routeRequestHash("preview-upsert", environmentID, logicalName, targetHost, targetPort, acknowledgePublic)
+	if indefinite && lifetime != 0 || lifetime < 0 || lifetime > maxPreviewLifetime {
+		return dbsqlc.ControlPreview{}, ErrPreviewLifetime
+	}
+	if !indefinite && lifetime == 0 {
+		lifetime = defaultPreviewLifetime
+	}
+	now := s.clock()
+	expiresAt := sql.NullTime{}
+	if !indefinite {
+		expiresAt = sql.NullTime{Time: now.Add(lifetime), Valid: true}
+	}
+	hash := routeRequestHash("preview-upsert", environmentID, logicalName, targetHost, targetPort, acknowledgePublic, lifetime, indefinite)
 	var result dbsqlc.ControlPreview
 	err := s.store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		if replay, ok, err := previewReplay(ctx, tx, operationKey, "upsert", hash); err != nil || ok {
@@ -179,7 +197,7 @@ func (s *PreviewService) createOrUpdate(ctx context.Context, actorID, operationK
 			if current.State == "removed" {
 				return ErrPreviewRemoved
 			}
-			result, err = tx.Queries().UpdateControlPreview(ctx, dbsqlc.UpdateControlPreviewParams{TargetHost: targetHost, TargetPort: targetPort, PublicAcknowledgedAt: acknowledgedAt(acknowledgePublic, s.clock()), Now: s.clock(), ID: current.ID, ExpectedVersion: current.Version})
+			result, err = tx.Queries().UpdateControlPreview(ctx, dbsqlc.UpdateControlPreviewParams{TargetHost: targetHost, TargetPort: targetPort, PublicAcknowledgedAt: acknowledgedAt(acknowledgePublic, now), ExpiresAt: expiresAt, Now: now, ID: current.ID, ExpectedVersion: current.Version})
 			if err != nil {
 				return err
 			}
@@ -194,7 +212,28 @@ func (s *PreviewService) createOrUpdate(ctx context.Context, actorID, operationK
 			if !acknowledgePublic {
 				return ErrPreviewAcknowledgment
 			}
-			result, err = s.createIdentity(ctx, tx, environmentID, logicalName, targetHost, targetPort)
+			count, countErr := tx.Queries().CountActiveControlPreviews(ctx, dbsqlc.CountActiveControlPreviewsParams{EnvironmentID: environmentID, Now: sql.NullTime{Time: now, Valid: true}})
+			if countErr != nil {
+				return countErr
+			}
+			if count >= maxPreviewsPerEnvironment {
+				evicted, evictionErr := tx.Queries().SelectControlPreviewForEviction(ctx, dbsqlc.SelectControlPreviewForEvictionParams{EnvironmentID: environmentID, Now: sql.NullTime{Time: now, Valid: true}})
+				if errors.Is(evictionErr, sql.ErrNoRows) {
+					return ErrPreviewLimit
+				}
+				if evictionErr != nil {
+					return evictionErr
+				}
+				if _, evictionErr = tx.Queries().RemoveControlPreview(ctx, dbsqlc.RemoveControlPreviewParams{Now: now, RetainedUntil: sql.NullTime{Time: now.Add(previewRetention), Valid: true}, ID: evicted.ID, ExpectedVersion: evicted.Version}); evictionErr != nil {
+					return evictionErr
+				}
+				if evicted.RouteID.Valid {
+					if _, evictionErr = tx.Queries().RemoveControlPreviewRoute(ctx, dbsqlc.RemoveControlPreviewRouteParams{Now: now, ID: evicted.RouteID.String, EnvironmentID: environmentID}); evictionErr != nil {
+						return evictionErr
+					}
+				}
+			}
+			result, err = s.createIdentity(ctx, tx, environmentID, logicalName, targetHost, targetPort, expiresAt)
 			if err != nil {
 				return err
 			}
@@ -273,7 +312,7 @@ func (s *PreviewService) remove(ctx context.Context, actorID, operationKey, envi
 	return result, err
 }
 
-func (s *PreviewService) createIdentity(ctx context.Context, tx *db.Tx, environmentID, logicalName, targetHost string, targetPort int32) (dbsqlc.ControlPreview, error) {
+func (s *PreviewService) createIdentity(ctx context.Context, tx *db.Tx, environmentID, logicalName, targetHost string, targetPort int32, expiresAt sql.NullTime) (dbsqlc.ControlPreview, error) {
 	previewID, err := randomHex("prv_", 12)
 	if err != nil {
 		return dbsqlc.ControlPreview{}, err
@@ -291,7 +330,7 @@ func (s *PreviewService) createIdentity(ctx context.Context, tx *db.Tx, environm
 		if err != nil {
 			return dbsqlc.ControlPreview{}, err
 		}
-		preview, err := tx.Queries().CreateControlPreview(ctx, dbsqlc.CreateControlPreviewParams{ID: previewID, EnvironmentID: environmentID, LogicalName: logicalName, PreviewKey: key, CollisionCounter: int64(counter), PublicHost: host, TargetHost: targetHost, TargetPort: targetPort, PublicAcknowledgedAt: acknowledgedAt(true, s.clock())})
+		preview, err := tx.Queries().CreateControlPreview(ctx, dbsqlc.CreateControlPreviewParams{ID: previewID, EnvironmentID: environmentID, LogicalName: logicalName, PreviewKey: key, CollisionCounter: int64(counter), PublicHost: host, TargetHost: targetHost, TargetPort: targetPort, PublicAcknowledgedAt: acknowledgedAt(true, s.clock()), ExpiresAt: expiresAt})
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}

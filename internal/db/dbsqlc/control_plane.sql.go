@@ -674,6 +674,24 @@ func (q *Queries) ConsumeControlHelperEnrollment(ctx context.Context, arg Consum
 	return i, err
 }
 
+const countActiveControlPreviews = `-- name: CountActiveControlPreviews :one
+SELECT count(*)::integer FROM control_previews
+WHERE environment_id = $1 AND state NOT IN ('removed','expired')
+  AND (expires_at IS NULL OR expires_at > $2)
+`
+
+type CountActiveControlPreviewsParams struct {
+	EnvironmentID string
+	Now           sql.NullTime
+}
+
+func (q *Queries) CountActiveControlPreviews(ctx context.Context, arg CountActiveControlPreviewsParams) (int32, error) {
+	row := q.db.QueryRowContext(ctx, countActiveControlPreviews, arg.EnvironmentID, arg.Now)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const createControlConfigConflictResolution = `-- name: CreateControlConfigConflictResolution :one
 INSERT INTO control_config_conflict_resolutions
   (id, environment_id, repository_id, assignment_id, conflict_revision, path,
@@ -1048,11 +1066,11 @@ func (q *Queries) CreateControlHelperEnrollment(ctx context.Context, arg CreateC
 const createControlPreview = `-- name: CreateControlPreview :one
 INSERT INTO control_previews
   (id, environment_id, logical_name, preview_key, collision_counter, public_host,
-   target_host, target_port, public_acknowledged_at)
+   target_host, target_port, public_acknowledged_at, expires_at)
 VALUES
   ($1, $2, $3, $4,
    $5, $6, $7, $8,
-   $9)
+   $9, $10)
 ON CONFLICT (preview_key) DO NOTHING
 RETURNING id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at
 `
@@ -1067,6 +1085,7 @@ type CreateControlPreviewParams struct {
 	TargetHost           string
 	TargetPort           int32
 	PublicAcknowledgedAt sql.NullTime
+	ExpiresAt            sql.NullTime
 }
 
 func (q *Queries) CreateControlPreview(ctx context.Context, arg CreateControlPreviewParams) (ControlPreview, error) {
@@ -1080,6 +1099,7 @@ func (q *Queries) CreateControlPreview(ctx context.Context, arg CreateControlPre
 		arg.TargetHost,
 		arg.TargetPort,
 		arg.PublicAcknowledgedAt,
+		arg.ExpiresAt,
 	)
 	var i ControlPreview
 	err := row.Scan(
@@ -2129,6 +2149,7 @@ func (q *Queries) GetControlPreviewByKey(ctx context.Context, previewKey string)
 const getControlPreviewForUpdate = `-- name: GetControlPreviewForUpdate :one
 SELECT id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at FROM control_previews
 WHERE environment_id = $1 AND logical_name = $2
+  AND state <> 'removed'
 FOR UPDATE
 `
 
@@ -3086,7 +3107,8 @@ func (q *Queries) ListControlConfigRepositoryAccessPendingProviderRevoke(ctx con
 
 const listControlPreviews = `-- name: ListControlPreviews :many
 SELECT id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at FROM control_previews
-WHERE environment_id = $1 AND state <> 'removed'
+WHERE environment_id = $1 AND state NOT IN ('removed','expired')
+  AND (expires_at IS NULL OR expires_at > now())
 ORDER BY logical_name, id
 `
 
@@ -3137,11 +3159,13 @@ func (q *Queries) ListControlPreviews(ctx context.Context, environmentID string)
 }
 
 const listControlRoutesForEnvironmentAdmission = `-- name: ListControlRoutesForEnvironmentAdmission :many
-SELECT id AS route_id, desired_revision AS route_revision, kind, public_host, target_host, target_port
-FROM control_routes
-WHERE environment_id = $1
-  AND desired_state IN ('attached','replacing')
-ORDER BY id
+SELECT r.id AS route_id, r.desired_revision AS route_revision, r.kind, r.public_host, r.target_host, r.target_port
+FROM control_routes r
+LEFT JOIN control_previews p ON p.route_id = r.id
+WHERE r.environment_id = $1
+  AND r.desired_state IN ('attached','replacing')
+  AND (p.id IS NULL OR (p.state NOT IN ('expired','removed') AND (p.expires_at IS NULL OR p.expires_at > now())))
+ORDER BY r.id
 LIMIT 128
 `
 
@@ -3196,8 +3220,8 @@ LEFT JOIN control_previews p ON p.route_id = r.id
 WHERE c.edge_node_id = $1
   AND r.desired_state IN ('attached','replacing')
   AND c.state IN ('pending','admitted')
-  AND (c.expires_at IS NULL OR c.expires_at > $2)
   AND h.state = 'active'
+  AND (p.id IS NULL OR (p.state NOT IN ('expired','removed') AND (p.expires_at IS NULL OR p.expires_at > $2)))
 ORDER BY r.id
 `
 
@@ -5036,6 +5060,49 @@ func (q *Queries) RevokePendingHelperEnrollments(ctx context.Context, arg Revoke
 	return result.RowsAffected()
 }
 
+const selectControlPreviewForEviction = `-- name: SelectControlPreviewForEviction :one
+SELECT id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at FROM control_previews
+WHERE environment_id = $1 AND state NOT IN ('removed','expired')
+  AND (expires_at IS NULL OR expires_at > $2)
+ORDER BY (expires_at IS NULL) ASC, created_at ASC, id ASC
+LIMIT 1 FOR UPDATE
+`
+
+type SelectControlPreviewForEvictionParams struct {
+	EnvironmentID string
+	Now           sql.NullTime
+}
+
+func (q *Queries) SelectControlPreviewForEviction(ctx context.Context, arg SelectControlPreviewForEvictionParams) (ControlPreview, error) {
+	row := q.db.QueryRowContext(ctx, selectControlPreviewForEviction, arg.EnvironmentID, arg.Now)
+	var i ControlPreview
+	err := row.Scan(
+		&i.ID,
+		&i.EnvironmentID,
+		&i.LogicalName,
+		&i.PreviewKey,
+		&i.CollisionCounter,
+		&i.PublicHost,
+		&i.TargetHost,
+		&i.TargetPort,
+		&i.State,
+		&i.RouteID,
+		&i.HelperReady,
+		&i.EdgeReady,
+		&i.TargetReady,
+		&i.PublicAcknowledgedAt,
+		&i.ExpiresAt,
+		&i.RemovedAt,
+		&i.RetainedUntil,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.HelperObservationRevision,
+		&i.HelperObservedAt,
+	)
+	return i, err
+}
+
 const selectReadyControlTunnelNodeForUpdate = `-- name: SelectReadyControlTunnelNodeForUpdate :one
 SELECT id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at FROM control_tunnel_nodes
 WHERE edge_pool = $1 AND state = 'ready' AND ready = true
@@ -5352,8 +5419,9 @@ UPDATE control_previews
 SET target_host = $1, target_port = $2,
     state = CASE WHEN state = 'removed' THEN state ELSE 'registering' END,
     public_acknowledged_at = coalesce(public_acknowledged_at, $3),
-    version = version + 1, updated_at = $4
-WHERE id = $5 AND version = $6
+    expires_at = $4,
+    version = version + 1, updated_at = $5
+WHERE id = $6 AND version = $7
 RETURNING id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at
 `
 
@@ -5361,6 +5429,7 @@ type UpdateControlPreviewParams struct {
 	TargetHost           string
 	TargetPort           int32
 	PublicAcknowledgedAt sql.NullTime
+	ExpiresAt            sql.NullTime
 	Now                  time.Time
 	ID                   string
 	ExpectedVersion      int64
@@ -5371,6 +5440,7 @@ func (q *Queries) UpdateControlPreview(ctx context.Context, arg UpdateControlPre
 		arg.TargetHost,
 		arg.TargetPort,
 		arg.PublicAcknowledgedAt,
+		arg.ExpiresAt,
 		arg.Now,
 		arg.ID,
 		arg.ExpectedVersion,

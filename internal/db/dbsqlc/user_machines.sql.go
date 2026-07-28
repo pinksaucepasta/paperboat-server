@@ -2600,6 +2600,43 @@ func (q *Queries) RevokeUserMachinesOverSeatLimit(ctx context.Context, arg Revok
 	return items, nil
 }
 
+const selectUserMachineTerminalSessionForEviction = `-- name: SelectUserMachineTerminalSessionForEviction :one
+SELECT id, user_machine_id, terminal_id, thread_id, name, idempotency_key, is_default, auto_name_ordinal, launch_cwd, desired_state, runtime_state, last_activity_at, last_runtime_sync_at, last_runtime_sequence, deleted_at, version, created_at, updated_at, terminal_mode FROM user_machine_terminal_sessions
+WHERE user_machine_id=$1 AND deleted_at IS NULL AND NOT is_default
+ORDER BY (desired_state='closed') DESC,
+         coalesce(last_activity_at,updated_at,created_at) ASC,
+         created_at ASC,
+         id ASC
+LIMIT 1 FOR UPDATE
+`
+
+func (q *Queries) SelectUserMachineTerminalSessionForEviction(ctx context.Context, userMachineID string) (UserMachineTerminalSession, error) {
+	row := q.db.QueryRowContext(ctx, selectUserMachineTerminalSessionForEviction, userMachineID)
+	var i UserMachineTerminalSession
+	err := row.Scan(
+		&i.ID,
+		&i.UserMachineID,
+		&i.TerminalID,
+		&i.ThreadID,
+		&i.Name,
+		&i.IdempotencyKey,
+		&i.IsDefault,
+		&i.AutoNameOrdinal,
+		&i.LaunchCwd,
+		&i.DesiredState,
+		&i.RuntimeState,
+		&i.LastActivityAt,
+		&i.LastRuntimeSyncAt,
+		&i.LastRuntimeSequence,
+		&i.DeletedAt,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.TerminalMode,
+	)
+	return i, err
+}
+
 const setUserMachineAvailabilityPolicy = `-- name: SetUserMachineAvailabilityPolicy :execrows
 UPDATE user_machines
 SET availability_mode=$1,

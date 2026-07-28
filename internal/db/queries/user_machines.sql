@@ -554,6 +554,15 @@ WHERE id=sqlc.arg(user_machine_id) AND user_id=sqlc.arg(user_id) AND deleted_at 
 SELECT count(*)::integer FROM user_machine_terminal_sessions
 WHERE user_machine_id=sqlc.arg(user_machine_id) AND deleted_at IS NULL;
 
+-- name: SelectUserMachineTerminalSessionForEviction :one
+SELECT * FROM user_machine_terminal_sessions
+WHERE user_machine_id=sqlc.arg(user_machine_id) AND deleted_at IS NULL AND NOT is_default
+ORDER BY (desired_state='closed') DESC,
+         coalesce(last_activity_at,updated_at,created_at) ASC,
+         created_at ASC,
+         id ASC
+LIMIT 1 FOR UPDATE;
+
 -- name: NextUserMachineTerminalSessionOrdinal :one
 SELECT coalesce(max(auto_name_ordinal),1)::integer+1 FROM user_machine_terminal_sessions
 WHERE user_machine_id=sqlc.arg(user_machine_id);

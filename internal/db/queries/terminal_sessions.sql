@@ -21,6 +21,16 @@ WHERE id=sqlc.arg(project_id) RETURNING id;
 -- name: CountActiveTerminalSessions :one
 SELECT count(*)::integer FROM project_terminal_sessions WHERE project_id=sqlc.arg(project_id) AND deleted_at IS NULL;
 
+-- name: SelectTerminalSessionForEviction :one
+SELECT project_terminal_sessions.*
+FROM project_terminal_sessions
+WHERE project_id=sqlc.arg(project_id) AND deleted_at IS NULL AND NOT is_default
+ORDER BY (desired_state='closed') DESC,
+         coalesce(last_activity_at,updated_at,created_at) ASC,
+         created_at ASC,
+         id ASC
+LIMIT 1 FOR UPDATE;
+
 -- name: NextTerminalSessionOrdinal :one
 SELECT coalesce(max(auto_name_ordinal),1)::integer+1 FROM project_terminal_sessions WHERE project_id=sqlc.arg(project_id);
 

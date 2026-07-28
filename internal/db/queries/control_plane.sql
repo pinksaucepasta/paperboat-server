@@ -631,6 +631,7 @@ SELECT * FROM control_environments WHERE id = $1;
 -- name: GetControlPreviewForUpdate :one
 SELECT * FROM control_previews
 WHERE environment_id = sqlc.arg(environment_id) AND logical_name = sqlc.arg(logical_name)
+  AND state <> 'removed'
 FOR UPDATE;
 
 -- name: GetControlPreviewByKey :one
@@ -659,8 +660,21 @@ SELECT EXISTS (
 
 -- name: ListControlPreviews :many
 SELECT * FROM control_previews
-WHERE environment_id = sqlc.arg(environment_id) AND state <> 'removed'
+WHERE environment_id = sqlc.arg(environment_id) AND state NOT IN ('removed','expired')
+  AND (expires_at IS NULL OR expires_at > now())
 ORDER BY logical_name, id;
+
+-- name: CountActiveControlPreviews :one
+SELECT count(*)::integer FROM control_previews
+WHERE environment_id = sqlc.arg(environment_id) AND state NOT IN ('removed','expired')
+  AND (expires_at IS NULL OR expires_at > sqlc.arg(now));
+
+-- name: SelectControlPreviewForEviction :one
+SELECT * FROM control_previews
+WHERE environment_id = sqlc.arg(environment_id) AND state NOT IN ('removed','expired')
+  AND (expires_at IS NULL OR expires_at > sqlc.arg(now))
+ORDER BY (expires_at IS NULL) ASC, created_at ASC, id ASC
+LIMIT 1 FOR UPDATE;
 
 -- name: ListOwnedControlPreviews :many
 SELECT p.*, e.owner_user_id, e.workspace_id,
@@ -688,11 +702,11 @@ FOR UPDATE;
 -- name: CreateControlPreview :one
 INSERT INTO control_previews
   (id, environment_id, logical_name, preview_key, collision_counter, public_host,
-   target_host, target_port, public_acknowledged_at)
+   target_host, target_port, public_acknowledged_at, expires_at)
 VALUES
   (sqlc.arg(id), sqlc.arg(environment_id), sqlc.arg(logical_name), sqlc.arg(preview_key),
    sqlc.arg(collision_counter), sqlc.arg(public_host), sqlc.arg(target_host), sqlc.arg(target_port),
-   sqlc.narg(public_acknowledged_at))
+   sqlc.narg(public_acknowledged_at), sqlc.narg(expires_at))
 ON CONFLICT (preview_key) DO NOTHING
 RETURNING *;
 
@@ -701,6 +715,7 @@ UPDATE control_previews
 SET target_host = sqlc.arg(target_host), target_port = sqlc.arg(target_port),
     state = CASE WHEN state = 'removed' THEN state ELSE 'registering' END,
     public_acknowledged_at = coalesce(public_acknowledged_at, sqlc.narg(public_acknowledged_at)),
+    expires_at = sqlc.narg(expires_at),
     version = version + 1, updated_at = sqlc.arg(now)
 WHERE id = sqlc.arg(id) AND version = sqlc.arg(expected_version)
 RETURNING *;
@@ -980,16 +995,18 @@ LEFT JOIN control_previews p ON p.route_id = r.id
 WHERE c.edge_node_id = sqlc.arg(edge_node_id)
   AND r.desired_state IN ('attached','replacing')
   AND c.state IN ('pending','admitted')
-  AND (c.expires_at IS NULL OR c.expires_at > sqlc.arg(now))
   AND h.state = 'active'
+  AND (p.id IS NULL OR (p.state NOT IN ('expired','removed') AND (p.expires_at IS NULL OR p.expires_at > sqlc.arg(now))))
 ORDER BY r.id;
 
 -- name: ListControlRoutesForEnvironmentAdmission :many
-SELECT id AS route_id, desired_revision AS route_revision, kind, public_host, target_host, target_port
-FROM control_routes
-WHERE environment_id = sqlc.arg(environment_id)
-  AND desired_state IN ('attached','replacing')
-ORDER BY id
+SELECT r.id AS route_id, r.desired_revision AS route_revision, r.kind, r.public_host, r.target_host, r.target_port
+FROM control_routes r
+LEFT JOIN control_previews p ON p.route_id = r.id
+WHERE r.environment_id = sqlc.arg(environment_id)
+  AND r.desired_state IN ('attached','replacing')
+  AND (p.id IS NULL OR (p.state NOT IN ('expired','removed') AND (p.expires_at IS NULL OR p.expires_at > now())))
+ORDER BY r.id
 LIMIT 128;
 
 -- name: HeartbeatControlTunnelNode :one
