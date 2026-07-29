@@ -804,7 +804,7 @@ func (s *Service) issueUserMachineCredentials(ctx context.Context, input access.
 	if err != nil {
 		return access.CLICredentials{}, err
 	}
-	uploadToken, err := sign("image_stage", []string{"file:stage"}, uploadJTI)
+	uploadToken, err := sign("file_stage", []string{"file:stage"}, uploadJTI)
 	if err != nil {
 		return access.CLICredentials{}, err
 	}

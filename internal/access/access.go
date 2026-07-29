@@ -748,7 +748,7 @@ func (s *Service) connectCanonicalHosted(ctx context.Context, input DescriptorRe
 	if err != nil {
 		return ConnectionDescriptor{}, err
 	}
-	uploadToken, err := sign("image_stage", []string{"file:stage"}, uploadJTI)
+	uploadToken, err := sign("file_stage", []string{"file:stage"}, uploadJTI)
 	if err != nil {
 		return ConnectionDescriptor{}, err
 	}

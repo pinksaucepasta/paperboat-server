@@ -131,7 +131,7 @@ var credentialPolicies = map[string]struct {
 	"connector_admission":  {audience: "paperboat-edge", scopes: []string{"connector:admit"}, maxTTL: 5 * time.Minute},
 	"config_sync":          {audience: "paperboat-helper", scopes: []string{"config:pull", "config:apply", "config:report"}, maxTTL: 5 * time.Minute},
 	"terminal_operation":   {audience: "paperboat-helper", scopes: []string{"terminal:operate"}, maxTTL: 5 * time.Minute},
-	"image_stage":          {audience: "paperboat-helper", scopes: []string{"file:stage"}, maxTTL: 5 * time.Minute},
+	"file_stage":           {audience: "paperboat-helper", scopes: []string{"file:stage"}, maxTTL: 5 * time.Minute},
 }
 
 func New(keys []Key, activeID string, maxAge time.Duration) (*Provider, error) {
@@ -290,7 +290,7 @@ func (p *Provider) SignCredential(input CredentialInput) (string, error) {
 			return "", errors.New("config sync bindings are required")
 		}
 		claims["helper_id"], claims["assignment_id"], claims["warning_revision"] = input.HelperID, input.AssignmentID, input.WarningRevision
-	case "terminal_operation", "image_stage":
+	case "terminal_operation", "file_stage":
 		if input.UserID == "" || input.CLIClientSessionID == "" || input.SessionID == "" {
 			return "", errors.New("helper access bindings are required")
 		}
@@ -390,7 +390,7 @@ func (p *Provider) verifyCredential(token, expectedIssuer, expectedClass string,
 		if claims.HelperID == "" || claims.AssignmentID == "" || claims.WarningRevision == "" {
 			return CredentialClaims{}, errors.New("credential claims are invalid")
 		}
-	case "terminal_operation", "image_stage":
+	case "terminal_operation", "file_stage":
 		if claims.UserID == "" || claims.CLIClientSessionID == "" || claims.SessionID == "" {
 			return CredentialClaims{}, errors.New("credential claims are invalid")
 		}

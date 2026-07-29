@@ -371,7 +371,7 @@ func TestProjectConnectionDescriptorUsesCanonicalHostedHelperRoute(t *testing.T)
 	}
 	terminalSessionID, _ := envelope.Data.Terminal["session_id"].(string)
 	var revokedJTIs []string
-	for class, descriptor := range map[string]map[string]any{"terminal_operation": envelope.Data.Terminal, "image_stage": envelope.Data.Upload} {
+	for class, descriptor := range map[string]map[string]any{"terminal_operation": envelope.Data.Terminal, "file_stage": envelope.Data.Upload} {
 		authValue, _ := descriptor["auth"].(map[string]any)
 		token, _ := authValue["token"].(string)
 		claims, verifyErr := signer.VerifyCredential(token, config.NormalizeIssuer(config.Default().HTTP.PublicBaseURL), class, time.Now().UTC())

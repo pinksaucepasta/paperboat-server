@@ -783,7 +783,7 @@ func TestConnectIssuesEnvironmentBoundDescriptor(t *testing.T) {
 	}
 	terminalAuth := response.Terminal["auth"].(map[string]any)
 	uploadAuth := response.Upload["auth"].(map[string]any)
-	for class, token := range map[string]string{"terminal_operation": terminalAuth["token"].(string), "image_stage": uploadAuth["token"].(string)} {
+	for class, token := range map[string]string{"terminal_operation": terminalAuth["token"].(string), "file_stage": uploadAuth["token"].(string)} {
 		claims, verifyErr := signer.VerifyCredential(token, "https://api.paperboat.test", class, time.Now().UTC())
 		if verifyErr != nil {
 			t.Fatalf("verify %s credential: %v", class, verifyErr)

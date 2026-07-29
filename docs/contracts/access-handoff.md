@@ -196,9 +196,11 @@ environment. Readiness requires the active environment and helper, the current a
 connector generation, its matching applied route observation, and a ready assigned edge
 node. Terminal and upload auth are separate server-signed `paperboat-credential+jwt`
 bearer credentials, respectively classed `terminal_operation` with exact scope
-`terminal:operate` and `image_stage` with exact scope `file:stage`. Both are bound to the
+`terminal:operate` and `file_stage` with exact scope `file:stage`. Both are bound to the
 environment, user, client session, and selected terminal session and expire within five
-minutes. A descriptor request fails closed when the machine is revoked, disconnected,
+minutes. Terminal reconnect and file staging transparently re-broker expired operation
+credentials through the existing CLI session; neither requires user reauthentication. A
+descriptor request fails closed when the machine is revoked, disconnected,
 offline, lacks a seat, or has no remaining allowance/top-up capacity.
 - The environment id is allocated with the project and is stable across machine stop/start,
   machine replacement, and route reconciliation. It changes only when the project identity
