@@ -1,12 +1,12 @@
 -- +goose Up
 
 ALTER TABLE project_terminal_sessions
-  ADD COLUMN terminal_mode text NOT NULL DEFAULT 'herdr'
-  CHECK (terminal_mode IN ('herdr', 'shell'));
+  ADD COLUMN terminal_mode text NOT NULL DEFAULT 'shell'
+  CHECK (terminal_mode = 'shell');
 
 ALTER TABLE user_machine_terminal_sessions
-  ADD COLUMN terminal_mode text NOT NULL DEFAULT 'herdr'
-  CHECK (terminal_mode IN ('herdr', 'shell'));
+  ADD COLUMN terminal_mode text NOT NULL DEFAULT 'shell'
+  CHECK (terminal_mode = 'shell');
 
 -- +goose Down
 

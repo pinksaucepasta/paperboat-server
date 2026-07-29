@@ -414,7 +414,7 @@ func connectionState(connectable bool, status, state string) string {
 
 func setCanonicalCLIIdentity(response *ConnectionDescriptor, project projects.Project) {
 	response.Schema = accessdescriptor.SchemaV1
-	response.Capabilities = []string{accessdescriptor.CapabilityTerminal, accessdescriptor.CapabilityHerdr, accessdescriptor.CapabilityFileTransfer, accessdescriptor.CapabilityPreview}
+	response.Capabilities = []string{accessdescriptor.CapabilityTerminal, accessdescriptor.CapabilityFileTransfer, accessdescriptor.CapabilityPreview}
 	response.Environment = map[string]any{
 		"id": project.ID, "kind": accessdescriptor.EnvironmentHosted, "resource_id": project.ID,
 		"display_name": project.Name, "state": connectionState(response.Connectable, response.Status, project.State), "root": "/workspace",
@@ -752,7 +752,7 @@ func (s *Service) connectCanonicalHosted(ctx context.Context, input DescriptorRe
 	setCanonicalCLIIdentity(&response, project)
 	response.Terminal = map[string]any{
 		"protocol": "paperboat.terminal.v2", "endpoints": map[string]any{"quic": "quic://" + route.PublicHost + ":443", "wss": "wss://" + route.PublicHost + "/v1/runtime"}, "session_id": terminalSession.ID,
-		"thread_id": terminalSession.ThreadID, "terminal_id": terminalSession.TerminalID, "cwd": terminalSession.LaunchCwd, "terminal_mode": terminalSession.TerminalMode,
+		"thread_id": terminalSession.ThreadID, "terminal_id": terminalSession.TerminalID, "cwd": terminalSession.LaunchCwd,
 		"auth": map[string]any{"method": "bearer", "token": terminalToken, "expires_at": expires, "scopes": []string{"terminal:operate"}},
 	}
 	response.FileTransfer = fileTransferDescriptor(httpBaseURL, transferToken, expires, s.fileTransferPolicy)

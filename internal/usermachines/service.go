@@ -54,7 +54,6 @@ var (
 	ErrTerminalSessionConflict    = errors.New("user-machine terminal session name conflict")
 	ErrTerminalSessionInvalidName = errors.New("invalid user-machine terminal session name")
 	ErrTerminalSessionIdempotency = errors.New("terminal session idempotency key is required")
-	ErrTerminalSessionInvalidMode = errors.New("invalid user-machine terminal session mode")
 )
 
 var (
@@ -591,7 +590,6 @@ type TerminalSession struct {
 	LastActiveAt   *time.Time       `json:"last_active_at,omitempty"`
 	CreatedAt      time.Time        `json:"created_at"`
 	UpdatedAt      time.Time        `json:"updated_at"`
-	TerminalMode   string           `json:"terminal_mode"`
 	EvictedSession *TerminalSession `json:"evicted_session,omitempty"`
 }
 
@@ -684,7 +682,7 @@ func machineConnectionState(connectable bool, state string) string {
 
 func setCanonicalMachineIdentity(response *ConnectionDescriptor, row dbsqlc.UserMachine) {
 	response.Schema = accessdescriptor.SchemaV1
-	response.Capabilities = []string{accessdescriptor.CapabilityTerminal, accessdescriptor.CapabilityHerdr, accessdescriptor.CapabilityFileTransfer, accessdescriptor.CapabilityPreview}
+	response.Capabilities = []string{accessdescriptor.CapabilityTerminal, accessdescriptor.CapabilityFileTransfer, accessdescriptor.CapabilityPreview}
 	response.Environment = map[string]any{"id": row.EnvironmentID, "kind": accessdescriptor.EnvironmentBYOD, "resource_id": row.ID, "display_name": row.DisplayName, "state": machineConnectionState(response.Connectable, row.State), "root": row.WorkspaceRoot}
 }
 
@@ -772,7 +770,7 @@ func (s *Service) ConnectTerminalSession(ctx context.Context, userID, userMachin
 	}
 	response.Connectable, response.Status, response.Reason, response.RetryAfterSeconds = true, "ready", "ready", 0
 	setCanonicalMachineIdentity(&response, row)
-	response.Terminal = map[string]any{"protocol": "paperboat.terminal.v2", "endpoints": machineTerminalEndpoints(websocketBaseURL), "session_id": terminalSession.ID, "thread_id": terminalSession.ThreadID, "terminal_id": terminalSession.TerminalID, "cwd": terminalSession.LaunchCwd, "terminal_mode": terminalSession.TerminalMode, "auth": credentials.TerminalAuth}
+	response.Terminal = map[string]any{"protocol": "paperboat.terminal.v2", "endpoints": machineTerminalEndpoints(websocketBaseURL), "session_id": terminalSession.ID, "thread_id": terminalSession.ThreadID, "terminal_id": terminalSession.TerminalID, "cwd": terminalSession.LaunchCwd, "auth": credentials.TerminalAuth}
 	if credentials.FileTransferAuth != nil {
 		response.FileTransfer = map[string]any{"endpoint": httpBaseURL + "/v1/file-transfers", "policy": s.fileTransferPolicy, "auth": credentials.FileTransferAuth}
 	}
@@ -1316,10 +1314,6 @@ func (s *Service) ListTerminalSessions(ctx context.Context, userID, userMachineI
 }
 
 func (s *Service) CreateTerminalSession(ctx context.Context, userID, userMachineID, name, idempotencyKey string, maxActive int) (TerminalSession, error) {
-	return s.CreateTerminalSessionWithMode(ctx, userID, userMachineID, name, "herdr", idempotencyKey, maxActive)
-}
-
-func (s *Service) CreateTerminalSessionWithMode(ctx context.Context, userID, userMachineID, name, terminalMode, idempotencyKey string, maxActive int) (TerminalSession, error) {
 	requestedName := strings.ToLower(strings.TrimSpace(name))
 	if requestedName != "" && !validUserMachineTerminalSessionName(requestedName) {
 		return TerminalSession{}, ErrTerminalSessionInvalidName
@@ -1327,20 +1321,10 @@ func (s *Service) CreateTerminalSessionWithMode(ctx context.Context, userID, use
 	if strings.TrimSpace(idempotencyKey) == "" {
 		return TerminalSession{}, ErrTerminalSessionIdempotency
 	}
-	terminalMode = strings.TrimSpace(terminalMode)
-	if terminalMode == "" {
-		terminalMode = "herdr"
-	}
-	if terminalMode != "herdr" && terminalMode != "shell" {
-		return TerminalSession{}, ErrTerminalSessionInvalidMode
-	}
 	if maxActive <= 0 {
 		return TerminalSession{}, ErrTerminalSessionLimit
 	}
 	if existing, err := s.db.Queries().GetUserMachineTerminalSessionByIdempotencyKey(ctx, dbsqlc.GetUserMachineTerminalSessionByIdempotencyKeyParams{UserMachineID: userMachineID, UserID: userID, IdempotencyKey: sql.NullString{String: idempotencyKey, Valid: true}}); err == nil {
-		if existing.TerminalMode != terminalMode {
-			return TerminalSession{}, ErrTerminalSessionConflict
-		}
 		return mapTerminalSession(existing), nil
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return TerminalSession{}, err
@@ -1362,9 +1346,6 @@ func (s *Service) CreateTerminalSessionWithMode(ctx context.Context, userID, use
 			return err
 		}
 		if existing, err := tx.Queries().GetUserMachineTerminalSessionByIdempotencyKey(ctx, dbsqlc.GetUserMachineTerminalSessionByIdempotencyKeyParams{UserMachineID: userMachineID, UserID: userID, IdempotencyKey: sql.NullString{String: idempotencyKey, Valid: true}}); err == nil {
-			if existing.TerminalMode != terminalMode {
-				return ErrTerminalSessionConflict
-			}
 			id, terminalID = existing.ID, existing.TerminalID
 			return nil
 		} else if !errors.Is(err, sql.ErrNoRows) {
@@ -1400,15 +1381,12 @@ func (s *Service) CreateTerminalSessionWithMode(ctx context.Context, userID, use
 			}
 			sessionName = fmt.Sprintf("shell-%d", ordinal)
 		}
-		return tx.Queries().CreateUserMachineTerminalSession(ctx, dbsqlc.CreateUserMachineTerminalSessionParams{ID: id, UserMachineID: userMachineID, TerminalID: terminalID, Name: sessionName, AutoNameOrdinal: ordinal, IdempotencyKey: sql.NullString{String: idempotencyKey, Valid: true}, LaunchCwd: machine.WorkspaceRoot, TerminalMode: terminalMode})
+		return tx.Queries().CreateUserMachineTerminalSession(ctx, dbsqlc.CreateUserMachineTerminalSessionParams{ID: id, UserMachineID: userMachineID, TerminalID: terminalID, Name: sessionName, AutoNameOrdinal: ordinal, IdempotencyKey: sql.NullString{String: idempotencyKey, Valid: true}, LaunchCwd: machine.WorkspaceRoot})
 	})
 	if err != nil {
 		if userMachineTerminalSessionUniqueViolation(err) {
 			existing, lookupErr := s.db.Queries().GetUserMachineTerminalSessionByIdempotencyKey(ctx, dbsqlc.GetUserMachineTerminalSessionByIdempotencyKeyParams{UserMachineID: userMachineID, UserID: userID, IdempotencyKey: sql.NullString{String: idempotencyKey, Valid: true}})
 			if lookupErr == nil {
-				if existing.TerminalMode != terminalMode {
-					return TerminalSession{}, ErrTerminalSessionConflict
-				}
 				return mapTerminalSession(existing), nil
 			}
 			if !errors.Is(lookupErr, sql.ErrNoRows) {
@@ -1434,10 +1412,6 @@ func userMachineTerminalSessionUniqueViolation(err error) bool {
 
 func (s *Service) CreateConfiguredTerminalSession(ctx context.Context, userID, userMachineID, name, idempotencyKey string) (TerminalSession, error) {
 	return s.CreateTerminalSession(ctx, userID, userMachineID, name, idempotencyKey, s.maxSessions)
-}
-
-func (s *Service) CreateConfiguredTerminalSessionWithMode(ctx context.Context, userID, userMachineID, name, terminalMode, idempotencyKey string) (TerminalSession, error) {
-	return s.CreateTerminalSessionWithMode(ctx, userID, userMachineID, name, terminalMode, idempotencyKey, s.maxSessions)
 }
 
 func (s *Service) RenameTerminalSession(ctx context.Context, userID, userMachineID, id, name string) (TerminalSession, error) {
@@ -1627,7 +1601,7 @@ func minInt(left, right int) int {
 }
 
 func mapTerminalSession(row dbsqlc.UserMachineTerminalSession) TerminalSession {
-	session := TerminalSession{ID: row.ID, Name: row.Name, IsDefault: row.IsDefault, State: row.DesiredState, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, TerminalMode: row.TerminalMode}
+	session := TerminalSession{ID: row.ID, Name: row.Name, IsDefault: row.IsDefault, State: row.DesiredState, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
 	if row.LastActivityAt.Valid {
 		value := row.LastActivityAt.Time
 		session.LastActiveAt = &value

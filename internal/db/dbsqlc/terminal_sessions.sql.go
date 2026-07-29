@@ -56,8 +56,8 @@ func (q *Queries) CreateDefaultTerminalSession(ctx context.Context, arg CreateDe
 }
 
 const createTerminalSession = `-- name: CreateTerminalSession :exec
-INSERT INTO project_terminal_sessions (id,project_id,terminal_id,name,auto_name_ordinal,idempotency_key,terminal_mode)
-VALUES ($1,$2,$3,$4,nullif($5,0),$6,$7)
+INSERT INTO project_terminal_sessions (id,project_id,terminal_id,name,auto_name_ordinal,idempotency_key)
+VALUES ($1,$2,$3,$4,nullif($5,0),$6)
 `
 
 type CreateTerminalSessionParams struct {
@@ -67,7 +67,6 @@ type CreateTerminalSessionParams struct {
 	Name            string
 	AutoNameOrdinal interface{}
 	IdempotencyKey  sql.NullString
-	TerminalMode    string
 }
 
 func (q *Queries) CreateTerminalSession(ctx context.Context, arg CreateTerminalSessionParams) error {
@@ -78,7 +77,6 @@ func (q *Queries) CreateTerminalSession(ctx context.Context, arg CreateTerminalS
 		arg.Name,
 		arg.AutoNameOrdinal,
 		arg.IdempotencyKey,
-		arg.TerminalMode,
 	)
 	return err
 }
@@ -102,7 +100,7 @@ func (q *Queries) DeleteTerminalSession(ctx context.Context, arg DeleteTerminalS
 }
 
 const getActiveTerminalSession = `-- name: GetActiveTerminalSession :one
-SELECT project_terminal_sessions.id, project_terminal_sessions.project_id, project_terminal_sessions.terminal_id, project_terminal_sessions.thread_id, project_terminal_sessions.name, project_terminal_sessions.idempotency_key, project_terminal_sessions.is_default, project_terminal_sessions.auto_name_ordinal, project_terminal_sessions.launch_cwd, project_terminal_sessions.desired_state, project_terminal_sessions.runtime_state, project_terminal_sessions.last_activity_at, project_terminal_sessions.last_runtime_sync_at, project_terminal_sessions.last_runtime_sequence, project_terminal_sessions.deleted_at, project_terminal_sessions.version, project_terminal_sessions.created_at, project_terminal_sessions.updated_at, project_terminal_sessions.terminal_mode
+SELECT project_terminal_sessions.id, project_terminal_sessions.project_id, project_terminal_sessions.terminal_id, project_terminal_sessions.thread_id, project_terminal_sessions.name, project_terminal_sessions.idempotency_key, project_terminal_sessions.is_default, project_terminal_sessions.auto_name_ordinal, project_terminal_sessions.launch_cwd, project_terminal_sessions.desired_state, project_terminal_sessions.runtime_state, project_terminal_sessions.last_activity_at, project_terminal_sessions.last_runtime_sync_at, project_terminal_sessions.last_runtime_sequence, project_terminal_sessions.deleted_at, project_terminal_sessions.version, project_terminal_sessions.created_at, project_terminal_sessions.updated_at
 FROM project_terminal_sessions WHERE project_id=$1 AND id=$2 AND deleted_at IS NULL
 `
 
@@ -133,13 +131,12 @@ func (q *Queries) GetActiveTerminalSession(ctx context.Context, arg GetActiveTer
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.TerminalMode,
 	)
 	return i, err
 }
 
 const getDefaultTerminalSession = `-- name: GetDefaultTerminalSession :one
-SELECT project_terminal_sessions.id, project_terminal_sessions.project_id, project_terminal_sessions.terminal_id, project_terminal_sessions.thread_id, project_terminal_sessions.name, project_terminal_sessions.idempotency_key, project_terminal_sessions.is_default, project_terminal_sessions.auto_name_ordinal, project_terminal_sessions.launch_cwd, project_terminal_sessions.desired_state, project_terminal_sessions.runtime_state, project_terminal_sessions.last_activity_at, project_terminal_sessions.last_runtime_sync_at, project_terminal_sessions.last_runtime_sequence, project_terminal_sessions.deleted_at, project_terminal_sessions.version, project_terminal_sessions.created_at, project_terminal_sessions.updated_at, project_terminal_sessions.terminal_mode
+SELECT project_terminal_sessions.id, project_terminal_sessions.project_id, project_terminal_sessions.terminal_id, project_terminal_sessions.thread_id, project_terminal_sessions.name, project_terminal_sessions.idempotency_key, project_terminal_sessions.is_default, project_terminal_sessions.auto_name_ordinal, project_terminal_sessions.launch_cwd, project_terminal_sessions.desired_state, project_terminal_sessions.runtime_state, project_terminal_sessions.last_activity_at, project_terminal_sessions.last_runtime_sync_at, project_terminal_sessions.last_runtime_sequence, project_terminal_sessions.deleted_at, project_terminal_sessions.version, project_terminal_sessions.created_at, project_terminal_sessions.updated_at
 FROM project_terminal_sessions WHERE project_id=$1 AND is_default AND deleted_at IS NULL
 `
 
@@ -165,13 +162,12 @@ func (q *Queries) GetDefaultTerminalSession(ctx context.Context, projectID strin
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.TerminalMode,
 	)
 	return i, err
 }
 
 const getTerminalSessionByIdempotencyKey = `-- name: GetTerminalSessionByIdempotencyKey :one
-SELECT project_terminal_sessions.id, project_terminal_sessions.project_id, project_terminal_sessions.terminal_id, project_terminal_sessions.thread_id, project_terminal_sessions.name, project_terminal_sessions.idempotency_key, project_terminal_sessions.is_default, project_terminal_sessions.auto_name_ordinal, project_terminal_sessions.launch_cwd, project_terminal_sessions.desired_state, project_terminal_sessions.runtime_state, project_terminal_sessions.last_activity_at, project_terminal_sessions.last_runtime_sync_at, project_terminal_sessions.last_runtime_sequence, project_terminal_sessions.deleted_at, project_terminal_sessions.version, project_terminal_sessions.created_at, project_terminal_sessions.updated_at, project_terminal_sessions.terminal_mode
+SELECT project_terminal_sessions.id, project_terminal_sessions.project_id, project_terminal_sessions.terminal_id, project_terminal_sessions.thread_id, project_terminal_sessions.name, project_terminal_sessions.idempotency_key, project_terminal_sessions.is_default, project_terminal_sessions.auto_name_ordinal, project_terminal_sessions.launch_cwd, project_terminal_sessions.desired_state, project_terminal_sessions.runtime_state, project_terminal_sessions.last_activity_at, project_terminal_sessions.last_runtime_sync_at, project_terminal_sessions.last_runtime_sequence, project_terminal_sessions.deleted_at, project_terminal_sessions.version, project_terminal_sessions.created_at, project_terminal_sessions.updated_at
 FROM project_terminal_sessions WHERE project_id=$1 AND idempotency_key=$2
 `
 
@@ -202,7 +198,6 @@ func (q *Queries) GetTerminalSessionByIdempotencyKey(ctx context.Context, arg Ge
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.TerminalMode,
 	)
 	return i, err
 }
@@ -219,7 +214,7 @@ func (q *Queries) GetTerminalSessionProjectOwner(ctx context.Context, projectID 
 }
 
 const listActiveTerminalSessions = `-- name: ListActiveTerminalSessions :many
-SELECT project_terminal_sessions.id, project_terminal_sessions.project_id, project_terminal_sessions.terminal_id, project_terminal_sessions.thread_id, project_terminal_sessions.name, project_terminal_sessions.idempotency_key, project_terminal_sessions.is_default, project_terminal_sessions.auto_name_ordinal, project_terminal_sessions.launch_cwd, project_terminal_sessions.desired_state, project_terminal_sessions.runtime_state, project_terminal_sessions.last_activity_at, project_terminal_sessions.last_runtime_sync_at, project_terminal_sessions.last_runtime_sequence, project_terminal_sessions.deleted_at, project_terminal_sessions.version, project_terminal_sessions.created_at, project_terminal_sessions.updated_at, project_terminal_sessions.terminal_mode
+SELECT project_terminal_sessions.id, project_terminal_sessions.project_id, project_terminal_sessions.terminal_id, project_terminal_sessions.thread_id, project_terminal_sessions.name, project_terminal_sessions.idempotency_key, project_terminal_sessions.is_default, project_terminal_sessions.auto_name_ordinal, project_terminal_sessions.launch_cwd, project_terminal_sessions.desired_state, project_terminal_sessions.runtime_state, project_terminal_sessions.last_activity_at, project_terminal_sessions.last_runtime_sync_at, project_terminal_sessions.last_runtime_sequence, project_terminal_sessions.deleted_at, project_terminal_sessions.version, project_terminal_sessions.created_at, project_terminal_sessions.updated_at
 FROM project_terminal_sessions WHERE project_id=$1 AND deleted_at IS NULL
 ORDER BY is_default DESC, last_activity_at DESC NULLS LAST, name
 `
@@ -252,7 +247,6 @@ func (q *Queries) ListActiveTerminalSessions(ctx context.Context, projectID stri
 			&i.Version,
 			&i.CreatedAt,
 			&i.UpdatedAt,
-			&i.TerminalMode,
 		); err != nil {
 			return nil, err
 		}
@@ -494,7 +488,7 @@ func (q *Queries) RetryTerminalSessionOperation(ctx context.Context, arg RetryTe
 }
 
 const selectTerminalSessionForEviction = `-- name: SelectTerminalSessionForEviction :one
-SELECT project_terminal_sessions.id, project_terminal_sessions.project_id, project_terminal_sessions.terminal_id, project_terminal_sessions.thread_id, project_terminal_sessions.name, project_terminal_sessions.idempotency_key, project_terminal_sessions.is_default, project_terminal_sessions.auto_name_ordinal, project_terminal_sessions.launch_cwd, project_terminal_sessions.desired_state, project_terminal_sessions.runtime_state, project_terminal_sessions.last_activity_at, project_terminal_sessions.last_runtime_sync_at, project_terminal_sessions.last_runtime_sequence, project_terminal_sessions.deleted_at, project_terminal_sessions.version, project_terminal_sessions.created_at, project_terminal_sessions.updated_at, project_terminal_sessions.terminal_mode
+SELECT project_terminal_sessions.id, project_terminal_sessions.project_id, project_terminal_sessions.terminal_id, project_terminal_sessions.thread_id, project_terminal_sessions.name, project_terminal_sessions.idempotency_key, project_terminal_sessions.is_default, project_terminal_sessions.auto_name_ordinal, project_terminal_sessions.launch_cwd, project_terminal_sessions.desired_state, project_terminal_sessions.runtime_state, project_terminal_sessions.last_activity_at, project_terminal_sessions.last_runtime_sync_at, project_terminal_sessions.last_runtime_sequence, project_terminal_sessions.deleted_at, project_terminal_sessions.version, project_terminal_sessions.created_at, project_terminal_sessions.updated_at
 FROM project_terminal_sessions
 WHERE project_id=$1 AND deleted_at IS NULL AND NOT is_default
 ORDER BY (desired_state='closed') DESC,
@@ -526,7 +520,6 @@ func (q *Queries) SelectTerminalSessionForEviction(ctx context.Context, projectI
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.TerminalMode,
 	)
 	return i, err
 }

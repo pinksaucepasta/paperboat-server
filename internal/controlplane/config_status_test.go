@@ -73,7 +73,7 @@ func TestConfigStatusValidationAcceptsHelperWarningWithSafeSkippedSpecialFiles(t
 		RemoteRevision: "b08059618b070ee1673a0db2301c36ca7696e07a",
 		LastAttemptAt:  &now, LastSuccessfulAt: &now, UpdatedAt: now,
 		Skipped: []ConfigStatusPath{{
-			Path: ".paperboat/helper/herdr/pts_fixture/herdr/herdr.sock", Reason: "special_file",
+			Path: ".paperboat/helper/runtime/pts_fixture/client.sock", Reason: "special_file",
 		}},
 		ErrorCode: "credential_expired",
 	}

@@ -1053,7 +1053,6 @@ type ProjectTerminalSession struct {
 	Version             int64
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
-	TerminalMode        string
 }
 
 type ProviderEvent struct {
@@ -1372,7 +1371,6 @@ type UserMachineTerminalSession struct {
 	Version             int64
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
-	TerminalMode        string
 }
 
 type UserMachineTerminalSessionOperation struct {

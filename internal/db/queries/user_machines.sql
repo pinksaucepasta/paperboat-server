@@ -568,8 +568,8 @@ SELECT coalesce(max(auto_name_ordinal),1)::integer+1 FROM user_machine_terminal_
 WHERE user_machine_id=sqlc.arg(user_machine_id);
 
 -- name: CreateUserMachineTerminalSession :exec
-INSERT INTO user_machine_terminal_sessions (id,user_machine_id,terminal_id,name,auto_name_ordinal,idempotency_key,launch_cwd,terminal_mode)
-VALUES (sqlc.arg(id),sqlc.arg(user_machine_id),sqlc.arg(terminal_id),sqlc.arg(name),nullif(sqlc.arg(auto_name_ordinal),0),sqlc.arg(idempotency_key),sqlc.arg(launch_cwd),sqlc.arg(terminal_mode));
+INSERT INTO user_machine_terminal_sessions (id,user_machine_id,terminal_id,name,auto_name_ordinal,idempotency_key,launch_cwd)
+VALUES (sqlc.arg(id),sqlc.arg(user_machine_id),sqlc.arg(terminal_id),sqlc.arg(name),nullif(sqlc.arg(auto_name_ordinal),0),sqlc.arg(idempotency_key),sqlc.arg(launch_cwd));
 
 -- name: RenameUserMachineTerminalSession :execrows
 UPDATE user_machine_terminal_sessions SET name=sqlc.arg(name),version=version+1,updated_at=now()

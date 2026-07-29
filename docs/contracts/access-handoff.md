@@ -36,7 +36,7 @@ helper loopback tokens, VM addresses, or reusable infrastructure credentials.
     "root": "/workspace/project"
   },
   "helper": {"id": "hlp_...", "generation": 7},
-  "capabilities": ["terminal", "herdr", "file_transfer", "preview"],
+  "capabilities": ["terminal", "file_transfer", "preview"],
   "terminal": {
     "protocol": "paperboat.terminal.v2",
     "endpoints": {
@@ -52,8 +52,7 @@ helper loopback tokens, VM addresses, or reusable infrastructure credentials.
     "session_id": "ses_...",
     "thread_id": "paperboat-cli",
     "terminal_id": "default",
-    "cwd": "/workspace/project",
-    "terminal_mode": "shell"
+    "cwd": "/workspace/project"
   },
   "file_transfer": {
     "endpoint": "https://environment.example/v1/file-transfers",

@@ -90,10 +90,10 @@ func TestCreateTerminalSessionMapsDuplicateNameToConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := New(store, audit.NewWriter(store), Policy{}, nil)
-	if _, err := service.CreateTerminalSessionWithMode(ctx, userID, machineID, "benchmark", "shell", "create-one", 4); err != nil {
+	if _, err := service.CreateTerminalSession(ctx, userID, machineID, "benchmark", "create-one", 4); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.CreateTerminalSessionWithMode(ctx, userID, machineID, "benchmark", "shell", "create-two", 4); !errors.Is(err, ErrTerminalSessionConflict) {
+	if _, err := service.CreateTerminalSession(ctx, userID, machineID, "benchmark", "create-two", 4); !errors.Is(err, ErrTerminalSessionConflict) {
 		t.Fatalf("duplicate name error = %v, want %v", err, ErrTerminalSessionConflict)
 	}
 }
@@ -113,17 +113,17 @@ func TestCreateTerminalSessionEvictsClosedSessionAtRetentionLimit(t *testing.T) 
 		t.Fatal(err)
 	}
 	service := New(store, audit.NewWriter(store), Policy{}, nil)
-	first, err := service.CreateTerminalSessionWithMode(ctx, userID, machineID, "first", "shell", "limit-first", 3)
+	first, err := service.CreateTerminalSession(ctx, userID, machineID, "first", "limit-first", 3)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.CreateTerminalSessionWithMode(ctx, userID, machineID, "second", "shell", "limit-second", 3); err != nil {
+	if _, err := service.CreateTerminalSession(ctx, userID, machineID, "second", "limit-second", 3); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machine_terminal_sessions SET desired_state='closed',updated_at=now()-interval '1 day' WHERE id=$1`, first.ID); err != nil {
 		t.Fatal(err)
 	}
-	created, err := service.CreateTerminalSessionWithMode(ctx, userID, machineID, "third", "shell", "limit-third", 3)
+	created, err := service.CreateTerminalSession(ctx, userID, machineID, "third", "limit-third", 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,22 +148,22 @@ func TestCreateTerminalSessionAllocatesNameWhenOmitted(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := New(store, audit.NewWriter(store), Policy{}, nil)
-	first, err := service.CreateTerminalSessionWithMode(ctx, userID, machineID, "", "shell", "create-auto-one", 4)
+	first, err := service.CreateTerminalSession(ctx, userID, machineID, "", "create-auto-one", 4)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Name != "shell-2" || first.TerminalMode != "shell" {
+	if first.Name != "shell-2" {
 		t.Fatalf("first session = %+v", first)
 	}
-	replay, err := service.CreateTerminalSessionWithMode(ctx, userID, machineID, "", "shell", "create-auto-one", 4)
+	replay, err := service.CreateTerminalSession(ctx, userID, machineID, "", "create-auto-one", 4)
 	if err != nil || replay.ID != first.ID || replay.Name != first.Name {
 		t.Fatalf("idempotent replay = %+v, %v", replay, err)
 	}
-	second, err := service.CreateTerminalSessionWithMode(ctx, userID, machineID, "", "shell", "create-auto-two", 4)
+	second, err := service.CreateTerminalSession(ctx, userID, machineID, "", "create-auto-two", 4)
 	if err != nil || second.Name != "shell-3" {
 		t.Fatalf("second session = %+v, %v", second, err)
 	}
-	if _, err := service.CreateTerminalSessionWithMode(ctx, userID, machineID, "shell-4", "shell", "create-reserved", 4); !errors.Is(err, ErrTerminalSessionInvalidName) {
+	if _, err := service.CreateTerminalSession(ctx, userID, machineID, "shell-4", "create-reserved", 4); !errors.Is(err, ErrTerminalSessionInvalidName) {
 		t.Fatalf("reserved automatic name error = %v", err)
 	}
 }

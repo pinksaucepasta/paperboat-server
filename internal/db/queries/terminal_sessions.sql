@@ -35,8 +35,8 @@ LIMIT 1 FOR UPDATE;
 SELECT coalesce(max(auto_name_ordinal),1)::integer+1 FROM project_terminal_sessions WHERE project_id=sqlc.arg(project_id);
 
 -- name: CreateTerminalSession :exec
-INSERT INTO project_terminal_sessions (id,project_id,terminal_id,name,auto_name_ordinal,idempotency_key,terminal_mode)
-VALUES (sqlc.arg(id),sqlc.arg(project_id),sqlc.arg(terminal_id),sqlc.arg(name),nullif(sqlc.arg(auto_name_ordinal),0),sqlc.arg(idempotency_key),sqlc.arg(terminal_mode));
+INSERT INTO project_terminal_sessions (id,project_id,terminal_id,name,auto_name_ordinal,idempotency_key)
+VALUES (sqlc.arg(id),sqlc.arg(project_id),sqlc.arg(terminal_id),sqlc.arg(name),nullif(sqlc.arg(auto_name_ordinal),0),sqlc.arg(idempotency_key));
 
 -- name: GetTerminalSessionByIdempotencyKey :one
 SELECT project_terminal_sessions.*

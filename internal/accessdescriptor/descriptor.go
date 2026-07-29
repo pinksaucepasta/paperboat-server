@@ -10,7 +10,6 @@ const (
 	EnvironmentBYOD   = "byod"
 
 	CapabilityTerminal     = "terminal"
-	CapabilityHerdr        = "herdr"
 	CapabilityFileTransfer = "file_transfer"
 	CapabilityPreview      = "preview"
 )
@@ -61,7 +60,6 @@ type Terminal struct {
 	ThreadID   string            `json:"thread_id"`
 	TerminalID string            `json:"terminal_id"`
 	CWD        string            `json:"cwd"`
-	Mode       string            `json:"terminal_mode"`
 }
 
 type TerminalEndpoints struct {

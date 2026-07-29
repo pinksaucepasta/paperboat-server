@@ -61,14 +61,13 @@ func terminalSessionsCreate(s *terminalsessions.Service) http.HandlerFunc {
 			return
 		}
 		var b struct {
-			Name         string `json:"name"`
-			TerminalMode string `json:"terminal_mode"`
+			Name string `json:"name"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
 			writeError(w, r, 400, "invalid_request", "Request body must be valid JSON.")
 			return
 		}
-		out, err := s.CreateWithMode(r.Context(), p.User.ID, r.PathValue("project_id"), b.Name, b.TerminalMode, r.Header.Get("Idempotency-Key"))
+		out, err := s.Create(r.Context(), p.User.ID, r.PathValue("project_id"), b.Name, r.Header.Get("Idempotency-Key"))
 		if terminalSessionError(w, r, err) {
 			return
 		}
@@ -149,8 +148,6 @@ func terminalSessionError(w http.ResponseWriter, r *http.Request, err error) boo
 		writeError(w, r, 409, "terminal_session_name_conflict", "A terminal session already uses that name.")
 	case errors.Is(err, terminalsessions.ErrInvalidName):
 		writeError(w, r, 400, "invalid_terminal_session_name", "Terminal session name is invalid.")
-	case errors.Is(err, terminalsessions.ErrInvalidMode):
-		writeError(w, r, 400, "invalid_terminal_mode", "Terminal mode must be herdr or shell.")
 	case errors.Is(err, terminalsessions.ErrIdempotencyKeyRequired):
 		writeError(w, r, 400, "idempotency_key_required", "Idempotency-Key is required.")
 	default:
