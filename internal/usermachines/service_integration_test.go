@@ -608,7 +608,7 @@ func TestInstallationFailureRevokesIdentityReleasesSeatAndRetryIssuesNewIdentity
 	}
 	service := New(store, audit.NewWriter(store), Policy{PairingLifetime: 10 * time.Minute, AllowedPlatforms: []string{"linux"}}, testSeatAuthorizer{})
 	service.ConfigureProvisioning(nil, "test-install-key")
-	service.ConfigureAccess(nil, "https://control.example.test", time.Minute, 0, nil, 0)
+	service.ConfigureAccess(nil, "https://control.example.test", time.Minute)
 	if err := service.ConfigureHelperRoute("example.test", 38080); err != nil {
 		t.Fatal(err)
 	}
@@ -765,7 +765,7 @@ func TestConnectIssuesEnvironmentBoundDescriptor(t *testing.T) {
 	}
 	service := New(store, audit.NewWriter(store), Policy{}, nil)
 	service.ConfigureProvisioning(access.FakeClient{}, "test-key")
-	service.ConfigureAccess(access.FakeCredentialIssuer{}, "https://api.paperboat.test", 15*time.Minute, 1024, []string{"image/png"}, 60)
+	service.ConfigureAccess(access.FakeCredentialIssuer{}, "https://api.paperboat.test", 15*time.Minute)
 	signer, err := mint.NewEphemeral(5 * time.Minute)
 	if err != nil {
 		t.Fatal(err)
@@ -778,12 +778,12 @@ func TestConnectIssuesEnvironmentBoundDescriptor(t *testing.T) {
 	if !response.Connectable || response.UserMachineID != userMachineID || response.Environment["id"] != environmentID || response.Environment["resource_id"] != userMachineID {
 		t.Fatalf("response = %#v", response)
 	}
-	if response.Terminal["endpoint"] != "wss://machine-"+suffix+".example.test/v1/runtime" || response.Terminal["http_endpoint"] != "https://machine-"+suffix+".example.test" || response.Upload["endpoint"] != "https://machine-"+suffix+".example.test/v1/uploads" || response.Terminal["auth"] == nil || response.Upload["auth"] == nil {
+	if response.Terminal["endpoint"] != "wss://machine-"+suffix+".example.test/v1/runtime" || response.Terminal["http_endpoint"] != "https://machine-"+suffix+".example.test" || response.FileTransfer["endpoint"] != "https://machine-"+suffix+".example.test/v1/file-transfers" || response.Terminal["auth"] == nil || response.FileTransfer["auth"] == nil {
 		t.Fatalf("descriptor = %#v", response)
 	}
 	terminalAuth := response.Terminal["auth"].(map[string]any)
-	uploadAuth := response.Upload["auth"].(map[string]any)
-	for class, token := range map[string]string{"terminal_operation": terminalAuth["token"].(string), "file_stage": uploadAuth["token"].(string)} {
+	transferAuth := response.FileTransfer["auth"].(map[string]any)
+	for class, token := range map[string]string{"terminal_operation": terminalAuth["token"].(string), "file_transfer": transferAuth["token"].(string)} {
 		claims, verifyErr := signer.VerifyCredential(token, "https://api.paperboat.test", class, time.Now().UTC())
 		if verifyErr != nil {
 			t.Fatalf("verify %s credential: %v", class, verifyErr)
@@ -831,7 +831,7 @@ func TestDisconnectRevokesMintedHelperSessionsAndRetriesOfflineConnector(t *test
 	issuer := &recordingIssuer{}
 	service := New(store, audit.NewWriter(store), Policy{}, nil)
 	service.ConfigureProvisioning(access.FakeClient{}, "test-key")
-	service.ConfigureAccess(issuer, "https://api.paperboat.test", 5*time.Minute, 1024, []string{"image/png"}, 60)
+	service.ConfigureAccess(issuer, "https://api.paperboat.test", 5*time.Minute)
 	if _, err := service.Connect(ctx, userID, userMachineID, "cls_1"); err != nil {
 		t.Fatal(err)
 	}

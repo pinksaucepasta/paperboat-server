@@ -86,16 +86,16 @@ func TestConnectionDescriptorSerializesCanonicalPayload(t *testing.T) {
 	expires := time.Now().UTC().Add(time.Minute)
 	response := ConnectionDescriptor{
 		Schema: accessdescriptor.SchemaV1, Issuer: "https://api.example", UserMachineID: "um_1", UserMachineState: "online", Connectable: true, ExpiresAt: expires,
-		Capabilities: []string{accessdescriptor.CapabilityTerminal, accessdescriptor.CapabilityUpload}, Status: "ready", Reason: "ready",
-		Environment: map[string]any{"id": "env_1", "kind": "byod", "resource_id": "um_1", "display_name": "Studio", "state": "ready", "root": "/Users/paperboat", "user_machine_id": "um_1"},
-		Terminal:    map[string]any{"endpoint": "wss://edge.example/e/env_1/terminal", "session_id": "session", "thread_id": "thread", "terminal_id": "terminal", "cwd": "/Users/paperboat", "auth": map[string]any{"method": "websocket_ticket", "ticket": "t", "expires_at": expires, "scopes": []string{"terminal:operate"}}, "kind": "paperboat_terminal_v2"},
-		Upload:      map[string]any{"endpoint": "https://edge.example/e/env_1/uploads", "max_bytes": int64(1024), "allowed_mime_types": []string{"image/png"}, "retention_seconds": int64(60), "auth": map[string]any{"method": "bearer", "token": "u", "expires_at": expires, "scopes": []string{"file:stage"}}, "kind": "paperboat_staged_image_v1"},
+		Capabilities: []string{accessdescriptor.CapabilityTerminal, accessdescriptor.CapabilityFileTransfer}, Status: "ready", Reason: "ready",
+		Environment:  map[string]any{"id": "env_1", "kind": "byod", "resource_id": "um_1", "display_name": "Studio", "state": "ready", "root": "/Users/paperboat", "user_machine_id": "um_1"},
+		Terminal:     map[string]any{"endpoint": "wss://edge.example/e/env_1/terminal", "session_id": "session", "thread_id": "thread", "terminal_id": "terminal", "cwd": "/Users/paperboat", "auth": map[string]any{"method": "websocket_ticket", "ticket": "t", "expires_at": expires, "scopes": []string{"terminal:operate"}}, "kind": "paperboat_terminal_v2"},
+		FileTransfer: map[string]any{"endpoint": "https://edge.example/v1/file-transfers", "policy": accessdescriptor.FileTransferPolicy{Revision: "file-transfer-v1", MaxFileBytes: 50 << 20, MaxBatchFiles: 10, MaxBatchBytes: 500 << 20, MaxConcurrentTransfers: 2, RetentionSeconds: 604800, DeliveryTimeoutSeconds: 600, MaxPendingSpoolBytes: 1 << 30}, "auth": map[string]any{"method": "bearer", "token": "u", "expires_at": expires, "scopes": []string{"file:transfer"}}},
 	}
 	b, err := json.Marshal(response)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, forbidden := range []string{"user_machine_id", "user_machine_state", "paperboat_terminal_v2", "paperboat_staged_image_v1", "websocket_base_url", "http_base_url"} {
+	for _, forbidden := range []string{"user_machine_id", "user_machine_state", "paperboat_terminal_v2", "paperboat_staged_image_v1", "websocket_base_url", "http_base_url", `"upload"`} {
 		if strings.Contains(string(b), forbidden) {
 			t.Fatalf("canonical payload contains legacy field %q: %s", forbidden, b)
 		}

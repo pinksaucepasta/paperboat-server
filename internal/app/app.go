@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/access"
+	"github.com/pinksaucepasta/paperboat-server/internal/accessdescriptor"
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/auth"
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
@@ -124,7 +125,13 @@ func New(opts Options) (*App, error) {
 	configSyncRepo := configsync.NewRepository(store, opts.Config.ConfigSync, opts.Config.Secrets.EncryptionKey, auditWriter)
 	userMachineService := usermachines.New(store, auditWriter, usermachines.Policy{PairingLifetime: opts.Config.UserMachines.PairingLifetime, OfflineAfter: opts.Config.UserMachines.OfflineAfter, AllowedPlatforms: opts.Config.UserMachines.AllowedPlatforms}, billingService)
 	userMachineService.ConfigureProvisioning(accessProvider, opts.Config.Secrets.EncryptionKey)
-	userMachineService.ConfigureAccess(credentialIssuer, normalizeHelperIssuer(opts.Config.HTTP.PublicBaseURL), opts.Config.CLIAuth.AccessTokenLifetime, opts.Config.Access.UploadMaxBytes, opts.Config.Access.UploadAllowedMIMEs, int64(opts.Config.Access.UploadRetention/time.Second))
+	userMachineService.ConfigureAccess(credentialIssuer, normalizeHelperIssuer(opts.Config.HTTP.PublicBaseURL), opts.Config.CLIAuth.AccessTokenLifetime)
+	userMachineService.ConfigureFileTransfer(accessdescriptor.FileTransferPolicy{
+		Revision: opts.Config.Access.FileTransfer.Revision, MaxFileBytes: opts.Config.Access.FileTransfer.MaxFileBytes,
+		MaxBatchFiles: opts.Config.Access.FileTransfer.MaxBatchFiles, MaxBatchBytes: opts.Config.Access.FileTransfer.MaxBatchBytes,
+		MaxConcurrentTransfers: opts.Config.Access.FileTransfer.MaxConcurrentTransfers, RetentionSeconds: int64(opts.Config.Access.FileTransfer.Retention / time.Second),
+		DeliveryTimeoutSeconds: int64(opts.Config.Access.FileTransfer.DeliveryTimeout / time.Second), MaxPendingSpoolBytes: opts.Config.Access.FileTransfer.MaxPendingSpoolBytes,
+	})
 	userMachineService.ConfigureTerminalSessions(opts.Config.TerminalSessions.MaxActivePerProject, mintKeys, &http.Client{Timeout: opts.Config.TerminalSessions.OperationTimeout})
 	userMachineService.ConfigureBootstrapCommand(opts.Config.UserMachines.BootstrapCommand)
 	if err := userMachineService.ConfigureHelperRoute(opts.Config.HelperBaseDomain, opts.Config.UserMachines.HelperListenPort); err != nil {
@@ -285,6 +292,7 @@ func New(opts Options) (*App, error) {
 		edgeControlService.SetBandwidthDebiter(userMachineService)
 		edgeControlService.SetAuditWriter(auditWriter)
 		edgeControlService.SetCredentialIssuer(mintKeys, config.NormalizeIssuer(opts.Config.HTTP.PublicBaseURL), opts.Config.Secrets.EncryptionKey)
+		edgeControlService.SetFileTransferPolicy(mint.FileTransferPolicy{Revision: opts.Config.Access.FileTransfer.Revision, MaxFileBytes: opts.Config.Access.FileTransfer.MaxFileBytes, MaxBatchFiles: opts.Config.Access.FileTransfer.MaxBatchFiles, MaxBatchBytes: opts.Config.Access.FileTransfer.MaxBatchBytes, MaxConcurrentTransfers: opts.Config.Access.FileTransfer.MaxConcurrentTransfers, RetentionSeconds: int64(opts.Config.Access.FileTransfer.Retention / time.Second), DeliveryTimeoutSeconds: int64(opts.Config.Access.FileTransfer.DeliveryTimeout / time.Second), MaxPendingSpoolBytes: opts.Config.Access.FileTransfer.MaxPendingSpoolBytes})
 		edgeControlHandler = edgeControlService.Handler()
 	}
 	router := httpapi.NewRouter(httpapi.Options{

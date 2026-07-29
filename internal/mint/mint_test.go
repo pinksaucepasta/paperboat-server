@@ -271,6 +271,27 @@ func TestSignHealthUsesDedicatedTypeAndScope(t *testing.T) {
 	}
 }
 
+func TestFileTransferCredentialIsSessionAndClientBound(t *testing.T) {
+	provider, _ := New([]Key{{ID: "transfer-key", PrivateKey: testKey(10)}}, "transfer-key", time.Minute)
+	now := time.Unix(1_700_000_000, 0)
+	input := CredentialInput{Issuer: "https://api.example.test", Audience: "paperboat-helper", Subject: "usr_1", JTI: "jti_transfer_1", IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute), CredentialClass: "file_transfer", Scopes: []string{"file:transfer"}, EnvironmentID: "env_1", UserID: "usr_1", CLIClientSessionID: "cli_1", SessionID: "ses_1"}
+	token, err := provider.SignCredential(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := provider.VerifyCredential(token, input.Issuer, "file_transfer", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims.CLIClientSessionID != "cli_1" || claims.SessionID != "ses_1" || len(claims.Scopes) != 1 || claims.Scopes[0] != "file:transfer" {
+		t.Fatalf("claims=%#v", claims)
+	}
+	input.Scopes = []string{"file:stage"}
+	if _, err := provider.SignCredential(input); err == nil {
+		t.Fatal("accepted legacy scope")
+	}
+}
+
 func decodeJSONPart(t *testing.T, part string, target any) {
 	t.Helper()
 	if err := json.Unmarshal(mustDecode(t, part), target); err != nil {

@@ -95,29 +95,44 @@ type CredentialInput struct {
 	ConnectorGeneration int64
 	EdgePool            string
 	EdgeNodeID          string
+	FileTransferPolicy  *FileTransferPolicy
 }
 
+type FileTransferPolicy struct {
+	Revision               string `json:"revision"`
+	MaxFileBytes           int64  `json:"max_file_bytes"`
+	MaxBatchFiles          int    `json:"max_batch_files"`
+	MaxBatchBytes          int64  `json:"max_batch_bytes"`
+	MaxConcurrentTransfers int    `json:"max_concurrent_transfers"`
+	RetentionSeconds       int64  `json:"retention_seconds"`
+	DeliveryTimeoutSeconds int64  `json:"delivery_timeout_seconds"`
+	MaxPendingSpoolBytes   int64  `json:"max_pending_spool_bytes"`
+}
+
+var DefaultFileTransferPolicy = FileTransferPolicy{Revision: "file-transfer-v1", MaxFileBytes: 50 << 20, MaxBatchFiles: 10, MaxBatchBytes: 500 << 20, MaxConcurrentTransfers: 2, RetentionSeconds: 604800, DeliveryTimeoutSeconds: 600, MaxPendingSpoolBytes: 1 << 30}
+
 type CredentialClaims struct {
-	Issuer              string   `json:"iss"`
-	Audience            string   `json:"aud"`
-	Subject             string   `json:"sub"`
-	JTI                 string   `json:"jti"`
-	IssuedAt            int64    `json:"iat"`
-	ExpiresAt           int64    `json:"exp"`
-	Scopes              []string `json:"scope"`
-	CredentialClass     string   `json:"credential_class"`
-	EnvironmentID       string   `json:"environment_id"`
-	EnrollmentID        string   `json:"enrollment_id,omitempty"`
-	AssignmentID        string   `json:"assignment_id,omitempty"`
-	WarningRevision     string   `json:"warning_revision,omitempty"`
-	HelperID            string   `json:"helper_id,omitempty"`
-	UserID              string   `json:"user_id,omitempty"`
-	CLIClientSessionID  string   `json:"cli_client_session_id,omitempty"`
-	SessionID           string   `json:"session_id,omitempty"`
-	KeyThumbprint       string   `json:"key_thumbprint,omitempty"`
-	ConnectorGeneration int64    `json:"connector_generation,omitempty"`
-	EdgePool            string   `json:"edge_pool,omitempty"`
-	EdgeNodeID          string   `json:"edge_node_id,omitempty"`
+	Issuer              string              `json:"iss"`
+	Audience            string              `json:"aud"`
+	Subject             string              `json:"sub"`
+	JTI                 string              `json:"jti"`
+	IssuedAt            int64               `json:"iat"`
+	ExpiresAt           int64               `json:"exp"`
+	Scopes              []string            `json:"scope"`
+	CredentialClass     string              `json:"credential_class"`
+	EnvironmentID       string              `json:"environment_id"`
+	EnrollmentID        string              `json:"enrollment_id,omitempty"`
+	AssignmentID        string              `json:"assignment_id,omitempty"`
+	WarningRevision     string              `json:"warning_revision,omitempty"`
+	HelperID            string              `json:"helper_id,omitempty"`
+	UserID              string              `json:"user_id,omitempty"`
+	CLIClientSessionID  string              `json:"cli_client_session_id,omitempty"`
+	SessionID           string              `json:"session_id,omitempty"`
+	KeyThumbprint       string              `json:"key_thumbprint,omitempty"`
+	ConnectorGeneration int64               `json:"connector_generation,omitempty"`
+	EdgePool            string              `json:"edge_pool,omitempty"`
+	EdgeNodeID          string              `json:"edge_node_id,omitempty"`
+	FileTransferPolicy  *FileTransferPolicy `json:"file_transfer_policy,omitempty"`
 }
 
 var credentialPolicies = map[string]struct {
@@ -131,7 +146,7 @@ var credentialPolicies = map[string]struct {
 	"connector_admission":  {audience: "paperboat-edge", scopes: []string{"connector:admit"}, maxTTL: 5 * time.Minute},
 	"config_sync":          {audience: "paperboat-helper", scopes: []string{"config:pull", "config:apply", "config:report"}, maxTTL: 5 * time.Minute},
 	"terminal_operation":   {audience: "paperboat-helper", scopes: []string{"terminal:operate"}, maxTTL: 5 * time.Minute},
-	"file_stage":           {audience: "paperboat-helper", scopes: []string{"file:stage"}, maxTTL: 5 * time.Minute},
+	"file_transfer":        {audience: "paperboat-helper", scopes: []string{"file:transfer"}, maxTTL: 5 * time.Minute},
 }
 
 func New(keys []Key, activeID string, maxAge time.Duration) (*Provider, error) {
@@ -281,16 +296,20 @@ func (p *Provider) SignCredential(input CredentialInput) (string, error) {
 		}
 		claims["helper_id"] = input.HelperID
 	case "connector_admission":
+		if input.FileTransferPolicy == nil {
+			input.FileTransferPolicy = &DefaultFileTransferPolicy
+		}
 		if input.HelperID == "" || input.ConnectorGeneration < 1 || input.EdgePool == "" || input.EdgeNodeID == "" {
 			return "", errors.New("connector admission bindings are required")
 		}
 		claims["helper_id"], claims["connector_generation"], claims["edge_pool"], claims["edge_node_id"] = input.HelperID, input.ConnectorGeneration, input.EdgePool, input.EdgeNodeID
+		claims["file_transfer_policy"] = input.FileTransferPolicy
 	case "config_sync":
 		if input.HelperID == "" || input.AssignmentID == "" || input.WarningRevision == "" {
 			return "", errors.New("config sync bindings are required")
 		}
 		claims["helper_id"], claims["assignment_id"], claims["warning_revision"] = input.HelperID, input.AssignmentID, input.WarningRevision
-	case "terminal_operation", "file_stage":
+	case "terminal_operation", "file_transfer":
 		if input.UserID == "" || input.CLIClientSessionID == "" || input.SessionID == "" {
 			return "", errors.New("helper access bindings are required")
 		}
@@ -390,7 +409,7 @@ func (p *Provider) verifyCredential(token, expectedIssuer, expectedClass string,
 		if claims.HelperID == "" || claims.AssignmentID == "" || claims.WarningRevision == "" {
 			return CredentialClaims{}, errors.New("credential claims are invalid")
 		}
-	case "terminal_operation", "file_stage":
+	case "terminal_operation", "file_transfer":
 		if claims.UserID == "" || claims.CLIClientSessionID == "" || claims.SessionID == "" {
 			return CredentialClaims{}, errors.New("credential claims are invalid")
 		}

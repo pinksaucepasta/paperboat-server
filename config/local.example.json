@@ -96,12 +96,7 @@
   "access": {
     "route_subdomain_prefix": "pb",
     "connect_ready_timeout": 2000000000,
-    "connect_poll_interval": 100000000,
-    "upload_max_bytes": 52428800,
-    "upload_allowed_mime_types": [
-      "*/*"
-    ],
-    "upload_retention": 604800000000000
+    "connect_poll_interval": 100000000
   },
   "providers": {
     "fake_mode": true,

@@ -325,7 +325,8 @@ func TestProjectConnectionDescriptorIssuesHelperDescriptorWithScopedAuth(t *test
 	if !strings.Contains(rec.Body.String(), `"terminal"`) ||
 		!strings.Contains(rec.Body.String(), `"endpoint":"wss://`) ||
 		!strings.Contains(rec.Body.String(), `"websocket_ticket"`) ||
-		!strings.Contains(rec.Body.String(), `"upload"`) ||
+		!strings.Contains(rec.Body.String(), `"file_transfer"`) ||
+		strings.Contains(rec.Body.String(), `"upload"`) ||
 		strings.Contains(rec.Body.String(), "provider_route-machine-token") {
 		t.Fatalf("unexpected body = %s", rec.Body.String())
 	}
@@ -359,19 +360,19 @@ func TestProjectConnectionDescriptorUsesCanonicalHostedHelperRoute(t *testing.T)
 	}
 	var envelope struct {
 		Data struct {
-			Terminal map[string]any `json:"terminal"`
-			Upload   map[string]any `json:"upload"`
+			Terminal     map[string]any `json:"terminal"`
+			FileTransfer map[string]any `json:"file_transfer"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if envelope.Data.Terminal["endpoint"] != "wss://hosted-canonical.example.test/v1/runtime" || envelope.Data.Upload["endpoint"] != "https://hosted-canonical.example.test/v1/uploads" {
+	if envelope.Data.Terminal["endpoint"] != "wss://hosted-canonical.example.test/v1/runtime" || envelope.Data.FileTransfer["endpoint"] != "https://hosted-canonical.example.test/v1/file-transfers" {
 		t.Fatalf("canonical endpoints missing: %s", rec.Body.String())
 	}
 	terminalSessionID, _ := envelope.Data.Terminal["session_id"].(string)
 	var revokedJTIs []string
-	for class, descriptor := range map[string]map[string]any{"terminal_operation": envelope.Data.Terminal, "file_stage": envelope.Data.Upload} {
+	for class, descriptor := range map[string]map[string]any{"terminal_operation": envelope.Data.Terminal, "file_transfer": envelope.Data.FileTransfer} {
 		authValue, _ := descriptor["auth"].(map[string]any)
 		token, _ := authValue["token"].(string)
 		claims, verifyErr := signer.VerifyCredential(token, config.NormalizeIssuer(config.Default().HTTP.PublicBaseURL), class, time.Now().UTC())
@@ -1368,7 +1369,7 @@ func (i *recordingLifecycleCredentialIssuer) RevokeCLI(_ context.Context, input 
 func testLifecycleCredentials() access.CLICredentials {
 	return access.CLICredentials{
 		TerminalAuth:      map[string]any{"type": "bearer", "token": "terminal-token"},
-		UploadAuth:        map[string]any{"type": "bearer", "token": "file-token"},
+		FileTransferAuth:  map[string]any{"type": "bearer", "token": "file-token"},
 		TerminalSessionID: "helper-terminal-session",
 		FileSessionID:     "helper-file-session",
 	}

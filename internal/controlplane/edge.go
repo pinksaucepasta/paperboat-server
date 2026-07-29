@@ -27,20 +27,24 @@ import (
 const maxEdgeDocument = 1 << 20
 
 type EdgeService struct {
-	store         *db.DB
-	credential    string
-	clock         func() time.Time
-	bandwidth     BandwidthDebiter
-	audit         *audit.Writer
-	signer        *mint.Provider
-	issuer        string
-	encryptionKey string
+	store              *db.DB
+	credential         string
+	clock              func() time.Time
+	bandwidth          BandwidthDebiter
+	audit              *audit.Writer
+	signer             *mint.Provider
+	issuer             string
+	encryptionKey      string
+	fileTransferPolicy mint.FileTransferPolicy
 }
 
 func (s *EdgeService) SetBandwidthDebiter(debiter BandwidthDebiter) { s.bandwidth = debiter }
 func (s *EdgeService) SetAuditWriter(writer *audit.Writer)          { s.audit = writer }
 func (s *EdgeService) SetCredentialIssuer(signer *mint.Provider, issuer, encryptionKey string) {
 	s.signer, s.issuer, s.encryptionKey = signer, strings.TrimRight(strings.TrimSpace(issuer), "/"), encryptionKey
+}
+func (s *EdgeService) SetFileTransferPolicy(policy mint.FileTransferPolicy) {
+	s.fileTransferPolicy = policy
 }
 
 type ConnectorAdmission struct {
@@ -57,10 +61,11 @@ type ConnectorAdmission struct {
 		TCPPort  int32  `json:"tcp_port"`
 		QUICPort int32  `json:"quic_port"`
 	} `json:"edge_endpoint"`
-	Routes          []ConnectorRouteHandoff `json:"routes"`
-	ProtocolVersion string                  `json:"protocol_version"`
-	Capabilities    []string                `json:"capabilities,omitempty"`
-	ExpiresAt       time.Time               `json:"-"`
+	Routes             []ConnectorRouteHandoff `json:"routes"`
+	ProtocolVersion    string                  `json:"protocol_version"`
+	Capabilities       []string                `json:"capabilities,omitempty"`
+	FileTransferPolicy mint.FileTransferPolicy `json:"file_transfer_policy"`
+	ExpiresAt          time.Time               `json:"-"`
 }
 
 type ConnectorRouteHandoff struct {
@@ -244,7 +249,11 @@ func (s *EdgeService) IssueConnectorAdmission(ctx context.Context, identityToken
 			return err
 		}
 		expiresAt := now.Add(5 * time.Minute)
-		token, err := s.signer.SignCredential(mint.CredentialInput{Issuer: s.issuer, Audience: "paperboat-edge", Subject: claims.HelperID, JTI: jti, IssuedAt: now, ExpiresAt: expiresAt, CredentialClass: "connector_admission", Scopes: []string{"connector:admit"}, EnvironmentID: claims.EnvironmentID, HelperID: claims.HelperID, ConnectorGeneration: generation.Generation, EdgePool: edgePool, EdgeNodeID: node.ID})
+		policy := s.fileTransferPolicy
+		if policy.Revision == "" {
+			policy = mint.DefaultFileTransferPolicy
+		}
+		token, err := s.signer.SignCredential(mint.CredentialInput{Issuer: s.issuer, Audience: "paperboat-edge", Subject: claims.HelperID, JTI: jti, IssuedAt: now, ExpiresAt: expiresAt, CredentialClass: "connector_admission", Scopes: []string{"connector:admit"}, EnvironmentID: claims.EnvironmentID, HelperID: claims.HelperID, ConnectorGeneration: generation.Generation, EdgePool: edgePool, EdgeNodeID: node.ID, FileTransferPolicy: &policy})
 		if err != nil {
 			return err
 		}
@@ -252,7 +261,7 @@ func (s *EdgeService) IssueConnectorAdmission(ctx context.Context, identityToken
 		if err != nil || len(routes) == 0 || len(routes) > 128 {
 			return ErrHelperProof
 		}
-		result = ConnectorAdmission{OperationID: claims.OperationID, Credential: token, EnvironmentID: claims.EnvironmentID, HelperID: claims.HelperID, ConnectorGeneration: generation.Generation, EdgePool: edgePool, EdgeNodeID: node.ID, Routes: make([]ConnectorRouteHandoff, 0, len(routes)), ProtocolVersion: "1.0", ExpiresAt: expiresAt}
+		result = ConnectorAdmission{OperationID: claims.OperationID, Credential: token, EnvironmentID: claims.EnvironmentID, HelperID: claims.HelperID, ConnectorGeneration: generation.Generation, EdgePool: edgePool, EdgeNodeID: node.ID, Routes: make([]ConnectorRouteHandoff, 0, len(routes)), ProtocolVersion: "1.0", FileTransferPolicy: policy, ExpiresAt: expiresAt}
 		result.EdgeEndpoint.Host, result.EdgeEndpoint.Port = node.EndpointHost.String, node.EndpointTcpPort.Int32
 		result.EdgeEndpoint.TCPPort, result.EdgeEndpoint.QUICPort = node.EndpointTcpPort.Int32, node.EndpointQuicPort.Int32
 		for _, route := range routes {

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"mime"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -224,12 +224,21 @@ type ProviderConfig struct {
 }
 
 type Access struct {
-	RouteSubdomainPrefix string        `json:"route_subdomain_prefix,omitempty"`
-	ConnectReadyTimeout  time.Duration `json:"connect_ready_timeout,omitempty"`
-	ConnectPollInterval  time.Duration `json:"connect_poll_interval,omitempty"`
-	UploadMaxBytes       int64         `json:"upload_max_bytes,omitempty"`
-	UploadAllowedMIMEs   []string      `json:"upload_allowed_mime_types,omitempty"`
-	UploadRetention      time.Duration `json:"upload_retention,omitempty"`
+	RouteSubdomainPrefix string             `json:"route_subdomain_prefix,omitempty"`
+	ConnectReadyTimeout  time.Duration      `json:"connect_ready_timeout,omitempty"`
+	ConnectPollInterval  time.Duration      `json:"connect_poll_interval,omitempty"`
+	FileTransfer         FileTransferPolicy `json:"file_transfer"`
+}
+
+type FileTransferPolicy struct {
+	Revision               string        `json:"revision"`
+	MaxFileBytes           int64         `json:"max_file_bytes"`
+	MaxBatchFiles          int           `json:"max_batch_files"`
+	MaxBatchBytes          int64         `json:"max_batch_bytes"`
+	MaxConcurrentTransfers int           `json:"max_concurrent_transfers"`
+	Retention              time.Duration `json:"retention"`
+	DeliveryTimeout        time.Duration `json:"delivery_timeout"`
+	MaxPendingSpoolBytes   int64         `json:"max_pending_spool_bytes"`
 }
 
 type Secrets struct {
@@ -348,9 +357,11 @@ func Default() Config {
 			RouteSubdomainPrefix: "pb",
 			ConnectReadyTimeout:  2 * time.Second,
 			ConnectPollInterval:  100 * time.Millisecond,
-			UploadMaxBytes:       50 << 20,
-			UploadAllowedMIMEs:   []string{"*/*"},
-			UploadRetention:      7 * 24 * time.Hour,
+			FileTransfer: FileTransferPolicy{
+				Revision: "file-transfer-v1", MaxFileBytes: 50 << 20, MaxBatchFiles: 10,
+				MaxBatchBytes: 500 << 20, MaxConcurrentTransfers: 2, Retention: 7 * 24 * time.Hour,
+				DeliveryTimeout: 10 * time.Minute, MaxPendingSpoolBytes: 1 << 30,
+			},
 		},
 		Providers: Providers{
 			FakeMode: true,
@@ -530,15 +541,9 @@ func (c Config) Validate() error {
 	if c.Access.ConnectPollInterval <= 0 || c.Access.ConnectPollInterval > c.Access.ConnectReadyTimeout {
 		errs = append(errs, fmt.Errorf("access.connect_poll_interval must be positive and no greater than connect_ready_timeout"))
 	}
-	if c.Access.UploadMaxBytes <= 0 || len(c.Access.UploadAllowedMIMEs) == 0 || c.Access.UploadRetention <= 0 {
-		errs = append(errs, fmt.Errorf("access upload_max_bytes, upload_allowed_mime_types, and upload_retention are required"))
-	}
-	for _, mimeType := range c.Access.UploadAllowedMIMEs {
-		mediaType, params, err := mime.ParseMediaType(mimeType)
-		parts := strings.Split(mediaType, "/")
-		if mimeType != "*/*" && (err != nil || len(params) != 0 || mediaType != mimeType || len(parts) != 2 || parts[0] == "" || parts[1] == "") {
-			errs = append(errs, fmt.Errorf("access upload MIME type %q is not supported", mimeType))
-		}
+	transfer := c.Access.FileTransfer
+	if strings.TrimSpace(transfer.Revision) == "" || transfer.MaxFileBytes < 1 || transfer.MaxFileBytes > 50<<20 || transfer.MaxBatchFiles < 1 || transfer.MaxBatchFiles > 10 || transfer.MaxBatchBytes < transfer.MaxFileBytes || transfer.MaxBatchBytes > 500<<20 || transfer.MaxConcurrentTransfers < 1 || transfer.MaxConcurrentTransfers > 2 || transfer.Retention <= 0 || transfer.DeliveryTimeout <= 0 || transfer.MaxPendingSpoolBytes < transfer.MaxBatchBytes {
+		errs = append(errs, fmt.Errorf("access.file_transfer policy is invalid"))
 	}
 	if strings.TrimSpace(c.GitHub.OAuthAuthorizeURL) == "" || strings.TrimSpace(c.GitHub.OAuthTokenURL) == "" {
 		errs = append(errs, fmt.Errorf("github oauth urls are required"))
@@ -708,22 +713,16 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	if err := setSecret("PAPERBOAT_PREVIEW_IDENTITY_KEY", &c.Secrets.PreviewIdentityKey); err != nil {
 		return err
 	}
-	if v, ok := lookup("PAPERBOAT_UPLOAD_ALLOWED_MIME_TYPES"); ok {
-		c.Access.UploadAllowedMIMEs = splitCSV(v)
-	}
-	if v, ok := lookup("PAPERBOAT_UPLOAD_MAX_BYTES"); ok {
-		parsed, err := strconv.ParseInt(v, 10, 64)
-		if err != nil {
-			return fmt.Errorf("parse PAPERBOAT_UPLOAD_MAX_BYTES: %w", err)
+	if v, ok := lookup("PAPERBOAT_FILE_TRANSFER_POLICY_JSON"); ok {
+		decoder := json.NewDecoder(strings.NewReader(v))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&c.Access.FileTransfer); err != nil {
+			return fmt.Errorf("parse PAPERBOAT_FILE_TRANSFER_POLICY_JSON: %w", err)
 		}
-		c.Access.UploadMaxBytes = parsed
-	}
-	if v, ok := lookup("PAPERBOAT_UPLOAD_RETENTION"); ok {
-		parsed, err := time.ParseDuration(v)
-		if err != nil {
-			return fmt.Errorf("parse PAPERBOAT_UPLOAD_RETENTION: %w", err)
+		var extra any
+		if err := decoder.Decode(&extra); err != io.EOF {
+			return fmt.Errorf("parse PAPERBOAT_FILE_TRANSFER_POLICY_JSON: trailing data")
 		}
-		c.Access.UploadRetention = parsed
 	}
 	if v, ok := lookup("PAPERBOAT_TERMINAL_SESSIONS_MAX_ATTEMPTS_BEFORE_ALERT"); ok {
 		parsed, err := strconv.Atoi(v)

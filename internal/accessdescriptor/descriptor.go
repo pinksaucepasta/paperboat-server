@@ -9,26 +9,26 @@ const (
 	EnvironmentHosted = "hosted"
 	EnvironmentBYOD   = "byod"
 
-	CapabilityTerminal = "terminal"
-	CapabilityHerdr    = "herdr"
-	CapabilityUpload   = "upload"
-	CapabilityPreview  = "preview"
+	CapabilityTerminal     = "terminal"
+	CapabilityHerdr        = "herdr"
+	CapabilityFileTransfer = "file_transfer"
+	CapabilityPreview      = "preview"
 )
 
 type Descriptor struct {
-	Schema            string      `json:"schema"`
-	Issuer            string      `json:"issuer"`
-	Connectable       bool        `json:"connectable"`
-	ExpiresAt         time.Time   `json:"expires_at"`
-	Environment       Environment `json:"environment"`
-	Helper            *Helper     `json:"helper,omitempty"`
-	Capabilities      []string    `json:"capabilities,omitempty"`
-	Terminal          *Terminal   `json:"terminal,omitempty"`
-	Upload            *Upload     `json:"upload,omitempty"`
-	Preview           *Preview    `json:"preview,omitempty"`
-	Status            string      `json:"status"`
-	Reason            string      `json:"reason"`
-	RetryAfterSeconds int         `json:"retry_after_seconds"`
+	Schema            string        `json:"schema"`
+	Issuer            string        `json:"issuer"`
+	Connectable       bool          `json:"connectable"`
+	ExpiresAt         time.Time     `json:"expires_at"`
+	Environment       Environment   `json:"environment"`
+	Helper            *Helper       `json:"helper,omitempty"`
+	Capabilities      []string      `json:"capabilities,omitempty"`
+	Terminal          *Terminal     `json:"terminal,omitempty"`
+	FileTransfer      *FileTransfer `json:"file_transfer,omitempty"`
+	Preview           *Preview      `json:"preview,omitempty"`
+	Status            string        `json:"status"`
+	Reason            string        `json:"reason"`
+	RetryAfterSeconds int           `json:"retry_after_seconds"`
 }
 
 type Environment struct {
@@ -69,12 +69,21 @@ type TerminalEndpoints struct {
 	WSS  string `json:"wss"`
 }
 
-type Upload struct {
-	Endpoint         string   `json:"endpoint"`
-	Auth             Auth     `json:"auth"`
-	MaxBytes         int64    `json:"max_bytes"`
-	AllowedMIMETypes []string `json:"allowed_mime_types"`
-	RetentionSeconds int64    `json:"retention_seconds"`
+type FileTransferPolicy struct {
+	Revision               string `json:"revision"`
+	MaxFileBytes           int64  `json:"max_file_bytes"`
+	MaxBatchFiles          int    `json:"max_batch_files"`
+	MaxBatchBytes          int64  `json:"max_batch_bytes"`
+	MaxConcurrentTransfers int    `json:"max_concurrent_transfers"`
+	RetentionSeconds       int64  `json:"retention_seconds"`
+	DeliveryTimeoutSeconds int64  `json:"delivery_timeout_seconds"`
+	MaxPendingSpoolBytes   int64  `json:"max_pending_spool_bytes"`
+}
+
+type FileTransfer struct {
+	Endpoint string             `json:"endpoint"`
+	Auth     Auth               `json:"auth"`
+	Policy   FileTransferPolicy `json:"policy"`
 }
 
 type Preview struct {

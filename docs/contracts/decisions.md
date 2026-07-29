@@ -189,16 +189,16 @@ descriptor/mint contract in `access-handoff.md`.
 Decision:
 
 - CLI asks `paperboat-server` for a project CLI connect descriptor.
-- Descriptor tells CLI how to open the provider_route-mediated helper WebSocket path and how to
-  reach the VM helper server upload endpoint for image paste bridging.
+- Descriptor tells CLI how to open the helper terminal transports and how to reach the
+  resumable `/v1/file-transfers` endpoint for opaque files in either direction.
 - CLI uses dashboard-approved device authorization and its own revocable Paperboat client
   session. It never synthesizes a browser cookie or treats a helper token as a Paperboat
   session.
-- CLI terminal auth is a single-use `terminal:operate` WebSocket ticket. Upload auth is a
-  separate short-lived bearer token scoped to `file:stage`.
-- Paperboat's downstream helper mint profile is intentionally keyless: its signed proof
-  omits proof-key claims and its bootstrap exchanges omit DPoP. The terminal bearer stays
-  server-side to mint the ticket; only the separately scoped file bearer reaches the CLI.
+- CLI terminal auth is a short-lived `terminal:operate` credential. File-transfer auth is a
+  separate short-lived bearer token scoped to `file:transfer` and bound to the CLI client and
+  selected terminal session.
+- Paperboat operation credentials are server-signed, narrowly scoped, and re-brokered through
+  the revocable CLI session before expiry. Credential rotation never changes transfer state.
 
 ### Paperboat CLI Device Sessions
 

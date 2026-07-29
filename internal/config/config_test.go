@@ -23,9 +23,6 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 		"PAPERBOAT_PREVIEW_SUBDOMAIN_PREFIX":                    "pc",
 		"PAPERBOAT_ACCESS_CONNECT_READY_TIMEOUT":                "7s",
 		"PAPERBOAT_ACCESS_CONNECT_POLL_INTERVAL":                "250ms",
-		"PAPERBOAT_UPLOAD_MAX_BYTES":                            "7340032",
-		"PAPERBOAT_UPLOAD_ALLOWED_MIME_TYPES":                   "image/png,image/webp",
-		"PAPERBOAT_UPLOAD_RETENTION":                            "24h",
 		"PAPERBOAT_TERMINAL_SESSIONS_MAX_ACTIVE_PER_PROJECT":    "16",
 		"PAPERBOAT_TERMINAL_SESSIONS_OPERATION_TIMEOUT":         "20s",
 		"PAPERBOAT_TERMINAL_SESSIONS_RETRY_BACKOFF":             "3s",
@@ -73,9 +70,7 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 	}
 	if cfg.Access.RouteSubdomainPrefix != "pc" ||
 		cfg.Access.ConnectReadyTimeout.String() != "7s" ||
-		cfg.Access.ConnectPollInterval.String() != "250ms" ||
-		cfg.Access.UploadMaxBytes != 7340032 || cfg.Access.UploadRetention.String() != "24h0m0s" ||
-		!slices.Equal(cfg.Access.UploadAllowedMIMEs, []string{"image/png", "image/webp"}) {
+		cfg.Access.ConnectPollInterval.String() != "250ms" {
 		t.Fatalf("access config was not loaded from env: %#v", cfg.Access)
 	}
 	if got := strings.Join(cfg.Secrets.SessionKeys, ","); got != "one,two" {
@@ -95,19 +90,6 @@ func TestValidationRejectsInvalidHelperBaseDomain(t *testing.T) {
 	cfg.HelperBaseDomain = "https://helper.example.test/path"
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "helper_base_domain") {
 		t.Fatalf("validation error = %v", err)
-	}
-}
-
-func TestDefaultUploadMIMEPolicyAllowsAllFiles(t *testing.T) {
-	cfg := Default()
-	if cfg.Access.UploadMaxBytes != 50<<20 {
-		t.Fatalf("default upload max bytes = %d", cfg.Access.UploadMaxBytes)
-	}
-	if !slices.Equal(cfg.Access.UploadAllowedMIMEs, []string{"*/*"}) {
-		t.Fatalf("default upload MIME types = %v", cfg.Access.UploadAllowedMIMEs)
-	}
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("file wildcard policy rejected: %v", err)
 	}
 }
 

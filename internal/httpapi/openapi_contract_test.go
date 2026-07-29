@@ -370,10 +370,15 @@ func TestOpenAPIFreezesCLIContractSchemas(t *testing.T) {
 			t.Fatalf("TerminalAuth lacks %q variant", method)
 		}
 	}
-	stagedUploadProperties := objectValue(t, doc.Components.Schemas["StagedImageUpload"]["properties"], "StagedImageUpload.properties")
-	uploadAuth := objectValue(t, stagedUploadProperties["auth"], "StagedImageUpload.auth")
-	uploadAuthProperties := objectValue(t, uploadAuth["properties"], "StagedImageUpload.auth.properties")
-	assertSingletonConstScope(t, uploadAuthProperties["scopes"], "file:stage", "StagedImageUpload.auth.scopes")
+	transferProperties := objectValue(t, doc.Components.Schemas["FileTransfer"]["properties"], "FileTransfer.properties")
+	transferAuth := objectValue(t, transferProperties["auth"], "FileTransfer.auth")
+	transferAuthProperties := objectValue(t, transferAuth["properties"], "FileTransfer.auth.properties")
+	assertSingletonConstScope(t, transferAuthProperties["scopes"], "file:transfer", "FileTransfer.auth.scopes")
+	for _, legacy := range []string{"max_bytes", "allowed_mime_types", "mime_type"} {
+		if _, present := transferProperties[legacy]; present {
+			t.Fatalf("FileTransfer retains legacy field %q", legacy)
+		}
+	}
 	required := stringSet(t, client["required"], "CLIClientSession.required")
 	for _, field := range []string{
 		"cli_client_session_id", "client_id", "client_label", "device_type", "os", "scopes",

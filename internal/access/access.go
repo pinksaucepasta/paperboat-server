@@ -105,7 +105,7 @@ type CredentialInput struct {
 
 type CLICredentials struct {
 	TerminalAuth      map[string]any
-	UploadAuth        map[string]any
+	FileTransferAuth  map[string]any
 	TerminalSessionID string
 	FileSessionID     string
 }
@@ -138,7 +138,7 @@ func (FakeCredentialIssuer) CheckHealth(context.Context, CredentialInput) error 
 
 func (FakeCredentialIssuer) IssueCLI(_ context.Context, input CredentialInput) (CLICredentials, error) {
 	terminalScopes := []string{"terminal:operate"}
-	fileScopes := []string{"file:stage"}
+	transferScopes := []string{"file:transfer"}
 	return CLICredentials{
 		TerminalAuth: map[string]any{
 			"method":     "websocket_ticket",
@@ -146,11 +146,9 @@ func (FakeCredentialIssuer) IssueCLI(_ context.Context, input CredentialInput) (
 			"expires_at": input.ExpiresAt,
 			"scopes":     terminalScopes,
 		},
-		UploadAuth: map[string]any{
-			"method":     "bearer",
-			"token":      "pat_" + input.ProjectID,
-			"expires_at": input.ExpiresAt,
-			"scopes":     fileScopes,
+		FileTransferAuth: map[string]any{
+			"method": "bearer", "token": "pft_" + input.ProjectID,
+			"expires_at": input.ExpiresAt, "scopes": transferScopes,
 		},
 		TerminalSessionID: "fake-terminal-" + input.ProjectID + "-" + input.CLIClientSessionID,
 		FileSessionID:     "fake-file-" + input.ProjectID + "-" + input.CLIClientSessionID,
@@ -235,9 +233,7 @@ type Service struct {
 	ttl                      time.Duration
 	connectReadyTimeout      time.Duration
 	connectPollInterval      time.Duration
-	uploadMaxBytes           int64
-	uploadAllowedMIMEs       []string
-	uploadRetentionSeconds   int64
+	fileTransferPolicy       accessdescriptor.FileTransferPolicy
 	beforeConnect            func(context.Context, string, string) error
 	controlSigner            *mint.Provider
 	now                      func() time.Time
@@ -291,9 +287,7 @@ func NewServiceWithCredentials(store *db.DB, projectService *projects.Service, c
 		ttl:                      defaultAccessTTL,
 		connectReadyTimeout:      cfg.Access.ConnectReadyTimeout,
 		connectPollInterval:      cfg.Access.ConnectPollInterval,
-		uploadMaxBytes:           cfg.Access.UploadMaxBytes,
-		uploadAllowedMIMEs:       slices.Clone(cfg.Access.UploadAllowedMIMEs),
-		uploadRetentionSeconds:   int64(cfg.Access.UploadRetention / time.Second),
+		fileTransferPolicy:       descriptorFileTransferPolicy(cfg.Access.FileTransfer),
 		now:                      time.Now,
 	}
 }
@@ -331,7 +325,7 @@ type ConnectionDescriptor struct {
 	Environment       map[string]any `json:"environment,omitempty"`
 	AccessEndpoint    map[string]any `json:"access_endpoint,omitempty"`
 	Terminal          map[string]any `json:"terminal,omitempty"`
-	HelperUpload      map[string]any `json:"upload,omitempty"`
+	FileTransfer      map[string]any `json:"file_transfer,omitempty"`
 	Status            string         `json:"status,omitempty"`
 	Reason            string         `json:"reason,omitempty"`
 	RetryAfterSeconds int            `json:"retry_after_seconds"`
@@ -366,12 +360,12 @@ func (r ConnectionDescriptor) canonicalDescriptor() (accessdescriptor.Descriptor
 		}
 		out.Terminal = &terminal
 	}
-	if r.HelperUpload != nil && r.HelperUpload["auth"] != nil {
-		upload, err := decodeCanonical[accessdescriptor.Upload](r.HelperUpload)
+	if r.FileTransfer != nil && r.FileTransfer["auth"] != nil {
+		transfer, err := decodeCanonical[accessdescriptor.FileTransfer](r.FileTransfer)
 		if err != nil {
-			return accessdescriptor.Descriptor{}, fmt.Errorf("canonical upload descriptor: %w", err)
+			return accessdescriptor.Descriptor{}, fmt.Errorf("canonical file transfer descriptor: %w", err)
 		}
-		out.Upload = &upload
+		out.FileTransfer = &transfer
 	}
 	return out, nil
 }
@@ -420,7 +414,7 @@ func connectionState(connectable bool, status, state string) string {
 
 func setCanonicalCLIIdentity(response *ConnectionDescriptor, project projects.Project) {
 	response.Schema = accessdescriptor.SchemaV1
-	response.Capabilities = []string{accessdescriptor.CapabilityTerminal, accessdescriptor.CapabilityHerdr, accessdescriptor.CapabilityUpload, accessdescriptor.CapabilityPreview}
+	response.Capabilities = []string{accessdescriptor.CapabilityTerminal, accessdescriptor.CapabilityHerdr, accessdescriptor.CapabilityFileTransfer, accessdescriptor.CapabilityPreview}
 	response.Environment = map[string]any{
 		"id": project.ID, "kind": accessdescriptor.EnvironmentHosted, "resource_id": project.ID,
 		"display_name": project.Name, "state": connectionState(response.Connectable, response.Status, project.State), "root": "/workspace",
@@ -667,7 +661,7 @@ func (s *Service) Connect(ctx context.Context, input DescriptorRequest) (Connect
 		_ = s.audit.Write(ctx, audit.Event{ActorUserID: input.UserID, ActorType: audit.ActorUser, EventType: "access.credentials_minted", ResourceType: "project", ResourceID: input.ProjectID, IdempotencyKey: "access.credentials_minted:" + credentials.TerminalSessionID, Metadata: map[string]any{"environment_id": input.ProjectID, "cli_client_session_id": input.CLIClientSessionID, "terminal_session_id": credentials.TerminalSessionID, "file_session_id": credentials.FileSessionID}})
 		observability.CredentialsMinted()
 	}
-	response := buildResponse(input.Kind, project, resource, expires, credentials, s.uploadMaxBytes, s.uploadAllowedMIMEs, s.uploadRetentionSeconds, terminalSession.ThreadID, terminalSession.TerminalID, terminalSession.LaunchCwd)
+	response := buildResponse(input.Kind, project, resource, expires, credentials, s.fileTransferPolicy, terminalSession.ThreadID, terminalSession.TerminalID, terminalSession.LaunchCwd)
 	if input.Kind == DescriptorForCLI {
 		response.Issuer = s.issuer
 	}
@@ -736,7 +730,8 @@ func (s *Service) connectCanonicalHosted(ctx context.Context, input DescriptorRe
 	if s.now != nil {
 		issuedAt = s.now().UTC()
 	}
-	terminalJTI, uploadJTI := newID("jti_helper_terminal"), newID("jti_helper_upload")
+	terminalJTI := newID("jti_helper_terminal")
+	transferJTI := newID("jti_helper_file_transfer")
 	sign := func(class string, scopes []string, jti string) (string, error) {
 		return s.controlSigner.SignCredential(mint.CredentialInput{
 			Issuer: s.issuer, Audience: "paperboat-helper", Subject: input.UserID, JTI: jti,
@@ -748,7 +743,7 @@ func (s *Service) connectCanonicalHosted(ctx context.Context, input DescriptorRe
 	if err != nil {
 		return ConnectionDescriptor{}, err
 	}
-	uploadToken, err := sign("file_stage", []string{"file:stage"}, uploadJTI)
+	transferToken, err := sign("file_transfer", []string{"file:transfer"}, transferJTI)
 	if err != nil {
 		return ConnectionDescriptor{}, err
 	}
@@ -760,12 +755,8 @@ func (s *Service) connectCanonicalHosted(ctx context.Context, input DescriptorRe
 		"thread_id": terminalSession.ThreadID, "terminal_id": terminalSession.TerminalID, "cwd": terminalSession.LaunchCwd, "terminal_mode": terminalSession.TerminalMode,
 		"auth": map[string]any{"method": "bearer", "token": terminalToken, "expires_at": expires, "scopes": []string{"terminal:operate"}},
 	}
-	response.HelperUpload = map[string]any{
-		"endpoint": httpBaseURL + "/v1/uploads", "max_bytes": s.uploadMaxBytes,
-		"allowed_mime_types": s.uploadAllowedMIMEs, "retention_seconds": s.uploadRetentionSeconds,
-		"auth": map[string]any{"method": "bearer", "token": uploadToken, "expires_at": expires, "scopes": []string{"file:stage"}},
-	}
-	session, err := s.repo.CreateAccessSession(ctx, input.UserID, input.ProjectID, input.CLIClientSessionID, terminalJTI, uploadJTI, string(input.Kind), response, expires)
+	response.FileTransfer = fileTransferDescriptor(httpBaseURL, transferToken, expires, s.fileTransferPolicy)
+	session, err := s.repo.CreateAccessSession(ctx, input.UserID, input.ProjectID, input.CLIClientSessionID, terminalJTI, transferJTI, string(input.Kind), response, expires)
 	if err != nil {
 		return ConnectionDescriptor{}, err
 	}
@@ -1199,7 +1190,7 @@ func terminalProjectState(state string) bool {
 	}
 }
 
-func buildResponse(kind DescriptorKind, project projects.Project, resource ResourceDescriptor, expires time.Time, credentials CLICredentials, uploadMaxBytes int64, uploadAllowedMIMEs []string, uploadRetentionSeconds int64, threadID, terminalID, cwd string) ConnectionDescriptor {
+func buildResponse(kind DescriptorKind, project projects.Project, resource ResourceDescriptor, expires time.Time, credentials CLICredentials, transferPolicy accessdescriptor.FileTransferPolicy, threadID, terminalID, cwd string) ConnectionDescriptor {
 	base := ConnectionDescriptor{ProjectID: project.ID, ProjectState: project.State, Connectable: true, ExpiresAt: expires, Status: "ready", Reason: "ready", HTTPBaseURL: resource.HTTPBaseURL}
 	switch kind {
 	case DescriptorForHelper:
@@ -1253,17 +1244,9 @@ func buildResponse(kind DescriptorKind, project projects.Project, resource Resou
 			"provider": project.Repository.Provider,
 			"url":      project.Repository.SourceURL,
 		}
-		base.HelperUpload = map[string]any{
-			"endpoint":           uploadEndpoint(resource.HTTPBaseURL),
-			"kind":               "paperboat_staged_image_v1",
-			"http_base_url":      resource.HTTPBaseURL,
-			"path":               uploadPath(resource.HTTPBaseURL),
-			"max_bytes":          uploadMaxBytes,
-			"allowed_mime_types": slices.Clone(uploadAllowedMIMEs),
-			"retention_seconds":  uploadRetentionSeconds,
-		}
-		if credentials.UploadAuth != nil {
-			base.HelperUpload["auth"] = credentials.UploadAuth
+		if credentials.FileTransferAuth != nil {
+			base.FileTransfer = fileTransferDescriptor(resource.HTTPBaseURL, stringValue(credentials.FileTransferAuth, "token"), expires, transferPolicy)
+			base.FileTransfer["auth"] = credentials.FileTransferAuth
 		}
 	default:
 		base.Descriptors = []any{map[string]any{
@@ -1275,24 +1258,25 @@ func buildResponse(kind DescriptorKind, project projects.Project, resource Resou
 	return base
 }
 
-func uploadPath(httpBaseURL string) string {
-	u, err := url.Parse(httpBaseURL)
-	if err != nil {
-		return ""
+func fileTransferDescriptor(httpBaseURL, token string, expires time.Time, policy accessdescriptor.FileTransferPolicy) map[string]any {
+	endpoint := strings.TrimRight(httpBaseURL, "/") + "/v1/file-transfers"
+	result := map[string]any{
+		"endpoint": endpoint,
+		"policy":   policy,
 	}
-	u.Path = strings.TrimRight(u.Path, "/") + "/v1/files/staged-images"
-	u.RawPath = ""
-	return u.Path
+	if token != "" {
+		result["auth"] = map[string]any{"method": "bearer", "token": token, "expires_at": expires, "scopes": []string{"file:transfer"}}
+	}
+	return result
 }
 
-func uploadEndpoint(httpBaseURL string) string {
-	u, err := url.Parse(httpBaseURL)
-	if err != nil {
-		return ""
+func descriptorFileTransferPolicy(policy config.FileTransferPolicy) accessdescriptor.FileTransferPolicy {
+	return accessdescriptor.FileTransferPolicy{
+		Revision: policy.Revision, MaxFileBytes: policy.MaxFileBytes, MaxBatchFiles: policy.MaxBatchFiles,
+		MaxBatchBytes: policy.MaxBatchBytes, MaxConcurrentTransfers: policy.MaxConcurrentTransfers,
+		RetentionSeconds: int64(policy.Retention / time.Second), DeliveryTimeoutSeconds: int64(policy.DeliveryTimeout / time.Second),
+		MaxPendingSpoolBytes: policy.MaxPendingSpoolBytes,
 	}
-	u.Path = uploadPath(httpBaseURL)
-	u.RawPath, u.RawQuery, u.Fragment = "", "", ""
-	return u.String()
 }
 
 func (s *Service) retryAfterSeconds() int {

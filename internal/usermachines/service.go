@@ -115,28 +115,26 @@ type Policy struct {
 	AllowedPlatforms []string
 }
 type Service struct {
-	db                *db.DB
-	audit             *audit.Writer
-	policy            Policy
-	seats             SeatAuthorizer
-	now               func() time.Time
-	provisioner       access.Client
-	encryptionKey     string
-	credentials       access.CredentialIssuer
-	issuer            string
-	ttl               time.Duration
-	uploadMaxBytes    int64
-	uploadMIMEs       []string
-	uploadRetention   int64
-	maxSessions       int
-	controlSigner     *mint.Provider
-	controlRuntime    userMachineHelperRuntime
-	bootstrapCommand  string
-	helperGrant       func(context.Context, string, string, string, time.Duration) (HelperEnrollmentGrant, error)
-	helperArtifacts   map[string]HelperArtifact
-	artifactPublicKey string
-	helperBaseDomain  string
-	helperListenPort  int32
+	db                 *db.DB
+	audit              *audit.Writer
+	policy             Policy
+	seats              SeatAuthorizer
+	now                func() time.Time
+	provisioner        access.Client
+	encryptionKey      string
+	credentials        access.CredentialIssuer
+	issuer             string
+	ttl                time.Duration
+	fileTransferPolicy accessdescriptor.FileTransferPolicy
+	maxSessions        int
+	controlSigner      *mint.Provider
+	controlRuntime     userMachineHelperRuntime
+	bootstrapCommand   string
+	helperGrant        func(context.Context, string, string, string, time.Duration) (HelperEnrollmentGrant, error)
+	helperArtifacts    map[string]HelperArtifact
+	artifactPublicKey  string
+	helperBaseDomain   string
+	helperListenPort   int32
 }
 
 type userMachineHelperRuntime interface {
@@ -205,8 +203,12 @@ func (s *Service) ConfigureProvisioning(provider access.Client, encryptionKey st
 	s.provisioner, s.encryptionKey = provider, encryptionKey
 }
 
-func (s *Service) ConfigureAccess(credentials access.CredentialIssuer, issuer string, ttl time.Duration, uploadMaxBytes int64, uploadMIMEs []string, uploadRetention int64) {
-	s.credentials, s.issuer, s.ttl, s.uploadMaxBytes, s.uploadMIMEs, s.uploadRetention = credentials, strings.TrimRight(issuer, "/"), ttl, uploadMaxBytes, slices.Clone(uploadMIMEs), uploadRetention
+func (s *Service) ConfigureAccess(credentials access.CredentialIssuer, issuer string, ttl time.Duration) {
+	s.credentials, s.issuer, s.ttl = credentials, strings.TrimRight(issuer, "/"), ttl
+}
+
+func (s *Service) ConfigureFileTransfer(policy accessdescriptor.FileTransferPolicy) {
+	s.fileTransferPolicy = policy
 }
 
 func (s *Service) ConfigureTerminalSessions(maxActive int, signer *mint.Provider, client *http.Client) {
@@ -610,7 +612,7 @@ type ConnectionDescriptor struct {
 	ExpiresAt         time.Time      `json:"expires_at"`
 	Environment       map[string]any `json:"environment,omitempty"`
 	Terminal          map[string]any `json:"terminal,omitempty"`
-	Upload            map[string]any `json:"upload,omitempty"`
+	FileTransfer      map[string]any `json:"file_transfer,omitempty"`
 	Status            string         `json:"status,omitempty"`
 	Reason            string         `json:"reason,omitempty"`
 	RetryAfterSeconds int            `json:"retry_after_seconds,omitempty"`
@@ -639,12 +641,12 @@ func (r ConnectionDescriptor) MarshalJSON() ([]byte, error) {
 		}
 		out.Terminal = &terminal
 	}
-	if r.Upload != nil && r.Upload["auth"] != nil {
-		upload, err := decodeCanonical[accessdescriptor.Upload](r.Upload)
+	if r.FileTransfer != nil && r.FileTransfer["auth"] != nil {
+		transfer, err := decodeCanonical[accessdescriptor.FileTransfer](r.FileTransfer)
 		if err != nil {
 			return nil, err
 		}
-		out.Upload = &upload
+		out.FileTransfer = &transfer
 	}
 	return json.Marshal(out)
 }
@@ -682,7 +684,7 @@ func machineConnectionState(connectable bool, state string) string {
 
 func setCanonicalMachineIdentity(response *ConnectionDescriptor, row dbsqlc.UserMachine) {
 	response.Schema = accessdescriptor.SchemaV1
-	response.Capabilities = []string{accessdescriptor.CapabilityTerminal, accessdescriptor.CapabilityHerdr, accessdescriptor.CapabilityUpload, accessdescriptor.CapabilityPreview}
+	response.Capabilities = []string{accessdescriptor.CapabilityTerminal, accessdescriptor.CapabilityHerdr, accessdescriptor.CapabilityFileTransfer, accessdescriptor.CapabilityPreview}
 	response.Environment = map[string]any{"id": row.EnvironmentID, "kind": accessdescriptor.EnvironmentBYOD, "resource_id": row.ID, "display_name": row.DisplayName, "state": machineConnectionState(response.Connectable, row.State), "root": row.WorkspaceRoot}
 }
 
@@ -771,7 +773,9 @@ func (s *Service) ConnectTerminalSession(ctx context.Context, userID, userMachin
 	response.Connectable, response.Status, response.Reason, response.RetryAfterSeconds = true, "ready", "ready", 0
 	setCanonicalMachineIdentity(&response, row)
 	response.Terminal = map[string]any{"protocol": "paperboat.terminal.v2", "endpoints": machineTerminalEndpoints(websocketBaseURL), "session_id": terminalSession.ID, "thread_id": terminalSession.ThreadID, "terminal_id": terminalSession.TerminalID, "cwd": terminalSession.LaunchCwd, "terminal_mode": terminalSession.TerminalMode, "auth": credentials.TerminalAuth}
-	response.Upload = map[string]any{"endpoint": httpBaseURL + "/v1/uploads", "max_bytes": s.uploadMaxBytes, "allowed_mime_types": s.uploadMIMEs, "retention_seconds": s.uploadRetention, "auth": credentials.UploadAuth}
+	if credentials.FileTransferAuth != nil {
+		response.FileTransfer = map[string]any{"endpoint": httpBaseURL + "/v1/file-transfers", "policy": s.fileTransferPolicy, "auth": credentials.FileTransferAuth}
+	}
 	return response, nil
 }
 
@@ -792,7 +796,8 @@ func (s *Service) issueUserMachineCredentials(ctx context.Context, input access.
 		return s.credentials.IssueCLI(ctx, input)
 	}
 	issuedAt := s.now().UTC()
-	terminalJTI, uploadJTI := newID("jti_helper_terminal"), newID("jti_helper_upload")
+	terminalJTI := newID("jti_helper_terminal")
+	transferJTI := newID("jti_helper_file_transfer")
 	sign := func(class string, scopes []string, jti string) (string, error) {
 		return s.controlSigner.SignCredential(mint.CredentialInput{
 			Issuer: s.issuer, Audience: "paperboat-helper", Subject: input.UserID, JTI: jti,
@@ -804,14 +809,14 @@ func (s *Service) issueUserMachineCredentials(ctx context.Context, input access.
 	if err != nil {
 		return access.CLICredentials{}, err
 	}
-	uploadToken, err := sign("file_stage", []string{"file:stage"}, uploadJTI)
+	transferToken, err := sign("file_transfer", []string{"file:transfer"}, transferJTI)
 	if err != nil {
 		return access.CLICredentials{}, err
 	}
 	return access.CLICredentials{
 		TerminalAuth:      map[string]any{"method": "bearer", "token": terminalToken, "expires_at": input.ExpiresAt, "scopes": []string{"terminal:operate"}},
-		UploadAuth:        map[string]any{"method": "bearer", "token": uploadToken, "expires_at": input.ExpiresAt, "scopes": []string{"file:stage"}},
-		TerminalSessionID: terminalJTI, FileSessionID: uploadJTI,
+		FileTransferAuth:  map[string]any{"method": "bearer", "token": transferToken, "expires_at": input.ExpiresAt, "scopes": []string{"file:transfer"}},
+		TerminalSessionID: terminalJTI, FileSessionID: transferJTI,
 	}, nil
 }
 

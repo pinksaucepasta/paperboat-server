@@ -178,7 +178,7 @@ Session list records contain `id`, `name`, `is_default`, `state`, nullable
 `cli-connect` returns a short-lived descriptor that lets the CLI connect through
 provider_route. The server may start or resume the project machine before returning the
 descriptor. A not-ready response is HTTP `202` and contains no credentials; the CLI polls
-connection status and calls `cli-connect` again once ready. Live terminal and staged-image
+connection status and calls `cli-connect` again once ready. Live terminal and file-transfer
 traffic still goes through provider_route to helper, not this API.
 
 ## Error Codes
