@@ -113,8 +113,8 @@ Frozen ready response data shape:
       "expires_at": "2026-07-05T12:00:00Z",
       "scopes": ["file:stage"]
     },
-    "max_bytes": 10485760,
-    "allowed_mime_types": ["image/*"],
+    "max_bytes": 52428800,
+    "allowed_mime_types": ["*/*"],
     "retention_seconds": 604800
   }
 }

@@ -770,9 +770,21 @@ func (s *Service) ConnectTerminalSession(ctx context.Context, userID, userMachin
 	}
 	response.Connectable, response.Status, response.Reason, response.RetryAfterSeconds = true, "ready", "ready", 0
 	setCanonicalMachineIdentity(&response, row)
-	response.Terminal = map[string]any{"endpoint": websocketBaseURL + "/v1/runtime", "session_id": terminalSession.ID, "thread_id": terminalSession.ThreadID, "terminal_id": terminalSession.TerminalID, "cwd": terminalSession.LaunchCwd, "terminal_mode": terminalSession.TerminalMode, "auth": credentials.TerminalAuth}
+	response.Terminal = map[string]any{"protocol": "paperboat.terminal.v2", "endpoints": machineTerminalEndpoints(websocketBaseURL), "session_id": terminalSession.ID, "thread_id": terminalSession.ThreadID, "terminal_id": terminalSession.TerminalID, "cwd": terminalSession.LaunchCwd, "terminal_mode": terminalSession.TerminalMode, "auth": credentials.TerminalAuth}
 	response.Upload = map[string]any{"endpoint": httpBaseURL + "/v1/uploads", "max_bytes": s.uploadMaxBytes, "allowed_mime_types": s.uploadMIMEs, "retention_seconds": s.uploadRetention, "auth": credentials.UploadAuth}
 	return response, nil
+}
+
+func machineTerminalEndpoints(wss string) map[string]any {
+	u, err := url.Parse(wss)
+	if err != nil || u.Hostname() == "" {
+		return map[string]any{}
+	}
+	host := u.Host
+	if u.Port() == "" {
+		host += ":443"
+	}
+	return map[string]any{"quic": "quic://" + host, "wss": "wss://" + u.Host + "/v1/runtime"}
 }
 
 func (s *Service) issueUserMachineCredentials(ctx context.Context, input access.CredentialInput, terminalSessionID string) (access.CLICredentials, error) {

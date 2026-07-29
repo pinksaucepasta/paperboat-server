@@ -355,7 +355,7 @@ type edgeUsageRequest struct {
 const controlTunnelNodeStaleAfter = 2 * time.Minute
 
 func (s *EdgeService) RegisterNode(ctx context.Context, r edgeNodeRegistration) error {
-	if r.NodeID == "" || r.EdgePool == "" || r.Protocol == "" || r.ProcessEpoch == "" || r.Capacity == 0 || r.Endpoint.Host == "" || r.Endpoint.TCPPort == 0 || r.Endpoint.QUICPort == 0 || r.Endpoint.TCPPort == r.Endpoint.QUICPort {
+	if r.NodeID == "" || r.EdgePool == "" || r.Protocol == "" || r.ProcessEpoch == "" || r.Capacity == 0 || r.Endpoint.Host == "" || r.Endpoint.TCPPort == 0 || r.Endpoint.QUICPort == 0 {
 		return ErrInvalidUsageReport
 	}
 	capacity, _ := json.Marshal(map[string]any{"connectors": r.Capacity, "artifact": r.Artifact})

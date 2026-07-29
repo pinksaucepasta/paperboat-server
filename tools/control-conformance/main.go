@@ -328,6 +328,7 @@ type fullTunnelDeployment struct {
 	PrivateVhostAddress    string        `json:"private_vhost_address"`
 	EdgeGatewayAddress     string        `json:"edge_gateway_address"`
 	CaddyListenAddress     string        `json:"caddy_listen_address"`
+	CaddyHTTPListenAddress string        `json:"caddy_http_listen_address"`
 	CaddyAdminAddress      string        `json:"caddy_admin_address"`
 	PreviewBaseDomain      string        `json:"preview_base_domain"`
 	HelperBaseDomain       string        `json:"helper_base_domain"`
@@ -378,7 +379,7 @@ func runFullTunnelConformance(ctx context.Context, store *db.DB, handler http.Ha
 	if err := os.WriteFile(usagePath, usageDocument, 0o600); err != nil {
 		return err
 	}
-	ports := make([]int, 8)
+	ports := make([]int, 9)
 	seenPorts := make(map[int]struct{}, len(ports))
 	for index := range ports {
 		for {
@@ -398,7 +399,7 @@ func runFullTunnelConformance(ctx context.Context, store *db.DB, handler http.Ha
 		ControlURL: controlURL, CredentialIssuer: controlURL, ControlCredentialFile: credentialPath, ControlCAFile: caPath, JWKSFile: jwksPath, RevocationsFile: revocationsPath, UsageSigningKeyFile: usagePath,
 		FRPSBinary: frpsPath, FRPSSHA256: fileSHA256(frpsPath), CaddyBinary: caddyPath, CaddySHA256: fileSHA256(caddyPath), RuntimeDirectory: runtimeRoot,
 		HookAddress: "127.0.0.1:" + fmt.Sprint(ports[0]), HookPath: "/private/control-conformance-hook", ConnectorBindAddress: "127.0.0.1", ConnectorAdvertiseHost: "edge.example.test", ConnectorTCPPort: ports[1], ConnectorQUICPort: ports[2],
-		PrivateVhostAddress: "127.0.0.1:" + fmt.Sprint(ports[3]), EdgeGatewayAddress: "127.0.0.1:" + fmt.Sprint(ports[4]), CaddyListenAddress: "127.0.0.1:" + fmt.Sprint(ports[5]), CaddyAdminAddress: "127.0.0.1:" + fmt.Sprint(ports[6]), PreviewBaseDomain: "preview.example.test", HelperBaseDomain: "helper.example.test", TrustedProxyCIDRs: []string{"127.0.0.0/8"}, CertificateIssuer: "internal",
+		PrivateVhostAddress: "127.0.0.1:" + fmt.Sprint(ports[3]), EdgeGatewayAddress: "127.0.0.1:" + fmt.Sprint(ports[4]), CaddyListenAddress: "127.0.0.1:" + fmt.Sprint(ports[5]), CaddyHTTPListenAddress: "127.0.0.1:" + fmt.Sprint(ports[6]), CaddyAdminAddress: "127.0.0.1:" + fmt.Sprint(ports[7]), PreviewBaseDomain: "preview.example.test", HelperBaseDomain: "helper.example.test", TrustedProxyCIDRs: []string{"127.0.0.0/8"}, CertificateIssuer: "internal",
 		NodeCapacity: 8, ControlInterval: 250 * time.Millisecond, UsageInterval: 250 * time.Millisecond, ControlTimeout: 2 * time.Second,
 	}
 	if deployment.FRPSSHA256 == "" || deployment.CaddySHA256 == "" {
@@ -410,7 +411,7 @@ func runFullTunnelConformance(ctx context.Context, store *db.DB, handler http.Ha
 		return err
 	}
 	statePath := filepath.Join(trustRoot, "edge-state.json")
-	healthAddress := "127.0.0.1:" + fmt.Sprint(ports[7])
+	healthAddress := "127.0.0.1:" + fmt.Sprint(ports[8])
 	var firstEpoch string
 	for run := 1; run <= 2; run++ {
 		command := exec.CommandContext(ctx, tunnelPath, "-node-id", fullNodeID, "-edge-pool", "default", "-health-address", healthAddress, "-state-path", statePath, "-deployment-config", deploymentPath, "-shutdown-timeout", "5s")

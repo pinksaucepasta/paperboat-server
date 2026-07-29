@@ -98,13 +98,16 @@ func TestValidationRejectsInvalidHelperBaseDomain(t *testing.T) {
 	}
 }
 
-func TestDefaultUploadMIMEPolicyAllowsAllImages(t *testing.T) {
+func TestDefaultUploadMIMEPolicyAllowsAllFiles(t *testing.T) {
 	cfg := Default()
-	if !slices.Equal(cfg.Access.UploadAllowedMIMEs, []string{"image/*"}) {
+	if cfg.Access.UploadMaxBytes != 50<<20 {
+		t.Fatalf("default upload max bytes = %d", cfg.Access.UploadMaxBytes)
+	}
+	if !slices.Equal(cfg.Access.UploadAllowedMIMEs, []string{"*/*"}) {
 		t.Fatalf("default upload MIME types = %v", cfg.Access.UploadAllowedMIMEs)
 	}
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("image wildcard policy rejected: %v", err)
+		t.Fatalf("file wildcard policy rejected: %v", err)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"mime"
 	"net"
 	"net/url"
 	"os"
@@ -347,8 +348,8 @@ func Default() Config {
 			RouteSubdomainPrefix: "pb",
 			ConnectReadyTimeout:  2 * time.Second,
 			ConnectPollInterval:  100 * time.Millisecond,
-			UploadMaxBytes:       10 << 20,
-			UploadAllowedMIMEs:   []string{"image/*"},
+			UploadMaxBytes:       50 << 20,
+			UploadAllowedMIMEs:   []string{"*/*"},
 			UploadRetention:      7 * 24 * time.Hour,
 		},
 		Providers: Providers{
@@ -533,7 +534,9 @@ func (c Config) Validate() error {
 		errs = append(errs, fmt.Errorf("access upload_max_bytes, upload_allowed_mime_types, and upload_retention are required"))
 	}
 	for _, mimeType := range c.Access.UploadAllowedMIMEs {
-		if mimeType != "image/*" && (!strings.HasPrefix(mimeType, "image/") || len(mimeType) == len("image/")) {
+		mediaType, params, err := mime.ParseMediaType(mimeType)
+		parts := strings.Split(mediaType, "/")
+		if mimeType != "*/*" && (err != nil || len(params) != 0 || mediaType != mimeType || len(parts) != 2 || parts[0] == "" || parts[1] == "") {
 			errs = append(errs, fmt.Errorf("access upload MIME type %q is not supported", mimeType))
 		}
 	}

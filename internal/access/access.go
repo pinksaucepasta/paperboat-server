@@ -335,6 +335,7 @@ type ConnectionDescriptor struct {
 	Status            string         `json:"status,omitempty"`
 	Reason            string         `json:"reason,omitempty"`
 	RetryAfterSeconds int            `json:"retry_after_seconds"`
+	HTTPBaseURL       string         `json:"-"`
 }
 
 func (r ConnectionDescriptor) MarshalJSON() ([]byte, error) {
@@ -755,7 +756,7 @@ func (s *Service) connectCanonicalHosted(ctx context.Context, input DescriptorRe
 	response.Connectable, response.Status, response.Reason, response.RetryAfterSeconds = true, "ready", "ready", 0
 	setCanonicalCLIIdentity(&response, project)
 	response.Terminal = map[string]any{
-		"endpoint": "wss://" + route.PublicHost + "/v1/runtime", "session_id": terminalSession.ID,
+		"protocol": "paperboat.terminal.v2", "endpoints": map[string]any{"quic": "quic://" + route.PublicHost + ":443", "wss": "wss://" + route.PublicHost + "/v1/runtime"}, "session_id": terminalSession.ID,
 		"thread_id": terminalSession.ThreadID, "terminal_id": terminalSession.TerminalID, "cwd": terminalSession.LaunchCwd, "terminal_mode": terminalSession.TerminalMode,
 		"auth": map[string]any{"method": "bearer", "token": terminalToken, "expires_at": expires, "scopes": []string{"terminal:operate"}},
 	}
@@ -1199,7 +1200,7 @@ func terminalProjectState(state string) bool {
 }
 
 func buildResponse(kind DescriptorKind, project projects.Project, resource ResourceDescriptor, expires time.Time, credentials CLICredentials, uploadMaxBytes int64, uploadAllowedMIMEs []string, uploadRetentionSeconds int64, threadID, terminalID, cwd string) ConnectionDescriptor {
-	base := ConnectionDescriptor{ProjectID: project.ID, ProjectState: project.State, Connectable: true, ExpiresAt: expires, Status: "ready", Reason: "ready"}
+	base := ConnectionDescriptor{ProjectID: project.ID, ProjectState: project.State, Connectable: true, ExpiresAt: expires, Status: "ready", Reason: "ready", HTTPBaseURL: resource.HTTPBaseURL}
 	switch kind {
 	case DescriptorForHelper:
 		base.Environment = map[string]any{
@@ -1235,15 +1236,12 @@ func buildResponse(kind DescriptorKind, project projects.Project, resource Resou
 			cwd = "/workspace"
 		}
 		base.Terminal = map[string]any{
-			"endpoint":           resource.WebSocketBaseURL,
-			"http_endpoint":      resource.HTTPBaseURL,
-			"session_id":         threadID,
-			"kind":               "paperboat_terminal_v2",
-			"http_base_url":      resource.HTTPBaseURL,
-			"websocket_base_url": resource.WebSocketBaseURL,
-			"thread_id":          threadID,
-			"terminal_id":        terminalID,
-			"cwd":                cwd,
+			"protocol":    "paperboat.terminal.v2",
+			"endpoints":   terminalEndpoints(resource.WebSocketBaseURL),
+			"session_id":  threadID,
+			"thread_id":   threadID,
+			"terminal_id": terminalID,
+			"cwd":         cwd,
 		}
 		if credentials.TerminalAuth != nil {
 			base.Terminal["auth"] = credentials.TerminalAuth
@@ -1328,13 +1326,24 @@ func terminalStatusDescriptor(status TunnelStatus, terminalSession dbsqlc.Projec
 		return nil
 	}
 	return map[string]any{
-		"kind":               "paperboat_terminal_v2",
-		"http_base_url":      status.HTTPBaseURL,
-		"websocket_base_url": status.WebSocketBaseURL,
-		"thread_id":          terminalSession.ThreadID,
-		"terminal_id":        terminalSession.TerminalID,
-		"cwd":                terminalSession.LaunchCwd,
+		"protocol":    "paperboat.terminal.v2",
+		"endpoints":   terminalEndpoints(status.WebSocketBaseURL),
+		"thread_id":   terminalSession.ThreadID,
+		"terminal_id": terminalSession.TerminalID,
+		"cwd":         terminalSession.LaunchCwd,
 	}
+}
+
+func terminalEndpoints(wss string) map[string]any {
+	u, err := url.Parse(wss)
+	if err != nil || u.Hostname() == "" {
+		return map[string]any{}
+	}
+	host := u.Host
+	if u.Port() == "" {
+		host += ":443"
+	}
+	return map[string]any{"quic": "quic://" + host, "wss": "wss://" + u.Host + "/v1/runtime"}
 }
 
 func firstNonEmpty(values ...string) string {
@@ -1487,7 +1496,7 @@ func (r *Repository) CreateAccessSession(ctx context.Context, userID, projectID,
 	}
 	key := "access.session:" + id
 	err = r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		return tx.Queries().CreateAccessSession(ctx, dbsqlc.CreateAccessSessionParams{ID: id, UserID: userID, ProjectID: projectID, CLIClientSessionID: cliClientSessionID, HelperTerminalSessionID: terminalSessionID, HelperFileSessionID: fileSessionID, SessionType: sessionType, Descriptor: descriptorBytes, ExpiresAt: expiresAt, IdempotencyKey: key})
+		return tx.Queries().CreateAccessSession(ctx, dbsqlc.CreateAccessSessionParams{ID: id, UserID: userID, ProjectID: projectID, CLIClientSessionID: cliClientSessionID, HelperTerminalSessionID: terminalSessionID, HelperFileSessionID: fileSessionID, SessionType: sessionType, Descriptor: descriptorBytes, HttpBaseUrl: descriptor.HTTPBaseURL, ExpiresAt: expiresAt, IdempotencyKey: key})
 	})
 	return AccessSession{ID: id}, err
 }

@@ -495,6 +495,11 @@ AND helper_terminal_session_id IS NOT NULL AND helper_file_session_id IS NOT NUL
 	if len(issuer.revocations) != 2 {
 		t.Fatalf("revocation attempts=%d, want initial delivery and retry", len(issuer.revocations))
 	}
+	for index, revocation := range issuer.revocations {
+		if revocation.HTTPBaseURL != "https://access.example/projects/"+projectID {
+			t.Fatalf("revocation %d HTTP base URL=%q", index, revocation.HTTPBaseURL)
+		}
+	}
 	if err := store.SQL().QueryRowContext(context.Background(), `
 SELECT helper_revoked_at IS NOT NULL FROM paperboat.access_sessions WHERE project_id=$1 AND session_type='cli'`, projectID).Scan(&helperRevoked); err != nil {
 		t.Fatal(err)

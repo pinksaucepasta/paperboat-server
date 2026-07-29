@@ -15,8 +15,8 @@ import (
 )
 
 const createAccessSession = `-- name: CreateAccessSession :exec
-INSERT INTO access_sessions (id,user_id,project_id,cli_client_session_id,helper_terminal_session_id,helper_file_session_id,session_type,state,descriptor,expires_at,idempotency_key)
-VALUES ($1,$2,$3,nullif($4,''),nullif($5,''),nullif($6,''),$7,'active',$8::jsonb,$9,$10)
+INSERT INTO access_sessions (id,user_id,project_id,cli_client_session_id,helper_terminal_session_id,helper_file_session_id,session_type,state,descriptor,http_base_url,expires_at,idempotency_key)
+VALUES ($1,$2,$3,nullif($4,''),nullif($5,''),nullif($6,''),$7,'active',$8::jsonb,$9,$10,$11)
 `
 
 type CreateAccessSessionParams struct {
@@ -28,6 +28,7 @@ type CreateAccessSessionParams struct {
 	HelperFileSessionID     interface{}
 	SessionType             string
 	Descriptor              json.RawMessage
+	HttpBaseUrl             string
 	ExpiresAt               time.Time
 	IdempotencyKey          string
 }
@@ -42,6 +43,7 @@ func (q *Queries) CreateAccessSession(ctx context.Context, arg CreateAccessSessi
 		arg.HelperFileSessionID,
 		arg.SessionType,
 		arg.Descriptor,
+		arg.HttpBaseUrl,
 		arg.ExpiresAt,
 		arg.IdempotencyKey,
 	)
@@ -148,7 +150,7 @@ const listClientHelperSessions = `-- name: ListClientHelperSessions :many
 SELECT user_id,project_id,coalesce(cli_client_session_id,'') AS cli_client_session_id,
 coalesce(helper_terminal_session_id,'') AS helper_terminal_session_id,
 coalesce(helper_file_session_id,'') AS helper_file_session_id,
-coalesce(descriptor #>> '{terminal,http_base_url}','') AS http_base_url
+http_base_url
 FROM access_sessions WHERE cli_client_session_id=$1
 AND (helper_terminal_session_id IS NOT NULL OR helper_file_session_id IS NOT NULL)
 `
@@ -159,7 +161,7 @@ type ListClientHelperSessionsRow struct {
 	CLIClientSessionID      string
 	HelperTerminalSessionID string
 	HelperFileSessionID     string
-	HttpBaseUrl             interface{}
+	HttpBaseUrl             string
 }
 
 func (q *Queries) ListClientHelperSessions(ctx context.Context, cliClientSessionID sql.NullString) ([]ListClientHelperSessionsRow, error) {
@@ -244,7 +246,7 @@ const listPendingHelperRevocations = `-- name: ListPendingHelperRevocations :man
 SELECT id,user_id,project_id,coalesce(cli_client_session_id,'') AS cli_client_session_id,
 coalesce(helper_terminal_session_id,'') AS helper_terminal_session_id,
 coalesce(helper_file_session_id,'') AS helper_file_session_id,
-coalesce(descriptor #>> '{terminal,http_base_url}','') AS http_base_url,
+http_base_url,
 coalesce(descriptor->>'revocation_reason','revoked') AS reason
 FROM access_sessions WHERE state='revoked' AND helper_revoked_at IS NULL
 AND (helper_terminal_session_id IS NOT NULL OR helper_file_session_id IS NOT NULL)
@@ -257,7 +259,7 @@ type ListPendingHelperRevocationsRow struct {
 	CLIClientSessionID      string
 	HelperTerminalSessionID string
 	HelperFileSessionID     string
-	HttpBaseUrl             interface{}
+	HttpBaseUrl             string
 	Reason                  interface{}
 }
 
@@ -337,7 +339,7 @@ const listProjectHelperSessions = `-- name: ListProjectHelperSessions :many
 SELECT user_id,project_id,coalesce(cli_client_session_id,'') AS cli_client_session_id,
 coalesce(helper_terminal_session_id,'') AS helper_terminal_session_id,
 coalesce(helper_file_session_id,'') AS helper_file_session_id,
-coalesce(descriptor #>> '{terminal,http_base_url}','') AS http_base_url
+http_base_url
 FROM access_sessions WHERE project_id=$1
 AND (helper_terminal_session_id IS NOT NULL OR helper_file_session_id IS NOT NULL)
 `
@@ -348,7 +350,7 @@ type ListProjectHelperSessionsRow struct {
 	CLIClientSessionID      string
 	HelperTerminalSessionID string
 	HelperFileSessionID     string
-	HttpBaseUrl             interface{}
+	HttpBaseUrl             string
 }
 
 func (q *Queries) ListProjectHelperSessions(ctx context.Context, projectID string) ([]ListProjectHelperSessionsRow, error) {
@@ -385,7 +387,7 @@ const listUserHelperSessions = `-- name: ListUserHelperSessions :many
 SELECT user_id,project_id,coalesce(cli_client_session_id,'') AS cli_client_session_id,
 coalesce(helper_terminal_session_id,'') AS helper_terminal_session_id,
 coalesce(helper_file_session_id,'') AS helper_file_session_id,
-coalesce(descriptor #>> '{terminal,http_base_url}','') AS http_base_url
+http_base_url
 FROM access_sessions WHERE user_id=$1
 AND (helper_terminal_session_id IS NOT NULL OR helper_file_session_id IS NOT NULL)
 `
@@ -396,7 +398,7 @@ type ListUserHelperSessionsRow struct {
 	CLIClientSessionID      string
 	HelperTerminalSessionID string
 	HelperFileSessionID     string
-	HttpBaseUrl             interface{}
+	HttpBaseUrl             string
 }
 
 func (q *Queries) ListUserHelperSessions(ctx context.Context, userID string) ([]ListUserHelperSessionsRow, error) {

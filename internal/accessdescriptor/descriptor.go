@@ -54,14 +54,19 @@ type Auth struct {
 }
 
 type Terminal struct {
-	Endpoint     string `json:"endpoint"`
-	HTTPEndpoint string `json:"http_endpoint,omitempty"`
-	Auth         Auth   `json:"auth"`
-	SessionID    string `json:"session_id"`
-	ThreadID     string `json:"thread_id"`
-	TerminalID   string `json:"terminal_id"`
-	CWD          string `json:"cwd"`
-	Mode         string `json:"terminal_mode"`
+	Protocol   string            `json:"protocol"`
+	Endpoints  TerminalEndpoints `json:"endpoints"`
+	Auth       Auth              `json:"auth"`
+	SessionID  string            `json:"session_id"`
+	ThreadID   string            `json:"thread_id"`
+	TerminalID string            `json:"terminal_id"`
+	CWD        string            `json:"cwd"`
+	Mode       string            `json:"terminal_mode"`
+}
+
+type TerminalEndpoints struct {
+	QUIC string `json:"quic"`
+	WSS  string `json:"wss"`
 }
 
 type Upload struct {

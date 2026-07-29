@@ -27,8 +27,8 @@ SELECT tunnel_id,client_id,resource_id,metadata FROM provider_routes WHERE proje
 SELECT event_type FROM project_events WHERE project_id=$1 AND event_type LIKE 'project.stop_queued.%' ORDER BY created_at DESC LIMIT 1;
 
 -- name: CreateAccessSession :exec
-INSERT INTO access_sessions (id,user_id,project_id,cli_client_session_id,helper_terminal_session_id,helper_file_session_id,session_type,state,descriptor,expires_at,idempotency_key)
-VALUES (sqlc.arg(id),sqlc.arg(user_id),sqlc.arg(project_id),nullif(sqlc.arg(cli_client_session_id),''),nullif(sqlc.arg(helper_terminal_session_id),''),nullif(sqlc.arg(helper_file_session_id),''),sqlc.arg(session_type),'active',sqlc.arg(descriptor)::jsonb,sqlc.arg(expires_at),sqlc.arg(idempotency_key));
+INSERT INTO access_sessions (id,user_id,project_id,cli_client_session_id,helper_terminal_session_id,helper_file_session_id,session_type,state,descriptor,http_base_url,expires_at,idempotency_key)
+VALUES (sqlc.arg(id),sqlc.arg(user_id),sqlc.arg(project_id),nullif(sqlc.arg(cli_client_session_id),''),nullif(sqlc.arg(helper_terminal_session_id),''),nullif(sqlc.arg(helper_file_session_id),''),sqlc.arg(session_type),'active',sqlc.arg(descriptor)::jsonb,sqlc.arg(http_base_url),sqlc.arg(expires_at),sqlc.arg(idempotency_key));
 
 -- name: RevokeClientAccessSessions :exec
 UPDATE access_sessions SET state='revoked',revoked_at=coalesce(revoked_at,now()),updated_at=now(),version=version+1,
@@ -64,7 +64,7 @@ AND (helper_terminal_session_id IS NOT NULL OR helper_file_session_id IS NOT NUL
 SELECT user_id,project_id,coalesce(cli_client_session_id,'') AS cli_client_session_id,
 coalesce(helper_terminal_session_id,'') AS helper_terminal_session_id,
 coalesce(helper_file_session_id,'') AS helper_file_session_id,
-coalesce(descriptor #>> '{terminal,http_base_url}','') AS http_base_url
+http_base_url
 FROM access_sessions WHERE cli_client_session_id=sqlc.arg(cli_client_session_id)
 AND (helper_terminal_session_id IS NOT NULL OR helper_file_session_id IS NOT NULL);
 
@@ -72,7 +72,7 @@ AND (helper_terminal_session_id IS NOT NULL OR helper_file_session_id IS NOT NUL
 SELECT user_id,project_id,coalesce(cli_client_session_id,'') AS cli_client_session_id,
 coalesce(helper_terminal_session_id,'') AS helper_terminal_session_id,
 coalesce(helper_file_session_id,'') AS helper_file_session_id,
-coalesce(descriptor #>> '{terminal,http_base_url}','') AS http_base_url
+http_base_url
 FROM access_sessions WHERE user_id=sqlc.arg(user_id)
 AND (helper_terminal_session_id IS NOT NULL OR helper_file_session_id IS NOT NULL);
 
@@ -80,7 +80,7 @@ AND (helper_terminal_session_id IS NOT NULL OR helper_file_session_id IS NOT NUL
 SELECT user_id,project_id,coalesce(cli_client_session_id,'') AS cli_client_session_id,
 coalesce(helper_terminal_session_id,'') AS helper_terminal_session_id,
 coalesce(helper_file_session_id,'') AS helper_file_session_id,
-coalesce(descriptor #>> '{terminal,http_base_url}','') AS http_base_url
+http_base_url
 FROM access_sessions WHERE project_id=sqlc.arg(project_id)
 AND (helper_terminal_session_id IS NOT NULL OR helper_file_session_id IS NOT NULL);
 
@@ -88,7 +88,7 @@ AND (helper_terminal_session_id IS NOT NULL OR helper_file_session_id IS NOT NUL
 SELECT id,user_id,project_id,coalesce(cli_client_session_id,'') AS cli_client_session_id,
 coalesce(helper_terminal_session_id,'') AS helper_terminal_session_id,
 coalesce(helper_file_session_id,'') AS helper_file_session_id,
-coalesce(descriptor #>> '{terminal,http_base_url}','') AS http_base_url,
+http_base_url,
 coalesce(descriptor->>'revocation_reason','revoked') AS reason
 FROM access_sessions WHERE state='revoked' AND helper_revoked_at IS NULL
 AND (helper_terminal_session_id IS NOT NULL OR helper_file_session_id IS NOT NULL);

@@ -27,6 +27,7 @@ type AccessSession struct {
 	HelperTerminalSessionID sql.NullString
 	HelperFileSessionID     sql.NullString
 	HelperRevokedAt         sql.NullTime
+	HttpBaseUrl             string
 }
 
 type AccountConfigKey struct {

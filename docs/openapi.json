@@ -653,7 +653,7 @@
             "uniqueItems": true,
             "items": {
               "type": "string",
-              "pattern": "^image/"
+              "pattern": "^[^/\\s]+/[^/\\s]+$"
             }
           },
           "retention_seconds": {

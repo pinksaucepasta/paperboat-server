@@ -778,7 +778,7 @@ func TestConnectIssuesEnvironmentBoundDescriptor(t *testing.T) {
 	if !response.Connectable || response.UserMachineID != userMachineID || response.Environment["id"] != environmentID || response.Environment["resource_id"] != userMachineID {
 		t.Fatalf("response = %#v", response)
 	}
-	if response.Terminal["endpoint"] != "wss://machine-"+suffix+".example.test/v1/runtime" || response.Upload["endpoint"] != "https://machine-"+suffix+".example.test/v1/uploads" || response.Terminal["auth"] == nil || response.Upload["auth"] == nil {
+	if response.Terminal["endpoint"] != "wss://machine-"+suffix+".example.test/v1/runtime" || response.Terminal["http_endpoint"] != "https://machine-"+suffix+".example.test" || response.Upload["endpoint"] != "https://machine-"+suffix+".example.test/v1/uploads" || response.Terminal["auth"] == nil || response.Upload["auth"] == nil {
 		t.Fatalf("descriptor = %#v", response)
 	}
 	terminalAuth := response.Terminal["auth"].(map[string]any)

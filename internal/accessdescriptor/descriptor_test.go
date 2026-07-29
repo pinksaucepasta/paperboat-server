@@ -13,7 +13,7 @@ func TestDescriptorUsesCanonicalNames(t *testing.T) {
 		Schema: SchemaV1, Issuer: "https://api.paperboat.test", Connectable: true, ExpiresAt: expires,
 		Environment:  Environment{ID: "env_1", Kind: EnvironmentHosted, ResourceID: "prj_1", DisplayName: "demo", State: "ready", Root: "/workspace"},
 		Capabilities: []string{CapabilityTerminal, CapabilityUpload},
-		Terminal:     &Terminal{Endpoint: "wss://edge.paperboat.test/e/env_1/terminal", SessionID: "session_1", ThreadID: "thread_1", TerminalID: "term_1", CWD: "/workspace"},
+		Terminal:     &Terminal{Protocol: "paperboat.terminal.v2", Endpoints: TerminalEndpoints{QUIC: "quic://edge.paperboat.test:443", WSS: "wss://edge.paperboat.test/v1/runtime"}, SessionID: "session_1", ThreadID: "thread_1", TerminalID: "term_1", CWD: "/workspace"},
 		Upload:       &Upload{Endpoint: "https://edge.paperboat.test/e/env_1/uploads", MaxBytes: 1024, AllowedMIMETypes: []string{"image/png"}, RetentionSeconds: 60},
 		Status:       "ready", Reason: "ready",
 	}

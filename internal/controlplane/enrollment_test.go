@@ -353,7 +353,7 @@ func TestConnectorAdmissionBindsProofGenerationNodeAndReplay(t *testing.T) {
 	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.control_environments SET owner_user_id='usr_test' WHERE id=$1`, "env_"+suffix); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.control_tunnel_nodes SET state='ready',ready=true,endpoint_host='edge.example.test',endpoint_tcp_port=26022,endpoint_quic_port=26023,last_heartbeat_at=$2 WHERE id=$1`, "node_"+suffix, now); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.control_tunnel_nodes SET state='ready',ready=true,endpoint_host='edge.example.test',endpoint_tcp_port=26023,endpoint_quic_port=26023,last_heartbeat_at=$2 WHERE id=$1`, "node_"+suffix, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id) VALUES ($1,'workspace_test','usr_test')`, environmentID); err != nil {
@@ -391,11 +391,11 @@ func TestConnectorAdmissionBindsProofGenerationNodeAndReplay(t *testing.T) {
 	edge.SetClock(func() time.Time { return now })
 	edge.SetCredentialIssuer(signer, "https://api.example.test", "admission-encryption-key")
 	admission, err := edge.IssueConnectorAdmission(ctx, identity.Credential, proof, body, "default", "POST", "/v1/connectors/admission")
-	if err != nil || admission.OperationID != "admission-operation-01" || admission.EdgePool != "default" || admission.ProtocolVersion != "1.0" || admission.EdgeNodeID != "node_"+suffix || admission.EdgeEndpoint.Port != 26022 || len(admission.Routes) != 1 || admission.Routes[0].RouteID != "route_admission_"+suffix {
+	if err != nil || admission.OperationID != "admission-operation-01" || admission.EdgePool != "default" || admission.ProtocolVersion != "1.0" || admission.EdgeNodeID != "node_"+suffix || admission.EdgeEndpoint.Port != 26023 || len(admission.Routes) != 1 || admission.Routes[0].RouteID != "route_admission_"+suffix {
 		t.Fatalf("admission = %#v, %v", admission, err)
 	}
 	wire, err := json.Marshal(admission)
-	if err != nil || bytes.Contains(wire, []byte(`"expires_at"`)) || !bytes.Contains(wire, []byte(`"tcp_port":26022`)) || !bytes.Contains(wire, []byte(`"quic_port":26023`)) {
+	if err != nil || bytes.Contains(wire, []byte(`"expires_at"`)) || !bytes.Contains(wire, []byte(`"tcp_port":26023`)) || !bytes.Contains(wire, []byte(`"quic_port":26023`)) {
 		t.Fatalf("admission wire = %s, %v", wire, err)
 	}
 	if _, err := signer.VerifyCredential(admission.Credential, "https://api.example.test", "connector_admission", now); err != nil {
