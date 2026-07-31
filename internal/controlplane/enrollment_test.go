@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -27,6 +28,7 @@ func TestHelperEnrollmentExchangeIsSingleUseAndKeyBound(t *testing.T) {
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id) VALUES ($1,$2,'usr_test') ON CONFLICT (id) DO UPDATE SET owner_user_id='usr_test'`, environmentID, "workspace_test"); err != nil {
 		t.Fatal(err)
 	}
+	seedEnrollmentMachine(t, store, "usr_test", environmentID)
 	privateKey := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
 	signer, err := mint.New([]mint.Key{{ID: "enrollment-test", PrivateKey: privateKey}}, "enrollment-test", time.Minute)
 	if err != nil {
@@ -53,7 +55,7 @@ func TestHelperEnrollmentExchangeIsSingleUseAndKeyBound(t *testing.T) {
 	if strings.Contains(string(ciphertext), grant.Credential) {
 		t.Fatal("stored enrollment grant contains plaintext credential")
 	}
-	helperPrivate := ed25519.NewKeyFromSeed([]byte(strings.Repeat("h", ed25519.SeedSize)))
+	helperPrivate := enrollmentTestPrivateKey(environmentID)
 	helperPublic := helperPrivate.Public().(ed25519.PublicKey)
 	identity, err := service.Exchange(ctx, grant.Credential, helperPublic)
 	if err != nil {
@@ -184,6 +186,7 @@ func TestEnsureBootGrantReplacesExpiredGrantAndStopsAfterEnrollment(t *testing.T
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id) VALUES ($1,$1,'usr_test')`, environmentID); err != nil {
 		t.Fatal(err)
 	}
+	seedEnrollmentMachine(t, store, "usr_test", environmentID)
 	signer, err := mint.New([]mint.Key{{ID: "boot-grant-test", PrivateKey: ed25519.NewKeyFromSeed([]byte(strings.Repeat("b", ed25519.SeedSize)))}}, "boot-grant-test", time.Minute)
 	if err != nil {
 		t.Fatal(err)
@@ -203,7 +206,7 @@ func TestEnsureBootGrantReplacesExpiredGrantAndStopsAfterEnrollment(t *testing.T
 	if err := store.SQL().QueryRowContext(ctx, `SELECT state FROM paperboat.control_helper_enrollments WHERE id=$1`, first.EnrollmentID).Scan(&firstState); err != nil || firstState != "revoked" {
 		t.Fatalf("first grant state = %q, %v", firstState, err)
 	}
-	helperKey := ed25519.NewKeyFromSeed([]byte(strings.Repeat("h", ed25519.SeedSize)))
+	helperKey := enrollmentTestPrivateKey(environmentID)
 	if _, err := service.Exchange(ctx, replacement.Credential, helperKey.Public().(ed25519.PublicKey)); err != nil {
 		t.Fatal(err)
 	}
@@ -233,14 +236,21 @@ func TestHostedWorkloadIdentityRecoversExpiredIdentityForSameKey(t *testing.T) {
 		VALUES ($1,$2,'hosted recovery','running',$1)`, environmentID, userID); err != nil {
 		t.Fatal(err)
 	}
+	canonicalMachineID := "mch_" + suffix
+	if _, err := store.SQL().ExecContext(ctx, `
+		INSERT INTO paperboat.user_machines
+		(id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,setup_roles,machine_kind)
+		VALUES ($1,$2,$3,'hosted recovery','linux','unknown','/workspace','online','occupied',ARRAY['host']::text[],'hosted')`, canonicalMachineID, userID, environmentID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.SQL().ExecContext(ctx, `
 		INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id)
 		VALUES ($1,$1,$2)`, environmentID, userID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `
-		INSERT INTO paperboat.fly_machines (id,project_id,fly_machine_id,state,image_ref,region)
-		VALUES ($1,$2,$3,'running','test-image','ams')`, "fly_"+suffix, environmentID, machineID); err != nil {
+		INSERT INTO paperboat.fly_machines (id,project_id,user_machine_id,fly_machine_id,state,image_ref,region)
+		VALUES ($1,$2,$3,$4,'running','test-image','ams')`, "fly_"+suffix, environmentID, canonicalMachineID, machineID); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
@@ -359,6 +369,7 @@ func TestConnectorAdmissionBindsProofGenerationNodeAndReplay(t *testing.T) {
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id) VALUES ($1,'workspace_test','usr_test')`, environmentID); err != nil {
 		t.Fatal(err)
 	}
+	seedEnrollmentMachine(t, store, "usr_test", environmentID)
 	privateKey := ed25519.NewKeyFromSeed([]byte(strings.Repeat("a", ed25519.SeedSize)))
 	signer, err := mint.New([]mint.Key{{ID: "admission-test", PrivateKey: privateKey}}, "admission-test", time.Minute)
 	if err != nil {
@@ -370,19 +381,19 @@ func TestConnectorAdmissionBindsProofGenerationNodeAndReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	helperPrivate := ed25519.NewKeyFromSeed([]byte(strings.Repeat("h", ed25519.SeedSize)))
+	helperPrivate := enrollmentTestPrivateKey(environmentID)
 	identity, err := enrollment.Exchange(ctx, grant.Credential, helperPrivate.Public().(ed25519.PublicKey))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_routes (id,environment_id,kind,public_host,target_host,target_port) VALUES ($1,$2,'helper_https_wss',$3,'127.0.0.1',8080)`, "route_admission_"+suffix, environmentID, "admission-"+strings.ToLower(strings.ReplaceAll(suffix, "_", "-"))+".example.test"); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_routes (id,environment_id,kind,public_host,target_host,target_port) VALUES ($1,$2,'runtime_https_wss',$3,'127.0.0.1',8080)`, "route_admission_"+suffix, environmentID, "admission-"+strings.ToLower(strings.ReplaceAll(suffix, "_", "-"))+".example.test"); err != nil {
 		t.Fatal(err)
 	}
 	// Bind the connector generation to the ready node after enrollment.
 	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.control_connector_generations SET edge_node_id=$2,state='pending' WHERE environment_id=$1`, environmentID, "node_"+suffix); err != nil {
 		t.Fatal(err)
 	}
-	body := []byte(`{"operation_id":"admission-operation-01","environment_id":"` + environmentID + `","helper_id":"` + identity.HelperID + `","edge_pool":"default","protocol_version":"1.0"}`)
+	body := []byte(`{"operation_id":"admission-operation-01","environment_id":"` + environmentID + `","machine_id":"` + identity.MachineID + `","connector_id":"runtime","edge_pool":"default","protocol_version":"1.0"}`)
 	bodyHash := sha256.Sum256(body)
 	proofClaims := HelperProofClaims{HelperID: identity.HelperID, EnvironmentID: environmentID, OperationID: "admission-operation-01", Method: "POST", Path: "/v1/connectors/admission", BodySHA256: base64.RawURLEncoding.EncodeToString(bodyHash[:]), IssuedAt: now, ExpiresAt: now.Add(time.Minute)}
 	payload, _ := json.Marshal(proofClaims)
@@ -410,7 +421,7 @@ func TestConnectorAdmissionBindsProofGenerationNodeAndReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	edge.SetClock(func() time.Time { return next })
-	nextBody := []byte(`{"operation_id":"admission-operation-02","environment_id":"` + environmentID + `","helper_id":"` + identity.HelperID + `","edge_pool":"default","protocol_version":"1.0"}`)
+	nextBody := []byte(`{"operation_id":"admission-operation-02","environment_id":"` + environmentID + `","machine_id":"` + identity.MachineID + `","connector_id":"runtime","edge_pool":"default","protocol_version":"1.0"}`)
 	nextHash := sha256.Sum256(nextBody)
 	nextClaims := HelperProofClaims{HelperID: identity.HelperID, EnvironmentID: environmentID, OperationID: "admission-operation-02", Method: "POST", Path: "/v1/connectors/admission", BodySHA256: base64.RawURLEncoding.EncodeToString(nextHash[:]), IssuedAt: next, ExpiresAt: next.Add(time.Minute)}
 	nextPayload, _ := json.Marshal(nextClaims)
@@ -419,4 +430,21 @@ func TestConnectorAdmissionBindsProofGenerationNodeAndReplay(t *testing.T) {
 	if err != nil || renewed.OperationID != "admission-operation-02" || renewed.Credential == admission.Credential {
 		t.Fatalf("admission replacement = %#v, %v", renewed, err)
 	}
+}
+
+func seedEnrollmentMachine(t *testing.T, store interface{ SQL() *sql.DB }, userID, environmentID string) {
+	t.Helper()
+	if _, err := store.SQL().ExecContext(context.Background(), `
+		INSERT INTO paperboat.user_machines
+		  (id,user_id,environment_id,display_name,platform,architecture,workspace_root,machine_kind)
+		VALUES ($1,$2,$3,$4,'linux','unknown','/workspace','hosted')
+		ON CONFLICT (environment_id) DO NOTHING`,
+		"machine_"+environmentID, userID, environmentID, "Machine "+environmentID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func enrollmentTestPrivateKey(scope string) ed25519.PrivateKey {
+	seed := sha256.Sum256([]byte("enrollment-test:" + scope))
+	return ed25519.NewKeyFromSeed(seed[:])
 }

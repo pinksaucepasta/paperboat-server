@@ -49,7 +49,7 @@ type ConfigRepositoryAccess struct {
 	RepositoryID  string    `json:"repository_id"`
 	AssignmentID  string    `json:"assignment_id"`
 	EnvironmentID string    `json:"environment_id"`
-	HelperID      string    `json:"helper_id"`
+	MachineID     string    `json:"machine_id"`
 	CloneURL      string    `json:"clone_url"`
 	PublishURL    string    `json:"publish_url"`
 	Branch        string    `json:"branch"`
@@ -86,7 +86,11 @@ func (s *ConfigRepositoryAccessService) Issue(ctx context.Context, identityToken
 	}
 	contentsPermission := "write"
 	capability := "repository_contents_write"
-	if s.leases.mode == "read_only" {
+	assignment, err := s.store.Queries().GetControlConfigAssignment(ctx, holder.EnvironmentID)
+	if err != nil || assignment.ID != holder.AssignmentID {
+		return ConfigRepositoryAccess{}, ErrConfigRepositoryAccessInvalid
+	}
+	if s.leases.mode == "read_only" || assignment.Mode == ConfigModePullOnly {
 		contentsPermission, capability = "read", "repository_contents_read"
 	}
 	requestHash := repositoryAccessRequestHash(operationID, holder, capability)
@@ -107,8 +111,8 @@ func (s *ConfigRepositoryAccessService) Issue(ctx context.Context, identityToken
 	}
 	_, err = s.store.Queries().ReserveControlConfigRepositoryAccess(ctx, dbsqlc.ReserveControlConfigRepositoryAccessParams{
 		OperationID: operationID, RequestHash: requestHash, RepositoryID: holder.RepositoryID,
-		AssignmentID: holder.AssignmentID, EnvironmentID: holder.EnvironmentID, HelperID: holder.HelperID,
-		HelperGeneration: holder.HelperGeneration, WarningRevision: currentWarningRevision(ctx, s.store, holder.EnvironmentID),
+		AssignmentID: holder.AssignmentID, EnvironmentID: holder.EnvironmentID, MachineID: holder.MachineID,
+		InstallationGeneration: holder.InstallationGeneration, WarningRevision: currentWarningRevision(ctx, s.store, holder.EnvironmentID),
 	})
 	if errors.Is(err, sql.ErrNoRows) {
 		existing, getErr := s.store.Queries().GetControlConfigRepositoryAccessOperation(ctx, operationID)
@@ -134,7 +138,7 @@ func (s *ConfigRepositoryAccessService) Issue(ctx context.Context, identityToken
 	}
 	result := ConfigRepositoryAccess{
 		RepositoryID: holder.RepositoryID, AssignmentID: holder.AssignmentID, EnvironmentID: holder.EnvironmentID,
-		HelperID: holder.HelperID, CloneURL: repository.CloneUrl.String, PublishURL: repository.PublishUrl.String,
+		MachineID: holder.MachineID, CloneURL: repository.CloneUrl.String, PublishURL: repository.PublishUrl.String,
 		Branch: repository.DefaultBranch.String, Username: "x-access-token", Password: issued.Token,
 		Capability: capability, ExpiresAt: issued.ExpiresAt.UTC(),
 	}
@@ -152,7 +156,7 @@ func (s *ConfigRepositoryAccessService) Issue(ctx context.Context, identityToken
 		return s.audit.WriteTx(ctx, tx, audit.Event{ActorType: audit.ActorSystem, EventType: "config.repository_access_issued",
 			ResourceType: "config_repository", ResourceID: holder.RepositoryID,
 			IdempotencyKey: "config.repository_access:" + operationID,
-			Metadata:       map[string]any{"assignment_id": holder.AssignmentID, "environment_id": holder.EnvironmentID, "helper_id": holder.HelperID, "expires_at": issued.ExpiresAt.UTC()}})
+			Metadata:       map[string]any{"assignment_id": holder.AssignmentID, "environment_id": holder.EnvironmentID, "machine_id": holder.MachineID, "expires_at": issued.ExpiresAt.UTC()}})
 	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return ConfigRepositoryAccess{}, ErrConfigRepositoryAccessInvalid

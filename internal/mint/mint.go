@@ -75,27 +75,31 @@ type TerminalControlInput struct {
 }
 
 type CredentialInput struct {
-	Issuer              string
-	Audience            string
-	Subject             string
-	JTI                 string
-	IssuedAt            time.Time
-	ExpiresAt           time.Time
-	CredentialClass     string
-	Scopes              []string
-	EnvironmentID       string
-	EnrollmentID        string
-	AssignmentID        string
-	WarningRevision     string
-	HelperID            string
-	UserID              string
-	CLIClientSessionID  string
-	SessionID           string
-	KeyThumbprint       string
-	ConnectorGeneration int64
-	EdgePool            string
-	EdgeNodeID          string
-	FileTransferPolicy  *FileTransferPolicy
+	Issuer                 string
+	Audience               string
+	Subject                string
+	JTI                    string
+	IssuedAt               time.Time
+	ExpiresAt              time.Time
+	CredentialClass        string
+	Scopes                 []string
+	EnvironmentID          string
+	EnrollmentID           string
+	AssignmentID           string
+	WarningRevision        string
+	HelperID               string
+	MachineID              string
+	SourceMachineID        string
+	UserID                 string
+	CLIClientSessionID     string
+	SessionID              string
+	KeyThumbprint          string
+	ConnectorID            string
+	ConnectorGeneration    int64
+	InstallationGeneration int64
+	EdgePool               string
+	EdgeNodeID             string
+	FileTransferPolicy     *FileTransferPolicy
 }
 
 type FileTransferPolicy struct {
@@ -112,27 +116,31 @@ type FileTransferPolicy struct {
 var DefaultFileTransferPolicy = FileTransferPolicy{Revision: "file-transfer-v1", MaxFileBytes: 50 << 20, MaxBatchFiles: 10, MaxBatchBytes: 500 << 20, MaxConcurrentTransfers: 2, RetentionSeconds: 604800, DeliveryTimeoutSeconds: 600, MaxPendingSpoolBytes: 1 << 30}
 
 type CredentialClaims struct {
-	Issuer              string              `json:"iss"`
-	Audience            string              `json:"aud"`
-	Subject             string              `json:"sub"`
-	JTI                 string              `json:"jti"`
-	IssuedAt            int64               `json:"iat"`
-	ExpiresAt           int64               `json:"exp"`
-	Scopes              []string            `json:"scope"`
-	CredentialClass     string              `json:"credential_class"`
-	EnvironmentID       string              `json:"environment_id"`
-	EnrollmentID        string              `json:"enrollment_id,omitempty"`
-	AssignmentID        string              `json:"assignment_id,omitempty"`
-	WarningRevision     string              `json:"warning_revision,omitempty"`
-	HelperID            string              `json:"helper_id,omitempty"`
-	UserID              string              `json:"user_id,omitempty"`
-	CLIClientSessionID  string              `json:"cli_client_session_id,omitempty"`
-	SessionID           string              `json:"session_id,omitempty"`
-	KeyThumbprint       string              `json:"key_thumbprint,omitempty"`
-	ConnectorGeneration int64               `json:"connector_generation,omitempty"`
-	EdgePool            string              `json:"edge_pool,omitempty"`
-	EdgeNodeID          string              `json:"edge_node_id,omitempty"`
-	FileTransferPolicy  *FileTransferPolicy `json:"file_transfer_policy,omitempty"`
+	Issuer                 string              `json:"iss"`
+	Audience               string              `json:"aud"`
+	Subject                string              `json:"sub"`
+	JTI                    string              `json:"jti"`
+	IssuedAt               int64               `json:"iat"`
+	ExpiresAt              int64               `json:"exp"`
+	Scopes                 []string            `json:"scope"`
+	CredentialClass        string              `json:"credential_class"`
+	EnvironmentID          string              `json:"environment_id"`
+	EnrollmentID           string              `json:"enrollment_id,omitempty"`
+	AssignmentID           string              `json:"assignment_id,omitempty"`
+	WarningRevision        string              `json:"warning_revision,omitempty"`
+	HelperID               string              `json:"helper_id,omitempty"`
+	MachineID              string              `json:"machine_id,omitempty"`
+	SourceMachineID        string              `json:"source_machine_id,omitempty"`
+	UserID                 string              `json:"user_id,omitempty"`
+	CLIClientSessionID     string              `json:"cli_client_session_id,omitempty"`
+	SessionID              string              `json:"session_id,omitempty"`
+	KeyThumbprint          string              `json:"key_thumbprint,omitempty"`
+	ConnectorGeneration    int64               `json:"connector_generation,omitempty"`
+	ConnectorID            string              `json:"connector_id,omitempty"`
+	InstallationGeneration int64               `json:"installation_generation,omitempty"`
+	EdgePool               string              `json:"edge_pool,omitempty"`
+	EdgeNodeID             string              `json:"edge_node_id,omitempty"`
+	FileTransferPolicy     *FileTransferPolicy `json:"file_transfer_policy,omitempty"`
 }
 
 var credentialPolicies = map[string]struct {
@@ -142,11 +150,13 @@ var credentialPolicies = map[string]struct {
 }{
 	"helper_enrollment":    {audience: "paperboat-enrollment", scopes: []string{"helper:enroll"}, maxTTL: 10 * time.Minute},
 	"helper_identity":      {audience: "paperboat-control", scopes: []string{"helper:connect", "helper:renew"}, maxTTL: time.Hour},
+	"machine_control":      {audience: "paperboat-control", scopes: []string{"machine:connect", "machine:renew"}, maxTTL: time.Hour},
 	"preview_registration": {audience: "paperboat-control", scopes: []string{"preview:register"}, maxTTL: 5 * time.Minute},
 	"connector_admission":  {audience: "paperboat-edge", scopes: []string{"connector:admit"}, maxTTL: 5 * time.Minute},
-	"config_sync":          {audience: "paperboat-helper", scopes: []string{"config:pull", "config:apply", "config:report"}, maxTTL: 5 * time.Minute},
-	"terminal_operation":   {audience: "paperboat-helper", scopes: []string{"terminal:operate"}, maxTTL: 5 * time.Minute},
-	"file_transfer":        {audience: "paperboat-helper", scopes: []string{"file:transfer"}, maxTTL: 5 * time.Minute},
+	"config_sync":          {audience: "paperboat-machine", scopes: []string{"config:pull", "config:apply", "config:report"}, maxTTL: 5 * time.Minute},
+	"terminal_operation":   {audience: "paperboat-machine", scopes: []string{"terminal:operate"}, maxTTL: 5 * time.Minute},
+	"preview_launch":       {audience: "paperboat-machine", scopes: []string{"preview:launch"}, maxTTL: 5 * time.Minute},
+	"file_transfer":        {audience: "paperboat-machine", scopes: []string{"file:transfer"}, maxTTL: 5 * time.Minute},
 }
 
 func New(keys []Key, activeID string, maxAge time.Duration) (*Provider, error) {
@@ -286,34 +296,55 @@ func (p *Provider) SignCredential(input CredentialInput) (string, error) {
 		}
 		claims["enrollment_id"] = input.EnrollmentID
 	case "helper_identity":
-		if input.HelperID == "" || input.KeyThumbprint == "" {
+		if input.HelperID == "" || input.MachineID == "" || input.KeyThumbprint == "" {
 			return "", errors.New("helper identity bindings are required")
 		}
-		claims["helper_id"], claims["key_thumbprint"] = input.HelperID, input.KeyThumbprint
+		claims["helper_id"], claims["machine_id"], claims["key_thumbprint"] = input.HelperID, input.MachineID, input.KeyThumbprint
+	case "machine_control":
+		if input.UserID == "" || input.MachineID == "" || input.KeyThumbprint == "" || input.InstallationGeneration < 1 {
+			return "", errors.New("machine control bindings are required")
+		}
+		claims["user_id"], claims["machine_id"], claims["key_thumbprint"], claims["installation_generation"] = input.UserID, input.MachineID, input.KeyThumbprint, input.InstallationGeneration
 	case "preview_registration":
-		if input.HelperID == "" {
+		if input.MachineID == "" || input.InstallationGeneration < 1 {
 			return "", errors.New("preview registration binding is required")
 		}
-		claims["helper_id"] = input.HelperID
+		claims["machine_id"], claims["installation_generation"] = input.MachineID, input.InstallationGeneration
 	case "connector_admission":
 		if input.FileTransferPolicy == nil {
 			input.FileTransferPolicy = &DefaultFileTransferPolicy
 		}
-		if input.HelperID == "" || input.ConnectorGeneration < 1 || input.EdgePool == "" || input.EdgeNodeID == "" {
+		if input.MachineID == "" || input.InstallationGeneration < 1 || input.ConnectorID == "" || input.ConnectorGeneration < 1 || input.EdgePool == "" || input.EdgeNodeID == "" {
 			return "", errors.New("connector admission bindings are required")
 		}
-		claims["helper_id"], claims["connector_generation"], claims["edge_pool"], claims["edge_node_id"] = input.HelperID, input.ConnectorGeneration, input.EdgePool, input.EdgeNodeID
+		claims["machine_id"], claims["installation_generation"], claims["connector_id"], claims["connector_generation"], claims["edge_pool"], claims["edge_node_id"] = input.MachineID, input.InstallationGeneration, input.ConnectorID, input.ConnectorGeneration, input.EdgePool, input.EdgeNodeID
 		claims["file_transfer_policy"] = input.FileTransferPolicy
 	case "config_sync":
-		if input.HelperID == "" || input.AssignmentID == "" || input.WarningRevision == "" {
+		if input.MachineID == "" || input.InstallationGeneration < 1 || input.AssignmentID == "" || input.WarningRevision == "" {
 			return "", errors.New("config sync bindings are required")
 		}
-		claims["helper_id"], claims["assignment_id"], claims["warning_revision"] = input.HelperID, input.AssignmentID, input.WarningRevision
-	case "terminal_operation", "file_transfer":
-		if input.UserID == "" || input.CLIClientSessionID == "" || input.SessionID == "" {
-			return "", errors.New("helper access bindings are required")
+		claims["machine_id"], claims["installation_generation"], claims["assignment_id"], claims["warning_revision"] = input.MachineID, input.InstallationGeneration, input.AssignmentID, input.WarningRevision
+	case "terminal_operation":
+		if input.MachineID == "" || input.UserID == "" || input.CLIClientSessionID == "" || input.SessionID == "" {
+			return "", errors.New("machine access bindings are required")
 		}
-		claims["user_id"], claims["cli_client_session_id"], claims["session_id"] = input.UserID, input.CLIClientSessionID, input.SessionID
+		claims["machine_id"], claims["user_id"], claims["cli_client_session_id"], claims["session_id"] = input.MachineID, input.UserID, input.CLIClientSessionID, input.SessionID
+		if input.SourceMachineID != "" {
+			claims["source_machine_id"] = input.SourceMachineID
+		}
+	case "preview_launch":
+		if input.MachineID == "" || input.UserID == "" || input.CLIClientSessionID == "" {
+			return "", errors.New("preview launch bindings are required")
+		}
+		claims["machine_id"], claims["user_id"], claims["cli_client_session_id"] = input.MachineID, input.UserID, input.CLIClientSessionID
+	case "file_transfer":
+		if input.MachineID == "" || input.SourceMachineID == "" || input.UserID == "" || input.CLIClientSessionID == "" {
+			return "", errors.New("machine transfer bindings are required")
+		}
+		claims["machine_id"], claims["source_machine_id"], claims["user_id"], claims["cli_client_session_id"] = input.MachineID, input.SourceMachineID, input.UserID, input.CLIClientSessionID
+		if input.SessionID != "" {
+			claims["session_id"] = input.SessionID
+		}
 	}
 	return p.signClaims("paperboat-credential+jwt", claims)
 }
@@ -394,23 +425,35 @@ func (p *Provider) verifyCredential(token, expectedIssuer, expectedClass string,
 			return CredentialClaims{}, errors.New("credential claims are invalid")
 		}
 	case "helper_identity":
-		if claims.HelperID == "" || claims.KeyThumbprint == "" {
+		if claims.HelperID == "" || claims.MachineID == "" || claims.KeyThumbprint == "" {
+			return CredentialClaims{}, errors.New("credential claims are invalid")
+		}
+	case "machine_control":
+		if claims.UserID == "" || claims.MachineID == "" || claims.KeyThumbprint == "" || claims.InstallationGeneration < 1 {
 			return CredentialClaims{}, errors.New("credential claims are invalid")
 		}
 	case "preview_registration":
-		if claims.HelperID == "" {
+		if claims.MachineID == "" || claims.InstallationGeneration < 1 {
 			return CredentialClaims{}, errors.New("credential claims are invalid")
 		}
 	case "connector_admission":
-		if claims.HelperID == "" || claims.ConnectorGeneration < 1 || claims.EdgePool == "" || claims.EdgeNodeID == "" {
+		if claims.MachineID == "" || claims.InstallationGeneration < 1 || claims.ConnectorID == "" || claims.ConnectorGeneration < 1 || claims.EdgePool == "" || claims.EdgeNodeID == "" {
 			return CredentialClaims{}, errors.New("credential claims are invalid")
 		}
 	case "config_sync":
-		if claims.HelperID == "" || claims.AssignmentID == "" || claims.WarningRevision == "" {
+		if claims.MachineID == "" || claims.InstallationGeneration < 1 || claims.AssignmentID == "" || claims.WarningRevision == "" {
 			return CredentialClaims{}, errors.New("credential claims are invalid")
 		}
-	case "terminal_operation", "file_transfer":
-		if claims.UserID == "" || claims.CLIClientSessionID == "" || claims.SessionID == "" {
+	case "terminal_operation":
+		if claims.MachineID == "" || claims.UserID == "" || claims.CLIClientSessionID == "" || claims.SessionID == "" {
+			return CredentialClaims{}, errors.New("credential claims are invalid")
+		}
+	case "preview_launch":
+		if claims.MachineID == "" || claims.UserID == "" || claims.CLIClientSessionID == "" {
+			return CredentialClaims{}, errors.New("credential claims are invalid")
+		}
+	case "file_transfer":
+		if claims.MachineID == "" || claims.SourceMachineID == "" || claims.UserID == "" || claims.CLIClientSessionID == "" {
 			return CredentialClaims{}, errors.New("credential claims are invalid")
 		}
 	}

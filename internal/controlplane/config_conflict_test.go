@@ -26,13 +26,14 @@ func TestConfigConflictResolutionRequiresCurrentAssignmentHeadAndConflictRevisio
 		{`INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, []any{user, "workos_" + user, user + "@example.test"}},
 		{`INSERT INTO paperboat.control_config_repositories (id,owner_user_id,provider,external_ref,display_name,state) VALUES ($1,$2,'github',$1,'owner/config','active')`, []any{repository, user}},
 		{`INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id) VALUES ($1,$1,$2)`, []any{environment, user}},
+		{`INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,machine_kind) VALUES ($1,$2,$3,'Conflict host','linux','unknown','/workspace','hosted')`, []any{"machine_" + suffix, user, environment}},
 		{`INSERT INTO paperboat.control_helpers (id,environment_id,state,generation) VALUES ($1,$2,'active',1)`, []any{helper, environment}},
-		{`INSERT INTO paperboat.control_config_assignments (id,environment_id,repository_id,consent_state,warning_revision,version) VALUES ($1,$2,$3,'not_required','warning-1',3)`, []any{assignment, environment, repository}},
+		{`INSERT INTO paperboat.control_config_assignments (id,machine_id,environment_id,repository_id,mode,consent_state,warning_revision,version) VALUES ($1,$2,$3,$4,'bidirectional','not_required','warning-1',3)`, []any{assignment, "machine_" + suffix, environment, repository}},
 		{`INSERT INTO paperboat.control_config_sync_statuses
-		  (environment_id,repository_id,assignment_id,helper_id,helper_generation,
-		   warning_revision,policy_revision,key_version,sync_revision,state,remote_revision,
-		   pending_path_count,conflicts,helper_updated_at,observed_at)
-		  VALUES ($1,$2,$3,$4,1,'warning-1','policy-1',1,2,'conflict','head-2',0,
+		  (environment_id,repository_id,assignment_id,machine_id,installation_generation,
+		   warning_revision,policy_revision,sync_revision,state,remote_revision,
+		   pending_clean_path_count,conflicts,machine_updated_at,observed_at)
+		  VALUES ($1,$2,$3,$4,1,'warning-1','policy-1',2,'conflict','head-2',0,
 		          jsonb_build_array(jsonb_build_object('path','.config/tool','reason','concurrent_update','revision',$5::text)),$6,$6)`,
 			[]any{environment, repository, assignment, helper, revision, now}},
 	}
@@ -47,11 +48,25 @@ func TestConfigConflictResolutionRequiresCurrentAssignmentHeadAndConflictRevisio
 	service := NewConfigConflictService(store, nil, nil)
 	request := ConfigConflictResolution{
 		Path: ".config/tool", ConflictRevision: revision,
-		ExpectedRemoteRevision: "head-2", Action: "keep_local",
+		ExpectedRemoteRevision: "head-2", Scope: "path", Action: "keep_local",
 	}
 	created, err := service.Request(ctx, user, environment, 3, request)
 	if err != nil || created.ID == "" || created.Action != "keep_local" {
 		t.Fatalf("resolution = %#v, %v", created, err)
+	}
+	request.Action = "externally_resolved"
+	if _, err := service.Request(ctx, user, environment, 3, request); !errors.Is(err, ErrConfigConflictResolutionInvalid) {
+		t.Fatalf("removed action error = %v", err)
+	}
+	request.Action = "keep_local"
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.control_config_assignments SET mode='pull_only' WHERE id=$1`, assignment); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Request(ctx, user, environment, 3, request); !errors.Is(err, ErrConfigConflictResolutionMode) {
+		t.Fatalf("pull-only action error = %v", err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.control_config_assignments SET mode='bidirectional' WHERE id=$1`, assignment); err != nil {
+		t.Fatal(err)
 	}
 	request.ExpectedRemoteRevision = "head-stale"
 	if _, err := service.Request(ctx, user, environment, 3, request); !errors.Is(err, ErrConfigConflictResolutionStale) {
@@ -61,5 +76,25 @@ func TestConfigConflictResolutionRequiresCurrentAssignmentHeadAndConflictRevisio
 	request.ConflictRevision = strings.Repeat("b", 64)
 	if _, err := service.Request(ctx, user, environment, 3, request); !errors.Is(err, ErrConfigConflictResolutionStale) {
 		t.Fatalf("stale conflict error = %v", err)
+	}
+	force := ConfigConflictResolution{
+		Scope: "config", ExpectedRemoteRevision: "head-2", Action: "force_pull",
+		Confirmation: "wrong",
+	}
+	if _, err := service.Request(ctx, user, environment, 3, force); !errors.Is(err, ErrConfigConflictResolutionInvalid) {
+		t.Fatalf("confirmation error = %v", err)
+	}
+	force.Confirmation = "FORCE PULL"
+	created, err = service.Request(ctx, user, environment, 3, force)
+	if err != nil || created.Scope != "config" || created.Path != "." ||
+		!conflictRevisionPattern.MatchString(created.ConflictRevision) {
+		t.Fatalf("config force = %#v, %v", created, err)
+	}
+	force.Action, force.Confirmation = "force_push", "FORCE PUSH"
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.control_config_assignments SET mode='pull_only' WHERE id=$1`, assignment); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Request(ctx, user, environment, 3, force); !errors.Is(err, ErrConfigConflictResolutionMode) {
+		t.Fatalf("pull-only force push error = %v", err)
 	}
 }

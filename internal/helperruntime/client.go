@@ -18,8 +18,8 @@ import (
 )
 
 const (
-	protocolVersion = "2.0"
-	subprotocol     = "paperboat.terminal.v2"
+	protocolVersion = "1.0"
+	subprotocol     = "paperboat.terminal.v1"
 	maxFrameBytes   = 64 << 10
 )
 
@@ -28,15 +28,16 @@ type Client struct {
 }
 
 type Snapshot struct {
-	ID               string      `json:"id"`
-	Name             string      `json:"name"`
-	CWD              string      `json:"cwd"`
-	Dimensions       Dimensions  `json:"dimensions"`
-	State            string      `json:"state"`
-	Generation       uint64      `json:"generation"`
-	EarliestSequence uint64      `json:"earliest_sequence"`
-	LatestSequence   uint64      `json:"latest_sequence"`
-	Exit             *ExitResult `json:"exit,omitempty"`
+	ID                                    string      `json:"id"`
+	Name                                  string      `json:"name"`
+	CWD                                   string      `json:"cwd"`
+	Dimensions                            Dimensions  `json:"dimensions"`
+	State                                 string      `json:"state"`
+	Generation                            uint64      `json:"generation"`
+	EarliestSequence                      uint64      `json:"earliest_sequence"`
+	LatestSequence                        uint64      `json:"latest_sequence"`
+	Exit                                  *ExitResult `json:"exit,omitempty"`
+	EligibleTransferDestinationMachineIDs []string    `json:"eligible_transfer_destination_machine_ids,omitempty"`
 }
 
 type Dimensions struct {
@@ -103,7 +104,7 @@ func (c Client) Terminal(ctx context.Context, route, credential, action, session
 	}
 	helloPayload, _ := json.Marshal(map[string]any{
 		"min_version": protocolVersion, "max_version": protocolVersion,
-		"capabilities": []string{"terminal.v2", "health.v1"},
+		"capabilities": []string{"terminal.v1", "health.v1"},
 	})
 	if err := writeFrame(ctx, connection, frame{Type: "hello", RequestID: helloID, Version: protocolVersion, Payload: helloPayload}); err != nil {
 		return Snapshot{}, err
@@ -119,7 +120,7 @@ func (c Client) Terminal(ctx context.Context, route, credential, action, session
 		Version      string   `json:"version"`
 		Capabilities []string `json:"capabilities"`
 	}
-	if decodeStrict(welcome.Payload, &negotiated) != nil || negotiated.Version != protocolVersion || !contains(negotiated.Capabilities, "terminal.v2") || !contains(negotiated.Capabilities, "health.v1") {
+	if decodeStrict(welcome.Payload, &negotiated) != nil || negotiated.Version != protocolVersion || !contains(negotiated.Capabilities, "terminal.v1") || !contains(negotiated.Capabilities, "health.v1") {
 		return Snapshot{}, errors.New("helper runtime did not negotiate required capabilities")
 	}
 
@@ -138,7 +139,7 @@ func (c Client) Terminal(ctx context.Context, route, credential, action, session
 			deadline = uint32(milliseconds)
 		}
 	}
-	request := frame{Type: "request", RequestID: requestID, Version: protocolVersion, OperationID: operationID, Capability: "terminal.v2", DeadlineMS: deadline, Payload: payload}
+	request := frame{Type: "request", RequestID: requestID, Version: protocolVersion, OperationID: operationID, Capability: "terminal.v1", DeadlineMS: deadline, Payload: payload}
 	if err := writeFrame(ctx, connection, request); err != nil {
 		return Snapshot{}, err
 	}

@@ -13,7 +13,7 @@ func TestDescriptorUsesCanonicalNames(t *testing.T) {
 		Schema: SchemaV1, Issuer: "https://api.paperboat.test", Connectable: true, ExpiresAt: expires,
 		Environment:  Environment{ID: "env_1", Kind: EnvironmentHosted, ResourceID: "prj_1", DisplayName: "demo", State: "ready", Root: "/workspace"},
 		Capabilities: []string{CapabilityTerminal, CapabilityFileTransfer},
-		Terminal:     &Terminal{Protocol: "paperboat.terminal.v2", Endpoints: TerminalEndpoints{QUIC: "quic://edge.paperboat.test:443", WSS: "wss://edge.paperboat.test/v1/runtime"}, SessionID: "session_1", ThreadID: "thread_1", TerminalID: "term_1", CWD: "/workspace"},
+		Terminal:     &Terminal{Protocol: "paperboat.terminal.v1", Endpoints: TerminalEndpoints{QUIC: "quic://edge.paperboat.test:443", WSS: "wss://edge.paperboat.test/v1/runtime"}, SessionID: "session_1", ThreadID: "thread_1", TerminalID: "term_1", CWD: "/workspace"},
 		FileTransfer: &FileTransfer{Endpoint: "https://edge.paperboat.test/v1/file-transfers", Auth: Auth{Method: "bearer", Token: "token", ExpiresAt: expires, Scopes: []string{"file:transfer"}}, Policy: FileTransferPolicy{Revision: "file-transfer-v1", MaxFileBytes: 50 << 20, MaxBatchFiles: 10, MaxBatchBytes: 500 << 20, MaxConcurrentTransfers: 2, RetentionSeconds: 604800, DeliveryTimeoutSeconds: 600, MaxPendingSpoolBytes: 1 << 30}},
 		Status:       "ready", Reason: "ready",
 	}

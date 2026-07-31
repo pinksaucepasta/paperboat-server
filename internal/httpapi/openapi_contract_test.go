@@ -112,124 +112,120 @@ func TestOpenAPIDocumentCoversPublicAndFrozenTargetPaths(t *testing.T) {
 		t.Fatal("missing openapi version")
 	}
 	required := map[string][]string{
-		"/.well-known/jwks.json":                                                   {"get"},
-		"/v1/client-configuration":                                                 {"get"},
-		"/healthz":                                                                 {"get"},
-		"/metrics":                                                                 {"get"},
-		"/readyz":                                                                  {"get"},
-		"/v1/config/credentials":                                                   {"post"},
-		"/v1/config/leases/acquire":                                                {"post"},
-		"/v1/config/leases/renew":                                                  {"post"},
-		"/v1/config/leases/release":                                                {"post"},
-		"/v1/config/status":                                                        {"post"},
-		"/v1/config/repository-access":                                             {"post"},
-		"/v1/config/runtime":                                                       {"post"},
-		"/v1/config/classify":                                                      {"post"},
-		"/v1/config/conflict-resolutions/pending":                                  {"post"},
-		"/v1/config/conflict-resolutions/acknowledge":                              {"post"},
-		"/v1/edge/assignments/current":                                             {"post"},
-		"/v1/nodes/register":                                                       {"post"},
-		"/v1/nodes/heartbeat":                                                      {"post"},
-		"/v1/edge/routes/desired-state":                                            {"post"},
-		"/v1/edge/usage-reports":                                                   {"post"},
-		"/v1/connectors/admission":                                                 {"post"},
-		"/v1/helper-enrollments":                                                   {"post"},
-		"/v1/hosted-helper-enrollments":                                            {"post"},
-		"/v1/hosted-helper-bootstrap":                                              {"post"},
-		"/v1/helper-identity-renewals":                                             {"post"},
-		"/v1/user-machine-installation-failures":                                   {"post"},
-		"/v1/previews/credentials":                                                 {"post"},
-		"/v1/tls/authorizations/previews":                                          {"get"},
-		"/v1/tls/authorizations/routes":                                            {"get"},
-		"/v1/edge/routes/observations":                                             {"post"},
-		"/v1/previews/operations":                                                  {"post"},
-		"/v1/previews/observations":                                                {"post"},
-		"/v1/trust/revocations":                                                    {"get"},
-		"/v1/me":                                                                   {"get"},
-		"/v1/config-repositories":                                                  {"get", "post"},
-		"/v1/config-repositories/candidates":                                       {"get"},
-		"/v1/config-repositories/{repository_id}":                                  {"delete"},
-		"/v1/environments/{environment_id}/config-assignment":                      {"get", "put", "delete"},
-		"/v1/environments/{environment_id}/config-assignment/consent":              {"post", "delete"},
-		"/v1/environments/{environment_id}/config-assignment/warning":              {"get"},
-		"/v1/previews":                                                             {"get"},
-		"/v1/previews/{preview_id}":                                                {"delete"},
-		"/v1/environments/{environment_id}/routes":                                 {"post"},
-		"/v1/routes/{route_id}":                                                    {"patch"},
-		"/v1/admin/mint/signing-keys/{key_id}/revoke":                              {"post"},
-		"/v1/admin/edge/usage-keys":                                                {"post"},
-		"/v1/admin/edge/usage-keys/{key_id}/revoke":                                {"post"},
-		"/v1/admin/control-operations/{operation_id}/recover":                      {"post"},
-		"/v1/admin/hosted-provider-operations/{operation_id}/recover":              {"post"},
-		"/v1/admin/billing/uncertain/{kind}/{operation_id}/recover":                {"post"},
-		"/v1/environments/{environment_id}/helper-enrollments":                     {"post"},
-		"/v1/environments/{environment_id}/helpers/{helper_id}/replace":            {"post"},
-		"/v1/config-sync/status":                                                   {"get"},
-		"/v1/config-sync/environments/{environment_id}/conflict-resolutions":       {"post"},
-		"/v1/config-sync/overrides":                                                {"get", "put", "delete"},
-		"/v1/config-sync/recovery-key/export":                                      {"post"},
-		"/v1/config-sync/recovery-key/rotate":                                      {"post"},
-		"/v1/auth/workos/state":                                                    {"get"},
-		"/v1/auth/workos/callback":                                                 {"post"},
-		"/v1/auth/workos/reauth/state":                                             {"get"},
-		"/v1/auth/workos/reauth/callback":                                          {"post"},
-		"/v1/auth/logout":                                                          {"post"},
-		"/v1/auth/csrf":                                                            {"get"},
-		"/v1/auth/device/authorize":                                                {"post"},
-		"/v1/auth/device/token":                                                    {"post"},
-		"/v1/auth/device/requests/{user_code}":                                     {"get"},
-		"/v1/auth/device/requests/{user_code}/approve":                             {"post"},
-		"/v1/auth/device/requests/{user_code}/deny":                                {"post"},
-		"/v1/auth/token/refresh":                                                   {"post"},
-		"/v1/auth/token/revoke":                                                    {"post"},
-		"/v1/auth/cli-client-sessions":                                             {"get"},
-		"/v1/auth/cli-client-sessions/{cli_client_session_id}":                     {"delete"},
-		"/v1/billing/entitlement":                                                  {"get"},
-		"/v1/billing/usage":                                                        {"get"},
-		"/v1/billing/plan-products":                                                {"get"},
-		"/v1/billing/checkout":                                                     {"post"},
-		"/v1/billing/customer-portal":                                              {"post"},
-		"/v1/webhooks/polar":                                                       {"post"},
-		"/v1/catalog/plans":                                                        {"get"},
-		"/v1/catalog/machine-types":                                                {"get"},
-		"/v1/catalog/presets":                                                      {"get"},
-		"/v1/catalog/regions":                                                      {"get"},
-		"/v1/github/status":                                                        {"get"},
-		"/v1/github/repositories":                                                  {"get"},
-		"/v1/github/oauth/start":                                                   {"post"},
-		"/v1/github/oauth/callback":                                                {"get", "post"},
-		"/v1/github/config-repositories/provision":                                 {"post"},
-		"/v1/usage-summary":                                                        {"get"},
-		"/v1/projects":                                                             {"get", "post"},
-		"/v1/projects/{project_id}":                                                {"get", "patch", "delete"},
-		"/v1/projects/{project_id}/start":                                          {"post"},
-		"/v1/projects/{project_id}/stop":                                           {"post"},
-		"/v1/projects/{project_id}/restart":                                        {"post"},
-		"/v1/projects/{project_id}/events":                                         {"get"},
-		"/v1/projects/{project_id}/connection-descriptor":                          {"post"},
-		"/v1/projects/{project_id}/connection-readiness":                           {"get"},
-		"/v1/projects/{project_id}/terminal-sessions":                              {"get", "post"},
-		"/v1/projects/{project_id}/terminal-sessions/{session_id}":                 {"patch", "delete"},
-		"/v1/projects/{project_id}/terminal-sessions/{session_id}/close":           {"post"},
-		"/v1/user-machines":                                                        {"get"},
-		"/v1/user-machine-enrollments":                                             {"post"},
-		"/v1/user-machine-enrollments/{enrollment_id}":                             {"get"},
-		"/v1/user-machine-enrollments/{enrollment_id}/cancel":                      {"post"},
-		"/v1/user-machine-enrollments/{enrollment_id}/retry":                       {"post"},
-		"/v1/user-machines/overview":                                               {"get"},
-		"/v1/user-machines/{user_machine_id}":                                      {"get", "delete"},
-		"/v1/user-machines/{user_machine_id}/connection-descriptor":                {"post"},
-		"/v1/user-machines/{user_machine_id}/connection-readiness":                 {"get"},
-		"/v1/user-machines/{user_machine_id}/disconnect":                           {"post"},
-		"/v1/user-machines/{user_machine_id}/terminal-sessions":                    {"get", "post"},
-		"/v1/user-machines/{user_machine_id}/terminal-sessions/{session_id}":       {"patch", "delete"},
-		"/v1/user-machines/{user_machine_id}/terminal-sessions/{session_id}/close": {"post"},
-		"/v1/user-machines/pairings":                                               {"post"},
-		"/v1/user-machines/pairings/{user_code}/approve":                           {"post"},
-		"/v1/user-machines/pairings/{user_code}/deny":                              {"post"},
-		"/v1/runtime-observations":                                                 {"post"},
-		"/v1/admin/users/{user_id}/adjust-credits":                                 {"post"},
-		"/v1/admin/users/{user_id}/adjust-storage":                                 {"post"},
+		"/.well-known/jwks.json":                                             {"get"},
+		"/v1/client-configuration":                                           {"get"},
+		"/healthz":                                                           {"get"},
+		"/metrics":                                                           {"get"},
+		"/readyz":                                                            {"get"},
+		"/v1/config/credentials":                                             {"post"},
+		"/v1/config/leases/acquire":                                          {"post"},
+		"/v1/config/leases/renew":                                            {"post"},
+		"/v1/config/leases/release":                                          {"post"},
+		"/v1/config/status":                                                  {"post"},
+		"/v1/config/repository-access":                                       {"post"},
+		"/v1/config/runtime":                                                 {"post"},
+		"/v1/config/conflict-resolutions/pending":                            {"post"},
+		"/v1/config/conflict-resolutions/acknowledge":                        {"post"},
+		"/v1/edge/assignments/current":                                       {"post"},
+		"/v1/nodes/register":                                                 {"post"},
+		"/v1/nodes/heartbeat":                                                {"post"},
+		"/v1/edge/routes/desired-state":                                      {"post"},
+		"/v1/edge/usage-reports":                                             {"post"},
+		"/v1/connectors/admission":                                           {"post"},
+		"/v1/helper-enrollments":                                             {"post"},
+		"/v1/hosted-helper-enrollments":                                      {"post"},
+		"/v1/hosted-helper-bootstrap":                                        {"post"},
+		"/v1/helper-identity-renewals":                                       {"post"},
+		"/v1/machine-installation-failures":                                  {"post"},
+		"/v1/previews/credentials":                                           {"post"},
+		"/v1/tls/authorizations/previews":                                    {"get"},
+		"/v1/tls/authorizations/routes":                                      {"get"},
+		"/v1/edge/routes/observations":                                       {"post"},
+		"/v1/previews/operations":                                            {"post"},
+		"/v1/previews/observations":                                          {"post"},
+		"/v1/trust/revocations":                                              {"get"},
+		"/v1/me":                                                             {"get"},
+		"/v1/config-repositories":                                            {"get", "post"},
+		"/v1/config-repositories/candidates":                                 {"get"},
+		"/v1/config-repositories/{repository_id}":                            {"delete"},
+		"/v1/machines/{machine_id}/config-assignment":                        {"get", "put", "delete"},
+		"/v1/machines/{machine_id}/config-assignment/consent":                {"post", "delete"},
+		"/v1/machines/{machine_id}/config-assignment/warning":                {"get"},
+		"/v1/previews":                                                       {"get"},
+		"/v1/previews/{preview_id}":                                          {"delete"},
+		"/v1/environments/{environment_id}/routes":                           {"post"},
+		"/v1/routes/{route_id}":                                              {"patch"},
+		"/v1/admin/mint/signing-keys/{key_id}/revoke":                        {"post"},
+		"/v1/admin/edge/usage-keys":                                          {"post"},
+		"/v1/admin/edge/usage-keys/{key_id}/revoke":                          {"post"},
+		"/v1/admin/control-operations/{operation_id}/recover":                {"post"},
+		"/v1/admin/hosted-provider-operations/{operation_id}/recover":        {"post"},
+		"/v1/admin/billing/uncertain/{kind}/{operation_id}/recover":          {"post"},
+		"/v1/environments/{environment_id}/helper-enrollments":               {"post"},
+		"/v1/environments/{environment_id}/helpers/{helper_id}/replace":      {"post"},
+		"/v1/config-sync/status":                                             {"get"},
+		"/v1/config-sync/environments/{environment_id}/conflict-resolutions": {"post"},
+		"/v1/auth/workos/state":                                              {"get"},
+		"/v1/auth/workos/callback":                                           {"post"},
+		"/v1/auth/logout":                                                    {"post"},
+		"/v1/auth/csrf":                                                      {"get"},
+		"/v1/auth/device/authorize":                                          {"post"},
+		"/v1/auth/device/token":                                              {"post"},
+		"/v1/auth/device/requests/{user_code}":                               {"get"},
+		"/v1/auth/device/requests/{user_code}/approve":                       {"post"},
+		"/v1/auth/device/requests/{user_code}/deny":                          {"post"},
+		"/v1/auth/token/refresh":                                             {"post"},
+		"/v1/auth/token/revoke":                                              {"post"},
+		"/v1/auth/cli-client-sessions":                                       {"get"},
+		"/v1/auth/cli-client-sessions/{cli_client_session_id}":               {"delete"},
+		"/v1/billing/entitlement":                                            {"get"},
+		"/v1/billing/usage":                                                  {"get"},
+		"/v1/billing/plan-products":                                          {"get"},
+		"/v1/billing/checkout":                                               {"post"},
+		"/v1/billing/customer-portal":                                        {"post"},
+		"/v1/webhooks/polar":                                                 {"post"},
+		"/v1/catalog/plans":                                                  {"get"},
+		"/v1/catalog/machine-types":                                          {"get"},
+		"/v1/catalog/presets":                                                {"get"},
+		"/v1/catalog/regions":                                                {"get"},
+		"/v1/github/status":                                                  {"get"},
+		"/v1/github/repositories":                                            {"get"},
+		"/v1/github/oauth/start":                                             {"post"},
+		"/v1/github/oauth/callback":                                          {"get", "post"},
+		"/v1/github/config-repositories/provision":                           {"post"},
+		"/v1/usage-summary":                                                  {"get"},
+		"/v1/projects":                                                       {"get", "post"},
+		"/v1/projects/{project_id}":                                          {"get", "patch", "delete"},
+		"/v1/projects/{project_id}/start":                                    {"post"},
+		"/v1/projects/{project_id}/stop":                                     {"post"},
+		"/v1/projects/{project_id}/restart":                                  {"post"},
+		"/v1/projects/{project_id}/events":                                   {"get"},
+		"/v1/projects/{project_id}/connection-descriptor":                    {"post"},
+		"/v1/projects/{project_id}/connection-readiness":                     {"get"},
+		"/v1/projects/{project_id}/terminal-sessions":                        {"get", "post"},
+		"/v1/projects/{project_id}/terminal-sessions/{session_id}":           {"patch", "delete"},
+		"/v1/projects/{project_id}/terminal-sessions/{session_id}/close":     {"post"},
+		"/v1/machines":                                                       {"get"},
+		"/v1/machines/setup":                                                 {"post"},
+		"/v1/machines/{machine_id}/unpair":                                   {"post"},
+		"/v1/machine-enrollments":                                            {"post"},
+		"/v1/machine-enrollments/{enrollment_id}":                            {"get"},
+		"/v1/machine-enrollments/{enrollment_id}/cancel":                     {"post"},
+		"/v1/machine-enrollments/{enrollment_id}/retry":                      {"post"},
+		"/v1/machines/overview":                                              {"get"},
+		"/v1/machines/{machine_id}":                                          {"get", "delete"},
+		"/v1/machines/{machine_id}/connection-descriptor":                    {"post"},
+		"/v1/machines/{machine_id}/connection-readiness":                     {"get"},
+		"/v1/machines/{machine_id}/disconnect":                               {"post"},
+		"/v1/machines/{machine_id}/terminal-sessions":                        {"get", "post"},
+		"/v1/machines/{machine_id}/terminal-sessions/{session_id}":           {"patch", "delete"},
+		"/v1/machines/{machine_id}/terminal-sessions/{session_id}/close":     {"post"},
+		"/v1/machines/pairings":                                              {"post"},
+		"/v1/machines/pairings/{user_code}/approve":                          {"post"},
+		"/v1/machines/pairings/{user_code}/deny":                             {"post"},
+		"/v1/runtime-observations":                                           {"post"},
+		"/v1/admin/users/{user_id}/adjust-credits":                           {"post"},
+		"/v1/admin/users/{user_id}/adjust-storage":                           {"post"},
 	}
 	for path, methods := range required {
 		operations, ok := doc.Paths[path]
@@ -258,20 +254,14 @@ func TestOpenAPIFreezesConfigSyncRuntimeObservationAndStatusSchemas(t *testing.T
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatal(err)
 	}
-	for _, schema := range []string{"ConfigSyncPathSummary", "ConfigSyncHeartbeat", "RuntimeObservation", "ConfigSyncStatus"} {
+	for _, schema := range []string{"ConfigSyncPathSummary", "RuntimeObservation", "ConfigSyncStatus"} {
 		if doc.Components.Schemas[schema] == nil {
 			t.Fatalf("OpenAPI missing %s", schema)
 		}
 	}
-	heartbeat := objectValue(t, doc.Components.Schemas["RuntimeObservation"]["properties"], "RuntimeObservation.properties")
-	configStatus := objectValue(t, heartbeat["config_sync"], "RuntimeObservation.config_sync")
-	if configStatus["$ref"] != "#/components/schemas/ConfigSyncHeartbeat" {
-		t.Fatalf("config_sync ref = %v", configStatus["$ref"])
-	}
-	configHeartbeat := doc.Components.Schemas["ConfigSyncHeartbeat"]
-	configProperties := objectValue(t, configHeartbeat["properties"], "ConfigSyncHeartbeat.properties")
-	if configProperties["updated_at"] == nil || !stringSet(t, configHeartbeat["required"], "ConfigSyncHeartbeat.required")["updated_at"] {
-		t.Fatal("ConfigSyncHeartbeat.updated_at is not declared and required")
+	runtimeProperties := objectValue(t, doc.Components.Schemas["RuntimeObservation"]["properties"], "RuntimeObservation.properties")
+	if runtimeProperties["config_sync"] != nil || doc.Components.Schemas["ConfigSyncHeartbeat"] != nil {
+		t.Fatal("runtime observation still exposes the obsolete config status path")
 	}
 	operation := objectValue(t, doc.Paths["/v1/config-sync/status"]["get"], "GET /v1/config-sync/status")
 	if operation["security"] == nil {
@@ -331,7 +321,7 @@ func TestOpenAPIFreezesCLIContractSchemas(t *testing.T) {
 			t.Fatalf("EnvironmentConnectionDescriptor.environment lacks canonical field %q", field)
 		}
 	}
-	for _, field := range []string{"environment_id", "project_id", "user_machine_id", "project_root"} {
+	for _, field := range []string{"environment_id", "project_id", "machine_id", "project_root"} {
 		if _, present := environmentProperties[field]; present {
 			t.Fatalf("EnvironmentConnectionDescriptor.environment retains legacy field %q", field)
 		}
@@ -431,7 +421,7 @@ func TestOpenAPIFreezesCLIContractSchemas(t *testing.T) {
 	assertRequiredBearerScope(t, githubRepositories, "projects:read", "GET /v1/github/repositories")
 	configRepositories := objectValue(t, doc.Paths["/v1/config-repositories"]["get"], "GET /v1/config-repositories")
 	assertRequiredBearerScope(t, configRepositories, "projects:read", "GET /v1/config-repositories")
-	configAssignment := doc.Paths["/v1/environments/{environment_id}/config-assignment"]
+	configAssignment := doc.Paths["/v1/machines/{machine_id}/config-assignment"]
 	assertRequiredBearerScope(t, objectValue(t, configAssignment["get"], "GET config assignment"), "projects:read", "GET config assignment")
 	assertRequiredBearerScope(t, objectValue(t, configAssignment["put"], "PUT config assignment"), "projects:connect", "PUT config assignment")
 	assertRequiredBearerScope(t, objectValue(t, configAssignment["delete"], "DELETE config assignment"), "projects:connect", "DELETE config assignment")
@@ -441,10 +431,10 @@ func TestOpenAPIFreezesCLIContractSchemas(t *testing.T) {
 	}
 	cliConnect := objectValue(t, doc.Paths["/v1/projects/{project_id}/connection-descriptor"]["post"], "POST /v1/projects/{project_id}/connection-descriptor")
 	assertRequiredBearerScope(t, cliConnect, "projects:connect", "POST /v1/projects/{project_id}/connection-descriptor")
-	disconnectMachine := objectValue(t, doc.Paths["/v1/user-machines/{user_machine_id}/disconnect"]["post"], "POST user-machine disconnect")
-	assertRequiredBearerScope(t, disconnectMachine, "projects:connect", "POST user-machine disconnect")
-	deleteMachine := objectValue(t, doc.Paths["/v1/user-machines/{user_machine_id}"]["delete"], "DELETE user machine")
-	assertRequiredBearerScope(t, deleteMachine, "projects:connect", "DELETE user machine")
+	disconnectMachine := objectValue(t, doc.Paths["/v1/machines/{machine_id}/disconnect"]["post"], "POST machine disconnect")
+	assertRequiredBearerScope(t, disconnectMachine, "projects:connect", "POST machine disconnect")
+	deleteMachine := objectValue(t, doc.Paths["/v1/machines/{machine_id}"]["delete"], "DELETE machine")
+	assertRequiredBearerScope(t, deleteMachine, "projects:connect", "DELETE machine")
 	cliConnectionDescriptors := objectValue(t, cliConnect["responses"], "CLI connect responses")
 	if _, ok := cliConnectionDescriptors["503"]; !ok {
 		t.Fatal("CLI connect must document terminal runtime unavailability")

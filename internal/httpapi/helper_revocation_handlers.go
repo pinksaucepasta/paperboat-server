@@ -27,7 +27,7 @@ func helperRevocations(edge *controlplane.EdgeService, identities *controlplane.
 			return
 		}
 		parts := strings.Fields(r.Header.Get("Authorization"))
-		proof, proofErr := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Helper-Proof"))
+		proof, proofErr := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Machine-Proof"))
 		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || proofErr != nil || len(proof) == 0 {
 			writeError(w, r, http.StatusUnauthorized, "credential_invalid", "Helper identity is invalid.")
 			return

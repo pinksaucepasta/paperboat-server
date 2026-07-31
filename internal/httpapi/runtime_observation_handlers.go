@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pinksaucepasta/paperboat-server/internal/configsync"
 	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
 	"github.com/pinksaucepasta/paperboat-server/internal/usermachines"
@@ -30,7 +29,7 @@ type availabilityObservationRepository interface {
 	RecordAvailabilityObservation(context.Context, string, string, usermachines.AvailabilityObservation) error
 }
 
-func runtimeObservation(repo runtimeObservationRepository, identities runtimeIdentityVerifier, summaryLimit int, availabilityObservers ...availabilityObservationRepository) http.HandlerFunc {
+func runtimeObservation(repo runtimeObservationRepository, identities runtimeIdentityVerifier, _ int, availabilityObservers ...availabilityObservationRepository) http.HandlerFunc {
 	var availability availabilityObservationRepository
 	if len(availabilityObservers) > 0 {
 		availability = availabilityObservers[0]
@@ -41,7 +40,6 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 			ResourceID         string                                `json:"resource_id"`
 			ReporterVersion    string                                `json:"reporter_version"`
 			SampledAt          time.Time                             `json:"sampled_at"`
-			ConfigSync         *configsync.Status                    `json:"config_sync"`
 			Availability       *usermachines.AvailabilityObservation `json:"availability"`
 			RuntimeDiagnostics *struct {
 				WorkerGeneration    uint64    `json:"worker_generation"`
@@ -51,10 +49,11 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 				ConnectorGeneration uint64    `json:"connector_generation"`
 				ObservedAt          time.Time `json:"observed_at"`
 			} `json:"runtime_diagnostics"`
-			ConfigSyncObservedAt time.Time `json:"-"`
 		}
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20+1))
-		if err != nil || len(body) > 1<<20 || json.NewDecoder(bytes.NewReader(body)).Decode(&req) != nil {
+		decoder := json.NewDecoder(bytes.NewReader(body))
+		decoder.DisallowUnknownFields()
+		if err != nil || len(body) > 1<<20 || decoder.Decode(&req) != nil || !errors.Is(decoder.Decode(&struct{}{}), io.EOF) {
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "Heartbeat payload is invalid JSON.")
 			return
 		}
@@ -68,8 +67,8 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 		}
 		got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 		authErr := metering.ErrInvalidHeartbeatCredential
-		if identities != nil && r.Header.Get("X-Paperboat-Helper-Proof") != "" {
-			proof, proofErr := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Helper-Proof"))
+		if identities != nil && r.Header.Get("X-Paperboat-Machine-Proof") != "" {
+			proof, proofErr := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Machine-Proof"))
 			if proofErr == nil {
 				authErr = identities.VerifyRuntimeObservation(r.Context(), got, proof, body, req.EnvironmentID, req.ResourceID)
 			}
@@ -83,23 +82,6 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 			}
 			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
 			return
-		}
-		if req.ConfigSync != nil {
-			normalized, err := configsync.NormalizeStatus(*req.ConfigSync, summaryLimit)
-			if err != nil {
-				writeError(w, r, http.StatusBadRequest, "invalid_request", "Config sync status is invalid.")
-				return
-			}
-			serverNow := time.Now().UTC()
-			statusUpdated, statusObserved, validOrder := normalizeStatusTimestamps(normalized.UpdatedAt, req.SampledAt, serverNow)
-			if !validOrder {
-				normalized.State = "error"
-				normalized.ErrorCode = "status_clock_invalid"
-				normalized.ErrorMessage = "Config sync status timestamp is newer than its runtime observation."
-			}
-			normalized.UpdatedAt = statusUpdated
-			req.ConfigSync = &normalized
-			req.ConfigSyncObservedAt = statusObserved
 		}
 		if req.Availability != nil {
 			if availability == nil {
@@ -124,12 +106,10 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 			}
 		}
 		observation := metering.RuntimeObservation{
-			ProjectID:            req.EnvironmentID,
-			MachineID:            req.ResourceID,
-			ObservedAt:           req.SampledAt.UTC(),
-			ReporterVersion:      req.ReporterVersion,
-			ConfigSync:           req.ConfigSync,
-			ConfigSyncObservedAt: req.ConfigSyncObservedAt,
+			ProjectID:       req.EnvironmentID,
+			MachineID:       req.ResourceID,
+			ObservedAt:      req.SampledAt.UTC(),
+			ReporterVersion: req.ReporterVersion,
 		}
 		if req.RuntimeDiagnostics != nil {
 			observation.WorkerGeneration = req.RuntimeDiagnostics.WorkerGeneration
@@ -140,6 +120,10 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 			observation.DiagnosticsObservedAt = req.RuntimeDiagnostics.ObservedAt.UTC()
 		}
 		if err := repo.RecordRuntimeObservation(r.Context(), observation); err != nil {
+			if errors.Is(err, metering.ErrDuplicateMachineIdentity) {
+				writeError(w, r, http.StatusConflict, "duplicate_machine_identity", "This machine identity is active on another installation. Run pb setup to create a distinct machine identity.")
+				return
+			}
 			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
 			return
 		}

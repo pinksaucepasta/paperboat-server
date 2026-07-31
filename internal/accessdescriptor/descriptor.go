@@ -79,9 +79,12 @@ type FileTransferPolicy struct {
 }
 
 type FileTransfer struct {
-	Endpoint string             `json:"endpoint"`
-	Auth     Auth               `json:"auth"`
-	Policy   FileTransferPolicy `json:"policy"`
+	Endpoint             string             `json:"endpoint"`
+	SourceMachineID      string             `json:"source_machine_id"`
+	DestinationMachineID string             `json:"destination_machine_id"`
+	InitiatingUserID     string             `json:"initiating_user_id"`
+	Auth                 Auth               `json:"auth"`
+	Policy               FileTransferPolicy `json:"policy"`
 }
 
 type Preview struct {

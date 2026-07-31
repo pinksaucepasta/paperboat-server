@@ -22,6 +22,7 @@ func projectConnectionDescriptor(service *access.Service, kind access.Descriptor
 		}
 		var body struct {
 			TerminalSessionID string `json:"terminal_session_id"`
+			SourceMachineID   string `json:"source_machine_id"`
 		}
 		if kind == access.DescriptorForCLI && r.Body != nil {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
@@ -35,6 +36,7 @@ func projectConnectionDescriptor(service *access.Service, kind access.Descriptor
 			Kind:               kind,
 			CLIClientSessionID: cliClientSessionID,
 			TerminalSessionID:  body.TerminalSessionID,
+			SourceMachineID:    body.SourceMachineID,
 		})
 		if writeAccessError(w, r, err) {
 			return

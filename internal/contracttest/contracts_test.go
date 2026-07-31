@@ -32,7 +32,7 @@ func TestHelperProfilesDoNotGrantHostedLifecycleToBYOD(t *testing.T) {
 	}
 	readJSON(t, "helper/profiles.json", &profiles)
 	byod := profiles.Profiles["byod"]
-	if !contains(byod.Required, "terminal.v2") || !contains(byod.Forbidden, "hosted.lifecycle.v1") {
+	if !contains(byod.Required, "terminal.v1") || !contains(byod.Forbidden, "hosted.lifecycle.v1") {
 		t.Fatalf("unsafe BYOD profile: %#v", byod)
 	}
 	if byod.Conditional["config.apply.v1"] == "" {

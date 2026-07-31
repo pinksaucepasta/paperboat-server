@@ -33,8 +33,8 @@ func TestConfigSyncLifecycleVectorsFailClosed(t *testing.T) {
 	required := map[string]bool{
 		"eligible-current": false, "stale-warning": false, "stale-assignment": false,
 		"stale-fence": false, "remote-moved": false, "stale-status": false,
-		"stale-conflict": false, "offline-key-overlap": false,
-		"unknown-contract-version": false, "revoked-helper": false,
+		"stale-conflict":           false,
+		"unknown-contract-version": false, "reinstalled-machine": false,
 	}
 	seen := make(map[string]bool, len(fixture.Vectors))
 	for _, vector := range fixture.Vectors {

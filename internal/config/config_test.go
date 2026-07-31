@@ -15,7 +15,7 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 	}
 	env := map[string]string{
 		"PAPERBOAT_ENV":                                         "test",
-		"PAPERBOAT_HELPER_BASE_DOMAIN":                          "helper.example.test",
+		"PAPERBOAT_RUNTIME_BASE_DOMAIN":                         "helper.example.test",
 		"PAPERBOAT_HTTP_ADDRESS":                                "127.0.0.1:9090",
 		"PAPERBOAT_CATALOG_SEED_FILE":                           "/etc/paperboat/catalogs.json",
 		"PAPERBOAT_POLAR_WEBHOOK_TOLERANCE_SECONDS":             "120",
@@ -33,7 +33,7 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 		"PAPERBOAT_CONFIG_SYNC_BYOD_ENABLED":                    "true",
 		"PAPERBOAT_CONFIG_SYNC_INCLUDES":                        ".bashrc,.gitconfig",
 		"PAPERBOAT_CONFIG_SYNC_ENVIRONMENT_ALLOWLIST":           "env_one,env_two",
-		"PAPERBOAT_USER_MACHINES_URL":                           "https://dashboard.example.test/machines",
+		"PAPERBOAT_MACHINES_URL":                                "https://dashboard.example.test/machines",
 	}
 	cfg, err := Load(context.Background(), LoadOptions{
 		LookupEnv: func(key string) (string, bool) {
@@ -50,11 +50,11 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 	if cfg.Environment != EnvironmentTest {
 		t.Fatalf("environment = %q", cfg.Environment)
 	}
-	if cfg.CLIAuth.UserMachinesURL != env["PAPERBOAT_USER_MACHINES_URL"] {
-		t.Fatalf("user machines URL = %q", cfg.CLIAuth.UserMachinesURL)
+	if cfg.CLIAuth.MachinesURL != env["PAPERBOAT_MACHINES_URL"] {
+		t.Fatalf("machines URL = %q", cfg.CLIAuth.MachinesURL)
 	}
-	if cfg.HelperBaseDomain != "helper.example.test" {
-		t.Fatalf("helper base domain = %q", cfg.HelperBaseDomain)
+	if cfg.RuntimeBaseDomain != "helper.example.test" {
+		t.Fatalf("runtime base domain = %q", cfg.RuntimeBaseDomain)
 	}
 	if cfg.HTTP.Address != "127.0.0.1:9090" {
 		t.Fatalf("address = %q", cfg.HTTP.Address)
@@ -85,10 +85,10 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 	}
 }
 
-func TestValidationRejectsInvalidHelperBaseDomain(t *testing.T) {
+func TestValidationRejectsInvalidRuntimeBaseDomain(t *testing.T) {
 	cfg := Default()
-	cfg.HelperBaseDomain = "https://helper.example.test/path"
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "helper_base_domain") {
+	cfg.RuntimeBaseDomain = "https://helper.example.test/path"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "runtime_base_domain") {
 		t.Fatalf("validation error = %v", err)
 	}
 }
@@ -101,107 +101,33 @@ func TestValidationRejectsInvalidTerminalSessionAlertThreshold(t *testing.T) {
 	}
 }
 
-func TestMandatoryConfigSyncExclusionsCanOnlyBeExtended(t *testing.T) {
-	cfg, err := Load(context.Background(), LoadOptions{
-		LookupEnv: func(key string) (string, bool) {
-			if key == "PAPERBOAT_CONFIG_SYNC_MANDATORY_EXCLUDES" {
-				return ".custom-secret", true
-			}
-			return "", false
-		},
-		ReadFile: func(string) ([]byte, error) { return nil, nil },
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, required := range []string{".custom-secret", ".paperboat", "**/.paperboat", ".config/git/credentials", ".config/hub", ".claude/shell-snapshots", ".codex/log"} {
-		if !slices.Contains(cfg.ConfigSync.MandatoryExcludes, required) {
-			t.Fatalf("mandatory exclusion %q was removed: %v", required, cfg.ConfigSync.MandatoryExcludes)
-		}
-	}
-}
-
-func TestConfigFileCannotReplaceMandatoryConfigSyncExcludes(t *testing.T) {
-	cfg, err := Load(context.Background(), LoadOptions{
-		FilePath: "config.json",
-		ReadFile: func(string) ([]byte, error) {
-			return []byte(`{"config_sync":{"mandatory_excludes":[".custom-secret"]}}`), nil
-		},
-		LookupEnv: func(string) (string, bool) { return "", false },
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, required := range []string{".custom-secret", ".ssh", ".config/git/credentials", "**/credentials.*"} {
-		if !slices.Contains(cfg.ConfigSync.MandatoryExcludes, required) {
-			t.Fatalf("mandatory exclusion %q was replaced by config file", required)
-		}
-	}
-	unsafe := cfg
-	unsafe.ConfigSync.MandatoryExcludes = []string{".custom-secret"}
-	if err := unsafe.Validate(); err == nil {
-		t.Fatal("configuration without the built-in mandatory exclusion floor was accepted")
-	}
-}
-
-func TestValidationRejectsUnsafeConfigSyncPatterns(t *testing.T) {
-	for _, pattern := range []string{
-		"/absolute", "../traversal", "safe/../traversal", "[invalid", `back\slash`,
-		"nul\x00path", strings.Repeat("a", 513),
-	} {
-		cfg := Default()
-		cfg.ConfigSync.Includes = []string{pattern}
-		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "config_sync path pattern") {
-			t.Fatalf("pattern %q validation error = %v", pattern, err)
-		}
-	}
-}
-
-func TestValidationRequiresExplicitConfigSyncIncludes(t *testing.T) {
+func TestValidationAcceptsAllowlistFirstManifestConfiguration(t *testing.T) {
 	for _, mutate := range []func(*Config){
 		func(cfg *Config) { cfg.ConfigSync.Mode = "read_only" },
 		func(cfg *Config) { cfg.ConfigSync.BYODEnabled = true },
 	} {
 		cfg := Default()
 		mutate(&cfg)
-		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "config_sync.includes") {
-			t.Fatalf("empty includes validation error = %v", err)
-		}
-		cfg.ConfigSync.Includes = []string{".bashrc"}
 		if err := cfg.Validate(); err != nil {
-			t.Fatalf("explicit include rejected: %v", err)
+			t.Fatalf("manifest configuration rejected: %v", err)
 		}
-	}
-
-	cfg := Default()
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("disabled config sync rejected empty includes: %v", err)
 	}
 }
 
 func TestValidationRejectsConfigSyncPoliciesHelpersCannotConsume(t *testing.T) {
-	patterns := func(count int) []string {
-		result := make([]string, count)
-		for i := range result {
-			result[i] = ".bashrc"
-		}
-		return result
-	}
 	tests := map[string]func(*Config){
-		"file size":  func(cfg *Config) { cfg.ConfigSync.MaxFileBytes = 100<<20 + 1 },
-		"batch size": func(cfg *Config) { cfg.ConfigSync.MaxBatchBytes = 500<<20 + 1 },
-		"includes":   func(cfg *Config) { cfg.ConfigSync.Includes = patterns(257) },
-		"excludes":   func(cfg *Config) { cfg.ConfigSync.Excludes = patterns(513) },
-		"mandatory excludes": func(cfg *Config) {
-			cfg.ConfigSync.MandatoryExcludes = append(cfg.ConfigSync.MandatoryExcludes, patterns(1025-len(cfg.ConfigSync.MandatoryExcludes))...)
-		},
-		"debounce":      func(cfg *Config) { cfg.ConfigSync.Debounce = 5*time.Minute + 1 },
-		"push interval": func(cfg *Config) { cfg.ConfigSync.MinPushInterval = 24*time.Hour + 1 },
-		"dirty delay":   func(cfg *Config) { cfg.ConfigSync.MaxDirtyDelay = cfg.ConfigSync.Debounce - 1 },
-		"poll interval": func(cfg *Config) { cfg.ConfigSync.RemotePollInterval = time.Hour + 1 },
-		"retry limit":   func(cfg *Config) { cfg.ConfigSync.RetryLimit = 21 },
-		"flush timeout": func(cfg *Config) { cfg.ConfigSync.ShutdownFlushTimeout = 10*time.Minute + 1 },
-		"summary limit": func(cfg *Config) { cfg.ConfigSync.SummaryLimit = 1001 },
+		"file size":        func(cfg *Config) { cfg.ConfigSync.MaxFileBytes = 100<<20 + 1 },
+		"batch size":       func(cfg *Config) { cfg.ConfigSync.MaxBatchBytes = 500<<20 + 1 },
+		"manifest bytes":   func(cfg *Config) { cfg.ConfigSync.ManifestMaxBytes = 4<<20 + 1 },
+		"manifest lines":   func(cfg *Config) { cfg.ConfigSync.ManifestMaxLines = 65537 },
+		"manifest pattern": func(cfg *Config) { cfg.ConfigSync.ManifestMaxPatternBytes = 8193 },
+		"debounce":         func(cfg *Config) { cfg.ConfigSync.Debounce = 5*time.Minute + 1 },
+		"push interval":    func(cfg *Config) { cfg.ConfigSync.MinPushInterval = 24*time.Hour + 1 },
+		"dirty delay":      func(cfg *Config) { cfg.ConfigSync.MaxDirtyDelay = cfg.ConfigSync.Debounce - 1 },
+		"poll interval":    func(cfg *Config) { cfg.ConfigSync.RemotePollInterval = time.Hour + 1 },
+		"retry limit":      func(cfg *Config) { cfg.ConfigSync.RetryLimit = 21 },
+		"flush timeout":    func(cfg *Config) { cfg.ConfigSync.ShutdownFlushTimeout = 10*time.Minute + 1 },
+		"summary limit":    func(cfg *Config) { cfg.ConfigSync.SummaryLimit = 1001 },
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -254,11 +180,10 @@ func validProductionConfig() Config {
 	cfg.Secrets.GitHubAppPrivateKey = "configured-outside-this-validation-test"
 	cfg.Secrets.FlyAPIToken = "fly-api-token"
 	cfg.Secrets.EdgeControlCredential = "edge-control-credential-0123456789"
-	cfg.Secrets.ClassifierAPIKey = "classifier-api-key"
 	cfg.Fly.ImageRef = "registry.example.test/paperboat/project-vm@sha256:" + strings.Repeat("a", 64)
-	cfg.UserMachines.BootstrapCommand = "pbh bootstrap --server https://pb.example.test"
-	cfg.UserMachines.HelperArtifactsJSON = `[{"schema":"paperboat.helper-artifact/v1"}]`
-	cfg.UserMachines.HelperArtifactPublicKey = "helper-artifact-public-key"
+	cfg.UserMachines.BootstrapCommand = "pb pair --server https://pb.example.test"
+	cfg.UserMachines.MachineArtifactsJSON = `[{"schema":"paperboat.machine-artifact/v1"}]`
+	cfg.UserMachines.MachineArtifactPublicKey = "machine-artifact-public-key"
 	cfg.Preview.BaseDomain = "preview.example.test"
 	cfg.Secrets.PreviewIdentityKey = "preview-identity-key-012345678901234567890123456789"
 	cfg.CLIAuth.MintActiveKeyID = "current"
@@ -306,9 +231,9 @@ func TestValidationRejectsInvalidCLIAuthURLAndTrustedProxyCIDR(t *testing.T) {
 	}
 	for _, raw := range []string{"dashboard.example.com/machines", "ftp://dashboard.example.com/machines", "://bad"} {
 		cfg := Default()
-		cfg.CLIAuth.UserMachinesURL = raw
-		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "cli_auth.user_machines_url") {
-			t.Fatalf("user machines URL %q error = %v", raw, err)
+		cfg.CLIAuth.MachinesURL = raw
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "cli_auth.machines_url") {
+			t.Fatalf("machines URL %q error = %v", raw, err)
 		}
 	}
 	cfg := Default()
@@ -321,7 +246,7 @@ func TestValidationRejectsInvalidCLIAuthURLAndTrustedProxyCIDR(t *testing.T) {
 func TestValidationAcceptsAbsoluteCLIAuthURLAndTrustedProxyCIDR(t *testing.T) {
 	cfg := Default()
 	cfg.CLIAuth.VerificationURL = "https://dashboard.example.com/cli/authorize"
-	cfg.CLIAuth.UserMachinesURL = "https://dashboard.example.com/dashboard/user-machines"
+	cfg.CLIAuth.MachinesURL = "https://dashboard.example.com/dashboard/machines"
 	cfg.HTTP.TrustedProxyCIDRs = []string{"10.0.0.0/8", "2001:db8::/32"}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)

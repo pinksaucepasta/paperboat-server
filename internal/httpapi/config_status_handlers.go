@@ -30,7 +30,7 @@ func configStatusRecord(service *controlplane.ConfigStatusService, logger *slog.
 			writeError(w, r, http.StatusBadRequest, "status_invalid", "Configuration status is invalid.")
 			return
 		}
-		proof, proofErr := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Helper-Proof"))
+		proof, proofErr := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Machine-Proof"))
 		identity, ok := bearerToken(r)
 		if proofErr != nil || !ok {
 			writeError(w, r, http.StatusUnauthorized, "status_invalid", "Configuration status authorization is invalid.")

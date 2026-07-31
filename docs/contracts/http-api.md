@@ -225,11 +225,11 @@ Adding or renaming public codes after approval requires explicit contract approv
 The following endpoints are private service-to-service contracts and are not browser or
 CLI APIs:
 
-- `POST /v1/connectors/admission` requires the helper identity bearer credential and an
-  unpadded base64url `X-Paperboat-Helper-Proof` envelope signed by that helper's enrolled
-  Ed25519 key. The proof binds `POST`, the exact path and body hash, helper/environment,
+- `POST /v1/connectors/admission` requires the renewable machine-control bearer credential and an
+  unpadded base64url `X-Paperboat-Machine-Proof` envelope signed by that machine's enrolled
+  Ed25519 key. The proof binds `POST`, the exact path and body hash, machine/environment,
   operation ID, and a lifetime of at most one minute. The strict body contains
-  `operation_id`, `environment_id`, `helper_id`, `edge_pool`, and protocol version `1.0`.
+  `operation_id`, `environment_id`, `machine_id`, `connector_id`, `edge_pool`, and protocol version `1.0`.
   The response is the canonical connector-admission document: the same operation and
   identity bindings, generation, assigned node/pool, one `{host,port}` endpoint, at least
   one revisioned route handoff, protocol version, optional capabilities, and the scoped
@@ -243,18 +243,18 @@ CLI APIs:
   Hosted bootstrap credentials are never stored in Fly secrets or Machine environment.
 - `POST /v1/helper-enrollments` remains the one-time credential exchange for BYOD enrollment;
   hosted production composition does not use it.
-- `POST /v1/config/credentials` accepts a helper identity credential, a bounded `{}` JSON
-  body, and `X-Paperboat-Helper-Proof`; it returns a short-lived `config_sync` credential
-  bound to the active environment/helper assignment and warning revision. Exact operation
+- `POST /v1/config/credentials` accepts a machine-control credential, a bounded `{}` JSON
+  body, and `X-Paperboat-Machine-Proof`; it returns a short-lived `config_sync` credential
+  bound to the active machine assignment, installation generation, and warning revision. Exact operation
   replays return the original credential; conflicting replays return `operation_conflict`.
-- `POST /v1/previews/credentials` accepts the helper identity bearer, a bounded `{}` JSON
-  body, and `X-Paperboat-Helper-Proof`; it returns a five-minute
-  `preview_registration` credential with exact `preview:register` scope and helper/
-  environment binding. Preview operations and observations use that credential as the
-  bearer, carry the durable identity separately in `X-Paperboat-Helper-Identity`, and
-  remain signed by the enrolled helper key. The preview credential is held only in
-  helper memory.
-- `POST /v1/user-machine-installation-failures` accepts an active helper identity,
+- `POST /v1/previews/credentials` accepts the machine-control bearer, a bounded `{}` JSON
+  body, and `X-Paperboat-Machine-Proof`; it returns a five-minute
+  `preview_registration` credential with exact `preview:register` scope and machine/
+  installation-generation binding. Preview operations and observations use that credential as the
+  bearer, carry the durable identity separately in `X-Paperboat-Machine-Identity`, and
+  remain signed by the enrolled machine key. The preview credential is held only in
+  preview-runner memory.
+- `POST /v1/machine-installation-failures` accepts an active helper identity,
   its exact Ed25519 request proof, and only `enrollment_id` plus the bounded stage
   `service_install|service_readiness`. It transitions the matching `installing|connecting`
   enrollment to `failed_retryable`; its stage is `artifact_verification`, `service_install`,
@@ -263,11 +263,17 @@ CLI APIs:
   helper identity, and seat while rotating bootstrap generation and material.
 - `GET /v1/trust/revocations` requires the edge-control bearer credential and returns the
   bounded revocation document consumed by tunnel trust snapshots (`jtis`, `environments`,
-  `helper_generations`, and `key_ids`).
+  `connector_generations`, and `key_ids`).
 - `POST /v1/edge/routes/observations` accepts the bounded applied route snapshot from the assigned
   tunnel node. Each item is accepted only when route revision, node ID, and connector
   generation still match current desired ownership; stale observations return
   `version_conflict` and cannot mutate newer intent.
+- `POST /v1/machines/{machine_id}/preview-launch-descriptor` is a CLI endpoint for an
+  owned online paired machine. It returns the machine's routed `/v1/preview-launches`
+  endpoint and a two-minute `preview_launch` credential with exact `preview:launch`
+  scope, bound to user, machine, environment, and CLI client session. The target runtime
+  validates the binding and launches one isolated preview service; it does not grant
+  terminal, transfer, config, preview-registration, or connector authority.
 
 These endpoints never return repository/provider secrets. Assignment replacement, consent
 revocation, helper replacement, and environment revocation invalidate subsequent credential

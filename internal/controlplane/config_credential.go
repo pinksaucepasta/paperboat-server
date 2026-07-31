@@ -55,7 +55,7 @@ func (s *ConfigCredentialService) SetRollout(mode string, byodEnabled bool, envi
 type ConfigCredential struct {
 	Credential      string    `json:"credential"`
 	EnvironmentID   string    `json:"environment_id"`
-	HelperID        string    `json:"helper_id"`
+	MachineID       string    `json:"machine_id"`
 	AssignmentID    string    `json:"assignment_id"`
 	WarningRevision string    `json:"warning_revision"`
 	ExpiresAt       time.Time `json:"expires_at"`
@@ -65,7 +65,7 @@ func (s *ConfigCredentialService) Issue(ctx context.Context, identityToken strin
 	if s == nil || s.signer == nil || s.store == nil || s.issuer == "" || s.encryptionKey == "" {
 		return ConfigCredential{}, ErrConfigCredentialInvalid
 	}
-	claims, err := (&EnrollmentService{store: s.store, signer: s.signer, issuer: s.issuer, clock: s.clock}).VerifyHelperRequest(ctx, identityToken, proof, method, path, body)
+	claims, err := (&EnrollmentService{store: s.store, signer: s.signer, issuer: s.issuer, clock: s.clock}).VerifyMachineRequest(ctx, identityToken, proof, method, path, body)
 	if err != nil {
 		return ConfigCredential{}, err
 	}
@@ -75,8 +75,8 @@ func (s *ConfigCredentialService) Issue(ctx context.Context, identityToken strin
 		(byod && !s.byodEnabled) {
 		return ConfigCredential{}, ErrConfigCredentialInvalid
 	}
-	requestHash := sha256.Sum256(append([]byte(claims.HelperID+"\x00"+claims.EnvironmentID+"\x00"), body...))
-	operationKey := "config-credential:" + claims.HelperID + ":" + claims.OperationID
+	requestHash := sha256.Sum256(append([]byte(claims.MachineID+"\x00"+claims.EnvironmentID+"\x00"), body...))
+	operationKey := "config-credential:" + claims.MachineID + ":" + claims.OperationID
 	now := s.clock().UTC()
 	var result ConfigCredential
 	issuedNew := false
@@ -95,7 +95,7 @@ func (s *ConfigCredentialService) Issue(ctx context.Context, identityToken strin
 		if !errors.Is(getErr, sql.ErrNoRows) {
 			return getErr
 		}
-		assignment, err := tx.Queries().GetEligibleControlConfigAssignment(ctx, dbsqlc.GetEligibleControlConfigAssignmentParams{EnvironmentID: claims.EnvironmentID, HelperID: claims.HelperID})
+		assignment, err := tx.Queries().GetEligibleMachineConfigAssignment(ctx, dbsqlc.GetEligibleMachineConfigAssignmentParams{MachineID: claims.MachineID, EnvironmentID: claims.EnvironmentID, InstallationGeneration: claims.InstallationGeneration})
 		if err != nil || !assignment.WarningRevision.Valid || assignment.WarningRevision.String == "" {
 			return ErrConfigCredentialInvalid
 		}
@@ -107,12 +107,16 @@ func (s *ConfigCredentialService) Issue(ctx context.Context, identityToken strin
 		if err != nil {
 			return err
 		}
+		machineID := claims.MachineID
+		if strings.TrimSpace(machineID) == "" || assignment.MachineID != machineID {
+			return ErrConfigCredentialInvalid
+		}
 		expiresAt := now.Add(5 * time.Minute)
-		token, err := s.signer.SignCredential(mint.CredentialInput{Issuer: s.issuer, Audience: "paperboat-helper", Subject: claims.HelperID, JTI: jti, IssuedAt: now, ExpiresAt: expiresAt, CredentialClass: "config_sync", Scopes: []string{"config:pull", "config:apply", "config:report"}, EnvironmentID: claims.EnvironmentID, HelperID: claims.HelperID, AssignmentID: assignment.ID, WarningRevision: assignment.WarningRevision.String})
+		token, err := s.signer.SignCredential(mint.CredentialInput{Issuer: s.issuer, Audience: "paperboat-machine", Subject: claims.MachineID, JTI: jti, IssuedAt: now, ExpiresAt: expiresAt, CredentialClass: "config_sync", Scopes: []string{"config:pull", "config:apply", "config:report"}, EnvironmentID: claims.EnvironmentID, MachineID: machineID, InstallationGeneration: claims.InstallationGeneration, AssignmentID: assignment.ID, WarningRevision: assignment.WarningRevision.String})
 		if err != nil {
 			return err
 		}
-		result = ConfigCredential{Credential: token, EnvironmentID: claims.EnvironmentID, HelperID: claims.HelperID, AssignmentID: assignment.ID, WarningRevision: assignment.WarningRevision.String, ExpiresAt: expiresAt}
+		result = ConfigCredential{Credential: token, EnvironmentID: claims.EnvironmentID, MachineID: claims.MachineID, AssignmentID: assignment.ID, WarningRevision: assignment.WarningRevision.String, ExpiresAt: expiresAt}
 		encoded, err := json.Marshal(result)
 		if err != nil {
 			return err
@@ -122,11 +126,11 @@ func (s *ConfigCredentialService) Issue(ctx context.Context, identityToken strin
 			return err
 		}
 		jtiHash := sha256.Sum256([]byte(jti))
-		if _, err = tx.Queries().CreateControlConfigCredential(ctx, dbsqlc.CreateControlConfigCredentialParams{JtiHash: jtiHash[:], Jti: jti, OperationKey: operationKey, RequestHash: requestHash[:], EnvironmentID: claims.EnvironmentID, HelperID: claims.HelperID, AssignmentID: assignment.ID, WarningRevision: assignment.WarningRevision, CredentialCiphertext: ciphertext, ExpiresAt: expiresAt}); err != nil {
+		if _, err = tx.Queries().CreateControlConfigCredential(ctx, dbsqlc.CreateControlConfigCredentialParams{JtiHash: jtiHash[:], Jti: jti, OperationKey: operationKey, RequestHash: requestHash[:], EnvironmentID: claims.EnvironmentID, MachineID: claims.MachineID, AssignmentID: assignment.ID, WarningRevision: assignment.WarningRevision, CredentialCiphertext: ciphertext, ExpiresAt: expiresAt}); err != nil {
 			return err
 		}
 		issuedNew = true
-		return s.audit.WriteTx(ctx, tx, audit.Event{ActorType: audit.ActorSystem, EventType: "config.credential_issued", ResourceType: "config_assignment", ResourceID: assignment.ID, IdempotencyKey: operationKey, Metadata: map[string]any{"environment_id": claims.EnvironmentID, "helper_id": claims.HelperID, "warning_revision": assignment.WarningRevision.String, "expires_at": expiresAt}})
+		return s.audit.WriteTx(ctx, tx, audit.Event{ActorType: audit.ActorSystem, EventType: "config.credential_issued", ResourceType: "config_assignment", ResourceID: assignment.ID, IdempotencyKey: operationKey, Metadata: map[string]any{"environment_id": claims.EnvironmentID, "machine_id": claims.MachineID, "warning_revision": assignment.WarningRevision.String, "expires_at": expiresAt}})
 	})
 	if err == nil && issuedNew {
 		observability.ControlCredentialIssued()

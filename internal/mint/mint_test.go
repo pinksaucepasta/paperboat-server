@@ -138,7 +138,7 @@ func TestVerifyCredentialExpiryGraceIsExplicitAndBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	token, err := provider.SignCredential(CredentialInput{Issuer: "https://api.example.test", Audience: "paperboat-control", Subject: "helper_1", JTI: "jti_identity_1", IssuedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(-time.Hour), CredentialClass: "helper_identity", Scopes: []string{"helper:connect", "helper:renew"}, EnvironmentID: "env_1", HelperID: "helper_1", KeyThumbprint: "sha256:key"})
+	token, err := provider.SignCredential(CredentialInput{Issuer: "https://api.example.test", Audience: "paperboat-control", Subject: "helper_1", JTI: "jti_identity_1", IssuedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(-time.Hour), CredentialClass: "helper_identity", Scopes: []string{"helper:connect", "helper:renew"}, EnvironmentID: "env_1", HelperID: "helper_1", MachineID: "machine_1", KeyThumbprint: "sha256:key"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,45 +153,66 @@ func TestVerifyCredentialExpiryGraceIsExplicitAndBounded(t *testing.T) {
 	}
 }
 
+func TestMachineControlCredentialRequiresAllMachineBindings(t *testing.T) {
+	provider, err := NewEphemeral(time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC)
+	input := CredentialInput{Issuer: "https://api.example.test", Audience: "paperboat-control", Subject: "mch_1", JTI: "mcc_1", IssuedAt: now, ExpiresAt: now.Add(time.Hour), CredentialClass: "machine_control", Scopes: []string{"machine:connect", "machine:renew"}, EnvironmentID: "env_1", MachineID: "mch_1", UserID: "usr_1", KeyThumbprint: "sha256:key", InstallationGeneration: 2}
+	token, err := provider.SignCredential(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := provider.VerifyCredential(token, input.Issuer, "machine_control", now)
+	if err != nil || claims.UserID != input.UserID || claims.MachineID != input.MachineID || claims.InstallationGeneration != 2 {
+		t.Fatalf("claims=%+v err=%v", claims, err)
+	}
+	input.InstallationGeneration = 0
+	if _, err := provider.SignCredential(input); err == nil {
+		t.Fatal("credential without installation generation was accepted")
+	}
+}
+
 func TestSignCredentialConfigSyncBindsAssignmentAndWarning(t *testing.T) {
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	provider, err := New([]Key{{ID: "key-config", PrivateKey: testKey(11)}}, "key-config", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	token, err := provider.SignCredential(CredentialInput{Issuer: "https://api.example.test", Audience: "paperboat-helper", Subject: "helper_1", JTI: "jti_config_1", IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute), CredentialClass: "config_sync", Scopes: []string{"config:pull", "config:apply", "config:report"}, EnvironmentID: "env_1", HelperID: "helper_1", AssignmentID: "assignment_1", WarningRevision: "warning_7"})
+	token, err := provider.SignCredential(CredentialInput{Issuer: "https://api.example.test", Audience: "paperboat-machine", Subject: "machine_1", JTI: "jti_config_1", IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute), CredentialClass: "config_sync", Scopes: []string{"config:pull", "config:apply", "config:report"}, EnvironmentID: "env_1", MachineID: "machine_1", InstallationGeneration: 2, AssignmentID: "assignment_1", WarningRevision: "warning_7"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	claims, err := provider.VerifyCredential(token, "https://api.example.test", "config_sync", now)
-	if err != nil || claims.AssignmentID != "assignment_1" || claims.WarningRevision != "warning_7" || claims.HelperID != "helper_1" {
+	if err != nil || claims.AssignmentID != "assignment_1" || claims.WarningRevision != "warning_7" || claims.MachineID != "machine_1" || claims.InstallationGeneration != 2 {
 		t.Fatalf("claims = %#v, %v", claims, err)
 	}
-	if _, err := provider.SignCredential(CredentialInput{Issuer: "https://api.example.test", Audience: "paperboat-helper", Subject: "helper_1", JTI: "jti_config_2", IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute), CredentialClass: "config_sync", Scopes: []string{"config:pull"}, EnvironmentID: "env_1", HelperID: "helper_1", AssignmentID: "assignment_1", WarningRevision: "warning_7"}); err == nil {
+	if _, err := provider.SignCredential(CredentialInput{Issuer: "https://api.example.test", Audience: "paperboat-machine", Subject: "machine_1", JTI: "jti_config_2", IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute), CredentialClass: "config_sync", Scopes: []string{"config:pull"}, EnvironmentID: "env_1", MachineID: "machine_1", InstallationGeneration: 2, AssignmentID: "assignment_1", WarningRevision: "warning_7"}); err == nil {
 		t.Fatal("incomplete config scopes accepted")
 	}
 }
 
-func TestSignPreviewRegistrationBindsHelperAndEnvironment(t *testing.T) {
+func TestSignPreviewRegistrationBindsMachineAndEnvironment(t *testing.T) {
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
 	provider, err := New([]Key{{ID: "key-preview", PrivateKey: testKey(12)}}, "key-preview", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	input := CredentialInput{Issuer: "https://api.example.test", Audience: "paperboat-control", Subject: "helper_1", JTI: "jti_preview_1", IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute), CredentialClass: "preview_registration", Scopes: []string{"preview:register"}, EnvironmentID: "env_1", HelperID: "helper_1"}
+	input := CredentialInput{Issuer: "https://api.example.test", Audience: "paperboat-control", Subject: "machine_1", JTI: "jti_preview_1", IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute), CredentialClass: "preview_registration", Scopes: []string{"preview:register"}, EnvironmentID: "env_1", MachineID: "machine_1", InstallationGeneration: 2}
 	token, err := provider.SignCredential(input)
 	if err != nil {
 		t.Fatal(err)
 	}
 	claims, err := provider.VerifyCredential(token, "https://api.example.test", "preview_registration", now)
-	if err != nil || claims.EnvironmentID != "env_1" || claims.HelperID != "helper_1" {
+	if err != nil || claims.EnvironmentID != "env_1" || claims.MachineID != "machine_1" || claims.InstallationGeneration != 2 {
 		t.Fatalf("claims = %#v, %v", claims, err)
 	}
-	input.HelperID = ""
+	input.MachineID = ""
 	if _, err := provider.SignCredential(input); err == nil {
-		t.Fatal("preview credential without helper binding was accepted")
+		t.Fatal("preview credential without machine binding was accepted")
 	}
-	input.HelperID = "helper_1"
+	input.MachineID = "machine_1"
 	input.Scopes = []string{"helper:renew"}
 	if _, err := provider.SignCredential(input); err == nil {
 		t.Fatal("preview credential with wrong scope was accepted")
@@ -205,7 +226,7 @@ func TestSignPreviewRegistrationBindsHelperAndEnvironment(t *testing.T) {
 func TestSignTerminalControlBindsOperationAndTerminalIDs(t *testing.T) {
 	provider, _ := New([]Key{{ID: "key", PrivateKey: testKey(9)}}, "key", time.Minute)
 	now := time.Unix(1_700_000_000, 0)
-	token, err := provider.SignTerminalControl(TerminalControlInput{Issuer: "https://api.example", EnvironmentID: "env_1", UserID: "usr_1", JTI: "jti_1", Nonce: "nonce_1", IssuedAt: now, ExpiresAt: now.Add(time.Minute), Operation: "delete_history", ThreadID: "paperboat-cli", TerminalIDs: []string{"term_a", "term_b"}})
+	token, err := provider.SignTerminalControl(TerminalControlInput{Issuer: "https://api.example", EnvironmentID: "env_1", UserID: "usr_1", JTI: "jti_1", Nonce: "nonce_1", IssuedAt: now, ExpiresAt: now.Add(time.Minute), Operation: "delete_history", ThreadID: "paperboat", TerminalIDs: []string{"term_a", "term_b"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +234,7 @@ func TestSignTerminalControlBindsOperationAndTerminalIDs(t *testing.T) {
 	var header, payload map[string]any
 	decodeJSONPart(t, parts[0], &header)
 	decodeJSONPart(t, parts[1], &payload)
-	if header["typ"] != TerminalControlType || payload["scope"].([]any)[0] != TerminalControlScope || payload["operation"] != "delete_history" || payload["threadId"] != "paperboat-cli" {
+	if header["typ"] != TerminalControlType || payload["scope"].([]any)[0] != TerminalControlScope || payload["operation"] != "delete_history" || payload["threadId"] != "paperboat" {
 		t.Fatalf("header=%#v payload=%#v", header, payload)
 	}
 	if got := payload["terminalIds"].([]any); len(got) != 2 || got[0] != "term_a" {
@@ -274,7 +295,7 @@ func TestSignHealthUsesDedicatedTypeAndScope(t *testing.T) {
 func TestFileTransferCredentialIsSessionAndClientBound(t *testing.T) {
 	provider, _ := New([]Key{{ID: "transfer-key", PrivateKey: testKey(10)}}, "transfer-key", time.Minute)
 	now := time.Unix(1_700_000_000, 0)
-	input := CredentialInput{Issuer: "https://api.example.test", Audience: "paperboat-helper", Subject: "usr_1", JTI: "jti_transfer_1", IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute), CredentialClass: "file_transfer", Scopes: []string{"file:transfer"}, EnvironmentID: "env_1", UserID: "usr_1", CLIClientSessionID: "cli_1", SessionID: "ses_1"}
+	input := CredentialInput{Issuer: "https://api.example.test", Audience: "paperboat-machine", Subject: "usr_1", JTI: "jti_transfer_1", IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute), CredentialClass: "file_transfer", Scopes: []string{"file:transfer"}, EnvironmentID: "env_1", MachineID: "machine_1", SourceMachineID: "machine_source", UserID: "usr_1", CLIClientSessionID: "cli_1", SessionID: "ses_1"}
 	token, err := provider.SignCredential(input)
 	if err != nil {
 		t.Fatal(err)
@@ -289,6 +310,26 @@ func TestFileTransferCredentialIsSessionAndClientBound(t *testing.T) {
 	input.Scopes = []string{"file:stage"}
 	if _, err := provider.SignCredential(input); err == nil {
 		t.Fatal("accepted legacy scope")
+	}
+}
+
+func TestFileTransferCredentialAllowsNoTerminalSession(t *testing.T) {
+	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	provider, err := New([]Key{{ID: "transfer-key", PrivateKey: testKey(11)}}, "transfer-key", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := CredentialInput{Issuer: "https://api.example.test", Audience: "paperboat-machine", Subject: "usr_1", JTI: "jti_transfer_2", IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute), CredentialClass: "file_transfer", Scopes: []string{"file:transfer"}, EnvironmentID: "env_1", MachineID: "machine_1", SourceMachineID: "machine_source", UserID: "usr_1", CLIClientSessionID: "cli_1"}
+	token, err := provider.SignCredential(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := provider.VerifyCredential(token, input.Issuer, "file_transfer", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims.SessionID != "" || claims.SourceMachineID != input.SourceMachineID {
+		t.Fatalf("claims=%+v", claims)
 	}
 }
 

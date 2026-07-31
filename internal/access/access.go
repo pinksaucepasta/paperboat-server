@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/http"
 	"net/url"
 	"slices"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
+	"github.com/pinksaucepasta/paperboat-server/internal/helperruntime"
 	"github.com/pinksaucepasta/paperboat-server/internal/mint"
 	"github.com/pinksaucepasta/paperboat-server/internal/observability"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
@@ -98,6 +100,7 @@ type CredentialInput struct {
 	UserID             string
 	ProjectID          string
 	EnvironmentID      string
+	SourceMachineID    string
 	CLIClientSessionID string
 	HTTPBaseURL        string
 	ExpiresAt          time.Time
@@ -237,6 +240,7 @@ type Service struct {
 	beforeConnect            func(context.Context, string, string) error
 	controlSigner            *mint.Provider
 	now                      func() time.Time
+	runtime                  helperruntime.Client
 }
 
 // HelperHTTPBaseURL returns the canonical provider_route route for an already
@@ -250,6 +254,119 @@ func (s *Service) HelperHTTPBaseURL(ctx context.Context, projectID string) (stri
 		return "", ErrTunnelUnavailable
 	}
 	return strings.TrimRight(resource.HTTPBaseURL, "/"), nil
+}
+
+type TransferDescriptorRequest struct {
+	UserID, SourceMachineID, DestinationMachineID, CLIClientSessionID, SessionID string
+}
+
+func (s *Service) FileTransferDescriptor(ctx context.Context, input TransferDescriptorRequest) (accessdescriptor.FileTransfer, error) {
+	if s.controlSigner == nil || input.UserID == "" || input.SourceMachineID == "" || input.DestinationMachineID == "" || input.SourceMachineID == input.DestinationMachineID || input.CLIClientSessionID == "" || input.SessionID == "" {
+		return accessdescriptor.FileTransfer{}, ErrCredentialIssuerUnavailable
+	}
+	session, err := s.repo.db.Queries().GetProjectTerminalSessionForUser(ctx, dbsqlc.GetProjectTerminalSessionForUserParams{ID: input.SessionID, UserID: input.UserID})
+	if errors.Is(err, sql.ErrNoRows) {
+		return accessdescriptor.FileTransfer{}, ErrTerminalSessionNotFound
+	}
+	if err != nil {
+		return accessdescriptor.FileTransfer{}, err
+	}
+	if _, err := s.repo.db.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: input.SourceMachineID, UserID: input.UserID}); err != nil {
+		return accessdescriptor.FileTransfer{}, ErrCredentialIssuerUnavailable
+	}
+	destination, err := s.repo.db.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: input.DestinationMachineID, UserID: input.UserID})
+	if err != nil || destination.State == "revoked" || destination.State == "disconnected" || destination.State == "deleted" || destination.SeatState != "occupied" {
+		return accessdescriptor.FileTransfer{}, ErrCredentialIssuerUnavailable
+	}
+	project, err := s.projects.Get(ctx, input.UserID, session.ProjectID)
+	if err != nil {
+		return accessdescriptor.FileTransfer{}, err
+	}
+	route, err := s.repo.db.Queries().GetActiveHelperRouteForEnvironment(ctx, project.ID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return accessdescriptor.FileTransfer{}, ErrTunnelUnavailable
+	}
+	if err != nil {
+		return accessdescriptor.FileTransfer{}, err
+	}
+	hostMachineID, err := s.repo.db.Queries().GetHostedMachineIDForEnvironment(ctx, project.ID)
+	if err != nil || hostMachineID == "" {
+		return accessdescriptor.FileTransfer{}, ErrTerminalRuntimeUnavailable
+	}
+	now := time.Now().UTC()
+	if s.now != nil {
+		now = s.now().UTC()
+	}
+	expires := now.Add(s.ttl)
+	if s.ttl <= 0 || expires.After(now.Add(5*time.Minute)) {
+		expires = now.Add(5 * time.Minute)
+	}
+	jti := newID("jti_helper_file_transfer")
+	token, err := s.controlSigner.SignCredential(mint.CredentialInput{
+		Issuer: s.issuer, Audience: "paperboat-machine", Subject: input.UserID, JTI: jti,
+		IssuedAt: now, ExpiresAt: expires, CredentialClass: "file_transfer", Scopes: []string{"file:transfer"},
+		EnvironmentID: project.ID, MachineID: hostMachineID, SourceMachineID: input.SourceMachineID,
+		UserID: input.UserID, CLIClientSessionID: input.CLIClientSessionID, SessionID: input.SessionID,
+	})
+	if err != nil {
+		return accessdescriptor.FileTransfer{}, err
+	}
+	httpBaseURL := "https://" + route.PublicHost
+	transfer := accessdescriptor.FileTransfer{
+		Endpoint: httpBaseURL + "/v1/file-transfers", SourceMachineID: input.SourceMachineID,
+		DestinationMachineID: input.DestinationMachineID, InitiatingUserID: input.UserID,
+		Auth: accessdescriptor.Auth{Method: "bearer", Token: token, ExpiresAt: expires, Scopes: []string{"file:transfer"}}, Policy: s.fileTransferPolicy,
+	}
+	response := ConnectionDescriptor{Schema: accessdescriptor.SchemaV1, Issuer: s.issuer, ProjectID: project.ID, ProjectState: project.State, Connectable: true, ExpiresAt: expires, HTTPBaseURL: httpBaseURL, Status: "ready", Reason: "ready"}
+	setCanonicalCLIIdentity(&response, project)
+	response.FileTransfer = fileTransferDescriptor(httpBaseURL, input.SourceMachineID, input.DestinationMachineID, input.UserID, token, expires, s.fileTransferPolicy)
+	accessSession, err := s.repo.CreateAccessSession(ctx, input.UserID, project.ID, input.CLIClientSessionID, "", jti, "file_transfer", response, expires)
+	if err != nil {
+		return accessdescriptor.FileTransfer{}, err
+	}
+	_ = s.audit.Write(ctx, audit.Event{ActorUserID: input.UserID, ActorType: audit.ActorUser, EventType: "access.file_transfer_approved", ResourceType: "terminal_session", ResourceID: input.SessionID, IdempotencyKey: "access.file_transfer_approved:" + accessSession.ID, Metadata: map[string]any{"destination_machine_id": input.DestinationMachineID}})
+	return transfer, nil
+}
+
+func (s *Service) EligibleTerminalSessionTransferDestinationIDs(ctx context.Context, userID, cliClientSessionID, sessionID string) ([]string, error) {
+	if s.controlSigner == nil || userID == "" || cliClientSessionID == "" || sessionID == "" {
+		return nil, ErrCredentialIssuerUnavailable
+	}
+	session, err := s.repo.db.Queries().GetProjectTerminalSessionForUser(ctx, dbsqlc.GetProjectTerminalSessionForUserParams{ID: sessionID, UserID: userID})
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrTerminalSessionNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	route, err := s.repo.db.Queries().GetActiveHelperRouteForEnvironment(ctx, session.ProjectID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrTunnelUnavailable
+	}
+	if err != nil {
+		return nil, err
+	}
+	hostMachineID, err := s.repo.db.Queries().GetHostedMachineIDForEnvironment(ctx, session.ProjectID)
+	if err != nil || hostMachineID == "" {
+		return nil, ErrTerminalRuntimeUnavailable
+	}
+	now := time.Now().UTC()
+	if s.now != nil {
+		now = s.now().UTC()
+	}
+	token, err := s.controlSigner.SignCredential(mint.CredentialInput{
+		Issuer: s.issuer, Audience: "paperboat-machine", Subject: userID, JTI: newID("jti_helper_terminal"),
+		IssuedAt: now, ExpiresAt: now.Add(2 * time.Minute), CredentialClass: "terminal_operation", Scopes: []string{"terminal:operate"},
+		EnvironmentID: session.ProjectID, MachineID: hostMachineID, UserID: userID, CLIClientSessionID: cliClientSessionID, SessionID: sessionID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	snapshot, err := s.runtime.Terminal(ctx, "https://"+route.PublicHost, token, "transfer-destinations", sessionID, newID("op_transfer_destinations"))
+	if err != nil {
+		return nil, err
+	}
+	return slices.Clone(snapshot.EligibleTransferDestinationMachineIDs), nil
 }
 
 // SetBeforeConnect configures control-plane reconciliation that must complete
@@ -276,6 +393,10 @@ func NewServiceWithCredentials(store *db.DB, projectService *projects.Service, c
 	if issuer == nil {
 		issuer = DisabledCredentialIssuer{}
 	}
+	runtimeTimeout := cfg.TerminalSessions.OperationTimeout
+	if runtimeTimeout <= 0 {
+		runtimeTimeout = 15 * time.Second
+	}
 	return &Service{
 		issuer:                   config.NormalizeIssuer(cfg.HTTP.PublicBaseURL),
 		repo:                     NewRepository(store, cfg.Secrets.EncryptionKey),
@@ -289,6 +410,7 @@ func NewServiceWithCredentials(store *db.DB, projectService *projects.Service, c
 		connectPollInterval:      cfg.Access.ConnectPollInterval,
 		fileTransferPolicy:       descriptorFileTransferPolicy(cfg.Access.FileTransfer),
 		now:                      time.Now,
+		runtime:                  helperruntime.Client{HTTPClient: &http.Client{Timeout: runtimeTimeout}},
 	}
 }
 
@@ -311,6 +433,7 @@ type DescriptorRequest struct {
 	Kind               DescriptorKind
 	CLIClientSessionID string
 	TerminalSessionID  string
+	SourceMachineID    string
 }
 
 type ConnectionDescriptor struct {
@@ -661,7 +784,7 @@ func (s *Service) Connect(ctx context.Context, input DescriptorRequest) (Connect
 		_ = s.audit.Write(ctx, audit.Event{ActorUserID: input.UserID, ActorType: audit.ActorUser, EventType: "access.credentials_minted", ResourceType: "project", ResourceID: input.ProjectID, IdempotencyKey: "access.credentials_minted:" + credentials.TerminalSessionID, Metadata: map[string]any{"environment_id": input.ProjectID, "cli_client_session_id": input.CLIClientSessionID, "terminal_session_id": credentials.TerminalSessionID, "file_session_id": credentials.FileSessionID}})
 		observability.CredentialsMinted()
 	}
-	response := buildResponse(input.Kind, project, resource, expires, credentials, s.fileTransferPolicy, terminalSession.ThreadID, terminalSession.TerminalID, terminalSession.LaunchCwd)
+	response := buildResponse(input.Kind, project, resource, expires, credentials, s.fileTransferPolicy, input.SourceMachineID, input.UserID, terminalSession.ThreadID, terminalSession.TerminalID, terminalSession.LaunchCwd)
 	if input.Kind == DescriptorForCLI {
 		response.Issuer = s.issuer
 	}
@@ -696,7 +819,10 @@ func (s *Service) Connect(ctx context.Context, input DescriptorRequest) (Connect
 }
 
 func (s *Service) connectCanonicalHosted(ctx context.Context, input DescriptorRequest, project projects.Project, terminalSession dbsqlc.ProjectTerminalSession, expires time.Time) (ConnectionDescriptor, error) {
-	if strings.TrimSpace(input.CLIClientSessionID) == "" {
+	if strings.TrimSpace(input.CLIClientSessionID) == "" || strings.TrimSpace(input.SourceMachineID) == "" {
+		return ConnectionDescriptor{}, ErrCredentialIssuerUnavailable
+	}
+	if _, err := s.repo.db.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: input.SourceMachineID, UserID: input.UserID}); err != nil {
 		return ConnectionDescriptor{}, ErrCredentialIssuerUnavailable
 	}
 	if project.State == "stopped" || project.State == "ready" {
@@ -721,6 +847,10 @@ func (s *Service) connectCanonicalHosted(ctx context.Context, input DescriptorRe
 	if err != nil {
 		return ConnectionDescriptor{}, err
 	}
+	machineID, err := s.repo.db.Queries().GetHostedMachineIDForEnvironment(ctx, project.ID)
+	if err != nil || strings.TrimSpace(machineID) == "" {
+		return ConnectionDescriptor{}, ErrTerminalRuntimeUnavailable
+	}
 	if s.beforeConnect != nil {
 		if err := s.beforeConnect(ctx, input.UserID, input.ProjectID); err != nil {
 			return ConnectionDescriptor{}, fmt.Errorf("%w: %v", ErrTerminalRuntimeUnavailable, err)
@@ -734,9 +864,9 @@ func (s *Service) connectCanonicalHosted(ctx context.Context, input DescriptorRe
 	transferJTI := newID("jti_helper_file_transfer")
 	sign := func(class string, scopes []string, jti string) (string, error) {
 		return s.controlSigner.SignCredential(mint.CredentialInput{
-			Issuer: s.issuer, Audience: "paperboat-helper", Subject: input.UserID, JTI: jti,
+			Issuer: s.issuer, Audience: "paperboat-machine", Subject: input.UserID, JTI: jti,
 			IssuedAt: issuedAt, ExpiresAt: expires, CredentialClass: class, Scopes: scopes,
-			EnvironmentID: project.ID, UserID: input.UserID, CLIClientSessionID: input.CLIClientSessionID, SessionID: terminalSession.ID,
+			EnvironmentID: project.ID, MachineID: machineID, SourceMachineID: input.SourceMachineID, UserID: input.UserID, CLIClientSessionID: input.CLIClientSessionID, SessionID: terminalSession.ID,
 		})
 	}
 	terminalToken, err := sign("terminal_operation", []string{"terminal:operate"}, terminalJTI)
@@ -748,14 +878,15 @@ func (s *Service) connectCanonicalHosted(ctx context.Context, input DescriptorRe
 		return ConnectionDescriptor{}, err
 	}
 	httpBaseURL := "https://" + route.PublicHost
+	response.HTTPBaseURL = httpBaseURL
 	response.Connectable, response.Status, response.Reason, response.RetryAfterSeconds = true, "ready", "ready", 0
 	setCanonicalCLIIdentity(&response, project)
 	response.Terminal = map[string]any{
-		"protocol": "paperboat.terminal.v2", "endpoints": map[string]any{"quic": "quic://" + route.PublicHost + ":443", "wss": "wss://" + route.PublicHost + "/v1/runtime"}, "session_id": terminalSession.ID,
+		"protocol": "paperboat.terminal.v1", "endpoints": map[string]any{"quic": "quic://" + route.PublicHost + ":443", "wss": "wss://" + route.PublicHost + "/v1/runtime"}, "session_id": terminalSession.ID,
 		"thread_id": terminalSession.ThreadID, "terminal_id": terminalSession.TerminalID, "cwd": terminalSession.LaunchCwd,
 		"auth": map[string]any{"method": "bearer", "token": terminalToken, "expires_at": expires, "scopes": []string{"terminal:operate"}},
 	}
-	response.FileTransfer = fileTransferDescriptor(httpBaseURL, transferToken, expires, s.fileTransferPolicy)
+	response.FileTransfer = fileTransferDescriptor(httpBaseURL, input.SourceMachineID, machineID, input.UserID, transferToken, expires, s.fileTransferPolicy)
 	session, err := s.repo.CreateAccessSession(ctx, input.UserID, input.ProjectID, input.CLIClientSessionID, terminalJTI, transferJTI, string(input.Kind), response, expires)
 	if err != nil {
 		return ConnectionDescriptor{}, err
@@ -1190,7 +1321,7 @@ func terminalProjectState(state string) bool {
 	}
 }
 
-func buildResponse(kind DescriptorKind, project projects.Project, resource ResourceDescriptor, expires time.Time, credentials CLICredentials, transferPolicy accessdescriptor.FileTransferPolicy, threadID, terminalID, cwd string) ConnectionDescriptor {
+func buildResponse(kind DescriptorKind, project projects.Project, resource ResourceDescriptor, expires time.Time, credentials CLICredentials, transferPolicy accessdescriptor.FileTransferPolicy, sourceMachineID, initiatingUserID, threadID, terminalID, cwd string) ConnectionDescriptor {
 	base := ConnectionDescriptor{ProjectID: project.ID, ProjectState: project.State, Connectable: true, ExpiresAt: expires, Status: "ready", Reason: "ready", HTTPBaseURL: resource.HTTPBaseURL}
 	switch kind {
 	case DescriptorForHelper:
@@ -1218,7 +1349,7 @@ func buildResponse(kind DescriptorKind, project projects.Project, resource Resou
 	case DescriptorForCLI:
 		setCanonicalCLIIdentity(&base, project)
 		if threadID == "" {
-			threadID = "paperboat-cli"
+			threadID = "paperboat"
 		}
 		if terminalID == "" {
 			terminalID = "term-1"
@@ -1227,7 +1358,7 @@ func buildResponse(kind DescriptorKind, project projects.Project, resource Resou
 			cwd = "/workspace"
 		}
 		base.Terminal = map[string]any{
-			"protocol":    "paperboat.terminal.v2",
+			"protocol":    "paperboat.terminal.v1",
 			"endpoints":   terminalEndpoints(resource.WebSocketBaseURL),
 			"session_id":  threadID,
 			"thread_id":   threadID,
@@ -1245,7 +1376,7 @@ func buildResponse(kind DescriptorKind, project projects.Project, resource Resou
 			"url":      project.Repository.SourceURL,
 		}
 		if credentials.FileTransferAuth != nil {
-			base.FileTransfer = fileTransferDescriptor(resource.HTTPBaseURL, stringValue(credentials.FileTransferAuth, "token"), expires, transferPolicy)
+			base.FileTransfer = fileTransferDescriptor(resource.HTTPBaseURL, sourceMachineID, project.ID, initiatingUserID, stringValue(credentials.FileTransferAuth, "token"), expires, transferPolicy)
 			base.FileTransfer["auth"] = credentials.FileTransferAuth
 		}
 	default:
@@ -1258,11 +1389,11 @@ func buildResponse(kind DescriptorKind, project projects.Project, resource Resou
 	return base
 }
 
-func fileTransferDescriptor(httpBaseURL, token string, expires time.Time, policy accessdescriptor.FileTransferPolicy) map[string]any {
+func fileTransferDescriptor(httpBaseURL, sourceMachineID, destinationMachineID, initiatingUserID, token string, expires time.Time, policy accessdescriptor.FileTransferPolicy) map[string]any {
 	endpoint := strings.TrimRight(httpBaseURL, "/") + "/v1/file-transfers"
 	result := map[string]any{
-		"endpoint": endpoint,
-		"policy":   policy,
+		"endpoint": endpoint, "source_machine_id": sourceMachineID, "destination_machine_id": destinationMachineID, "initiating_user_id": initiatingUserID,
+		"policy": policy,
 	}
 	if token != "" {
 		result["auth"] = map[string]any{"method": "bearer", "token": token, "expires_at": expires, "scopes": []string{"file:transfer"}}
@@ -1310,7 +1441,7 @@ func terminalStatusDescriptor(status TunnelStatus, terminalSession dbsqlc.Projec
 		return nil
 	}
 	return map[string]any{
-		"protocol":    "paperboat.terminal.v2",
+		"protocol":    "paperboat.terminal.v1",
 		"endpoints":   terminalEndpoints(status.WebSocketBaseURL),
 		"thread_id":   terminalSession.ThreadID,
 		"terminal_id": terminalSession.TerminalID,

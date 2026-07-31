@@ -31,7 +31,7 @@ func helperIdentityRenew(service *controlplane.EnrollmentService) http.HandlerFu
 			writeError(w, r, http.StatusBadRequest, "validation_failed", "Request body must match the documented schema.")
 			return
 		}
-		proof, proofErr := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Helper-Proof"))
+		proof, proofErr := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Machine-Proof"))
 		if proofErr != nil || len(proof) == 0 || len(proof) > 16<<10 || r.Header.Get("Authorization") != "" {
 			noStore(w)
 			writeError(w, r, http.StatusUnauthorized, "credential_invalid", "Helper identity renewal is unavailable.")

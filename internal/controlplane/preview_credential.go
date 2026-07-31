@@ -16,7 +16,7 @@ type PreviewCredential struct {
 }
 
 func (s *EnrollmentService) IssuePreviewCredential(ctx context.Context, identityToken string, proof, body []byte, method, path string) (PreviewCredential, error) {
-	claims, err := s.VerifyHelperRequest(ctx, identityToken, proof, method, path, body)
+	claims, err := s.VerifyMachineRequest(ctx, identityToken, proof, method, path, body)
 	if err != nil {
 		return PreviewCredential{}, err
 	}
@@ -27,10 +27,10 @@ func (s *EnrollmentService) IssuePreviewCredential(ctx context.Context, identity
 		return PreviewCredential{}, err
 	}
 	token, err := s.signer.SignCredential(mint.CredentialInput{
-		Issuer: s.issuer, Audience: "paperboat-control", Subject: claims.HelperID,
+		Issuer: s.issuer, Audience: "paperboat-control", Subject: claims.MachineID,
 		JTI: jti, IssuedAt: now, ExpiresAt: expiresAt,
 		CredentialClass: "preview_registration", Scopes: []string{"preview:register"},
-		EnvironmentID: claims.EnvironmentID, HelperID: claims.HelperID,
+		EnvironmentID: claims.EnvironmentID, MachineID: claims.MachineID, InstallationGeneration: claims.InstallationGeneration,
 	})
 	if err != nil {
 		return PreviewCredential{}, err
@@ -38,14 +38,14 @@ func (s *EnrollmentService) IssuePreviewCredential(ctx context.Context, identity
 	return PreviewCredential{Credential: token, ExpiresAt: expiresAt}, nil
 }
 
-func (s *EnrollmentService) VerifyPreviewRequest(ctx context.Context, identityToken, previewToken string, proof, body []byte, method, path string) (HelperProofClaims, error) {
-	claims, err := s.VerifyHelperRequest(ctx, identityToken, proof, method, path, body)
+func (s *EnrollmentService) VerifyPreviewRequest(ctx context.Context, identityToken, previewToken string, proof, body []byte, method, path string) (MachineRequestClaims, error) {
+	claims, err := s.VerifyMachineRequest(ctx, identityToken, proof, method, path, body)
 	if err != nil {
-		return HelperProofClaims{}, err
+		return MachineRequestClaims{}, err
 	}
 	credential, err := s.signer.VerifyCredential(previewToken, s.issuer, "preview_registration", s.clock().UTC())
-	if err != nil || credential.HelperID != claims.HelperID || credential.EnvironmentID != claims.EnvironmentID || credential.Subject != claims.HelperID {
-		return HelperProofClaims{}, errors.New("preview credential is invalid")
+	if err != nil || credential.MachineID != claims.MachineID || credential.InstallationGeneration != claims.InstallationGeneration || credential.EnvironmentID != claims.EnvironmentID || credential.Subject != claims.MachineID {
+		return MachineRequestClaims{}, errors.New("preview credential is invalid")
 	}
 	return claims, nil
 }

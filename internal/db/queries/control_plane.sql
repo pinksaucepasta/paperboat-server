@@ -79,8 +79,8 @@ SET last_fencing_token = last_fencing_token + 1,
     lease_id = sqlc.arg(lease_id),
     assignment_id = sqlc.arg(assignment_id),
     environment_id = sqlc.arg(environment_id),
-    helper_id = sqlc.arg(helper_id),
-    helper_generation = sqlc.arg(helper_generation),
+    machine_id = sqlc.arg(machine_id),
+    installation_generation = sqlc.arg(installation_generation),
     base_remote_revision = sqlc.narg(base_remote_revision),
     operation_id = sqlc.arg(operation_id),
     acquired_at = sqlc.arg(now),
@@ -102,8 +102,8 @@ RETURNING *;
 
 -- name: ReleaseControlConfigRepositoryLease :one
 UPDATE control_config_repository_lease_authority
-SET lease_id = NULL, assignment_id = NULL, environment_id = NULL, helper_id = NULL,
-    helper_generation = NULL, base_remote_revision = NULL, operation_id = NULL,
+SET lease_id = NULL, assignment_id = NULL, environment_id = NULL, machine_id = NULL,
+    installation_generation = NULL, base_remote_revision = NULL, operation_id = NULL,
     acquired_at = NULL, expires_at = NULL, revoked_at = NULL,
     version = version + 1, updated_at = sqlc.arg(now)
 WHERE repository_id = sqlc.arg(repository_id) AND lease_id = sqlc.arg(lease_id)
@@ -124,10 +124,10 @@ WHERE environment_id = sqlc.arg(environment_id) AND lease_id IS NOT NULL AND rev
 -- name: CreateControlConfigLeaseOperation :one
 INSERT INTO control_config_repository_lease_operations
   (operation_id, operation_type, request_hash, repository_id, assignment_id, environment_id,
-   helper_id, base_remote_revision, lease_id, fencing_token, result_state, expires_at)
+   machine_id, base_remote_revision, lease_id, fencing_token, result_state, expires_at)
 VALUES
   (sqlc.arg(operation_id), sqlc.arg(operation_type), sqlc.arg(request_hash), sqlc.arg(repository_id),
-   sqlc.narg(assignment_id), sqlc.narg(environment_id), sqlc.narg(helper_id), sqlc.narg(base_remote_revision),
+   sqlc.narg(assignment_id), sqlc.narg(environment_id), sqlc.narg(machine_id), sqlc.narg(base_remote_revision),
    sqlc.narg(lease_id), sqlc.narg(fencing_token), sqlc.arg(result_state), sqlc.narg(expires_at))
 ON CONFLICT (operation_id) DO NOTHING
 RETURNING *;
@@ -136,16 +136,24 @@ RETURNING *;
 SELECT * FROM control_config_repository_lease_operations WHERE operation_id = sqlc.arg(operation_id);
 
 -- name: IsControlEnvironmentBYOD :one
-SELECT EXISTS (SELECT 1 FROM user_machines WHERE environment_id = sqlc.arg(environment_id) AND deleted_at IS NULL);
+SELECT EXISTS (
+  SELECT 1 FROM user_machines
+  WHERE environment_id = sqlc.arg(environment_id)
+    AND machine_kind <> 'hosted'
+    AND deleted_at IS NULL
+);
 
 -- name: GetControlConfigAssignment :one
 SELECT * FROM control_config_assignments WHERE environment_id = $1;
 
 -- name: SetControlConfigAssignment :one
-INSERT INTO control_config_assignments (id, environment_id, repository_id, consent_state, warning_revision)
-VALUES (sqlc.arg(assignment_id), sqlc.arg(environment_id), sqlc.arg(repository_id), sqlc.arg(consent_state), sqlc.narg(warning_revision))
-ON CONFLICT (environment_id) DO UPDATE
-SET id = EXCLUDED.id, repository_id = EXCLUDED.repository_id, consent_state = EXCLUDED.consent_state,
+INSERT INTO control_config_assignments (id, machine_id, environment_id, repository_id, mode, consent_state, warning_revision)
+SELECT sqlc.arg(assignment_id), machine.id, sqlc.arg(environment_id), sqlc.arg(repository_id),
+       sqlc.arg(mode), sqlc.arg(consent_state), sqlc.narg(warning_revision)
+FROM user_machines machine
+WHERE machine.environment_id = sqlc.arg(environment_id) AND machine.deleted_at IS NULL
+ON CONFLICT (machine_id) DO UPDATE
+SET id = EXCLUDED.id, repository_id = EXCLUDED.repository_id, mode = EXCLUDED.mode, consent_state = EXCLUDED.consent_state,
     warning_revision = EXCLUDED.warning_revision, accepted_at = NULL, revoked_at = NULL,
     version = control_config_assignments.version + 1, updated_at = sqlc.arg(now)
 WHERE control_config_assignments.version = sqlc.arg(expected_version)
@@ -153,25 +161,41 @@ RETURNING *;
 
 -- name: GetEligibleControlConfigAssignment :one
 SELECT a.* FROM control_config_assignments a
-JOIN control_helpers h ON h.environment_id = a.environment_id
+JOIN user_machines m ON m.id = a.machine_id
 JOIN control_environments e ON e.id = a.environment_id
 JOIN users u ON u.id = e.owner_user_id
 JOIN control_config_repositories r ON r.id = a.repository_id
-WHERE a.environment_id = sqlc.arg(environment_id) AND h.id = sqlc.arg(helper_id)
-  AND h.state = 'active' AND h.revoked_at IS NULL AND a.repository_id IS NOT NULL
+WHERE a.environment_id = sqlc.arg(environment_id) AND m.id = sqlc.arg(machine_id)
+  AND m.revoked_at IS NULL AND m.deleted_at IS NULL AND m.installation_generation = sqlc.arg(installation_generation)
+  AND a.repository_id IS NOT NULL
   AND a.revoked_at IS NULL AND a.consent_state IN ('not_required','accepted')
   AND e.desired_state = 'active' AND e.revoked_at IS NULL
   AND u.status = 'active'
   AND r.state = 'active' AND r.disconnected_at IS NULL
-FOR UPDATE OF a, h, e, u, r;
+FOR UPDATE OF a, m, e, u, r;
+
+-- name: GetEligibleMachineConfigAssignment :one
+SELECT a.* FROM control_config_assignments a
+JOIN user_machines m ON m.id = a.machine_id
+JOIN control_environments e ON e.id = a.environment_id
+JOIN users u ON u.id = e.owner_user_id
+JOIN control_config_repositories r ON r.id = a.repository_id
+WHERE a.machine_id = sqlc.arg(machine_id) AND a.environment_id = sqlc.arg(environment_id)
+  AND m.revoked_at IS NULL AND m.deleted_at IS NULL AND m.installation_generation = sqlc.arg(installation_generation)
+  AND a.repository_id IS NOT NULL
+  AND a.revoked_at IS NULL AND a.consent_state IN ('not_required','accepted')
+  AND e.desired_state = 'active' AND e.revoked_at IS NULL
+  AND u.status = 'active'
+  AND r.state = 'active' AND r.disconnected_at IS NULL
+FOR UPDATE OF a, m, e, u, r;
 
 -- name: CreateControlConfigCredential :one
 INSERT INTO control_config_credentials
-  (jti_hash, jti, operation_key, request_hash, environment_id, helper_id, assignment_id,
+  (jti_hash, jti, operation_key, request_hash, environment_id, machine_id, assignment_id,
    warning_revision, credential_ciphertext, expires_at)
 VALUES
   (sqlc.arg(jti_hash), sqlc.arg(jti), sqlc.arg(operation_key), sqlc.arg(request_hash), sqlc.arg(environment_id),
-   sqlc.arg(helper_id), sqlc.arg(assignment_id), sqlc.narg(warning_revision),
+   sqlc.arg(machine_id), sqlc.arg(assignment_id), sqlc.narg(warning_revision),
    sqlc.arg(credential_ciphertext), sqlc.arg(expires_at))
 ON CONFLICT (operation_key) DO NOTHING
 RETURNING *;
@@ -197,9 +221,9 @@ ORDER BY revoked.revoked_at, revoked.jti
 LIMIT sqlc.arg(row_limit);
 
 -- name: ListRevokedConnectorGenerations :many
-SELECT id AS helper_id, generation FROM control_helpers
+SELECT machine_id, connector_id, generation FROM control_connector_generations
 WHERE state IN ('revoked','replaced')
-ORDER BY updated_at, id
+ORDER BY updated_at, machine_id, connector_id
 LIMIT sqlc.arg(row_limit);
 
 -- name: ListRevokedControlEnvironments :many
@@ -234,7 +258,7 @@ SELECT * FROM control_config_credentials WHERE operation_key = $1;
 -- name: GetActiveControlConfigCredentialByJTI :one
 SELECT * FROM control_config_credentials
 WHERE jti = sqlc.arg(jti) AND environment_id = sqlc.arg(environment_id)
-  AND helper_id = sqlc.arg(helper_id) AND assignment_id = sqlc.arg(assignment_id)
+  AND machine_id = sqlc.arg(machine_id) AND assignment_id = sqlc.arg(assignment_id)
   AND revoked_at IS NULL AND expires_at > sqlc.arg(now);
 
 -- name: RevokeControlConfigCredentialsForEnvironment :execrows
@@ -249,11 +273,11 @@ WHERE environment_id = sqlc.arg(environment_id) AND revoked_at IS NULL AND state
 -- name: ReserveControlConfigRepositoryAccess :one
 INSERT INTO control_config_repository_access_operations
   (operation_id, request_hash, repository_id, assignment_id, environment_id,
-   helper_id, helper_generation, warning_revision)
+   machine_id, installation_generation, warning_revision)
 VALUES
   (sqlc.arg(operation_id), sqlc.arg(request_hash), sqlc.arg(repository_id),
-   sqlc.arg(assignment_id), sqlc.arg(environment_id), sqlc.arg(helper_id),
-   sqlc.arg(helper_generation), sqlc.arg(warning_revision))
+   sqlc.arg(assignment_id), sqlc.arg(environment_id), sqlc.arg(machine_id),
+   sqlc.arg(installation_generation), sqlc.arg(warning_revision))
 ON CONFLICT (operation_id) DO NOTHING
 RETURNING *;
 
@@ -309,7 +333,7 @@ RETURNING *;
 
 -- name: GetControlConfigWarningContext :one
 SELECT cm.display_name AS machine_name, cm.workspace_root AS canonical_scope,
-       r.display_name AS repository_name
+	   r.display_name AS repository_name, a.mode
 FROM control_config_assignments a
 JOIN control_environments e ON e.id = a.environment_id
 JOIN user_machines cm ON cm.environment_id = e.id AND cm.deleted_at IS NULL
@@ -360,41 +384,49 @@ SELECT environment_id FROM updated_assignments ORDER BY environment_id;
 
 -- name: RecordControlConfigSyncStatus :one
 INSERT INTO control_config_sync_statuses
-  (environment_id, repository_id, assignment_id, helper_id, helper_generation,
-   warning_revision, policy_revision, key_version, sync_revision, state,
-   remote_revision, lease_id, fencing_token, pending_path_count, classifier_pending,
+  (environment_id, repository_id, assignment_id, machine_id, installation_generation,
+   warning_revision, policy_revision, sync_revision, state, mode,
+   remote_revision, manifest_health, manifest_revision, managed_path_count,
+   pending_clean_path_count, last_applied_revision, last_published_revision,
+   lease_id, fencing_token,
    skipped, conflicts, error_code, recovery_actions, last_attempt_at,
-   last_successful_at, helper_updated_at, observed_at)
+   last_successful_at, machine_updated_at, observed_at)
 VALUES
-  (sqlc.arg(environment_id), sqlc.arg(repository_id), sqlc.arg(assignment_id), sqlc.arg(helper_id),
-   sqlc.arg(helper_generation), sqlc.arg(warning_revision), sqlc.arg(policy_revision),
-   sqlc.arg(key_version), sqlc.arg(sync_revision), sqlc.arg(state),
-   sqlc.narg(remote_revision), sqlc.narg(lease_id), sqlc.narg(fencing_token),
-   sqlc.arg(pending_path_count), sqlc.arg(classifier_pending), sqlc.arg(skipped),
+  (sqlc.arg(environment_id), sqlc.arg(repository_id), sqlc.arg(assignment_id), sqlc.arg(machine_id),
+   sqlc.arg(installation_generation), sqlc.arg(warning_revision), sqlc.arg(policy_revision),
+   sqlc.arg(sync_revision), sqlc.arg(state), sqlc.arg(mode),
+   sqlc.narg(remote_revision), sqlc.arg(manifest_health), sqlc.narg(manifest_revision),
+   sqlc.arg(managed_path_count), sqlc.arg(pending_clean_path_count),
+   sqlc.narg(last_applied_revision), sqlc.narg(last_published_revision),
+   sqlc.narg(lease_id), sqlc.narg(fencing_token), sqlc.arg(skipped),
    sqlc.arg(conflicts), sqlc.narg(error_code), sqlc.arg(recovery_actions),
-   sqlc.narg(last_attempt_at), sqlc.narg(last_successful_at), sqlc.arg(helper_updated_at), sqlc.arg(observed_at))
+   sqlc.narg(last_attempt_at), sqlc.narg(last_successful_at), sqlc.arg(machine_updated_at), sqlc.arg(observed_at))
 ON CONFLICT (environment_id) DO UPDATE
 SET repository_id = EXCLUDED.repository_id, assignment_id = EXCLUDED.assignment_id,
-    helper_id = EXCLUDED.helper_id, helper_generation = EXCLUDED.helper_generation,
+    machine_id = EXCLUDED.machine_id, installation_generation = EXCLUDED.installation_generation,
     warning_revision = EXCLUDED.warning_revision, policy_revision = EXCLUDED.policy_revision,
-    key_version = EXCLUDED.key_version, sync_revision = EXCLUDED.sync_revision,
-    state = EXCLUDED.state, remote_revision = EXCLUDED.remote_revision,
+    sync_revision = EXCLUDED.sync_revision,
+    state = EXCLUDED.state, mode = EXCLUDED.mode, remote_revision = EXCLUDED.remote_revision,
+    manifest_health = EXCLUDED.manifest_health, manifest_revision = EXCLUDED.manifest_revision,
+    managed_path_count = EXCLUDED.managed_path_count,
+    pending_clean_path_count = EXCLUDED.pending_clean_path_count,
+    last_applied_revision = EXCLUDED.last_applied_revision,
+    last_published_revision = EXCLUDED.last_published_revision,
     lease_id = EXCLUDED.lease_id, fencing_token = EXCLUDED.fencing_token,
-    pending_path_count = EXCLUDED.pending_path_count, classifier_pending = EXCLUDED.classifier_pending,
     skipped = EXCLUDED.skipped, conflicts = EXCLUDED.conflicts, error_code = EXCLUDED.error_code,
     recovery_actions = EXCLUDED.recovery_actions, last_attempt_at = EXCLUDED.last_attempt_at,
-    last_successful_at = EXCLUDED.last_successful_at, helper_updated_at = EXCLUDED.helper_updated_at,
+    last_successful_at = EXCLUDED.last_successful_at, machine_updated_at = EXCLUDED.machine_updated_at,
     observed_at = EXCLUDED.observed_at
 WHERE (
     control_config_sync_statuses.sync_revision < EXCLUDED.sync_revision
     OR (
       control_config_sync_statuses.sync_revision = EXCLUDED.sync_revision
-      AND control_config_sync_statuses.helper_updated_at < EXCLUDED.helper_updated_at
+      AND control_config_sync_statuses.machine_updated_at < EXCLUDED.machine_updated_at
     )
   )
   AND control_config_sync_statuses.assignment_id = EXCLUDED.assignment_id
-  AND control_config_sync_statuses.helper_id = EXCLUDED.helper_id
-  AND control_config_sync_statuses.helper_generation = EXCLUDED.helper_generation
+  AND control_config_sync_statuses.machine_id = EXCLUDED.machine_id
+  AND control_config_sync_statuses.installation_generation = EXCLUDED.installation_generation
 RETURNING *;
 
 -- name: GetControlConfigSyncRevision :one
@@ -402,16 +434,16 @@ SELECT sync_revision
 FROM control_config_sync_statuses
 WHERE environment_id = sqlc.arg(environment_id)
   AND assignment_id = sqlc.arg(assignment_id)
-  AND helper_id = sqlc.arg(helper_id)
-  AND helper_generation = sqlc.arg(helper_generation);
+  AND machine_id = sqlc.arg(machine_id)
+  AND installation_generation = sqlc.arg(installation_generation);
 
 -- name: InsertControlConfigSyncStatusHistory :exec
 INSERT INTO control_config_sync_status_history
-  (environment_id, sync_revision, repository_id, assignment_id, helper_id,
-   helper_generation, state, error_code, remote_revision, observed_at)
+  (environment_id, sync_revision, repository_id, assignment_id, machine_id,
+   installation_generation, state, error_code, remote_revision, observed_at)
 VALUES
   (sqlc.arg(environment_id), sqlc.arg(sync_revision), sqlc.arg(repository_id),
-   sqlc.arg(assignment_id), sqlc.arg(helper_id), sqlc.arg(helper_generation),
+   sqlc.arg(assignment_id), sqlc.arg(machine_id), sqlc.arg(installation_generation),
    sqlc.arg(state), sqlc.narg(error_code), sqlc.narg(remote_revision), sqlc.arg(observed_at))
 ON CONFLICT (environment_id, sync_revision) DO UPDATE
 SET state = EXCLUDED.state, error_code = EXCLUDED.error_code,
@@ -420,50 +452,47 @@ SET state = EXCLUDED.state, error_code = EXCLUDED.error_code,
 -- name: ListOwnedControlConfigSyncStatus :many
 SELECT
   environment.id AS environment_id,
+  machine.id AS machine_id,
   environment.workspace_id,
-  CASE WHEN machine.id IS NOT NULL THEN 'byod'::text ELSE 'hosted'::text END AS profile,
+  CASE WHEN machine.machine_kind = 'hosted' THEN 'hosted'::text ELSE 'byod'::text END AS profile,
   COALESCE(machine.display_name, project.name, environment.id)::text AS display_name,
   environment.desired_state AS environment_state,
   assignment.id AS assignment_id,
   assignment.repository_id,
+	assignment.mode,
   assignment.consent_state,
   assignment.warning_revision,
   assignment.version AS assignment_version,
   repository.display_name AS repository_name,
   repository.state AS repository_state,
-  COALESCE(helper.id, '')::text AS helper_id,
-  COALESCE(helper.generation, 0)::bigint AS helper_generation,
+  COALESCE(machine.installation_generation, 0)::bigint AS installation_generation,
   status.state AS sync_state,
   status.assignment_id AS status_assignment_id,
   status.repository_id AS status_repository_id,
-  status.helper_id AS status_helper_id,
-  status.helper_generation AS status_helper_generation,
+  status.machine_id AS status_machine_id,
+  status.installation_generation AS status_installation_generation,
   status.policy_revision,
-  status.key_version,
   status.sync_revision,
   status.remote_revision,
-  status.pending_path_count,
-  COALESCE(status.classifier_pending, '[]'::jsonb)::jsonb AS classifier_pending,
+  status.manifest_health,
+  status.manifest_revision,
+  status.managed_path_count,
+  status.pending_clean_path_count,
+  status.last_applied_revision,
+  status.last_published_revision,
   COALESCE(status.skipped, '[]'::jsonb)::jsonb AS skipped,
   COALESCE(status.conflicts, '[]'::jsonb)::jsonb AS conflicts,
   status.error_code,
   COALESCE(status.recovery_actions, '[]'::jsonb)::jsonb AS recovery_actions,
   status.last_attempt_at,
   status.last_successful_at,
-  status.helper_updated_at,
+  status.machine_updated_at,
   status.observed_at
 FROM control_environments environment
 LEFT JOIN control_config_assignments assignment
   ON assignment.environment_id = environment.id
 LEFT JOIN control_config_repositories repository
   ON repository.id = assignment.repository_id
-LEFT JOIN LATERAL (
-  SELECT id, generation
-  FROM control_helpers
-  WHERE environment_id = environment.id AND state = 'active' AND revoked_at IS NULL
-  ORDER BY generation DESC
-  LIMIT 1
-) helper ON true
 LEFT JOIN control_config_sync_statuses status
   ON status.environment_id = environment.id
 LEFT JOIN user_machines machine
@@ -561,12 +590,32 @@ SELECT * FROM control_helpers
 WHERE id = sqlc.arg(id) AND environment_id = sqlc.arg(environment_id)
   AND state = 'active' AND revoked_at IS NULL;
 
+-- name: GetHostedMachineIDForEnvironment :one
+SELECT id
+FROM user_machines
+WHERE environment_id = sqlc.arg(environment_id)
+  AND machine_kind = 'hosted'
+  AND revoked_at IS NULL
+  AND deleted_at IS NULL;
+
+-- name: GetMachineIDForActiveHelper :one
+SELECT coalesce(
+  (SELECT m.id FROM user_machines m
+   WHERE m.environment_id = h.environment_id AND m.deleted_at IS NULL
+   ORDER BY m.created_at DESC LIMIT 1),
+  (SELECT fm.fly_machine_id FROM fly_machines fm
+   WHERE fm.project_id = h.environment_id)
+)::text AS machine_id
+FROM control_helpers h
+WHERE h.id = sqlc.arg(helper_id) AND h.environment_id = sqlc.arg(environment_id)
+  AND h.state = 'active' AND h.revoked_at IS NULL;
+
 -- name: HostedHelperOwnsMachine :one
 SELECT EXISTS (
   SELECT 1 FROM control_helpers h
   JOIN fly_machines fm ON fm.project_id=h.environment_id
   WHERE h.id=sqlc.arg(helper_id) AND h.environment_id=sqlc.arg(environment_id)
-    AND h.state='active' AND h.revoked_at IS NULL AND fm.fly_machine_id=sqlc.arg(machine_id)
+    AND h.state='active' AND h.revoked_at IS NULL AND fm.user_machine_id=sqlc.arg(machine_id)
 );
 
 -- name: BYODHelperOwnsMachine :one
@@ -609,20 +658,27 @@ WHERE environment_id = sqlc.arg(environment_id)
   AND state IN ('pending','admitted','draining') AND revoked_at IS NULL;
 
 -- name: AdvanceControlConnectorGeneration :one
-INSERT INTO control_connector_generations (environment_id, helper_id, generation, edge_pool, state)
-VALUES (sqlc.arg(environment_id), sqlc.arg(helper_id), 1, sqlc.arg(edge_pool), 'pending')
-ON CONFLICT (environment_id) DO UPDATE
-SET helper_id = EXCLUDED.helper_id, generation = control_connector_generations.generation + 1,
+INSERT INTO control_connector_generations (environment_id, connector_id, machine_id, generation, edge_pool, state)
+VALUES (sqlc.arg(environment_id), sqlc.arg(connector_id), sqlc.arg(machine_id), 1, sqlc.arg(edge_pool), 'pending')
+ON CONFLICT (environment_id, connector_id) DO UPDATE
+SET machine_id = EXCLUDED.machine_id, generation = control_connector_generations.generation + 1,
     edge_pool = EXCLUDED.edge_pool, state = 'pending', edge_node_id = NULL,
     admission_jti_hash = NULL, expires_at = NULL, revoked_at = NULL,
     version = control_connector_generations.version + 1, updated_at = sqlc.arg(updated_at)
 RETURNING *;
 
--- name: BindControlConnectorHelper :one
-INSERT INTO control_connector_generations (environment_id, helper_id, generation, edge_pool, state)
-VALUES (sqlc.arg(environment_id), sqlc.arg(helper_id), 1, sqlc.arg(edge_pool), 'pending')
-ON CONFLICT (environment_id) DO UPDATE
-SET helper_id = EXCLUDED.helper_id, state = 'pending', updated_at = sqlc.arg(updated_at)
+-- name: BindControlConnectorMachine :one
+INSERT INTO control_connector_generations (environment_id, connector_id, machine_id, generation, edge_pool, state)
+VALUES (sqlc.arg(environment_id), sqlc.arg(connector_id), sqlc.arg(machine_id), 1, sqlc.arg(edge_pool), 'pending')
+ON CONFLICT (environment_id, connector_id) DO UPDATE
+SET machine_id = EXCLUDED.machine_id, state = 'pending', updated_at = sqlc.arg(updated_at)
+RETURNING *;
+
+-- name: EnsureControlConnectorMachine :one
+INSERT INTO control_connector_generations (environment_id, connector_id, machine_id, generation, edge_pool, state)
+VALUES (sqlc.arg(environment_id), sqlc.arg(connector_id), sqlc.arg(machine_id), 1, sqlc.arg(edge_pool), 'pending')
+ON CONFLICT (environment_id, connector_id) DO UPDATE
+SET environment_id = EXCLUDED.environment_id
 RETURNING *;
 
 -- name: GetControlEnvironment :one
@@ -648,7 +704,7 @@ SELECT EXISTS (
     AND e.revoked_at IS NULL
     AND r.desired_state = 'attached'
     AND (
-      r.kind = 'helper_https_wss'
+      r.kind = 'runtime_https_wss'
       OR (
         r.kind = 'preview_public_https_wss'
         AND p.state <> 'removed'
@@ -876,7 +932,7 @@ SELECT
      AND assignment.consent_state IN ('accepted','not_required'))::bigint AS eligible_environments,
   (SELECT count(*) FROM control_config_sync_statuses WHERE state IN ('restoring','watching','pending','syncing','healthy','warning','conflict','sync_uncertain'))::bigint AS reporting_environments,
   (SELECT count(*) FROM control_config_sync_statuses WHERE state='conflict')::bigint AS conflict_environments,
-  (SELECT coalesce(sum(pending_path_count),0) FROM control_config_sync_statuses)::bigint AS pending_paths,
+  (SELECT coalesce(sum(pending_clean_path_count),0) FROM control_config_sync_statuses)::bigint AS pending_paths,
   (SELECT count(*) FROM control_config_sync_statuses WHERE state='sync_uncertain')::bigint AS uncertain_publications,
   (SELECT count(*) FROM control_config_repository_lease_authority
    WHERE lease_id IS NOT NULL AND revoked_at IS NULL AND expires_at>now())::bigint AS active_writer_leases,
@@ -960,12 +1016,15 @@ RETURNING *;
 SELECT c.generation, c.edge_pool, c.edge_node_id, (c.revoked_at IS NOT NULL OR e.desired_state = 'revoked') AS revoked
 FROM control_connector_generations c
 JOIN control_environments e ON e.id = c.environment_id
-JOIN control_helpers h ON h.id = c.helper_id AND h.environment_id = c.environment_id
-WHERE c.environment_id = sqlc.arg(environment_id) AND c.helper_id = sqlc.arg(helper_id)
-  AND h.state = 'active' AND e.desired_state = 'active';
+JOIN user_machines m ON m.id = c.machine_id AND m.environment_id = c.environment_id
+WHERE c.environment_id = sqlc.arg(environment_id) AND c.machine_id = sqlc.arg(machine_id)
+  AND c.connector_id = sqlc.arg(connector_id)
+  AND m.revoked_at IS NULL AND m.deleted_at IS NULL AND e.desired_state = 'active';
 
 -- name: GetControlConnectorGenerationForUpdate :one
-SELECT * FROM control_connector_generations WHERE environment_id = sqlc.arg(environment_id) FOR UPDATE;
+SELECT * FROM control_connector_generations
+WHERE environment_id = sqlc.arg(environment_id) AND connector_id = sqlc.arg(connector_id)
+FOR UPDATE;
 
 -- name: SelectReadyControlTunnelNodeForUpdate :one
 SELECT * FROM control_tunnel_nodes
@@ -980,22 +1039,24 @@ SET edge_node_id = sqlc.arg(edge_node_id), state = 'admitted', admission_jti_has
     admission_operation_key = sqlc.arg(admission_operation_key), admission_request_hash = sqlc.arg(admission_request_hash),
     admission_credential_ciphertext = sqlc.arg(admission_credential_ciphertext), expires_at = sqlc.arg(expires_at),
     version = version + 1, updated_at = sqlc.arg(updated_at)
-WHERE environment_id = sqlc.arg(environment_id) AND generation = sqlc.arg(generation)
+WHERE environment_id = sqlc.arg(environment_id) AND connector_id = sqlc.arg(connector_id)
+  AND generation = sqlc.arg(generation)
 RETURNING *;
 
 -- name: ListControlRoutesForNode :many
-SELECT r.id AS route_id, r.desired_revision AS route_revision, r.environment_id,
+SELECT r.id AS route_id, r.desired_revision AS route_revision, r.environment_id, c.connector_id,
        c.generation AS connector_generation, c.edge_node_id, r.kind, r.public_host,
        r.target_host, r.target_port, COALESCE(p.state, 'ready') AS preview_state,
        CASE WHEN p.state = 'degraded' AND NOT p.target_ready THEN 'target_unhealthy' ELSE '' END AS preview_reason
 FROM control_routes r
-JOIN control_connector_generations c ON c.environment_id = r.environment_id
-JOIN control_helpers h ON h.id = c.helper_id AND h.environment_id = c.environment_id
+JOIN control_connector_generations c ON c.environment_id = r.environment_id AND c.connector_id = r.connector_id
+JOIN user_machines m ON m.id = c.machine_id AND m.environment_id = c.environment_id
 LEFT JOIN control_previews p ON p.route_id = r.id
 WHERE c.edge_node_id = sqlc.arg(edge_node_id)
   AND r.desired_state IN ('attached','replacing')
   AND c.state IN ('pending','admitted')
-  AND h.state = 'active'
+  AND (c.expires_at IS NULL OR c.expires_at > sqlc.arg(now))
+  AND m.revoked_at IS NULL AND m.deleted_at IS NULL
   AND (p.id IS NULL OR (p.state NOT IN ('expired','removed') AND (p.expires_at IS NULL OR p.expires_at > sqlc.arg(now))))
 ORDER BY r.id;
 
@@ -1003,7 +1064,7 @@ ORDER BY r.id;
 SELECT r.id AS route_id, r.desired_revision AS route_revision, r.kind, r.public_host, r.target_host, r.target_port
 FROM control_routes r
 LEFT JOIN control_previews p ON p.route_id = r.id
-WHERE r.environment_id = sqlc.arg(environment_id)
+WHERE r.environment_id = sqlc.arg(environment_id) AND r.connector_id = sqlc.arg(connector_id)
   AND r.desired_state IN ('attached','replacing')
   AND (p.id IS NULL OR (p.state NOT IN ('expired','removed') AND (p.expires_at IS NULL OR p.expires_at > now())))
 ORDER BY r.id
@@ -1072,15 +1133,16 @@ SELECT * FROM control_routes WHERE id = $1 FOR UPDATE;
 -- name: GetActiveHelperRouteForEnvironment :one
 SELECT r.* FROM control_routes r
 JOIN control_environments e ON e.id = r.environment_id
-JOIN control_connector_generations c ON c.environment_id = r.environment_id
-JOIN control_helpers h ON h.id = c.helper_id AND h.environment_id = r.environment_id
+JOIN control_connector_generations c ON c.environment_id = r.environment_id AND c.connector_id = r.connector_id
+JOIN user_machines m ON m.id = c.machine_id AND m.environment_id = r.environment_id
 JOIN control_tunnel_nodes n ON n.id = c.edge_node_id AND n.id = r.applied_node_id
 WHERE r.environment_id = sqlc.arg(environment_id)
-  AND r.kind = 'helper_https_wss'
+  AND r.kind = 'runtime_https_wss'
+	AND c.connector_id = 'runtime'
   AND r.desired_state IN ('attached','replacing')
   AND r.applied_revision >= r.desired_revision
   AND r.applied_generation = c.generation
-  AND e.desired_state = 'active' AND h.state = 'active' AND c.state = 'admitted'
+  AND e.desired_state = 'active' AND m.revoked_at IS NULL AND m.deleted_at IS NULL AND c.state = 'admitted'
   AND n.state = 'ready' AND n.ready = true
 ORDER BY r.id
 LIMIT 1;
@@ -1088,14 +1150,14 @@ LIMIT 1;
 -- name: GetHelperRouteForEnvironment :one
 SELECT * FROM control_routes
 WHERE environment_id = sqlc.arg(environment_id)
-  AND kind = 'helper_https_wss'
+  AND kind = 'runtime_https_wss'
   AND desired_state IN ('attached','replacing')
 ORDER BY id
 LIMIT 1;
 
 -- name: CreateControlRoute :one
-INSERT INTO control_routes (id, environment_id, kind, public_host, target_host, target_port)
-VALUES (sqlc.arg(id), sqlc.arg(environment_id), sqlc.arg(kind), sqlc.arg(public_host), sqlc.arg(target_host), sqlc.arg(target_port))
+INSERT INTO control_routes (id, environment_id, connector_id, kind, public_host, target_host, target_port)
+VALUES (sqlc.arg(id), sqlc.arg(environment_id), sqlc.arg(connector_id), sqlc.arg(kind), sqlc.arg(public_host), sqlc.arg(target_host), sqlc.arg(target_port))
 RETURNING *;
 
 -- name: ReserveControlRouteOperation :one
@@ -1127,6 +1189,7 @@ WHERE id = sqlc.arg(id) AND desired_revision = sqlc.arg(route_revision)
   AND EXISTS (
     SELECT 1 FROM control_connector_generations c
     WHERE c.environment_id = control_routes.environment_id
+	  AND c.connector_id = control_routes.connector_id
       AND c.edge_node_id = sqlc.arg(edge_node_id)
       AND c.generation = sqlc.arg(connector_generation)
       AND c.state IN ('pending','admitted')
@@ -1188,6 +1251,7 @@ WHERE operation_id = sqlc.arg(operation_id);
 -- name: GetOwnedControlConfigConflictContext :one
 SELECT assignment.id AS assignment_id,
        assignment.version AS assignment_version,
+       assignment.mode AS assignment_mode,
        assignment.repository_id,
        status.remote_revision,
        status.conflicts
@@ -1201,16 +1265,15 @@ JOIN control_config_sync_statuses status
 WHERE environment.id=sqlc.arg(environment_id)
   AND environment.owner_user_id=sqlc.arg(owner_user_id)
   AND environment.desired_state='active'
-  AND repository.state='active'
-  AND status.state='conflict';
+  AND repository.state='active';
 
 -- name: CreateControlConfigConflictResolution :one
 INSERT INTO control_config_conflict_resolutions
-  (id, environment_id, repository_id, assignment_id, conflict_revision, path,
+  (id, environment_id, repository_id, assignment_id, conflict_revision, path, scope,
    action, expected_remote_revision, requested_by_user_id)
 VALUES
   (sqlc.arg(id),sqlc.arg(environment_id),sqlc.arg(repository_id),sqlc.arg(assignment_id),
-   sqlc.arg(conflict_revision),sqlc.arg(path),sqlc.arg(action),
+   sqlc.arg(conflict_revision),sqlc.arg(path),sqlc.arg(scope),sqlc.arg(action),
    sqlc.arg(expected_remote_revision),sqlc.arg(requested_by_user_id))
 ON CONFLICT (environment_id, conflict_revision, path) DO UPDATE
 SET action=EXCLUDED.action,

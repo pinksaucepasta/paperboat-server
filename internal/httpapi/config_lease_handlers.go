@@ -120,8 +120,8 @@ func configLeaseRelease(service *controlplane.ConfigLeaseService) http.HandlerFu
 }
 
 func authenticateConfigLease(w http.ResponseWriter, r *http.Request, service *controlplane.ConfigLeaseService, body []byte) (controlplane.ConfigLeaseHolder, bool) {
-	proof, err := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Helper-Proof"))
-	identityToken := strings.TrimSpace(r.Header.Get("X-Paperboat-Helper-Identity"))
+	proof, err := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Machine-Proof"))
+	identityToken := strings.TrimSpace(r.Header.Get("X-Paperboat-Machine-Identity"))
 	credential, bearerOK := bearerToken(r)
 	if err != nil || identityToken == "" || !bearerOK {
 		writeError(w, r, http.StatusUnauthorized, "lease_invalid", "Configuration lease authorization is invalid.")

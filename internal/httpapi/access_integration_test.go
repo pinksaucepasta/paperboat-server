@@ -21,7 +21,6 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/auth"
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
-	pbsync "github.com/pinksaucepasta/paperboat-server/internal/configsync"
 	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
@@ -134,7 +133,7 @@ func TestRuntimeObservationRequiresProjectMachineCredential(t *testing.T) {
 	const machineToken = "project-scoped-machine-token"
 	seedHeartbeatMachineCredential(t, store, projectID, machineID, machineToken)
 
-	body := `{"environment_id":"` + projectID + `","resource_id":"` + machineID + `","sampled_at":"2026-07-06T12:00:05Z","reporter_version":"test","config_sync":{"state":"warning","last_attempt_at":"2026-07-06T12:00:04Z","last_successful_sync_at":"2026-07-06T11:59:00Z","remote_commit":"abc123","pending_path_count":3,"skipped":[{"path":".config/a","bytes":6,"reason":"max_file_bytes"},{"path":".config/b","bytes":7,"reason":"max_file_bytes"},{"path":".config/c","bytes":8,"reason":"max_file_bytes"}],"conflicts":[],"error_code":"","error_message":"","max_file_bytes":10,"max_batch_bytes":20,"policy_revision":"test-policy","updated_at":"2026-07-06T12:00:04Z"}}`
+	body := `{"environment_id":"` + projectID + `","resource_id":"` + machineID + `","sampled_at":"2026-07-06T12:00:05Z","reporter_version":"test"}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer wrong-token")
@@ -171,59 +170,6 @@ func TestRuntimeObservationRequiresProjectMachineCredential(t *testing.T) {
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("valid heartbeat status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	var syncState, policyRevision string
-	var pending, skippedCount int
-	if err := store.SQL().QueryRowContext(context.Background(), `SELECT state,pending_path_count,jsonb_array_length(skipped),policy_revision FROM paperboat.config_sync_statuses WHERE project_id=$1 AND machine_id=$2`, projectID, machineID).Scan(&syncState, &pending, &skippedCount, &policyRevision); err != nil {
-		t.Fatal(err)
-	}
-	if syncState != "warning" || pending != 3 || skippedCount != 2 || policyRevision != "test-policy" {
-		t.Fatalf("persisted sync status = state:%s pending:%d skipped:%d policy:%s", syncState, pending, skippedCount, policyRevision)
-	}
-	if _, err := store.SQL().ExecContext(context.Background(), `UPDATE paperboat.config_sync_statuses SET received_at='epoch'::timestamptz WHERE project_id=$1 AND machine_id=$2`, projectID, machineID); err != nil {
-		t.Fatal(err)
-	}
-
-	older := strings.Replace(body, `"sampled_at":"2026-07-06T12:00:05Z"`, `"sampled_at":"2026-07-06T11:00:05Z"`, 1)
-	older = strings.Replace(older, `"updated_at":"2026-07-06T12:00:04Z"`, `"updated_at":"2026-07-06T11:00:04Z"`, 1)
-	older = strings.Replace(older, `"state":"warning"`, `"state":"healthy"`, 1)
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(older))
-	req.Header.Set("Authorization", "Bearer "+machineToken)
-	req.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("older heartbeat status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	var receiptRefreshed bool
-	if err := store.SQL().QueryRowContext(context.Background(), `SELECT state,received_at > now()-interval '1 minute' FROM paperboat.config_sync_statuses WHERE project_id=$1 AND machine_id=$2`, projectID, machineID).Scan(&syncState, &receiptRefreshed); err != nil {
-		t.Fatal(err)
-	}
-	if syncState != "warning" {
-		t.Fatalf("older heartbeat replaced newer sync state with %q", syncState)
-	}
-	if !receiptRefreshed {
-		t.Fatal("older status heartbeat did not refresh its server receipt time")
-	}
-	if _, err := store.SQL().ExecContext(context.Background(), `UPDATE paperboat.config_sync_statuses SET state='error',status_updated_at=now()+interval '1 hour' WHERE project_id=$1 AND machine_id=$2`, projectID, machineID); err != nil {
-		t.Fatal(err)
-	}
-	corrected := strings.Replace(body, `"sampled_at":"2026-07-06T12:00:05Z"`, `"sampled_at":"2026-07-06T12:01:05Z"`, 1)
-	corrected = strings.Replace(corrected, `"updated_at":"2026-07-06T12:00:04Z"`, `"updated_at":"2026-07-06T12:01:04Z"`, 1)
-	corrected = strings.Replace(corrected, `"state":"warning"`, `"state":"healthy"`, 1)
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(corrected))
-	req.Header.Set("Authorization", "Bearer "+machineToken)
-	req.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("clock-corrected heartbeat status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	if err := store.SQL().QueryRowContext(context.Background(), `SELECT state FROM paperboat.config_sync_statuses WHERE project_id=$1 AND machine_id=$2`, projectID, machineID).Scan(&syncState); err != nil {
-		t.Fatal(err)
-	}
-	if syncState != "healthy" {
-		t.Fatalf("future timestamp froze corrected sync state at %q", syncState)
 	}
 }
 
@@ -323,7 +269,7 @@ func TestProjectConnectionDescriptorIssuesHelperDescriptorWithScopedAuth(t *test
 		t.Fatalf("connect status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), `"terminal"`) ||
-		!strings.Contains(rec.Body.String(), `"endpoint":"wss://`) ||
+		!strings.Contains(rec.Body.String(), `"wss":"wss://`) ||
 		!strings.Contains(rec.Body.String(), `"websocket_ticket"`) ||
 		!strings.Contains(rec.Body.String(), `"file_transfer"`) ||
 		strings.Contains(rec.Body.String(), `"upload"`) ||
@@ -352,7 +298,7 @@ func TestProjectConnectionDescriptorUsesCanonicalHostedHelperRoute(t *testing.T)
 	tokens := authorizeCLI(t, router, cookies)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", strings.NewReader(`{"source_machine_id":"source_`+projectID+`"}`))
 	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -367,7 +313,8 @@ func TestProjectConnectionDescriptorUsesCanonicalHostedHelperRoute(t *testing.T)
 	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if envelope.Data.Terminal["endpoint"] != "wss://hosted-canonical.example.test/v1/runtime" || envelope.Data.FileTransfer["endpoint"] != "https://hosted-canonical.example.test/v1/file-transfers" {
+	terminalEndpoints, _ := envelope.Data.Terminal["endpoints"].(map[string]any)
+	if terminalEndpoints["wss"] != "wss://hosted-canonical.example.test/v1/runtime" || envelope.Data.FileTransfer["endpoint"] != "https://hosted-canonical.example.test/v1/file-transfers" {
 		t.Fatalf("canonical endpoints missing: %s", rec.Body.String())
 	}
 	terminalSessionID, _ := envelope.Data.Terminal["session_id"].(string)
@@ -379,10 +326,17 @@ func TestProjectConnectionDescriptorUsesCanonicalHostedHelperRoute(t *testing.T)
 		if verifyErr != nil {
 			t.Fatalf("verify %s: %v", class, verifyErr)
 		}
-		if claims.EnvironmentID != projectID || claims.UserID != userID || claims.CLIClientSessionID != tokens.CLIClientSessionID || claims.SessionID != terminalSessionID {
+		if claims.EnvironmentID != projectID || claims.UserID != userID || claims.MachineID != "machine_"+projectID || claims.CLIClientSessionID != tokens.CLIClientSessionID || claims.SessionID != terminalSessionID {
 			t.Fatalf("%s bindings=%#v", class, claims)
 		}
 		revokedJTIs = append(revokedJTIs, claims.JTI)
+	}
+	var persistedHTTPBaseURL string
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT http_base_url FROM paperboat.access_sessions WHERE project_id = $1 AND session_type = 'cli'`, projectID).Scan(&persistedHTTPBaseURL); err != nil {
+		t.Fatal(err)
+	}
+	if persistedHTTPBaseURL != "https://hosted-canonical.example.test" {
+		t.Fatalf("access session http_base_url = %q", persistedHTTPBaseURL)
 	}
 	var legacyResources int
 	if err := store.SQL().QueryRowContext(context.Background(), `SELECT count(*) FROM paperboat.provider_routes WHERE project_id=$1`, projectID).Scan(&legacyResources); err != nil {
@@ -1089,7 +1043,6 @@ func newAccessIntegrationRouterWithService(t *testing.T, email string, client ac
 		Projects:          projectService,
 		EnvironmentAccess: accessService,
 		MeteringRepo:      metering.NewRuntimeRepository(store, cfg.Secrets.EncryptionKey),
-		ConfigSync:        pbsync.NewRepository(store, cfg.ConfigSync, cfg.Secrets.EncryptionKey, audit.NewWriter(store)),
 		ConfigStatuses:    configStatuses,
 	})
 	cookies := loginCookies(t, router, "workos_seed_"+email+":"+email+":Access Owner")
@@ -1202,10 +1155,12 @@ func seedHostedHelperRoute(t *testing.T, store *db.DB, projectID, userID, public
 		args  []any
 	}{
 		{`INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id,desired_state) VALUES ($1,$1,$2,'active') ON CONFLICT (id) DO UPDATE SET desired_state='active',owner_user_id=EXCLUDED.owner_user_id`, []any{projectID, userID}},
+		{`INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,'Source machine','darwin','arm64','/Users/source','online','occupied',true)`, []any{"source_" + projectID, userID, "source_env_" + projectID}},
+		{`INSERT INTO paperboat.fly_machines (id,project_id,user_machine_id,fly_machine_id,state,image_ref,region) SELECT $1,$2,m.id,$3,'running','image','iad' FROM paperboat.user_machines m WHERE m.environment_id=$2 AND m.machine_kind='hosted' ON CONFLICT (project_id) DO UPDATE SET fly_machine_id=EXCLUDED.fly_machine_id,state=EXCLUDED.state`, []any{"flm_" + projectID, projectID, "machine_" + projectID}},
 		{`INSERT INTO paperboat.control_helpers (id,environment_id,state) VALUES ($1,$2,'active')`, []any{helperID, projectID}},
 		{`INSERT INTO paperboat.control_tunnel_nodes (id,edge_pool,protocol_version,process_epoch,state,ready,last_heartbeat_at) VALUES ($1,'development','1.0',$2,'ready',true,now())`, []any{edgeID, "epoch_" + projectID}},
-		{`INSERT INTO paperboat.control_connector_generations (environment_id,helper_id,generation,edge_pool,edge_node_id,state) VALUES ($1,$2,1,'development',$3,'admitted')`, []any{projectID, helperID, edgeID}},
-		{`INSERT INTO paperboat.control_routes (id,environment_id,kind,public_host,target_host,target_port,desired_revision,applied_revision,applied_node_id,applied_generation) VALUES ($1,$2,'helper_https_wss',$3,'127.0.0.1',8080,1,1,$4,1)`, []any{"route_" + projectID, projectID, publicHost, edgeID}},
+		{`INSERT INTO paperboat.control_connector_generations (environment_id,machine_id,generation,edge_pool,edge_node_id,state) SELECT $1,m.id,1,'development',$2,'admitted' FROM paperboat.user_machines m WHERE m.environment_id=$1`, []any{projectID, edgeID}},
+		{`INSERT INTO paperboat.control_routes (id,environment_id,kind,public_host,target_host,target_port,desired_revision,applied_revision,applied_node_id,applied_generation) VALUES ($1,$2,'runtime_https_wss',$3,'127.0.0.1',8080,1,1,$4,1)`, []any{"route_" + projectID, projectID, publicHost, edgeID}},
 	}
 	for _, statement := range statements {
 		if _, err := store.SQL().ExecContext(ctx, statement.query, statement.args...); err != nil {
@@ -1243,8 +1198,9 @@ func seedHeartbeatMachineCredential(t *testing.T, store *db.DB, projectID, machi
 	}
 	encoded := fmt.Sprintf("%x", ciphertext)
 	if _, err := store.SQL().ExecContext(context.Background(), `
-INSERT INTO paperboat.fly_machines (id, project_id, fly_machine_id, state, image_ref, region)
-VALUES ($1, $2, $3, 'running', 'image', 'iad')
+INSERT INTO paperboat.fly_machines (id, project_id, user_machine_id, fly_machine_id, state, image_ref, region)
+SELECT $1, $2, m.id, $3, 'running', 'image', 'iad' FROM paperboat.user_machines m
+WHERE m.environment_id=$2 AND m.machine_kind='hosted'
 ON CONFLICT (project_id) DO UPDATE SET fly_machine_id = EXCLUDED.fly_machine_id, state = EXCLUDED.state`,
 		"flm_heartbeat_"+projectID, projectID, machineID); err != nil {
 		t.Fatal(err)

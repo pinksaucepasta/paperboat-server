@@ -33,7 +33,7 @@ func TestRouteIntentOwnershipAndRevisionCAS(t *testing.T) {
 	if err != nil || replay.ID != route.ID {
 		t.Fatalf("create replay = %#v, %v", replay, err)
 	}
-	if _, err := service.Create(ctx, owner, "route-create-01", environmentID, "helper_https_wss", "other.example.test", "127.0.0.1", 8080); !errors.Is(err, ErrRouteConflict) {
+	if _, err := service.Create(ctx, owner, "route-create-01", environmentID, "runtime_https_wss", "other.example.test", "127.0.0.1", 8080); !errors.Is(err, ErrRouteConflict) {
 		t.Fatalf("create conflict = %v", err)
 	}
 	if _, err := service.Transition(ctx, other, "route-transition-other", route.ID, "detaching", 1); !errors.Is(err, ErrRouteDenied) {

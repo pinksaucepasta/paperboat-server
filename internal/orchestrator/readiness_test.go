@@ -11,9 +11,9 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 )
 
-func TestHostedHelperHostUsesTypedHelperBaseDomain(t *testing.T) {
+func TestHostedHelperHostUsesTypedRuntimeBaseDomain(t *testing.T) {
 	cfg := config.Default()
-	cfg.HelperBaseDomain = "helper.example.test"
+	cfg.RuntimeBaseDomain = "helper.example.test"
 	cfg.Access.RouteSubdomainPrefix = "pb"
 
 	if got, want := HostedHelperHealthHost(cfg, "prj_test"), "pb-prj-test.helper.example.test"; got != want {

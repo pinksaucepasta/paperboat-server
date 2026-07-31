@@ -7,6 +7,11 @@ ON CONFLICT (project_id) WHERE is_default AND deleted_at IS NULL DO NOTHING;
 SELECT project_terminal_sessions.*
 FROM project_terminal_sessions WHERE project_id=sqlc.arg(project_id) AND id=sqlc.arg(id) AND deleted_at IS NULL;
 
+-- name: GetProjectTerminalSessionForUser :one
+SELECT s.* FROM project_terminal_sessions s
+JOIN projects p ON p.id = s.project_id
+WHERE s.id = sqlc.arg(id) AND p.user_id = sqlc.arg(user_id) AND s.deleted_at IS NULL;
+
 -- name: GetDefaultTerminalSession :one
 SELECT project_terminal_sessions.*
 FROM project_terminal_sessions WHERE project_id=sqlc.arg(project_id) AND is_default AND deleted_at IS NULL;

@@ -10,7 +10,158 @@ import (
 	"database/sql"
 	"encoding/json"
 	"time"
+
+	"github.com/lib/pq"
 )
+
+const addUserMachineHostRole = `-- name: AddUserMachineHostRole :one
+UPDATE user_machines
+SET setup_roles = ARRAY(SELECT DISTINCT role FROM unnest(setup_roles || ARRAY['host']::text[]) role ORDER BY role),
+    display_name = $1, workspace_root = $2,
+    runtime_versions = $3,
+    updated_at = CASE WHEN NOT ('host' = ANY(setup_roles)) OR display_name IS DISTINCT FROM $1 OR workspace_root IS DISTINCT FROM $2 OR runtime_versions IS DISTINCT FROM $3 THEN now() ELSE updated_at END,
+    version = version + CASE WHEN NOT ('host' = ANY(setup_roles)) OR display_name IS DISTINCT FROM $1 OR workspace_root IS DISTINCT FROM $2 OR runtime_versions IS DISTINCT FROM $3 THEN 1 ELSE 0 END
+WHERE id = $4 AND user_id = $5 AND deleted_at IS NULL
+RETURNING id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state, online, provider_route_route_id, provider_route_client_id, provider_route_http_base_url, provider_route_websocket_base_url, runtime_versions, enrolled_at, last_seen_at, revoked_at, disconnected_at, deleted_at, version, created_at, updated_at, availability_mode, availability_desired_version, availability_observed_mode, availability_observed_version, availability_observed_at, availability_status, availability_error_code, host_service_version, host_service_scope, worker_generation, os_boot_id, worker_service_scope, connector_state, connector_generation, host_update_rollbacks, runtime_diagnostics_observed_at, setup_roles, public_identity_key, installation_generation, machine_kind
+`
+
+type AddUserMachineHostRoleParams struct {
+	DisplayName     string
+	WorkspaceRoot   string
+	RuntimeVersions json.RawMessage
+	ID              string
+	UserID          string
+}
+
+func (q *Queries) AddUserMachineHostRole(ctx context.Context, arg AddUserMachineHostRoleParams) (UserMachine, error) {
+	row := q.db.QueryRowContext(ctx, addUserMachineHostRole,
+		arg.DisplayName,
+		arg.WorkspaceRoot,
+		arg.RuntimeVersions,
+		arg.ID,
+		arg.UserID,
+	)
+	var i UserMachine
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.EnvironmentID,
+		&i.DisplayName,
+		&i.Platform,
+		&i.Architecture,
+		&i.WorkspaceRoot,
+		&i.State,
+		&i.SeatState,
+		&i.Online,
+		&i.ProviderRouteRouteID,
+		&i.ProviderRouteClientID,
+		&i.ProviderRouteHttpBaseUrl,
+		&i.ProviderRouteWebsocketBaseUrl,
+		&i.RuntimeVersions,
+		&i.EnrolledAt,
+		&i.LastSeenAt,
+		&i.RevokedAt,
+		&i.DisconnectedAt,
+		&i.DeletedAt,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AvailabilityMode,
+		&i.AvailabilityDesiredVersion,
+		&i.AvailabilityObservedMode,
+		&i.AvailabilityObservedVersion,
+		&i.AvailabilityObservedAt,
+		&i.AvailabilityStatus,
+		&i.AvailabilityErrorCode,
+		&i.HostServiceVersion,
+		&i.HostServiceScope,
+		&i.WorkerGeneration,
+		&i.OsBootID,
+		&i.WorkerServiceScope,
+		&i.ConnectorState,
+		&i.ConnectorGeneration,
+		&i.HostUpdateRollbacks,
+		&i.RuntimeDiagnosticsObservedAt,
+		pq.Array(&i.SetupRoles),
+		&i.PublicIdentityKey,
+		&i.InstallationGeneration,
+		&i.MachineKind,
+	)
+	return i, err
+}
+
+const addUserMachineInteractiveRole = `-- name: AddUserMachineInteractiveRole :one
+UPDATE user_machines
+SET setup_roles = ARRAY(SELECT DISTINCT role FROM unnest(setup_roles || ARRAY['interactive']::text[]) role ORDER BY role),
+    display_name = $1, runtime_versions = $2,
+    updated_at = CASE WHEN NOT ('interactive' = ANY(setup_roles)) OR display_name IS DISTINCT FROM $1 OR runtime_versions IS DISTINCT FROM $2 THEN now() ELSE updated_at END,
+    version = version + CASE WHEN NOT ('interactive' = ANY(setup_roles)) OR display_name IS DISTINCT FROM $1 OR runtime_versions IS DISTINCT FROM $2 THEN 1 ELSE 0 END
+WHERE id = $3 AND user_id = $4 AND deleted_at IS NULL
+RETURNING id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state, online, provider_route_route_id, provider_route_client_id, provider_route_http_base_url, provider_route_websocket_base_url, runtime_versions, enrolled_at, last_seen_at, revoked_at, disconnected_at, deleted_at, version, created_at, updated_at, availability_mode, availability_desired_version, availability_observed_mode, availability_observed_version, availability_observed_at, availability_status, availability_error_code, host_service_version, host_service_scope, worker_generation, os_boot_id, worker_service_scope, connector_state, connector_generation, host_update_rollbacks, runtime_diagnostics_observed_at, setup_roles, public_identity_key, installation_generation, machine_kind
+`
+
+type AddUserMachineInteractiveRoleParams struct {
+	DisplayName     string
+	RuntimeVersions json.RawMessage
+	ID              string
+	UserID          string
+}
+
+func (q *Queries) AddUserMachineInteractiveRole(ctx context.Context, arg AddUserMachineInteractiveRoleParams) (UserMachine, error) {
+	row := q.db.QueryRowContext(ctx, addUserMachineInteractiveRole,
+		arg.DisplayName,
+		arg.RuntimeVersions,
+		arg.ID,
+		arg.UserID,
+	)
+	var i UserMachine
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.EnvironmentID,
+		&i.DisplayName,
+		&i.Platform,
+		&i.Architecture,
+		&i.WorkspaceRoot,
+		&i.State,
+		&i.SeatState,
+		&i.Online,
+		&i.ProviderRouteRouteID,
+		&i.ProviderRouteClientID,
+		&i.ProviderRouteHttpBaseUrl,
+		&i.ProviderRouteWebsocketBaseUrl,
+		&i.RuntimeVersions,
+		&i.EnrolledAt,
+		&i.LastSeenAt,
+		&i.RevokedAt,
+		&i.DisconnectedAt,
+		&i.DeletedAt,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AvailabilityMode,
+		&i.AvailabilityDesiredVersion,
+		&i.AvailabilityObservedMode,
+		&i.AvailabilityObservedVersion,
+		&i.AvailabilityObservedAt,
+		&i.AvailabilityStatus,
+		&i.AvailabilityErrorCode,
+		&i.HostServiceVersion,
+		&i.HostServiceScope,
+		&i.WorkerGeneration,
+		&i.OsBootID,
+		&i.WorkerServiceScope,
+		&i.ConnectorState,
+		&i.ConnectorGeneration,
+		&i.HostUpdateRollbacks,
+		&i.RuntimeDiagnosticsObservedAt,
+		pq.Array(&i.SetupRoles),
+		&i.PublicIdentityKey,
+		&i.InstallationGeneration,
+		&i.MachineKind,
+	)
+	return i, err
+}
 
 const approveUserMachineEnrollment = `-- name: ApproveUserMachineEnrollment :execrows
 UPDATE user_machine_enrollments
@@ -51,6 +202,74 @@ func (q *Queries) ApproveUserMachinePairing(ctx context.Context, arg ApproveUser
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const bindCanonicalMachineIdentity = `-- name: BindCanonicalMachineIdentity :one
+UPDATE user_machines
+SET public_identity_key = $1,
+    installation_generation = installation_generation +
+      CASE WHEN public_identity_key IS NOT NULL AND public_identity_key <> $1 THEN 1 ELSE 0 END,
+    enrolled_at = coalesce(enrolled_at, $2), updated_at = $2,
+    version = version + CASE WHEN public_identity_key IS DISTINCT FROM $1 THEN 1 ELSE 0 END
+WHERE environment_id = $3 AND deleted_at IS NULL
+RETURNING id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state, online, provider_route_route_id, provider_route_client_id, provider_route_http_base_url, provider_route_websocket_base_url, runtime_versions, enrolled_at, last_seen_at, revoked_at, disconnected_at, deleted_at, version, created_at, updated_at, availability_mode, availability_desired_version, availability_observed_mode, availability_observed_version, availability_observed_at, availability_status, availability_error_code, host_service_version, host_service_scope, worker_generation, os_boot_id, worker_service_scope, connector_state, connector_generation, host_update_rollbacks, runtime_diagnostics_observed_at, setup_roles, public_identity_key, installation_generation, machine_kind
+`
+
+type BindCanonicalMachineIdentityParams struct {
+	PublicIdentityKey sql.NullString
+	Now               time.Time
+	EnvironmentID     string
+}
+
+func (q *Queries) BindCanonicalMachineIdentity(ctx context.Context, arg BindCanonicalMachineIdentityParams) (UserMachine, error) {
+	row := q.db.QueryRowContext(ctx, bindCanonicalMachineIdentity, arg.PublicIdentityKey, arg.Now, arg.EnvironmentID)
+	var i UserMachine
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.EnvironmentID,
+		&i.DisplayName,
+		&i.Platform,
+		&i.Architecture,
+		&i.WorkspaceRoot,
+		&i.State,
+		&i.SeatState,
+		&i.Online,
+		&i.ProviderRouteRouteID,
+		&i.ProviderRouteClientID,
+		&i.ProviderRouteHttpBaseUrl,
+		&i.ProviderRouteWebsocketBaseUrl,
+		&i.RuntimeVersions,
+		&i.EnrolledAt,
+		&i.LastSeenAt,
+		&i.RevokedAt,
+		&i.DisconnectedAt,
+		&i.DeletedAt,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AvailabilityMode,
+		&i.AvailabilityDesiredVersion,
+		&i.AvailabilityObservedMode,
+		&i.AvailabilityObservedVersion,
+		&i.AvailabilityObservedAt,
+		&i.AvailabilityStatus,
+		&i.AvailabilityErrorCode,
+		&i.HostServiceVersion,
+		&i.HostServiceScope,
+		&i.WorkerGeneration,
+		&i.OsBootID,
+		&i.WorkerServiceScope,
+		&i.ConnectorState,
+		&i.ConnectorGeneration,
+		&i.HostUpdateRollbacks,
+		&i.RuntimeDiagnosticsObservedAt,
+		pq.Array(&i.SetupRoles),
+		&i.PublicIdentityKey,
+		&i.InstallationGeneration,
+		&i.MachineKind,
+	)
+	return i, err
 }
 
 const cancelUserMachineEnrollment = `-- name: CancelUserMachineEnrollment :execrows
@@ -99,6 +318,45 @@ func (q *Queries) ClaimUserMachineEnrollment(ctx context.Context, arg ClaimUserM
 		arg.WorkspaceRoot,
 		arg.ID,
 	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const clearTerminalSessionTransferDestination = `-- name: ClearTerminalSessionTransferDestination :one
+WITH project_updated AS (
+  UPDATE project_terminal_sessions s SET transfer_destination_machine_id = NULL, version = s.version + 1, updated_at = now()
+  FROM projects p
+  WHERE s.id = $1 AND s.project_id = p.id AND p.user_id = $2 AND s.deleted_at IS NULL
+  RETURNING s.id
+), machine_updated AS (
+  UPDATE user_machine_terminal_sessions s SET transfer_destination_machine_id = NULL, version = s.version + 1, updated_at = now()
+  FROM user_machines owner
+  WHERE s.id = $1 AND s.user_machine_id = owner.id AND owner.user_id = $2 AND s.deleted_at IS NULL
+  RETURNING s.id
+)
+SELECT id FROM project_updated UNION ALL SELECT id FROM machine_updated LIMIT 1
+`
+
+type ClearTerminalSessionTransferDestinationParams struct {
+	SessionID string
+	UserID    string
+}
+
+func (q *Queries) ClearTerminalSessionTransferDestination(ctx context.Context, arg ClearTerminalSessionTransferDestinationParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, clearTerminalSessionTransferDestination, arg.SessionID, arg.UserID)
+	var id string
+	err := row.Scan(&id)
+	return id, err
+}
+
+const clearUserTransferDestinationDefault = `-- name: ClearUserTransferDestinationDefault :execrows
+DELETE FROM user_transfer_destination_defaults WHERE user_id = $1
+`
+
+func (q *Queries) ClearUserTransferDestinationDefault(ctx context.Context, userID string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, clearUserTransferDestinationDefault, userID)
 	if err != nil {
 		return 0, err
 	}
@@ -243,38 +501,30 @@ func (q *Queries) CreateDefaultUserMachineTerminalSession(ctx context.Context, a
 	return err
 }
 
-const createUserMachine = `-- name: CreateUserMachine :one
+const createHostedMachine = `-- name: CreateHostedMachine :one
 INSERT INTO user_machines (
   id, user_id, environment_id, display_name, platform, architecture, workspace_root,
-  state, seat_state, runtime_versions, enrolled_at
+  state, seat_state, runtime_versions, setup_roles, machine_kind
 ) VALUES (
   $1, $2, $3, $4,
-  $5, $6, $7,
-  'offline', 'occupied', $8, now()
-) RETURNING id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state, online, provider_route_route_id, provider_route_client_id, provider_route_http_base_url, provider_route_websocket_base_url, runtime_versions, enrolled_at, last_seen_at, revoked_at, disconnected_at, deleted_at, version, created_at, updated_at, availability_mode, availability_desired_version, availability_observed_mode, availability_observed_version, availability_observed_at, availability_status, availability_error_code, host_service_version, host_service_scope, worker_generation, os_boot_id, worker_service_scope, connector_state, connector_generation, host_update_rollbacks, runtime_diagnostics_observed_at
+  'linux', 'unknown', '/workspace', 'pending', 'occupied', '{}'::jsonb,
+  ARRAY['host']::text[], 'hosted'
+) RETURNING id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state, online, provider_route_route_id, provider_route_client_id, provider_route_http_base_url, provider_route_websocket_base_url, runtime_versions, enrolled_at, last_seen_at, revoked_at, disconnected_at, deleted_at, version, created_at, updated_at, availability_mode, availability_desired_version, availability_observed_mode, availability_observed_version, availability_observed_at, availability_status, availability_error_code, host_service_version, host_service_scope, worker_generation, os_boot_id, worker_service_scope, connector_state, connector_generation, host_update_rollbacks, runtime_diagnostics_observed_at, setup_roles, public_identity_key, installation_generation, machine_kind
 `
 
-type CreateUserMachineParams struct {
-	ID              string
-	UserID          string
-	EnvironmentID   string
-	DisplayName     string
-	Platform        string
-	Architecture    string
-	WorkspaceRoot   string
-	RuntimeVersions json.RawMessage
+type CreateHostedMachineParams struct {
+	ID            string
+	UserID        string
+	EnvironmentID string
+	DisplayName   string
 }
 
-func (q *Queries) CreateUserMachine(ctx context.Context, arg CreateUserMachineParams) (UserMachine, error) {
-	row := q.db.QueryRowContext(ctx, createUserMachine,
+func (q *Queries) CreateHostedMachine(ctx context.Context, arg CreateHostedMachineParams) (UserMachine, error) {
+	row := q.db.QueryRowContext(ctx, createHostedMachine,
 		arg.ID,
 		arg.UserID,
 		arg.EnvironmentID,
 		arg.DisplayName,
-		arg.Platform,
-		arg.Architecture,
-		arg.WorkspaceRoot,
-		arg.RuntimeVersions,
 	)
 	var i UserMachine
 	err := row.Scan(
@@ -317,6 +567,135 @@ func (q *Queries) CreateUserMachine(ctx context.Context, arg CreateUserMachinePa
 		&i.ConnectorGeneration,
 		&i.HostUpdateRollbacks,
 		&i.RuntimeDiagnosticsObservedAt,
+		pq.Array(&i.SetupRoles),
+		&i.PublicIdentityKey,
+		&i.InstallationGeneration,
+		&i.MachineKind,
+	)
+	return i, err
+}
+
+const createInteractiveMachine = `-- name: CreateInteractiveMachine :one
+INSERT INTO user_machines (
+  id, user_id, environment_id, display_name, platform, architecture, workspace_root,
+  state, seat_state, runtime_versions, setup_roles, public_identity_key, enrolled_at
+) VALUES (
+  $1, $2, $3, $4,
+  $5, $6, $7,
+  'offline', 'released', $8, ARRAY['interactive']::text[], $9, now()
+) RETURNING id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state, online, provider_route_route_id, provider_route_client_id, provider_route_http_base_url, provider_route_websocket_base_url, runtime_versions, enrolled_at, last_seen_at, revoked_at, disconnected_at, deleted_at, version, created_at, updated_at, availability_mode, availability_desired_version, availability_observed_mode, availability_observed_version, availability_observed_at, availability_status, availability_error_code, host_service_version, host_service_scope, worker_generation, os_boot_id, worker_service_scope, connector_state, connector_generation, host_update_rollbacks, runtime_diagnostics_observed_at, setup_roles, public_identity_key, installation_generation, machine_kind
+`
+
+type CreateInteractiveMachineParams struct {
+	ID                string
+	UserID            string
+	EnvironmentID     string
+	DisplayName       string
+	Platform          string
+	Architecture      string
+	WorkspaceRoot     string
+	RuntimeVersions   json.RawMessage
+	PublicIdentityKey sql.NullString
+}
+
+func (q *Queries) CreateInteractiveMachine(ctx context.Context, arg CreateInteractiveMachineParams) (UserMachine, error) {
+	row := q.db.QueryRowContext(ctx, createInteractiveMachine,
+		arg.ID,
+		arg.UserID,
+		arg.EnvironmentID,
+		arg.DisplayName,
+		arg.Platform,
+		arg.Architecture,
+		arg.WorkspaceRoot,
+		arg.RuntimeVersions,
+		arg.PublicIdentityKey,
+	)
+	var i UserMachine
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.EnvironmentID,
+		&i.DisplayName,
+		&i.Platform,
+		&i.Architecture,
+		&i.WorkspaceRoot,
+		&i.State,
+		&i.SeatState,
+		&i.Online,
+		&i.ProviderRouteRouteID,
+		&i.ProviderRouteClientID,
+		&i.ProviderRouteHttpBaseUrl,
+		&i.ProviderRouteWebsocketBaseUrl,
+		&i.RuntimeVersions,
+		&i.EnrolledAt,
+		&i.LastSeenAt,
+		&i.RevokedAt,
+		&i.DisconnectedAt,
+		&i.DeletedAt,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AvailabilityMode,
+		&i.AvailabilityDesiredVersion,
+		&i.AvailabilityObservedMode,
+		&i.AvailabilityObservedVersion,
+		&i.AvailabilityObservedAt,
+		&i.AvailabilityStatus,
+		&i.AvailabilityErrorCode,
+		&i.HostServiceVersion,
+		&i.HostServiceScope,
+		&i.WorkerGeneration,
+		&i.OsBootID,
+		&i.WorkerServiceScope,
+		&i.ConnectorState,
+		&i.ConnectorGeneration,
+		&i.HostUpdateRollbacks,
+		&i.RuntimeDiagnosticsObservedAt,
+		pq.Array(&i.SetupRoles),
+		&i.PublicIdentityKey,
+		&i.InstallationGeneration,
+		&i.MachineKind,
+	)
+	return i, err
+}
+
+const createMachineControlRenewal = `-- name: CreateMachineControlRenewal :one
+INSERT INTO machine_control_renewals (
+  operation_id, machine_id, installation_generation, credential_jti, issued_at, expires_at
+) VALUES (
+  $1, $2, $3,
+  $4, $5, $6
+) ON CONFLICT (operation_id) DO UPDATE SET operation_id = EXCLUDED.operation_id
+RETURNING operation_id, machine_id, installation_generation, credential_jti, issued_at, expires_at, created_at
+`
+
+type CreateMachineControlRenewalParams struct {
+	OperationID            string
+	MachineID              string
+	InstallationGeneration int64
+	CredentialJti          string
+	IssuedAt               time.Time
+	ExpiresAt              time.Time
+}
+
+func (q *Queries) CreateMachineControlRenewal(ctx context.Context, arg CreateMachineControlRenewalParams) (MachineControlRenewal, error) {
+	row := q.db.QueryRowContext(ctx, createMachineControlRenewal,
+		arg.OperationID,
+		arg.MachineID,
+		arg.InstallationGeneration,
+		arg.CredentialJti,
+		arg.IssuedAt,
+		arg.ExpiresAt,
+	)
+	var i MachineControlRenewal
+	err := row.Scan(
+		&i.OperationID,
+		&i.MachineID,
+		&i.InstallationGeneration,
+		&i.CredentialJti,
+		&i.IssuedAt,
+		&i.ExpiresAt,
+		&i.CreatedAt,
 	)
 	return i, err
 }
@@ -497,12 +876,12 @@ func (q *Queries) CreateUserMachineEnrollment(ctx context.Context, arg CreateUse
 const createUserMachinePairing = `-- name: CreateUserMachinePairing :one
 INSERT INTO user_machine_pairings (
   id, verifier_hash, user_code, requested_display_name, platform, architecture,
-  workspace_root, runtime_versions, expires_at
+  workspace_root, runtime_versions, public_identity_key, expires_at
 ) VALUES (
   $1, $2, $3, $4,
-  $5, $6, $7, $8,
-  $9
-) RETURNING id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at
+  $5, $6, $7, $8, $9,
+  $10
+) RETURNING id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key
 `
 
 type CreateUserMachinePairingParams struct {
@@ -514,6 +893,7 @@ type CreateUserMachinePairingParams struct {
 	Architecture         string
 	WorkspaceRoot        string
 	RuntimeVersions      json.RawMessage
+	PublicIdentityKey    string
 	ExpiresAt            time.Time
 }
 
@@ -527,6 +907,7 @@ func (q *Queries) CreateUserMachinePairing(ctx context.Context, arg CreateUserMa
 		arg.Architecture,
 		arg.WorkspaceRoot,
 		arg.RuntimeVersions,
+		arg.PublicIdentityKey,
 		arg.ExpiresAt,
 	)
 	var i UserMachinePairing
@@ -550,6 +931,7 @@ func (q *Queries) CreateUserMachinePairing(ctx context.Context, arg CreateUserMa
 		&i.DeniedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PublicIdentityKey,
 	)
 	return i, err
 }
@@ -580,6 +962,19 @@ func (q *Queries) CreateUserMachineTerminalSession(ctx context.Context, arg Crea
 		arg.LaunchCwd,
 	)
 	return err
+}
+
+const deleteExpiredMachineControlRenewals = `-- name: DeleteExpiredMachineControlRenewals :execrows
+DELETE FROM machine_control_renewals
+WHERE expires_at < $1
+`
+
+func (q *Queries) DeleteExpiredMachineControlRenewals(ctx context.Context, cutoff time.Time) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteExpiredMachineControlRenewals, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const deleteUserMachine = `-- name: DeleteUserMachine :execrows
@@ -766,6 +1161,63 @@ func (q *Queries) FailUserMachineEnrollmentForHelper(ctx context.Context, arg Fa
 	return i, err
 }
 
+const getActiveUserMachineForControl = `-- name: GetActiveUserMachineForControl :one
+SELECT id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state, online, provider_route_route_id, provider_route_client_id, provider_route_http_base_url, provider_route_websocket_base_url, runtime_versions, enrolled_at, last_seen_at, revoked_at, disconnected_at, deleted_at, version, created_at, updated_at, availability_mode, availability_desired_version, availability_observed_mode, availability_observed_version, availability_observed_at, availability_status, availability_error_code, host_service_version, host_service_scope, worker_generation, os_boot_id, worker_service_scope, connector_state, connector_generation, host_update_rollbacks, runtime_diagnostics_observed_at, setup_roles, public_identity_key, installation_generation, machine_kind FROM user_machines
+WHERE id = $1 AND deleted_at IS NULL AND revoked_at IS NULL
+  AND public_identity_key IS NOT NULL
+`
+
+func (q *Queries) GetActiveUserMachineForControl(ctx context.Context, id string) (UserMachine, error) {
+	row := q.db.QueryRowContext(ctx, getActiveUserMachineForControl, id)
+	var i UserMachine
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.EnvironmentID,
+		&i.DisplayName,
+		&i.Platform,
+		&i.Architecture,
+		&i.WorkspaceRoot,
+		&i.State,
+		&i.SeatState,
+		&i.Online,
+		&i.ProviderRouteRouteID,
+		&i.ProviderRouteClientID,
+		&i.ProviderRouteHttpBaseUrl,
+		&i.ProviderRouteWebsocketBaseUrl,
+		&i.RuntimeVersions,
+		&i.EnrolledAt,
+		&i.LastSeenAt,
+		&i.RevokedAt,
+		&i.DisconnectedAt,
+		&i.DeletedAt,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AvailabilityMode,
+		&i.AvailabilityDesiredVersion,
+		&i.AvailabilityObservedMode,
+		&i.AvailabilityObservedVersion,
+		&i.AvailabilityObservedAt,
+		&i.AvailabilityStatus,
+		&i.AvailabilityErrorCode,
+		&i.HostServiceVersion,
+		&i.HostServiceScope,
+		&i.WorkerGeneration,
+		&i.OsBootID,
+		&i.WorkerServiceScope,
+		&i.ConnectorState,
+		&i.ConnectorGeneration,
+		&i.HostUpdateRollbacks,
+		&i.RuntimeDiagnosticsObservedAt,
+		pq.Array(&i.SetupRoles),
+		&i.PublicIdentityKey,
+		&i.InstallationGeneration,
+		&i.MachineKind,
+	)
+	return i, err
+}
+
 const getActiveUserMachineSeatQuantity = `-- name: GetActiveUserMachineSeatQuantity :one
 SELECT seat_quantity FROM user_machine_entitlements
 WHERE user_id = $1
@@ -781,8 +1233,64 @@ func (q *Queries) GetActiveUserMachineSeatQuantity(ctx context.Context, userID s
 	return seat_quantity, err
 }
 
+const getCanonicalMachineForEnvironment = `-- name: GetCanonicalMachineForEnvironment :one
+SELECT id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state, online, provider_route_route_id, provider_route_client_id, provider_route_http_base_url, provider_route_websocket_base_url, runtime_versions, enrolled_at, last_seen_at, revoked_at, disconnected_at, deleted_at, version, created_at, updated_at, availability_mode, availability_desired_version, availability_observed_mode, availability_observed_version, availability_observed_at, availability_status, availability_error_code, host_service_version, host_service_scope, worker_generation, os_boot_id, worker_service_scope, connector_state, connector_generation, host_update_rollbacks, runtime_diagnostics_observed_at, setup_roles, public_identity_key, installation_generation, machine_kind FROM user_machines
+WHERE environment_id = $1 AND deleted_at IS NULL
+`
+
+func (q *Queries) GetCanonicalMachineForEnvironment(ctx context.Context, environmentID string) (UserMachine, error) {
+	row := q.db.QueryRowContext(ctx, getCanonicalMachineForEnvironment, environmentID)
+	var i UserMachine
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.EnvironmentID,
+		&i.DisplayName,
+		&i.Platform,
+		&i.Architecture,
+		&i.WorkspaceRoot,
+		&i.State,
+		&i.SeatState,
+		&i.Online,
+		&i.ProviderRouteRouteID,
+		&i.ProviderRouteClientID,
+		&i.ProviderRouteHttpBaseUrl,
+		&i.ProviderRouteWebsocketBaseUrl,
+		&i.RuntimeVersions,
+		&i.EnrolledAt,
+		&i.LastSeenAt,
+		&i.RevokedAt,
+		&i.DisconnectedAt,
+		&i.DeletedAt,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AvailabilityMode,
+		&i.AvailabilityDesiredVersion,
+		&i.AvailabilityObservedMode,
+		&i.AvailabilityObservedVersion,
+		&i.AvailabilityObservedAt,
+		&i.AvailabilityStatus,
+		&i.AvailabilityErrorCode,
+		&i.HostServiceVersion,
+		&i.HostServiceScope,
+		&i.WorkerGeneration,
+		&i.OsBootID,
+		&i.WorkerServiceScope,
+		&i.ConnectorState,
+		&i.ConnectorGeneration,
+		&i.HostUpdateRollbacks,
+		&i.RuntimeDiagnosticsObservedAt,
+		pq.Array(&i.SetupRoles),
+		&i.PublicIdentityKey,
+		&i.InstallationGeneration,
+		&i.MachineKind,
+	)
+	return i, err
+}
+
 const getDefaultUserMachineTerminalSession = `-- name: GetDefaultUserMachineTerminalSession :one
-SELECT s.id, s.user_machine_id, s.terminal_id, s.thread_id, s.name, s.idempotency_key, s.is_default, s.auto_name_ordinal, s.launch_cwd, s.desired_state, s.runtime_state, s.last_activity_at, s.last_runtime_sync_at, s.last_runtime_sequence, s.deleted_at, s.version, s.created_at, s.updated_at FROM user_machine_terminal_sessions s
+SELECT s.id, s.user_machine_id, s.terminal_id, s.thread_id, s.name, s.idempotency_key, s.is_default, s.auto_name_ordinal, s.launch_cwd, s.desired_state, s.runtime_state, s.last_activity_at, s.last_runtime_sync_at, s.last_runtime_sequence, s.deleted_at, s.version, s.created_at, s.updated_at, s.transfer_destination_machine_id FROM user_machine_terminal_sessions s
 JOIN user_machines m ON m.id=s.user_machine_id
 WHERE s.user_machine_id=$1 AND m.user_id=$2
   AND m.deleted_at IS NULL AND s.is_default AND s.deleted_at IS NULL
@@ -815,12 +1323,144 @@ func (q *Queries) GetDefaultUserMachineTerminalSession(ctx context.Context, arg 
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TransferDestinationMachineID,
+	)
+	return i, err
+}
+
+const getOwnedActiveUserMachineForControl = `-- name: GetOwnedActiveUserMachineForControl :one
+SELECT id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state, online, provider_route_route_id, provider_route_client_id, provider_route_http_base_url, provider_route_websocket_base_url, runtime_versions, enrolled_at, last_seen_at, revoked_at, disconnected_at, deleted_at, version, created_at, updated_at, availability_mode, availability_desired_version, availability_observed_mode, availability_observed_version, availability_observed_at, availability_status, availability_error_code, host_service_version, host_service_scope, worker_generation, os_boot_id, worker_service_scope, connector_state, connector_generation, host_update_rollbacks, runtime_diagnostics_observed_at, setup_roles, public_identity_key, installation_generation, machine_kind FROM user_machines
+WHERE id = $1 AND user_id = $2
+  AND deleted_at IS NULL AND revoked_at IS NULL AND public_identity_key IS NOT NULL
+`
+
+type GetOwnedActiveUserMachineForControlParams struct {
+	ID     string
+	UserID string
+}
+
+func (q *Queries) GetOwnedActiveUserMachineForControl(ctx context.Context, arg GetOwnedActiveUserMachineForControlParams) (UserMachine, error) {
+	row := q.db.QueryRowContext(ctx, getOwnedActiveUserMachineForControl, arg.ID, arg.UserID)
+	var i UserMachine
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.EnvironmentID,
+		&i.DisplayName,
+		&i.Platform,
+		&i.Architecture,
+		&i.WorkspaceRoot,
+		&i.State,
+		&i.SeatState,
+		&i.Online,
+		&i.ProviderRouteRouteID,
+		&i.ProviderRouteClientID,
+		&i.ProviderRouteHttpBaseUrl,
+		&i.ProviderRouteWebsocketBaseUrl,
+		&i.RuntimeVersions,
+		&i.EnrolledAt,
+		&i.LastSeenAt,
+		&i.RevokedAt,
+		&i.DisconnectedAt,
+		&i.DeletedAt,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AvailabilityMode,
+		&i.AvailabilityDesiredVersion,
+		&i.AvailabilityObservedMode,
+		&i.AvailabilityObservedVersion,
+		&i.AvailabilityObservedAt,
+		&i.AvailabilityStatus,
+		&i.AvailabilityErrorCode,
+		&i.HostServiceVersion,
+		&i.HostServiceScope,
+		&i.WorkerGeneration,
+		&i.OsBootID,
+		&i.WorkerServiceScope,
+		&i.ConnectorState,
+		&i.ConnectorGeneration,
+		&i.HostUpdateRollbacks,
+		&i.RuntimeDiagnosticsObservedAt,
+		pq.Array(&i.SetupRoles),
+		&i.PublicIdentityKey,
+		&i.InstallationGeneration,
+		&i.MachineKind,
+	)
+	return i, err
+}
+
+const getTerminalSessionTransferDestination = `-- name: GetTerminalSessionTransferDestination :one
+SELECT m.id, m.user_id, m.environment_id, m.display_name, m.platform, m.architecture, m.workspace_root, m.state, m.seat_state, m.online, m.provider_route_route_id, m.provider_route_client_id, m.provider_route_http_base_url, m.provider_route_websocket_base_url, m.runtime_versions, m.enrolled_at, m.last_seen_at, m.revoked_at, m.disconnected_at, m.deleted_at, m.version, m.created_at, m.updated_at, m.availability_mode, m.availability_desired_version, m.availability_observed_mode, m.availability_observed_version, m.availability_observed_at, m.availability_status, m.availability_error_code, m.host_service_version, m.host_service_scope, m.worker_generation, m.os_boot_id, m.worker_service_scope, m.connector_state, m.connector_generation, m.host_update_rollbacks, m.runtime_diagnostics_observed_at, m.setup_roles, m.public_identity_key, m.installation_generation, m.machine_kind FROM project_terminal_sessions s
+JOIN projects p ON p.id = s.project_id
+JOIN user_machines m ON m.id = s.transfer_destination_machine_id
+WHERE s.id = $1 AND p.user_id = $2 AND s.deleted_at IS NULL
+UNION ALL
+SELECT m.id, m.user_id, m.environment_id, m.display_name, m.platform, m.architecture, m.workspace_root, m.state, m.seat_state, m.online, m.provider_route_route_id, m.provider_route_client_id, m.provider_route_http_base_url, m.provider_route_websocket_base_url, m.runtime_versions, m.enrolled_at, m.last_seen_at, m.revoked_at, m.disconnected_at, m.deleted_at, m.version, m.created_at, m.updated_at, m.availability_mode, m.availability_desired_version, m.availability_observed_mode, m.availability_observed_version, m.availability_observed_at, m.availability_status, m.availability_error_code, m.host_service_version, m.host_service_scope, m.worker_generation, m.os_boot_id, m.worker_service_scope, m.connector_state, m.connector_generation, m.host_update_rollbacks, m.runtime_diagnostics_observed_at, m.setup_roles, m.public_identity_key, m.installation_generation, m.machine_kind FROM user_machine_terminal_sessions s
+JOIN user_machines owner ON owner.id = s.user_machine_id
+JOIN user_machines m ON m.id = s.transfer_destination_machine_id
+WHERE s.id = $1 AND owner.user_id = $2 AND s.deleted_at IS NULL
+LIMIT 1
+`
+
+type GetTerminalSessionTransferDestinationParams struct {
+	SessionID string
+	UserID    string
+}
+
+func (q *Queries) GetTerminalSessionTransferDestination(ctx context.Context, arg GetTerminalSessionTransferDestinationParams) (UserMachine, error) {
+	row := q.db.QueryRowContext(ctx, getTerminalSessionTransferDestination, arg.SessionID, arg.UserID)
+	var i UserMachine
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.EnvironmentID,
+		&i.DisplayName,
+		&i.Platform,
+		&i.Architecture,
+		&i.WorkspaceRoot,
+		&i.State,
+		&i.SeatState,
+		&i.Online,
+		&i.ProviderRouteRouteID,
+		&i.ProviderRouteClientID,
+		&i.ProviderRouteHttpBaseUrl,
+		&i.ProviderRouteWebsocketBaseUrl,
+		&i.RuntimeVersions,
+		&i.EnrolledAt,
+		&i.LastSeenAt,
+		&i.RevokedAt,
+		&i.DisconnectedAt,
+		&i.DeletedAt,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AvailabilityMode,
+		&i.AvailabilityDesiredVersion,
+		&i.AvailabilityObservedMode,
+		&i.AvailabilityObservedVersion,
+		&i.AvailabilityObservedAt,
+		&i.AvailabilityStatus,
+		&i.AvailabilityErrorCode,
+		&i.HostServiceVersion,
+		&i.HostServiceScope,
+		&i.WorkerGeneration,
+		&i.OsBootID,
+		&i.WorkerServiceScope,
+		&i.ConnectorState,
+		&i.ConnectorGeneration,
+		&i.HostUpdateRollbacks,
+		&i.RuntimeDiagnosticsObservedAt,
+		pq.Array(&i.SetupRoles),
+		&i.PublicIdentityKey,
+		&i.InstallationGeneration,
+		&i.MachineKind,
 	)
 	return i, err
 }
 
 const getUserMachineAvailabilityForHelper = `-- name: GetUserMachineAvailabilityForHelper :one
-SELECT m.id, m.user_id, m.environment_id, m.display_name, m.platform, m.architecture, m.workspace_root, m.state, m.seat_state, m.online, m.provider_route_route_id, m.provider_route_client_id, m.provider_route_http_base_url, m.provider_route_websocket_base_url, m.runtime_versions, m.enrolled_at, m.last_seen_at, m.revoked_at, m.disconnected_at, m.deleted_at, m.version, m.created_at, m.updated_at, m.availability_mode, m.availability_desired_version, m.availability_observed_mode, m.availability_observed_version, m.availability_observed_at, m.availability_status, m.availability_error_code, m.host_service_version, m.host_service_scope, m.worker_generation, m.os_boot_id, m.worker_service_scope, m.connector_state, m.connector_generation, m.host_update_rollbacks, m.runtime_diagnostics_observed_at FROM user_machines m
+SELECT m.id, m.user_id, m.environment_id, m.display_name, m.platform, m.architecture, m.workspace_root, m.state, m.seat_state, m.online, m.provider_route_route_id, m.provider_route_client_id, m.provider_route_http_base_url, m.provider_route_websocket_base_url, m.runtime_versions, m.enrolled_at, m.last_seen_at, m.revoked_at, m.disconnected_at, m.deleted_at, m.version, m.created_at, m.updated_at, m.availability_mode, m.availability_desired_version, m.availability_observed_mode, m.availability_observed_version, m.availability_observed_at, m.availability_status, m.availability_error_code, m.host_service_version, m.host_service_scope, m.worker_generation, m.os_boot_id, m.worker_service_scope, m.connector_state, m.connector_generation, m.host_update_rollbacks, m.runtime_diagnostics_observed_at, m.setup_roles, m.public_identity_key, m.installation_generation, m.machine_kind FROM user_machines m
 JOIN control_helpers h ON h.environment_id=m.environment_id
 WHERE h.id=$1 AND h.environment_id=$2
   AND h.state='active' AND h.revoked_at IS NULL
@@ -875,6 +1515,10 @@ func (q *Queries) GetUserMachineAvailabilityForHelper(ctx context.Context, arg G
 		&i.ConnectorGeneration,
 		&i.HostUpdateRollbacks,
 		&i.RuntimeDiagnosticsObservedAt,
+		pq.Array(&i.SetupRoles),
+		&i.PublicIdentityKey,
+		&i.InstallationGeneration,
+		&i.MachineKind,
 	)
 	return i, err
 }
@@ -968,6 +1612,63 @@ func (q *Queries) GetUserMachineBandwidthUsage(ctx context.Context, userID strin
 		&i.ConsumedIncludedBytes,
 		&i.ConsumedTopupBytes,
 		&i.PaidTopupRemainingBytes,
+	)
+	return i, err
+}
+
+const getUserMachineByPublicIdentityForUpdate = `-- name: GetUserMachineByPublicIdentityForUpdate :one
+SELECT id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state, online, provider_route_route_id, provider_route_client_id, provider_route_http_base_url, provider_route_websocket_base_url, runtime_versions, enrolled_at, last_seen_at, revoked_at, disconnected_at, deleted_at, version, created_at, updated_at, availability_mode, availability_desired_version, availability_observed_mode, availability_observed_version, availability_observed_at, availability_status, availability_error_code, host_service_version, host_service_scope, worker_generation, os_boot_id, worker_service_scope, connector_state, connector_generation, host_update_rollbacks, runtime_diagnostics_observed_at, setup_roles, public_identity_key, installation_generation, machine_kind FROM user_machines
+WHERE public_identity_key = $1 AND deleted_at IS NULL
+FOR UPDATE
+`
+
+func (q *Queries) GetUserMachineByPublicIdentityForUpdate(ctx context.Context, publicIdentityKey sql.NullString) (UserMachine, error) {
+	row := q.db.QueryRowContext(ctx, getUserMachineByPublicIdentityForUpdate, publicIdentityKey)
+	var i UserMachine
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.EnvironmentID,
+		&i.DisplayName,
+		&i.Platform,
+		&i.Architecture,
+		&i.WorkspaceRoot,
+		&i.State,
+		&i.SeatState,
+		&i.Online,
+		&i.ProviderRouteRouteID,
+		&i.ProviderRouteClientID,
+		&i.ProviderRouteHttpBaseUrl,
+		&i.ProviderRouteWebsocketBaseUrl,
+		&i.RuntimeVersions,
+		&i.EnrolledAt,
+		&i.LastSeenAt,
+		&i.RevokedAt,
+		&i.DisconnectedAt,
+		&i.DeletedAt,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AvailabilityMode,
+		&i.AvailabilityDesiredVersion,
+		&i.AvailabilityObservedMode,
+		&i.AvailabilityObservedVersion,
+		&i.AvailabilityObservedAt,
+		&i.AvailabilityStatus,
+		&i.AvailabilityErrorCode,
+		&i.HostServiceVersion,
+		&i.HostServiceScope,
+		&i.WorkerGeneration,
+		&i.OsBootID,
+		&i.WorkerServiceScope,
+		&i.ConnectorState,
+		&i.ConnectorGeneration,
+		&i.HostUpdateRollbacks,
+		&i.RuntimeDiagnosticsObservedAt,
+		pq.Array(&i.SetupRoles),
+		&i.PublicIdentityKey,
+		&i.InstallationGeneration,
+		&i.MachineKind,
 	)
 	return i, err
 }
@@ -1119,7 +1820,7 @@ func (q *Queries) GetUserMachineEntitlementForUpdate(ctx context.Context, userID
 }
 
 const getUserMachineForBandwidthUpdate = `-- name: GetUserMachineForBandwidthUpdate :one
-SELECT id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state, online, provider_route_route_id, provider_route_client_id, provider_route_http_base_url, provider_route_websocket_base_url, runtime_versions, enrolled_at, last_seen_at, revoked_at, disconnected_at, deleted_at, version, created_at, updated_at, availability_mode, availability_desired_version, availability_observed_mode, availability_observed_version, availability_observed_at, availability_status, availability_error_code, host_service_version, host_service_scope, worker_generation, os_boot_id, worker_service_scope, connector_state, connector_generation, host_update_rollbacks, runtime_diagnostics_observed_at FROM user_machines
+SELECT id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state, online, provider_route_route_id, provider_route_client_id, provider_route_http_base_url, provider_route_websocket_base_url, runtime_versions, enrolled_at, last_seen_at, revoked_at, disconnected_at, deleted_at, version, created_at, updated_at, availability_mode, availability_desired_version, availability_observed_mode, availability_observed_version, availability_observed_at, availability_status, availability_error_code, host_service_version, host_service_scope, worker_generation, os_boot_id, worker_service_scope, connector_state, connector_generation, host_update_rollbacks, runtime_diagnostics_observed_at, setup_roles, public_identity_key, installation_generation, machine_kind FROM user_machines
 WHERE id = $1 AND deleted_at IS NULL FOR UPDATE
 `
 
@@ -1166,12 +1867,16 @@ func (q *Queries) GetUserMachineForBandwidthUpdate(ctx context.Context, id strin
 		&i.ConnectorGeneration,
 		&i.HostUpdateRollbacks,
 		&i.RuntimeDiagnosticsObservedAt,
+		pq.Array(&i.SetupRoles),
+		&i.PublicIdentityKey,
+		&i.InstallationGeneration,
+		&i.MachineKind,
 	)
 	return i, err
 }
 
 const getUserMachineForEnvironmentBandwidthUpdate = `-- name: GetUserMachineForEnvironmentBandwidthUpdate :one
-SELECT id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state, online, provider_route_route_id, provider_route_client_id, provider_route_http_base_url, provider_route_websocket_base_url, runtime_versions, enrolled_at, last_seen_at, revoked_at, disconnected_at, deleted_at, version, created_at, updated_at, availability_mode, availability_desired_version, availability_observed_mode, availability_observed_version, availability_observed_at, availability_status, availability_error_code, host_service_version, host_service_scope, worker_generation, os_boot_id, worker_service_scope, connector_state, connector_generation, host_update_rollbacks, runtime_diagnostics_observed_at FROM user_machines
+SELECT id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state, online, provider_route_route_id, provider_route_client_id, provider_route_http_base_url, provider_route_websocket_base_url, runtime_versions, enrolled_at, last_seen_at, revoked_at, disconnected_at, deleted_at, version, created_at, updated_at, availability_mode, availability_desired_version, availability_observed_mode, availability_observed_version, availability_observed_at, availability_status, availability_error_code, host_service_version, host_service_scope, worker_generation, os_boot_id, worker_service_scope, connector_state, connector_generation, host_update_rollbacks, runtime_diagnostics_observed_at, setup_roles, public_identity_key, installation_generation, machine_kind FROM user_machines
 WHERE environment_id = $1 AND deleted_at IS NULL
 FOR UPDATE
 `
@@ -1219,12 +1924,16 @@ func (q *Queries) GetUserMachineForEnvironmentBandwidthUpdate(ctx context.Contex
 		&i.ConnectorGeneration,
 		&i.HostUpdateRollbacks,
 		&i.RuntimeDiagnosticsObservedAt,
+		pq.Array(&i.SetupRoles),
+		&i.PublicIdentityKey,
+		&i.InstallationGeneration,
+		&i.MachineKind,
 	)
 	return i, err
 }
 
 const getUserMachineForUpdate = `-- name: GetUserMachineForUpdate :one
-SELECT id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state, online, provider_route_route_id, provider_route_client_id, provider_route_http_base_url, provider_route_websocket_base_url, runtime_versions, enrolled_at, last_seen_at, revoked_at, disconnected_at, deleted_at, version, created_at, updated_at, availability_mode, availability_desired_version, availability_observed_mode, availability_observed_version, availability_observed_at, availability_status, availability_error_code, host_service_version, host_service_scope, worker_generation, os_boot_id, worker_service_scope, connector_state, connector_generation, host_update_rollbacks, runtime_diagnostics_observed_at FROM user_machines
+SELECT id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state, online, provider_route_route_id, provider_route_client_id, provider_route_http_base_url, provider_route_websocket_base_url, runtime_versions, enrolled_at, last_seen_at, revoked_at, disconnected_at, deleted_at, version, created_at, updated_at, availability_mode, availability_desired_version, availability_observed_mode, availability_observed_version, availability_observed_at, availability_status, availability_error_code, host_service_version, host_service_scope, worker_generation, os_boot_id, worker_service_scope, connector_state, connector_generation, host_update_rollbacks, runtime_diagnostics_observed_at, setup_roles, public_identity_key, installation_generation, machine_kind FROM user_machines
 WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL FOR UPDATE
 `
 
@@ -1276,12 +1985,16 @@ func (q *Queries) GetUserMachineForUpdate(ctx context.Context, arg GetUserMachin
 		&i.ConnectorGeneration,
 		&i.HostUpdateRollbacks,
 		&i.RuntimeDiagnosticsObservedAt,
+		pq.Array(&i.SetupRoles),
+		&i.PublicIdentityKey,
+		&i.InstallationGeneration,
+		&i.MachineKind,
 	)
 	return i, err
 }
 
 const getUserMachineForUser = `-- name: GetUserMachineForUser :one
-SELECT id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state, online, provider_route_route_id, provider_route_client_id, provider_route_http_base_url, provider_route_websocket_base_url, runtime_versions, enrolled_at, last_seen_at, revoked_at, disconnected_at, deleted_at, version, created_at, updated_at, availability_mode, availability_desired_version, availability_observed_mode, availability_observed_version, availability_observed_at, availability_status, availability_error_code, host_service_version, host_service_scope, worker_generation, os_boot_id, worker_service_scope, connector_state, connector_generation, host_update_rollbacks, runtime_diagnostics_observed_at FROM user_machines
+SELECT id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state, online, provider_route_route_id, provider_route_client_id, provider_route_http_base_url, provider_route_websocket_base_url, runtime_versions, enrolled_at, last_seen_at, revoked_at, disconnected_at, deleted_at, version, created_at, updated_at, availability_mode, availability_desired_version, availability_observed_mode, availability_observed_version, availability_observed_at, availability_status, availability_error_code, host_service_version, host_service_scope, worker_generation, os_boot_id, worker_service_scope, connector_state, connector_generation, host_update_rollbacks, runtime_diagnostics_observed_at, setup_roles, public_identity_key, installation_generation, machine_kind FROM user_machines
 WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
 `
 
@@ -1333,6 +2046,10 @@ func (q *Queries) GetUserMachineForUser(ctx context.Context, arg GetUserMachineF
 		&i.ConnectorGeneration,
 		&i.HostUpdateRollbacks,
 		&i.RuntimeDiagnosticsObservedAt,
+		pq.Array(&i.SetupRoles),
+		&i.PublicIdentityKey,
+		&i.InstallationGeneration,
+		&i.MachineKind,
 	)
 	return i, err
 }
@@ -1351,7 +2068,7 @@ func (q *Queries) GetUserMachineIDForRoute(ctx context.Context, providerRouteRou
 }
 
 const getUserMachinePairingByID = `-- name: GetUserMachinePairingByID :one
-SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at FROM user_machine_pairings WHERE id = $1
+SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key FROM user_machine_pairings WHERE id = $1
 `
 
 func (q *Queries) GetUserMachinePairingByID(ctx context.Context, id string) (UserMachinePairing, error) {
@@ -1377,12 +2094,13 @@ func (q *Queries) GetUserMachinePairingByID(ctx context.Context, id string) (Use
 		&i.DeniedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PublicIdentityKey,
 	)
 	return i, err
 }
 
 const getUserMachinePairingForCode = `-- name: GetUserMachinePairingForCode :one
-SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at FROM user_machine_pairings
+SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key FROM user_machine_pairings
 WHERE user_code = $1 FOR UPDATE
 `
 
@@ -1409,12 +2127,13 @@ func (q *Queries) GetUserMachinePairingForCode(ctx context.Context, userCode str
 		&i.DeniedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PublicIdentityKey,
 	)
 	return i, err
 }
 
 const getUserMachinePairingForVerifier = `-- name: GetUserMachinePairingForVerifier :one
-SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at FROM user_machine_pairings
+SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key FROM user_machine_pairings
 WHERE verifier_hash = $1 FOR UPDATE
 `
 
@@ -1441,7 +2160,34 @@ func (q *Queries) GetUserMachinePairingForVerifier(ctx context.Context, verifier
 		&i.DeniedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.PublicIdentityKey,
 	)
+	return i, err
+}
+
+const getUserMachineRuntimeInstanceForUpdate = `-- name: GetUserMachineRuntimeInstanceForUpdate :one
+SELECT online, last_seen_at, os_boot_id
+FROM user_machines
+WHERE id = $1 AND environment_id = $2
+  AND seat_state = 'occupied' AND deleted_at IS NULL
+FOR UPDATE
+`
+
+type GetUserMachineRuntimeInstanceForUpdateParams struct {
+	ID            string
+	EnvironmentID string
+}
+
+type GetUserMachineRuntimeInstanceForUpdateRow struct {
+	Online     bool
+	LastSeenAt sql.NullTime
+	OsBootID   sql.NullString
+}
+
+func (q *Queries) GetUserMachineRuntimeInstanceForUpdate(ctx context.Context, arg GetUserMachineRuntimeInstanceForUpdateParams) (GetUserMachineRuntimeInstanceForUpdateRow, error) {
+	row := q.db.QueryRowContext(ctx, getUserMachineRuntimeInstanceForUpdate, arg.ID, arg.EnvironmentID)
+	var i GetUserMachineRuntimeInstanceForUpdateRow
+	err := row.Scan(&i.Online, &i.LastSeenAt, &i.OsBootID)
 	return i, err
 }
 
@@ -1481,7 +2227,7 @@ func (q *Queries) GetUserMachineRuntimeMetrics(ctx context.Context) (GetUserMach
 }
 
 const getUserMachineTerminalSession = `-- name: GetUserMachineTerminalSession :one
-SELECT s.id, s.user_machine_id, s.terminal_id, s.thread_id, s.name, s.idempotency_key, s.is_default, s.auto_name_ordinal, s.launch_cwd, s.desired_state, s.runtime_state, s.last_activity_at, s.last_runtime_sync_at, s.last_runtime_sequence, s.deleted_at, s.version, s.created_at, s.updated_at FROM user_machine_terminal_sessions s
+SELECT s.id, s.user_machine_id, s.terminal_id, s.thread_id, s.name, s.idempotency_key, s.is_default, s.auto_name_ordinal, s.launch_cwd, s.desired_state, s.runtime_state, s.last_activity_at, s.last_runtime_sync_at, s.last_runtime_sequence, s.deleted_at, s.version, s.created_at, s.updated_at, s.transfer_destination_machine_id FROM user_machine_terminal_sessions s
 JOIN user_machines m ON m.id=s.user_machine_id
 WHERE s.id=$1 AND s.user_machine_id=$2
   AND m.user_id=$3 AND m.deleted_at IS NULL AND s.deleted_at IS NULL
@@ -1515,12 +2261,13 @@ func (q *Queries) GetUserMachineTerminalSession(ctx context.Context, arg GetUser
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TransferDestinationMachineID,
 	)
 	return i, err
 }
 
 const getUserMachineTerminalSessionByIdempotencyKey = `-- name: GetUserMachineTerminalSessionByIdempotencyKey :one
-SELECT s.id, s.user_machine_id, s.terminal_id, s.thread_id, s.name, s.idempotency_key, s.is_default, s.auto_name_ordinal, s.launch_cwd, s.desired_state, s.runtime_state, s.last_activity_at, s.last_runtime_sync_at, s.last_runtime_sequence, s.deleted_at, s.version, s.created_at, s.updated_at FROM user_machine_terminal_sessions s
+SELECT s.id, s.user_machine_id, s.terminal_id, s.thread_id, s.name, s.idempotency_key, s.is_default, s.auto_name_ordinal, s.launch_cwd, s.desired_state, s.runtime_state, s.last_activity_at, s.last_runtime_sync_at, s.last_runtime_sequence, s.deleted_at, s.version, s.created_at, s.updated_at, s.transfer_destination_machine_id FROM user_machine_terminal_sessions s
 JOIN user_machines m ON m.id=s.user_machine_id
 WHERE s.user_machine_id=$1 AND m.user_id=$2
   AND s.idempotency_key=$3 AND s.deleted_at IS NULL
@@ -1554,6 +2301,129 @@ func (q *Queries) GetUserMachineTerminalSessionByIdempotencyKey(ctx context.Cont
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TransferDestinationMachineID,
+	)
+	return i, err
+}
+
+const getUserMachineTerminalSessionHostForUser = `-- name: GetUserMachineTerminalSessionHostForUser :one
+SELECT m.id, m.user_id, m.environment_id, m.display_name, m.platform, m.architecture, m.workspace_root, m.state, m.seat_state, m.online, m.provider_route_route_id, m.provider_route_client_id, m.provider_route_http_base_url, m.provider_route_websocket_base_url, m.runtime_versions, m.enrolled_at, m.last_seen_at, m.revoked_at, m.disconnected_at, m.deleted_at, m.version, m.created_at, m.updated_at, m.availability_mode, m.availability_desired_version, m.availability_observed_mode, m.availability_observed_version, m.availability_observed_at, m.availability_status, m.availability_error_code, m.host_service_version, m.host_service_scope, m.worker_generation, m.os_boot_id, m.worker_service_scope, m.connector_state, m.connector_generation, m.host_update_rollbacks, m.runtime_diagnostics_observed_at, m.setup_roles, m.public_identity_key, m.installation_generation, m.machine_kind FROM user_machine_terminal_sessions s
+JOIN user_machines m ON m.id = s.user_machine_id
+WHERE s.id = $1 AND m.user_id = $2
+  AND s.deleted_at IS NULL AND m.deleted_at IS NULL
+`
+
+type GetUserMachineTerminalSessionHostForUserParams struct {
+	SessionID string
+	UserID    string
+}
+
+func (q *Queries) GetUserMachineTerminalSessionHostForUser(ctx context.Context, arg GetUserMachineTerminalSessionHostForUserParams) (UserMachine, error) {
+	row := q.db.QueryRowContext(ctx, getUserMachineTerminalSessionHostForUser, arg.SessionID, arg.UserID)
+	var i UserMachine
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.EnvironmentID,
+		&i.DisplayName,
+		&i.Platform,
+		&i.Architecture,
+		&i.WorkspaceRoot,
+		&i.State,
+		&i.SeatState,
+		&i.Online,
+		&i.ProviderRouteRouteID,
+		&i.ProviderRouteClientID,
+		&i.ProviderRouteHttpBaseUrl,
+		&i.ProviderRouteWebsocketBaseUrl,
+		&i.RuntimeVersions,
+		&i.EnrolledAt,
+		&i.LastSeenAt,
+		&i.RevokedAt,
+		&i.DisconnectedAt,
+		&i.DeletedAt,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AvailabilityMode,
+		&i.AvailabilityDesiredVersion,
+		&i.AvailabilityObservedMode,
+		&i.AvailabilityObservedVersion,
+		&i.AvailabilityObservedAt,
+		&i.AvailabilityStatus,
+		&i.AvailabilityErrorCode,
+		&i.HostServiceVersion,
+		&i.HostServiceScope,
+		&i.WorkerGeneration,
+		&i.OsBootID,
+		&i.WorkerServiceScope,
+		&i.ConnectorState,
+		&i.ConnectorGeneration,
+		&i.HostUpdateRollbacks,
+		&i.RuntimeDiagnosticsObservedAt,
+		pq.Array(&i.SetupRoles),
+		&i.PublicIdentityKey,
+		&i.InstallationGeneration,
+		&i.MachineKind,
+	)
+	return i, err
+}
+
+const getUserTransferDestinationDefault = `-- name: GetUserTransferDestinationDefault :one
+SELECT m.id, m.user_id, m.environment_id, m.display_name, m.platform, m.architecture, m.workspace_root, m.state, m.seat_state, m.online, m.provider_route_route_id, m.provider_route_client_id, m.provider_route_http_base_url, m.provider_route_websocket_base_url, m.runtime_versions, m.enrolled_at, m.last_seen_at, m.revoked_at, m.disconnected_at, m.deleted_at, m.version, m.created_at, m.updated_at, m.availability_mode, m.availability_desired_version, m.availability_observed_mode, m.availability_observed_version, m.availability_observed_at, m.availability_status, m.availability_error_code, m.host_service_version, m.host_service_scope, m.worker_generation, m.os_boot_id, m.worker_service_scope, m.connector_state, m.connector_generation, m.host_update_rollbacks, m.runtime_diagnostics_observed_at, m.setup_roles, m.public_identity_key, m.installation_generation, m.machine_kind FROM user_transfer_destination_defaults d
+JOIN user_machines m ON m.id = d.machine_id
+WHERE d.user_id = $1
+  AND m.user_id = d.user_id
+  AND m.deleted_at IS NULL
+`
+
+func (q *Queries) GetUserTransferDestinationDefault(ctx context.Context, userID string) (UserMachine, error) {
+	row := q.db.QueryRowContext(ctx, getUserTransferDestinationDefault, userID)
+	var i UserMachine
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.EnvironmentID,
+		&i.DisplayName,
+		&i.Platform,
+		&i.Architecture,
+		&i.WorkspaceRoot,
+		&i.State,
+		&i.SeatState,
+		&i.Online,
+		&i.ProviderRouteRouteID,
+		&i.ProviderRouteClientID,
+		&i.ProviderRouteHttpBaseUrl,
+		&i.ProviderRouteWebsocketBaseUrl,
+		&i.RuntimeVersions,
+		&i.EnrolledAt,
+		&i.LastSeenAt,
+		&i.RevokedAt,
+		&i.DisconnectedAt,
+		&i.DeletedAt,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AvailabilityMode,
+		&i.AvailabilityDesiredVersion,
+		&i.AvailabilityObservedMode,
+		&i.AvailabilityObservedVersion,
+		&i.AvailabilityObservedAt,
+		&i.AvailabilityStatus,
+		&i.AvailabilityErrorCode,
+		&i.HostServiceVersion,
+		&i.HostServiceScope,
+		&i.WorkerGeneration,
+		&i.OsBootID,
+		&i.WorkerServiceScope,
+		&i.ConnectorState,
+		&i.ConnectorGeneration,
+		&i.HostUpdateRollbacks,
+		&i.RuntimeDiagnosticsObservedAt,
+		pq.Array(&i.SetupRoles),
+		&i.PublicIdentityKey,
+		&i.InstallationGeneration,
+		&i.MachineKind,
 	)
 	return i, err
 }
@@ -1635,13 +2505,14 @@ SELECT o.id,o.user_machine_id,o.terminal_session_id,o.operation,o.attempts,
   m.user_id,m.environment_id,coalesce((SELECT 'https://' || r.public_host
     FROM control_routes r
     JOIN control_environments e ON e.id = r.environment_id
-    JOIN control_connector_generations c ON c.environment_id = r.environment_id
-    JOIN control_helpers h ON h.id = c.helper_id AND h.environment_id = r.environment_id
+    JOIN control_connector_generations c ON c.environment_id = r.environment_id AND c.connector_id = r.connector_id
+    JOIN user_machines connector_machine ON connector_machine.id = c.machine_id AND connector_machine.environment_id = r.environment_id
     JOIN control_tunnel_nodes n ON n.id = c.edge_node_id AND n.id = r.applied_node_id
-    WHERE r.environment_id = m.environment_id AND r.kind = 'helper_https_wss'
+    WHERE r.environment_id = m.environment_id AND r.kind = 'runtime_https_wss'
       AND r.desired_state IN ('attached','replacing') AND r.applied_revision >= r.desired_revision
       AND r.applied_generation = c.generation AND e.desired_state = 'active'
-      AND h.state = 'active' AND c.state = 'admitted' AND n.state = 'ready' AND n.ready = true
+      AND connector_machine.revoked_at IS NULL AND connector_machine.deleted_at IS NULL
+      AND c.state = 'admitted' AND n.state = 'ready' AND n.ready = true
     ORDER BY r.id LIMIT 1), '')::text AS provider_route_http_base_url,s.thread_id,s.terminal_id
 FROM user_machine_terminal_session_operations o
 JOIN user_machines m ON m.id=o.user_machine_id
@@ -1756,13 +2627,14 @@ SELECT o.id,o.user_machine_id,o.terminal_session_id,o.operation,o.attempts,
   m.user_id,m.environment_id,coalesce((SELECT 'https://' || r.public_host
     FROM control_routes r
     JOIN control_environments e ON e.id = r.environment_id
-    JOIN control_connector_generations c ON c.environment_id = r.environment_id
-    JOIN control_helpers h ON h.id = c.helper_id AND h.environment_id = r.environment_id
+    JOIN control_connector_generations c ON c.environment_id = r.environment_id AND c.connector_id = r.connector_id
+    JOIN user_machines connector_machine ON connector_machine.id = c.machine_id AND connector_machine.environment_id = r.environment_id
     JOIN control_tunnel_nodes n ON n.id = c.edge_node_id AND n.id = r.applied_node_id
-    WHERE r.environment_id = m.environment_id AND r.kind = 'helper_https_wss'
+    WHERE r.environment_id = m.environment_id AND r.kind = 'runtime_https_wss'
       AND r.desired_state IN ('attached','replacing') AND r.applied_revision >= r.desired_revision
       AND r.applied_generation = c.generation AND e.desired_state = 'active'
-      AND h.state = 'active' AND c.state = 'admitted' AND n.state = 'ready' AND n.ready = true
+      AND connector_machine.revoked_at IS NULL AND connector_machine.deleted_at IS NULL
+      AND c.state = 'admitted' AND n.state = 'ready' AND n.ready = true
     ORDER BY r.id LIMIT 1), '')::text AS provider_route_http_base_url,s.thread_id,s.terminal_id
 FROM user_machine_terminal_session_operations o
 JOIN user_machines m ON m.id=o.user_machine_id
@@ -1858,7 +2730,7 @@ func (q *Queries) ListRevokedUserMachineEnvironmentsForUser(ctx context.Context,
 }
 
 const listUserMachineTerminalSessions = `-- name: ListUserMachineTerminalSessions :many
-SELECT s.id, s.user_machine_id, s.terminal_id, s.thread_id, s.name, s.idempotency_key, s.is_default, s.auto_name_ordinal, s.launch_cwd, s.desired_state, s.runtime_state, s.last_activity_at, s.last_runtime_sync_at, s.last_runtime_sequence, s.deleted_at, s.version, s.created_at, s.updated_at FROM user_machine_terminal_sessions s
+SELECT s.id, s.user_machine_id, s.terminal_id, s.thread_id, s.name, s.idempotency_key, s.is_default, s.auto_name_ordinal, s.launch_cwd, s.desired_state, s.runtime_state, s.last_activity_at, s.last_runtime_sync_at, s.last_runtime_sequence, s.deleted_at, s.version, s.created_at, s.updated_at, s.transfer_destination_machine_id FROM user_machine_terminal_sessions s
 JOIN user_machines m ON m.id=s.user_machine_id
 WHERE s.user_machine_id=$1 AND m.user_id=$2
   AND m.deleted_at IS NULL AND s.deleted_at IS NULL
@@ -1898,6 +2770,7 @@ func (q *Queries) ListUserMachineTerminalSessions(ctx context.Context, arg ListU
 			&i.Version,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.TransferDestinationMachineID,
 		); err != nil {
 			return nil, err
 		}
@@ -1913,7 +2786,7 @@ func (q *Queries) ListUserMachineTerminalSessions(ctx context.Context, arg ListU
 }
 
 const listUserMachinesForUser = `-- name: ListUserMachinesForUser :many
-SELECT id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state, online, provider_route_route_id, provider_route_client_id, provider_route_http_base_url, provider_route_websocket_base_url, runtime_versions, enrolled_at, last_seen_at, revoked_at, disconnected_at, deleted_at, version, created_at, updated_at, availability_mode, availability_desired_version, availability_observed_mode, availability_observed_version, availability_observed_at, availability_status, availability_error_code, host_service_version, host_service_scope, worker_generation, os_boot_id, worker_service_scope, connector_state, connector_generation, host_update_rollbacks, runtime_diagnostics_observed_at FROM user_machines
+SELECT id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state, online, provider_route_route_id, provider_route_client_id, provider_route_http_base_url, provider_route_websocket_base_url, runtime_versions, enrolled_at, last_seen_at, revoked_at, disconnected_at, deleted_at, version, created_at, updated_at, availability_mode, availability_desired_version, availability_observed_mode, availability_observed_version, availability_observed_at, availability_status, availability_error_code, host_service_version, host_service_scope, worker_generation, os_boot_id, worker_service_scope, connector_state, connector_generation, host_update_rollbacks, runtime_diagnostics_observed_at, setup_roles, public_identity_key, installation_generation, machine_kind FROM user_machines
 WHERE user_id = $1 AND deleted_at IS NULL
 ORDER BY lower(display_name), id
 LIMIT $3 OFFSET $2
@@ -1974,6 +2847,10 @@ func (q *Queries) ListUserMachinesForUser(ctx context.Context, arg ListUserMachi
 			&i.ConnectorGeneration,
 			&i.HostUpdateRollbacks,
 			&i.RuntimeDiagnosticsObservedAt,
+			pq.Array(&i.SetupRoles),
+			&i.PublicIdentityKey,
+			&i.InstallationGeneration,
+			&i.MachineKind,
 		); err != nil {
 			return nil, err
 		}
@@ -2271,6 +3148,72 @@ func (q *Queries) RecordUserMachineTopupConsumption(ctx context.Context, arg Rec
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const removeUserMachineHostRole = `-- name: RemoveUserMachineHostRole :one
+UPDATE user_machines
+SET setup_roles = array_remove(setup_roles, 'host'), state = 'offline', seat_state = 'released',
+    online = false, installation_generation = installation_generation + 1,
+    updated_at = now(), version = version + 1
+WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
+  AND 'host' = ANY(setup_roles)
+RETURNING id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state, online, provider_route_route_id, provider_route_client_id, provider_route_http_base_url, provider_route_websocket_base_url, runtime_versions, enrolled_at, last_seen_at, revoked_at, disconnected_at, deleted_at, version, created_at, updated_at, availability_mode, availability_desired_version, availability_observed_mode, availability_observed_version, availability_observed_at, availability_status, availability_error_code, host_service_version, host_service_scope, worker_generation, os_boot_id, worker_service_scope, connector_state, connector_generation, host_update_rollbacks, runtime_diagnostics_observed_at, setup_roles, public_identity_key, installation_generation, machine_kind
+`
+
+type RemoveUserMachineHostRoleParams struct {
+	ID     string
+	UserID string
+}
+
+func (q *Queries) RemoveUserMachineHostRole(ctx context.Context, arg RemoveUserMachineHostRoleParams) (UserMachine, error) {
+	row := q.db.QueryRowContext(ctx, removeUserMachineHostRole, arg.ID, arg.UserID)
+	var i UserMachine
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.EnvironmentID,
+		&i.DisplayName,
+		&i.Platform,
+		&i.Architecture,
+		&i.WorkspaceRoot,
+		&i.State,
+		&i.SeatState,
+		&i.Online,
+		&i.ProviderRouteRouteID,
+		&i.ProviderRouteClientID,
+		&i.ProviderRouteHttpBaseUrl,
+		&i.ProviderRouteWebsocketBaseUrl,
+		&i.RuntimeVersions,
+		&i.EnrolledAt,
+		&i.LastSeenAt,
+		&i.RevokedAt,
+		&i.DisconnectedAt,
+		&i.DeletedAt,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AvailabilityMode,
+		&i.AvailabilityDesiredVersion,
+		&i.AvailabilityObservedMode,
+		&i.AvailabilityObservedVersion,
+		&i.AvailabilityObservedAt,
+		&i.AvailabilityStatus,
+		&i.AvailabilityErrorCode,
+		&i.HostServiceVersion,
+		&i.HostServiceScope,
+		&i.WorkerGeneration,
+		&i.OsBootID,
+		&i.WorkerServiceScope,
+		&i.ConnectorState,
+		&i.ConnectorGeneration,
+		&i.HostUpdateRollbacks,
+		&i.RuntimeDiagnosticsObservedAt,
+		pq.Array(&i.SetupRoles),
+		&i.PublicIdentityKey,
+		&i.InstallationGeneration,
+		&i.MachineKind,
+	)
+	return i, err
 }
 
 const renameUserMachineTerminalSession = `-- name: RenameUserMachineTerminalSession :execrows
@@ -2595,7 +3538,7 @@ func (q *Queries) RevokeUserMachinesOverSeatLimit(ctx context.Context, arg Revok
 }
 
 const selectUserMachineTerminalSessionForEviction = `-- name: SelectUserMachineTerminalSessionForEviction :one
-SELECT id, user_machine_id, terminal_id, thread_id, name, idempotency_key, is_default, auto_name_ordinal, launch_cwd, desired_state, runtime_state, last_activity_at, last_runtime_sync_at, last_runtime_sequence, deleted_at, version, created_at, updated_at FROM user_machine_terminal_sessions
+SELECT id, user_machine_id, terminal_id, thread_id, name, idempotency_key, is_default, auto_name_ordinal, launch_cwd, desired_state, runtime_state, last_activity_at, last_runtime_sync_at, last_runtime_sequence, deleted_at, version, created_at, updated_at, transfer_destination_machine_id FROM user_machine_terminal_sessions
 WHERE user_machine_id=$1 AND deleted_at IS NULL AND NOT is_default
 ORDER BY (desired_state='closed') DESC,
          coalesce(last_activity_at,updated_at,created_at) ASC,
@@ -2626,6 +3569,85 @@ func (q *Queries) SelectUserMachineTerminalSessionForEviction(ctx context.Contex
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TransferDestinationMachineID,
+	)
+	return i, err
+}
+
+const setTerminalSessionTransferDestination = `-- name: SetTerminalSessionTransferDestination :one
+WITH destination AS (
+  SELECT candidate.id FROM user_machines candidate
+  WHERE candidate.id = $1 AND candidate.user_id = $2
+    AND candidate.deleted_at IS NULL AND candidate.state NOT IN ('revoked','disconnected','deleted')
+    AND candidate.seat_state = 'occupied'
+), project_updated AS (
+  UPDATE project_terminal_sessions s SET transfer_destination_machine_id = destination.id, version = s.version + 1, updated_at = now()
+  FROM projects p, destination
+  WHERE s.id = $3 AND s.project_id = p.id AND p.user_id = $2 AND s.deleted_at IS NULL
+  RETURNING destination.id
+), machine_updated AS (
+  UPDATE user_machine_terminal_sessions s SET transfer_destination_machine_id = destination.id, version = s.version + 1, updated_at = now()
+  FROM user_machines owner, destination
+  WHERE s.id = $3 AND s.user_machine_id = owner.id AND owner.user_id = $2 AND s.deleted_at IS NULL
+  RETURNING destination.id
+)
+SELECT m.id, m.user_id, m.environment_id, m.display_name, m.platform, m.architecture, m.workspace_root, m.state, m.seat_state, m.online, m.provider_route_route_id, m.provider_route_client_id, m.provider_route_http_base_url, m.provider_route_websocket_base_url, m.runtime_versions, m.enrolled_at, m.last_seen_at, m.revoked_at, m.disconnected_at, m.deleted_at, m.version, m.created_at, m.updated_at, m.availability_mode, m.availability_desired_version, m.availability_observed_mode, m.availability_observed_version, m.availability_observed_at, m.availability_status, m.availability_error_code, m.host_service_version, m.host_service_scope, m.worker_generation, m.os_boot_id, m.worker_service_scope, m.connector_state, m.connector_generation, m.host_update_rollbacks, m.runtime_diagnostics_observed_at, m.setup_roles, m.public_identity_key, m.installation_generation, m.machine_kind FROM user_machines m
+WHERE m.id = (SELECT id FROM project_updated UNION ALL SELECT id FROM machine_updated LIMIT 1)
+`
+
+type SetTerminalSessionTransferDestinationParams struct {
+	MachineID string
+	UserID    string
+	SessionID string
+}
+
+func (q *Queries) SetTerminalSessionTransferDestination(ctx context.Context, arg SetTerminalSessionTransferDestinationParams) (UserMachine, error) {
+	row := q.db.QueryRowContext(ctx, setTerminalSessionTransferDestination, arg.MachineID, arg.UserID, arg.SessionID)
+	var i UserMachine
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.EnvironmentID,
+		&i.DisplayName,
+		&i.Platform,
+		&i.Architecture,
+		&i.WorkspaceRoot,
+		&i.State,
+		&i.SeatState,
+		&i.Online,
+		&i.ProviderRouteRouteID,
+		&i.ProviderRouteClientID,
+		&i.ProviderRouteHttpBaseUrl,
+		&i.ProviderRouteWebsocketBaseUrl,
+		&i.RuntimeVersions,
+		&i.EnrolledAt,
+		&i.LastSeenAt,
+		&i.RevokedAt,
+		&i.DisconnectedAt,
+		&i.DeletedAt,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AvailabilityMode,
+		&i.AvailabilityDesiredVersion,
+		&i.AvailabilityObservedMode,
+		&i.AvailabilityObservedVersion,
+		&i.AvailabilityObservedAt,
+		&i.AvailabilityStatus,
+		&i.AvailabilityErrorCode,
+		&i.HostServiceVersion,
+		&i.HostServiceScope,
+		&i.WorkerGeneration,
+		&i.OsBootID,
+		&i.WorkerServiceScope,
+		&i.ConnectorState,
+		&i.ConnectorGeneration,
+		&i.HostUpdateRollbacks,
+		&i.RuntimeDiagnosticsObservedAt,
+		pq.Array(&i.SetupRoles),
+		&i.PublicIdentityKey,
+		&i.InstallationGeneration,
+		&i.MachineKind,
 	)
 	return i, err
 }
@@ -2709,6 +3731,41 @@ func (q *Queries) SetUserMachineRoute(ctx context.Context, arg SetUserMachineRou
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const setUserTransferDestinationDefault = `-- name: SetUserTransferDestinationDefault :one
+INSERT INTO user_transfer_destination_defaults (user_id, machine_id)
+SELECT $1, m.id FROM user_machines m
+WHERE m.id = $2
+  AND m.user_id = $1
+  AND m.deleted_at IS NULL
+  AND m.state NOT IN ('revoked', 'disconnected', 'deleted')
+  AND m.seat_state = 'occupied'
+  AND m.online
+  AND m.setup_roles @> ARRAY['host']::text[]
+ON CONFLICT (user_id) DO UPDATE
+SET machine_id = EXCLUDED.machine_id,
+    version = user_transfer_destination_defaults.version + 1,
+    updated_at = now()
+RETURNING user_id, machine_id, version, created_at, updated_at
+`
+
+type SetUserTransferDestinationDefaultParams struct {
+	UserID    string
+	MachineID string
+}
+
+func (q *Queries) SetUserTransferDestinationDefault(ctx context.Context, arg SetUserTransferDestinationDefaultParams) (UserTransferDestinationDefault, error) {
+	row := q.db.QueryRowContext(ctx, setUserTransferDestinationDefault, arg.UserID, arg.MachineID)
+	var i UserTransferDestinationDefault
+	err := row.Scan(
+		&i.UserID,
+		&i.MachineID,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const updateUserMachineEntitlementState = `-- name: UpdateUserMachineEntitlementState :execrows
@@ -2871,6 +3928,30 @@ func (q *Queries) UserMachineTerminalSessionOperationPending(ctx context.Context
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const userOwnsTerminalSession = `-- name: UserOwnsTerminalSession :one
+SELECT EXISTS (
+  SELECT 1 FROM project_terminal_sessions s
+  JOIN projects p ON p.id = s.project_id
+  WHERE s.id = $1 AND p.user_id = $2 AND s.deleted_at IS NULL
+  UNION ALL
+  SELECT 1 FROM user_machine_terminal_sessions s
+  JOIN user_machines m ON m.id = s.user_machine_id
+  WHERE s.id = $1 AND m.user_id = $2 AND s.deleted_at IS NULL
+) AS owned
+`
+
+type UserOwnsTerminalSessionParams struct {
+	SessionID string
+	UserID    string
+}
+
+func (q *Queries) UserOwnsTerminalSession(ctx context.Context, arg UserOwnsTerminalSessionParams) (bool, error) {
+	row := q.db.QueryRowContext(ctx, userOwnsTerminalSession, arg.SessionID, arg.UserID)
+	var owned bool
+	err := row.Scan(&owned)
+	return owned, err
 }
 
 const voidUserMachineBandwidthTopup = `-- name: VoidUserMachineBandwidthTopup :execrows

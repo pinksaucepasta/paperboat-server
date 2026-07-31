@@ -531,6 +531,11 @@ func (r *Repository) createIntentOnce(ctx context.Context, input CreateInput, re
 		if err := q.InsertProject(ctx, dbsqlc.InsertProjectParams{ID: projectID, UserID: input.UserID, Name: input.Name, IdempotencyKey: input.IdempotencyKey, CreateRequestHash: createRequestHash(input)}); err != nil {
 			return err
 		}
+		if _, err := q.CreateHostedMachine(ctx, dbsqlc.CreateHostedMachineParams{
+			ID: newID("mch"), UserID: input.UserID, EnvironmentID: projectID, DisplayName: input.Name,
+		}); err != nil {
+			return err
+		}
 		if _, err := q.CreateControlEnvironment(ctx, dbsqlc.CreateControlEnvironmentParams{ID: projectID, WorkspaceID: projectID, OwnerUserID: sql.NullString{String: input.UserID, Valid: true}, DesiredState: "active"}); err != nil {
 			return err
 		}

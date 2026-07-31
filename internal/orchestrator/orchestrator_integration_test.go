@@ -75,7 +75,7 @@ func TestProvisionProjectIsIdempotentAndLeavesMachineStopped(t *testing.T) {
 	if spec.StopTimeout != wantStopTimeout {
 		t.Fatalf("machine stop timeout = %s, want %s", spec.StopTimeout, wantStopTimeout)
 	}
-	if spec.Env["PAPERBOAT_CONFIG_SHUTDOWN_GRACE_SECONDS"] != "2" || spec.Env["PAPERBOAT_ACTIVITY_SHUTDOWN_REPORT_SECONDS"] != "10" {
+	if spec.Env["PAPERBOAT_CONFIG_SHUTDOWN_GRACE_SECONDS"] != "2" || spec.Env["PAPERBOAT_CONFIG_SHUTDOWN_DEADLINE_SECONDS"] != "30" {
 		t.Fatalf("shutdown lifecycle env = %#v", spec.Env)
 	}
 	var resources int
@@ -84,6 +84,18 @@ func TestProvisionProjectIsIdempotentAndLeavesMachineStopped(t *testing.T) {
 	}
 	if resources != 0 {
 		t.Fatalf("hosted provision created %d legacy provider_route resources", resources)
+	}
+	var canonicalMachineID, linkedMachineID, machineKind string
+	if err := store.SQL().QueryRowContext(ctx, `
+		SELECT m.id, fm.user_machine_id, m.machine_kind
+		FROM paperboat.user_machines m
+		JOIN paperboat.fly_machines fm ON fm.project_id = m.environment_id
+		WHERE m.environment_id = $1
+	`, project.ID).Scan(&canonicalMachineID, &linkedMachineID, &machineKind); err != nil {
+		t.Fatal(err)
+	}
+	if canonicalMachineID == "" || linkedMachineID != canonicalMachineID || machineKind != "hosted" {
+		t.Fatalf("hosted machine link = canonical %q linked %q kind %q", canonicalMachineID, linkedMachineID, machineKind)
 	}
 	if err := service.provisionProject(ctx, project.ID); err != nil {
 		t.Fatal(err)
@@ -743,8 +755,8 @@ func TestStartAndRestartRecreateMissingMachineOnExistingVolume(t *testing.T) {
 	if spec.Hostname != cfg.Fly.Hostname {
 		t.Fatalf("replacement machine hostname = %q, want %q", spec.Hostname, cfg.Fly.Hostname)
 	}
-	if spec.Env["PAPERBOAT_PROJECT_ID"] != project.ID || spec.Env["PAPERBOAT_HELPER_PROFILE"] != "hosted" {
-		t.Fatalf("replacement helper identity env = project %q profile %q", spec.Env["PAPERBOAT_PROJECT_ID"], spec.Env["PAPERBOAT_HELPER_PROFILE"])
+	if spec.Env["PAPERBOAT_PROJECT_ID"] != project.ID || spec.Env["PAPERBOAT_RUNTIME_PROFILE"] != "hosted" {
+		t.Fatalf("replacement helper identity env = project %q profile %q", spec.Env["PAPERBOAT_PROJECT_ID"], spec.Env["PAPERBOAT_RUNTIME_PROFILE"])
 	}
 	if spec.Env["PAPERBOAT_CONTROL_URL"] != strings.TrimRight(cfg.HTTP.PublicBaseURL, "/") ||
 		spec.Env["PAPERBOAT_ENROLLMENT_CREDENTIAL_ENV"] != "" {
@@ -823,10 +835,8 @@ func TestDeleteReleasesStorageAfterProviderCleanup(t *testing.T) {
 	if len(fakeFly.Volumes) != 0 || len(fakeFly.Machines) != 0 {
 		t.Fatalf("provider resources remain after delete: volumes=%d machines=%d", len(fakeFly.Volumes), len(fakeFly.Machines))
 	}
-	// Deletion removes every historical per-project Fly secret name so projects
-	// created by older releases converge to the zero-secret model.
-	if calls := countCalls(fakeFly.Calls, "DeleteSecret:"); calls != 4 {
-		t.Fatalf("DeleteSecret calls = %d, want 4; calls=%#v", calls, fakeFly.Calls)
+	if calls := countCalls(fakeFly.Calls, "DeleteSecret:"); calls != 3 {
+		t.Fatalf("DeleteSecret calls = %d, want 3; calls=%#v", calls, fakeFly.Calls)
 	}
 }
 
@@ -990,7 +1000,7 @@ func TestProvisionUsesHostedBootstrapWithoutMachineSecrets(t *testing.T) {
 	}
 	if spec.Env["PAPERBOAT_PROJECT_ID"] != project.ID ||
 		spec.Env["PAPERBOAT_CONTROL_URL"] != strings.TrimRight(cfg.HTTP.PublicBaseURL, "/") ||
-		spec.Env["PAPERBOAT_HELPER_PROFILE"] != "hosted" {
+		spec.Env["PAPERBOAT_RUNTIME_PROFILE"] != "hosted" {
 		t.Fatalf("hosted helper trust config was not injected: %#v", spec.Env)
 	}
 	if strings.Contains(fmt.Sprint(spec.Env), "github-config-token") {

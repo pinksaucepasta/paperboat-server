@@ -20,9 +20,11 @@ type configRepositoryResponse struct {
 
 type configAssignmentResponse struct {
 	ID              string  `json:"id"`
+	MachineID       string  `json:"machine_id"`
 	EnvironmentID   string  `json:"environment_id"`
 	RepositoryID    *string `json:"repository_id,omitempty"`
 	ConsentState    string  `json:"consent_state"`
+	Mode            string  `json:"mode"`
 	WarningRevision *string `json:"warning_revision,omitempty"`
 	Version         int64   `json:"version"`
 }
@@ -40,7 +42,7 @@ func assignmentResponse(item dbsqlc.ControlConfigAssignment) configAssignmentRes
 		value := item.WarningRevision.String
 		warning = &value
 	}
-	return configAssignmentResponse{ID: item.ID, EnvironmentID: item.EnvironmentID, RepositoryID: repo, ConsentState: item.ConsentState, WarningRevision: warning, Version: item.Version}
+	return configAssignmentResponse{ID: item.ID, MachineID: item.MachineID, EnvironmentID: item.EnvironmentID, RepositoryID: repo, Mode: item.Mode, ConsentState: item.ConsentState, WarningRevision: warning, Version: item.Version}
 }
 
 func configRepositories(service *controlplane.ConfigAssignmentService) http.HandlerFunc {
@@ -125,9 +127,9 @@ func configAssignmentGet(service *controlplane.ConfigAssignmentService) http.Han
 			writeError(w, r, 401, "unauthenticated", "Authentication is required.")
 			return
 		}
-		item, err := service.Assignment(r.Context(), p.User.ID, r.PathValue("environment_id"))
+		item, err := service.Assignment(r.Context(), p.User.ID, r.PathValue("machine_id"))
 		if err != nil {
-			writeError(w, r, 404, "not_found_or_forbidden", "Environment was not found or is unavailable.")
+			writeError(w, r, 404, "not_found_or_forbidden", "Machine was not found or is unavailable.")
 			return
 		}
 		writeJSON(w, 200, SuccessResponse{Data: assignmentResponse(item)})
@@ -143,13 +145,14 @@ func configAssignmentSet(service *controlplane.ConfigAssignmentService) http.Han
 		}
 		var in struct {
 			RepositoryID    string `json:"repository_id"`
+			Mode            string `json:"mode"`
 			WarningRevision string `json:"warning_revision"`
 			ExpectedVersion int64  `json:"expected_version"`
 		}
 		if !decodeStrictJSON(w, r, &in) {
 			return
 		}
-		item, err := service.Assign(r.Context(), p.User.ID, r.PathValue("environment_id"), in.RepositoryID, in.WarningRevision, in.ExpectedVersion)
+		item, err := service.Assign(r.Context(), p.User.ID, r.PathValue("machine_id"), in.RepositoryID, in.Mode, in.WarningRevision, in.ExpectedVersion)
 		if err != nil {
 			status, code := 400, "validation_failed"
 			if errors.Is(err, controlplane.ErrAssignmentConflict) {
@@ -179,7 +182,7 @@ func configConsent(service *controlplane.ConfigAssignmentService) http.HandlerFu
 		if !decodeStrictJSON(w, r, &in) {
 			return
 		}
-		item, err := service.AcceptConsent(r.Context(), p.User.ID, r.PathValue("environment_id"), strings.TrimSpace(in.WarningRevision), in.ExpectedVersion)
+		item, err := service.AcceptConsent(r.Context(), p.User.ID, r.PathValue("machine_id"), strings.TrimSpace(in.WarningRevision), in.ExpectedVersion)
 		if err != nil {
 			status, code := 400, "validation_failed"
 			if errors.Is(err, controlplane.ErrAssignmentConflict) {
@@ -199,7 +202,7 @@ func configWarning(service *controlplane.ConfigAssignmentService) http.HandlerFu
 			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
 			return
 		}
-		facts, err := service.Warning(r.Context(), p.User.ID, r.PathValue("environment_id"))
+		facts, err := service.Warning(r.Context(), p.User.ID, r.PathValue("machine_id"))
 		if err != nil {
 			writeError(w, r, http.StatusNotFound, "not_found_or_forbidden", "Configuration warning is unavailable.")
 			return
@@ -217,7 +220,7 @@ func configConsentRemove(service *controlplane.ConfigAssignmentService) http.Han
 			return
 		}
 		expectedVersion, _ := strconv.ParseInt(r.URL.Query().Get("expected_version"), 10, 64)
-		item, err := service.RemoveConsent(r.Context(), p.User.ID, r.PathValue("environment_id"), expectedVersion)
+		item, err := service.RemoveConsent(r.Context(), p.User.ID, r.PathValue("machine_id"), expectedVersion)
 		if err != nil {
 			status, code := http.StatusBadRequest, "consent_remove_failed"
 			if errors.Is(err, controlplane.ErrAssignmentConflict) {
@@ -240,7 +243,7 @@ func configAssignmentClear(service *controlplane.ConfigAssignmentService) http.H
 			return
 		}
 		v, _ := strconv.ParseInt(r.URL.Query().Get("expected_version"), 10, 64)
-		if err := service.Clear(r.Context(), p.User.ID, r.PathValue("environment_id"), v); err != nil {
+		if err := service.Clear(r.Context(), p.User.ID, r.PathValue("machine_id"), v); err != nil {
 			status := 400
 			if errors.Is(err, controlplane.ErrAssignmentConflict) {
 				status = 409

@@ -28,10 +28,21 @@ collectors; never expose or route either endpoint publicly.
 | `user_machine_availability_drift_depth` | greater than 0 for two heartbeat intervals | increasing for five intervals | Compare desired/observed versions and inspect root host-service diagnostics. |
 | `user_machine_privileged_service_error_depth` | greater than 0 | increasing after retry | Inspect logind/pmset errors and restore the captured power baseline before manual changes. |
 | `user_machine_unsupported_host_scope_depth` | greater than 0 | any newly bootstrapped machine | Stop rollout; only system scope is a successful privileged bootstrap. |
-| `paperboat_helper_restart_total` | repeated restarts within 5 minutes | sustained restart loop | Inspect boot ID/generation, service exit status, and bounded logs. |
-| `paperboat_helper_renewal_failures_total` | increasing for two credential refresh attempts | credential expiry without recovery | Check proof freshness, active helper key, revocation, and server signing-key health. |
-| `paperboat_helper_connector_recovery_seconds` | above 60 seconds | sustained unavailability after network restoration | Check interface/DNS wakeups, admission, QUIC, and TCP/TLS fallback. |
-| `paperboat_helper_update_rollbacks_total` | greater than 0 | repeated for the same release | Stop rollout and inspect paired signatures, journal stage, worker health, and preserved previous versions. |
+| `paperboat_runtime_restart_total` | repeated restarts within 5 minutes | sustained restart loop | Inspect boot ID/generation, service exit status, and bounded logs. |
+| `paperboat_runtime_renewal_failures_total` | increasing for two credential refresh attempts | credential expiry without recovery | Check proof freshness, active helper key, revocation, and server signing-key health. |
+| `paperboat_runtime_connector_recovery_seconds` | above 60 seconds | sustained unavailability after network restoration | Check interface/DNS wakeups, admission, QUIC, and TCP/TLS fallback. |
+
+Connector incidents are scoped by `(machine_id, connector_id, connector_generation)`.
+`runtime` is the terminal-host connector; each preview uses its preview key as connector
+ID. Diagnose and fence the affected instance without revoking healthy sibling previews.
+Node loss advances every connector instance assigned to that node and invalidates late
+route observations from their prior generations.
+
+For preview restart loops, compare the local absolute expiry with the server preview
+record. Expired, removed, or mismatched records must not be re-registered. A matching
+active record may resume with only its remaining lifetime. Do not delete connector rows
+or manufacture a new preview key as incident recovery.
+| `paperboat_runtime_update_rollbacks_total` | greater than 0 | repeated for the same release | Stop rollout and inspect paired signatures, journal stage, worker health, and preserved previous versions. |
 
 Every alert record must include the deployment, request or operation ID when
 available, first observation time, current depth/age, and recovery decision.

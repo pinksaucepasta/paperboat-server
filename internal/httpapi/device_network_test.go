@@ -32,9 +32,9 @@ func TestRequestNetworkUsesForwardedAddressOnlyFromTrustedProxy(t *testing.T) {
 func TestRequestNetworkDefaultsToDirectPeer(t *testing.T) {
 	resolve := newRequestNetwork(nil)
 	req := httptest.NewRequest("POST", "/v1/auth/device/token", nil)
-	req.RemoteAddr = "192.0.2.10:1234"
+	req.RemoteAddr = "191.0.2.10:1234"
 	req.Header.Set("Fly-Client-IP", "198.51.100.30")
-	if got := resolve(req); got != "192.0.2.10" {
+	if got := resolve(req); got != "191.0.2.10" {
 		t.Fatalf("network = %q", got)
 	}
 }

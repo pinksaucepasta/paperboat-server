@@ -81,14 +81,15 @@ WHERE id=sqlc.arg(id) AND state='running' AND lease_token=sqlc.arg(lease_token);
 UPDATE projects SET state=$2,version=version+1,updated_at=now() WHERE id=$1 AND state='restarting';
 
 -- name: GetOrchestrationProjectIntent :one
-SELECT p.id,p.user_id,pr.source_url,pr.default_branch,psa.assigned_gb,mt.code AS machine_type_code,mtv.vcpu,mtv.memory_mb,rg.code AS region_code,
+SELECT p.id,p.user_id,m.id AS machine_id,pr.source_url,pr.default_branch,psa.assigned_gb,mt.code AS machine_type_code,mtv.vcpu,mtv.memory_mb,rg.code AS region_code,
 coalesce(json_agg(vp.code ORDER BY vp.code) FILTER (WHERE vp.code IS NOT NULL),'[]'::json) AS preset_codes,
 prc.setup_script_ref,prc.desired_config_hash,prc.pending_restart_apply
-FROM projects p JOIN project_repositories pr ON pr.project_id=p.id JOIN project_storage_allocations psa ON psa.project_id=p.id
+FROM projects p JOIN user_machines m ON m.environment_id=p.id AND m.machine_kind='hosted'
+JOIN project_repositories pr ON pr.project_id=p.id JOIN project_storage_allocations psa ON psa.project_id=p.id
 JOIN project_runtime_configs prc ON prc.project_id=p.id JOIN machine_type_versions mtv ON mtv.id=prc.machine_type_version_id
 JOIN machine_types mt ON mt.id=mtv.machine_type_id JOIN regions rg ON rg.id=prc.region_id
 LEFT JOIN vm_preset_versions vpv ON vpv.id=ANY(prc.preset_version_ids) LEFT JOIN vm_presets vp ON vp.id=vpv.preset_id
-WHERE p.id=$1 GROUP BY p.id,pr.project_id,psa.project_id,prc.project_id,mt.code,mtv.vcpu,mtv.memory_mb,rg.code;
+WHERE p.id=$1 GROUP BY p.id,m.id,pr.project_id,psa.project_id,prc.project_id,mt.code,mtv.vcpu,mtv.memory_mb,rg.code;
 
 -- name: GetLatestGitHubTokenCiphertext :one
 SELECT token_ciphertext FROM github_oauth_tokens WHERE user_id=$1 AND revoked_at IS NULL ORDER BY updated_at DESC LIMIT 1;
@@ -116,8 +117,11 @@ ON CONFLICT (project_id) DO UPDATE SET fly_volume_id=fly_volumes.fly_volume_id;
 UPDATE project_storage_allocations SET fly_volume_id=$2,updated_at=now() WHERE project_id=$1;
 
 -- name: UpsertFlyMachineRecord :exec
-INSERT INTO fly_machines (id,project_id,fly_machine_id,state,image_ref,region,observed_config_hash)
-VALUES ($1,$2,$3,$4,$5,$6,$7)
+INSERT INTO fly_machines (id,project_id,user_machine_id,fly_machine_id,state,image_ref,region,observed_config_hash)
+SELECT sqlc.arg(id), sqlc.arg(project_id), m.id, sqlc.arg(fly_machine_id), sqlc.arg(state),
+       sqlc.arg(image_ref), sqlc.arg(region), sqlc.arg(observed_config_hash)
+FROM user_machines m
+WHERE m.environment_id = sqlc.arg(project_id) AND m.machine_kind = 'hosted'
 ON CONFLICT (project_id) DO UPDATE SET fly_machine_id=EXCLUDED.fly_machine_id,state=EXCLUDED.state,image_ref=EXCLUDED.image_ref,
 region=EXCLUDED.region,observed_config_hash=EXCLUDED.observed_config_hash,updated_at=now();
 

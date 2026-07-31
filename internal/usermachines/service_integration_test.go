@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/access"
+	"github.com/pinksaucepasta/paperboat-server/internal/accessdescriptor"
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
@@ -26,8 +27,67 @@ import (
 
 type testSeatAuthorizer struct{}
 
+var integrationPublicIdentityKey = base64.RawURLEncoding.EncodeToString(make([]byte, ed25519.PublicKeySize))
+
 func (testSeatAuthorizer) ReserveUserMachineSeat(context.Context, *db.Tx, string) error {
 	return nil
+}
+
+func TestSetupIsIdempotentAndUnpairPreservesInteractiveIdentity(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID := "usr_machine_setup_" + suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_"+suffix, "machine-setup-"+suffix+"@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	public, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := SetupInput{DisplayName: "Studio", Platform: "linux", Architecture: "amd64", WorkspaceRoot: "/home/paperboat", PublicIdentityKey: base64.RawURLEncoding.EncodeToString(public), RuntimeVersions: json.RawMessage(`{"pb":"test"}`)}
+	service := New(store, audit.NewWriter(store), Policy{AllowedPlatforms: []string{"linux"}}, testSeatAuthorizer{})
+	first, err := service.Setup(ctx, userID, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var firstVersion int64
+	if err := store.SQL().QueryRowContext(ctx, `SELECT version FROM paperboat.user_machines WHERE id=$1`, first.ID).Scan(&firstVersion); err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.Setup(ctx, userID, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var secondVersion, machineCount int64
+	if err := store.SQL().QueryRowContext(ctx, `SELECT version FROM paperboat.user_machines WHERE id=$1`, first.ID).Scan(&secondVersion); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.user_machines WHERE public_identity_key=$1`, input.PublicIdentityKey).Scan(&machineCount); err != nil {
+		t.Fatal(err)
+	}
+	if second.ID != first.ID || secondVersion != firstVersion || machineCount != 1 || !reflect.DeepEqual(second.SetupRoles, []string{"interactive"}) {
+		t.Fatalf("first=%+v second=%+v versions=%d/%d count=%d", first, second, firstVersion, secondVersion, machineCount)
+	}
+	replacementPublic, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := input
+	replacement.PublicIdentityKey = base64.RawURLEncoding.EncodeToString(replacementPublic)
+	if _, err := service.Setup(ctx, userID, replacement); !errors.Is(err, ErrMachineNameConflict) {
+		t.Fatalf("replacement setup error = %v, want ErrMachineNameConflict", err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machines SET setup_roles=ARRAY['host','interactive'],seat_state='occupied' WHERE id=$1`, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	unpaired, err := service.Unpair(ctx, userID, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(unpaired.SetupRoles, []string{"interactive"}) || unpaired.PublicIdentityKey != input.PublicIdentityKey || unpaired.InstallationGeneration != 2 || unpaired.SeatState != "released" {
+		t.Fatalf("unpaired=%+v", unpaired)
+	}
 }
 
 func TestWorkerMarksStaleMachineOfflineAndHeartbeatRestoresIt(t *testing.T) {
@@ -378,11 +438,11 @@ func TestDashboardEnrollmentIsIdempotentSingleClaimAndRetrySafe(t *testing.T) {
 	if replayed.ID != first.ID || replayed.BootstrapToken != first.BootstrapToken || replayed.OperationID != first.OperationID {
 		t.Fatalf("idempotent replay changed result: first=%+v replay=%+v", first, replayed)
 	}
-	pairing, err := service.CreatePairing(ctx, PairingInput{EnrollmentToken: first.BootstrapToken, Verifier: "verifier-1", DisplayName: "Studio", Platform: "darwin", Architecture: "arm64", WorkspaceRoot: "/Users/paperboat", RuntimeVersions: json.RawMessage(`{"helper":"test"}`)})
+	pairing, err := service.CreatePairing(ctx, PairingInput{EnrollmentToken: first.BootstrapToken, Verifier: "verifier-1", DisplayName: "Studio", Platform: "darwin", Architecture: "arm64", WorkspaceRoot: "/Users/paperboat", RuntimeVersions: json.RawMessage(`{"pb":"test"}`), PublicIdentityKey: integrationPublicIdentityKey})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.CreatePairing(ctx, PairingInput{EnrollmentToken: first.BootstrapToken, Verifier: "verifier-2", DisplayName: "Replay", Platform: "darwin", Architecture: "arm64", WorkspaceRoot: "/Users/paperboat"}); !errors.Is(err, ErrEnrollmentState) {
+	if _, err := service.CreatePairing(ctx, PairingInput{EnrollmentToken: first.BootstrapToken, Verifier: "verifier-2", DisplayName: "Replay", Platform: "darwin", Architecture: "arm64", WorkspaceRoot: "/Users/paperboat", PublicIdentityKey: integrationPublicIdentityKey}); !errors.Is(err, ErrEnrollmentState) {
 		t.Fatalf("consumed bootstrap claim error=%v", err)
 	}
 	status, err := service.Enrollment(ctx, userID, first.ID)
@@ -419,7 +479,7 @@ func TestDashboardEnrollmentDenialIsAtomicAndNonRetryable(t *testing.T) {
 		t.Fatal(err)
 	}
 	verifier := "verifier-deny-" + suffix
-	pairing, err := service.CreatePairing(ctx, PairingInput{EnrollmentToken: first.BootstrapToken, Verifier: verifier, DisplayName: "Denied host", Platform: "linux", Architecture: "amd64", WorkspaceRoot: "/workspace"})
+	pairing, err := service.CreatePairing(ctx, PairingInput{EnrollmentToken: first.BootstrapToken, Verifier: verifier, DisplayName: "Denied host", Platform: "linux", Architecture: "amd64", WorkspaceRoot: "/workspace", PublicIdentityKey: integrationPublicIdentityKey})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -465,7 +525,7 @@ func TestDashboardEnrollmentExpiryIsAtomicAndRetryable(t *testing.T) {
 		t.Fatal(err)
 	}
 	verifier := "verifier-expiry-" + suffix
-	pairing, err := service.CreatePairing(ctx, PairingInput{EnrollmentToken: first.BootstrapToken, Verifier: verifier, DisplayName: "Expired host", Platform: "linux", Architecture: "amd64", WorkspaceRoot: "/workspace"})
+	pairing, err := service.CreatePairing(ctx, PairingInput{EnrollmentToken: first.BootstrapToken, Verifier: verifier, DisplayName: "Expired host", Platform: "linux", Architecture: "amd64", WorkspaceRoot: "/workspace", PublicIdentityKey: integrationPublicIdentityKey})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -522,7 +582,7 @@ func TestInstallationMaterialIsSingleUseAndExpiryBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	verifier := "verifier-install-" + suffix
-	pairing, err := service.CreatePairing(ctx, PairingInput{EnrollmentToken: start.BootstrapToken, Verifier: verifier, DisplayName: "Install host", Platform: "linux", Architecture: "amd64", WorkspaceRoot: "/workspace"})
+	pairing, err := service.CreatePairing(ctx, PairingInput{EnrollmentToken: start.BootstrapToken, Verifier: verifier, DisplayName: "Install host", Platform: "linux", Architecture: "amd64", WorkspaceRoot: "/workspace", PublicIdentityKey: integrationPublicIdentityKey})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -556,7 +616,7 @@ func TestInstallationMaterialIsSingleUseAndExpiryBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	expiredVerifier := "verifier-install-expired-" + suffix
-	expiredPairing, err := service.CreatePairing(ctx, PairingInput{EnrollmentToken: second.BootstrapToken, Verifier: expiredVerifier, DisplayName: "Expired host", Platform: "linux", Architecture: "amd64", WorkspaceRoot: "/workspace"})
+	expiredPairing, err := service.CreatePairing(ctx, PairingInput{EnrollmentToken: second.BootstrapToken, Verifier: expiredVerifier, DisplayName: "Expired host", Platform: "linux", Architecture: "amd64", WorkspaceRoot: "/workspace", PublicIdentityKey: integrationPublicIdentityKey})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -585,10 +645,10 @@ func TestInstallationFailureRevokesIdentityReleasesSeatAndRetryIssuesNewIdentity
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_install_failure_"+suffix, "install-failure-"+suffix+"@example.test"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state) VALUES ($1,$2,$3,'Recovery host','linux','amd64','/workspace','offline','occupied')`, userMachineID, userID, environmentID); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,public_identity_key) VALUES ($1,$2,$3,'Recovery host','linux','amd64','/workspace','offline','occupied',$4)`, userMachineID, userID, environmentID, integrationPublicIdentityKey); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machine_pairings (id,verifier_hash,user_code,requested_display_name,platform,architecture,workspace_root,state,user_machine_id,expires_at) VALUES ($1,$2,$3,'Recovery host','linux','amd64','/workspace','consumed',$4,now()+interval '10 minutes')`, pairingID, []byte("verifier_"+suffix), "CODE"+suffix, userMachineID); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machine_pairings (id,verifier_hash,user_code,requested_display_name,platform,architecture,workspace_root,public_identity_key,state,user_machine_id,expires_at) VALUES ($1,$2,$3,'Recovery host','linux','amd64','/workspace',$4,'consumed',$5,now()+interval '10 minutes')`, pairingID, []byte("verifier_"+suffix), "CODE"+suffix, integrationPublicIdentityKey, userMachineID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machine_enrollments (id,user_id,operation_id,idempotency_key,bootstrap_token_hash,bootstrap_token_ciphertext,state,pairing_id,user_machine_id,expires_at) VALUES ($1,$2,$3,$4,$5,$6,'installing',$7,$8,now()+interval '10 minutes')`, enrollmentID, userID, "op_"+suffix, "idem_"+suffix, []byte("token_"+suffix), []byte("cipher_"+suffix), pairingID, userMachineID); err != nil {
@@ -597,7 +657,7 @@ func TestInstallationFailureRevokesIdentityReleasesSeatAndRetryIssuesNewIdentity
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id,desired_state) VALUES ($1,$2,$3,'active')`, environmentID, userMachineID, userID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_routes (id,environment_id,kind,public_host,target_host,target_port,desired_state,desired_revision,applied_revision) VALUES ($1,$2,'helper_https_wss',$3,'127.0.0.1',38080,'attached',1,0)`, "route_"+suffix, environmentID, "recovery-"+suffix+".example.test"); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_routes (id,environment_id,kind,public_host,target_host,target_port,desired_state,desired_revision,applied_revision) VALUES ($1,$2,'runtime_https_wss',$3,'127.0.0.1',38080,'attached',1,0)`, "route_"+suffix, environmentID, "recovery-"+suffix+".example.test"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_helpers (id,environment_id,state) VALUES ($1,$2,'active')`, helperID, environmentID); err != nil {
@@ -609,7 +669,7 @@ func TestInstallationFailureRevokesIdentityReleasesSeatAndRetryIssuesNewIdentity
 	service := New(store, audit.NewWriter(store), Policy{PairingLifetime: 10 * time.Minute, AllowedPlatforms: []string{"linux"}}, testSeatAuthorizer{})
 	service.ConfigureProvisioning(nil, "test-install-key")
 	service.ConfigureAccess(nil, "https://control.example.test", time.Minute)
-	if err := service.ConfigureHelperRoute("example.test", 38080); err != nil {
+	if err := service.ConfigureRuntimeRoute("example.test", 38080); err != nil {
 		t.Fatal(err)
 	}
 	configureSignedTestArtifact(t, service)
@@ -652,7 +712,7 @@ func TestInstallationFailureRevokesIdentityReleasesSeatAndRetryIssuesNewIdentity
 		t.Fatalf("retry=%+v", retried)
 	}
 	retryVerifier := "retry-verifier-" + suffix
-	retryPairing, err := service.CreatePairing(ctx, PairingInput{EnrollmentToken: retried.BootstrapToken, Verifier: retryVerifier, DisplayName: "Recovery host", Platform: "linux", Architecture: "amd64", WorkspaceRoot: "/workspace"})
+	retryPairing, err := service.CreatePairing(ctx, PairingInput{EnrollmentToken: retried.BootstrapToken, Verifier: retryVerifier, DisplayName: "Recovery host", Platform: "linux", Architecture: "amd64", WorkspaceRoot: "/workspace", PublicIdentityKey: integrationPublicIdentityKey})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -680,8 +740,8 @@ func TestInstallationFailureRevokesIdentityReleasesSeatAndRetryIssuesNewIdentity
 		t.Fatalf("recovery material=%s", material)
 	}
 	var routeCount int
-	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.control_routes WHERE environment_id=$1 AND kind='helper_https_wss' AND public_host=$2 AND target_host='127.0.0.1' AND target_port=38080`, environmentID, "recovery-"+suffix+".example.test").Scan(&routeCount); err != nil || routeCount != 1 {
-		t.Fatalf("helper route count=%d err=%v", routeCount, err)
+	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.control_routes WHERE environment_id=$1 AND kind='runtime_https_wss' AND public_host=$2 AND target_host='127.0.0.1' AND target_port=38080`, environmentID, "recovery-"+suffix+".example.test").Scan(&routeCount); err != nil || routeCount != 1 {
+		t.Fatalf("runtime route count=%d err=%v", routeCount, err)
 	}
 	var machineCount, occupiedSeats int
 	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*), count(*) FILTER (WHERE seat_state='occupied') FROM paperboat.user_machines WHERE user_id=$1`, userID).Scan(&machineCount, &occupiedSeats); err != nil {
@@ -698,9 +758,9 @@ func configureSignedTestArtifact(t *testing.T, service *Service) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sign := func(kind, name, body string) HelperArtifact {
+	sign := func(kind, name, body string) MachineArtifact {
 		digest := sha256.Sum256([]byte(body))
-		artifact := HelperArtifact{Schema: "paperboat.helper-artifact/v2", Kind: kind, Version: "test", Platform: "linux", Architecture: "amd64", URL: "https://updates.example.test/" + name, ByteLength: int64(len(body)), SHA256: hex.EncodeToString(digest[:])}
+		artifact := MachineArtifact{Schema: "paperboat.machine-artifact/v1", Kind: kind, Version: "test", Platform: "linux", Architecture: "amd64", URL: "https://updates.example.test/" + name, ByteLength: int64(len(body)), SHA256: hex.EncodeToString(digest[:])}
 		payload, _ := json.Marshal(struct {
 			Architecture string `json:"architecture"`
 			ByteLength   int64  `json:"byte_length"`
@@ -714,10 +774,9 @@ func configureSignedTestArtifact(t *testing.T, service *Service) {
 		artifact.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, payload))
 		return artifact
 	}
-	artifact := sign("worker", "paperboat-helper", "helper")
-	hostArtifact := sign("host_service", "paperboat-host-service", "host")
-	encoded, _ := json.Marshal([]HelperArtifact{artifact, hostArtifact})
-	if err := service.ConfigureHelperArtifacts(string(encoded), base64.RawURLEncoding.EncodeToString(publicKey)); err != nil {
+	artifact := sign("pb", "pb", "runtime")
+	encoded, _ := json.Marshal([]MachineArtifact{artifact})
+	if err := service.ConfigureMachineArtifacts(string(encoded), base64.RawURLEncoding.EncodeToString(publicKey)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -731,6 +790,10 @@ func TestConnectIssuesEnvironmentBoundDescriptor(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,'Studio Mac','darwin','arm64','/Users/paperboat','online','occupied',true)`, userMachineID, userID, environmentID); err != nil {
+		t.Fatal(err)
+	}
+	sourceMachineID := "um_source_" + suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,'Source Mac','darwin','arm64','/Users/source','online','occupied',true)`, sourceMachineID, userID, "env_source_"+suffix); err != nil {
 		t.Fatal(err)
 	}
 	helperID := "helper_" + suffix
@@ -747,10 +810,10 @@ func TestConnectIssuesEnvironmentBoundDescriptor(t *testing.T) {
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_tunnel_nodes (id,edge_pool,protocol_version,process_epoch,state,ready,last_heartbeat_at) VALUES ($1,'development','1.0',$2,'ready',true,now())`, edgeNodeID, "epoch_"+suffix); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_connector_generations (environment_id,helper_id,generation,edge_pool,edge_node_id,state) VALUES ($1,$2,1,'development',$3,'admitted')`, environmentID, helperID, edgeNodeID); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_connector_generations (environment_id,machine_id,generation,edge_pool,edge_node_id,state) VALUES ($1,$2,1,'development',$3,'admitted')`, environmentID, userMachineID, edgeNodeID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_routes (id,environment_id,kind,public_host,target_host,target_port,desired_revision,applied_revision,applied_node_id,applied_generation) VALUES ($1,$2,'helper_https_wss',$3,'127.0.0.1',8080,1,1,$4,1)`, "route_"+suffix, environmentID, "machine-"+suffix+".example.test", edgeNodeID); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_routes (id,environment_id,kind,public_host,target_host,target_port,desired_revision,applied_revision,applied_node_id,applied_generation) VALUES ($1,$2,'runtime_https_wss',$3,'127.0.0.1',8080,1,1,$4,1)`, "route_"+suffix, environmentID, "machine-"+suffix+".example.test", edgeNodeID); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Queries().CreateDefaultUserMachineTerminalSession(ctx, dbsqlc.CreateDefaultUserMachineTerminalSessionParams{ID: "umts_default_" + userMachineID, UserMachineID: userMachineID, LaunchCwd: "/Users/paperboat"}); err != nil {
@@ -771,14 +834,15 @@ func TestConnectIssuesEnvironmentBoundDescriptor(t *testing.T) {
 		t.Fatal(err)
 	}
 	service.ConfigureTerminalSessions(4, signer, nil)
-	response, err := service.Connect(ctx, userID, userMachineID, "cls_1")
+	response, err := service.Connect(ctx, userID, sourceMachineID, userMachineID, "cls_1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !response.Connectable || response.UserMachineID != userMachineID || response.Environment["id"] != environmentID || response.Environment["resource_id"] != userMachineID {
 		t.Fatalf("response = %#v", response)
 	}
-	if response.Terminal["endpoint"] != "wss://machine-"+suffix+".example.test/v1/runtime" || response.Terminal["http_endpoint"] != "https://machine-"+suffix+".example.test" || response.FileTransfer["endpoint"] != "https://machine-"+suffix+".example.test/v1/file-transfers" || response.Terminal["auth"] == nil || response.FileTransfer["auth"] == nil {
+	terminalEndpoints, _ := response.Terminal["endpoints"].(map[string]any)
+	if terminalEndpoints["wss"] != "wss://machine-"+suffix+".example.test/v1/runtime" || terminalEndpoints["quic"] != "quic://machine-"+suffix+".example.test:443" || response.FileTransfer["endpoint"] != "https://machine-"+suffix+".example.test/v1/file-transfers" || response.Terminal["auth"] == nil || response.FileTransfer["auth"] == nil {
 		t.Fatalf("descriptor = %#v", response)
 	}
 	terminalAuth := response.Terminal["auth"].(map[string]any)
@@ -788,9 +852,122 @@ func TestConnectIssuesEnvironmentBoundDescriptor(t *testing.T) {
 		if verifyErr != nil {
 			t.Fatalf("verify %s credential: %v", class, verifyErr)
 		}
-		if claims.EnvironmentID != environmentID || claims.UserID != userID || claims.CLIClientSessionID != "cls_1" || claims.SessionID != "umts_default_"+userMachineID {
+		if claims.EnvironmentID != environmentID || claims.UserID != userID || claims.CLIClientSessionID != "cls_1" || claims.SessionID != "umts_default_"+userMachineID || class == "file_transfer" && claims.SourceMachineID != sourceMachineID {
 			t.Fatalf("%s credential bindings = %#v", class, claims)
 		}
+	}
+}
+
+func TestTransferDefaultsAndBrokerPreserveMachineOwnershipAndRouteHost(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID := "usr_transfer_" + suffix
+	foreignUserID := "usr_transfer_foreign_" + suffix
+	for _, user := range []struct{ id, email string }{{userID, "transfer-" + suffix + "@example.test"}, {foreignUserID, "transfer-foreign-" + suffix + "@example.test"}} {
+		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, user.id, "workos_"+user.id, user.email); err != nil {
+			t.Fatal(err)
+		}
+	}
+	type machineFixture struct{ id, environmentID, ownerID, name string }
+	source := machineFixture{"um_transfer_source_" + suffix, "env_transfer_source_" + suffix, userID, "Source"}
+	destination := machineFixture{"um_transfer_destination_" + suffix, "env_transfer_destination_" + suffix, userID, "Destination"}
+	host := machineFixture{"um_transfer_host_" + suffix, "env_transfer_host_" + suffix, userID, "Host"}
+	foreign := machineFixture{"um_transfer_foreign_" + suffix, "env_transfer_foreign_" + suffix, foreignUserID, "Foreign"}
+	for _, machine := range []machineFixture{source, destination, host, foreign} {
+		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,$4,'linux','amd64','/home/test','online','occupied',true)`, machine.id, machine.ownerID, machine.environmentID, machine.name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	addRoute := func(machine machineFixture, publicHost string) {
+		helperID := "helper_" + machine.id
+		edgeID := "edge_" + machine.id
+		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id,desired_state) VALUES ($1,$2,$3,'active')`, machine.environmentID, machine.id, machine.ownerID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_helpers (id,environment_id,state) VALUES ($1,$2,'active')`, helperID, machine.environmentID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_tunnel_nodes (id,edge_pool,protocol_version,process_epoch,state,ready,last_heartbeat_at) VALUES ($1,'development','1.0',$2,'ready',true,now())`, edgeID, "epoch_"+machine.id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_connector_generations (environment_id,machine_id,generation,edge_pool,edge_node_id,state) VALUES ($1,$2,1,'development',$3,'admitted')`, machine.environmentID, machine.id, edgeID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_routes (id,environment_id,kind,public_host,target_host,target_port,desired_revision,applied_revision,applied_node_id,applied_generation) VALUES ($1,$2,'runtime_https_wss',$3,'127.0.0.1',8080,1,1,$4,1)`, "route_"+machine.id, machine.environmentID, publicHost, edgeID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	addRoute(destination, "destination-"+suffix+".example.test")
+	addRoute(host, "host-"+suffix+".example.test")
+	sessionID := "umts_transfer_" + suffix
+	if err := store.Queries().CreateUserMachineTerminalSession(ctx, dbsqlc.CreateUserMachineTerminalSessionParams{ID: sessionID, UserMachineID: host.id, TerminalID: "term_" + suffix, Name: "transfer", LaunchCwd: "/home/test"}); err != nil {
+		t.Fatal(err)
+	}
+
+	signer, err := mint.NewEphemeral(5 * time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := accessdescriptor.FileTransferPolicy{Revision: "file-transfer-v1", MaxFileBytes: 50 << 20, MaxBatchFiles: 10, MaxBatchBytes: 500 << 20, MaxConcurrentTransfers: 2, RetentionSeconds: 604800, DeliveryTimeoutSeconds: 600, MaxPendingSpoolBytes: 1 << 30}
+	service := New(store, audit.NewWriter(store), Policy{}, nil)
+	service.ConfigureAccess(nil, "https://api.paperboat.test", 2*time.Minute)
+	service.ConfigureTerminalSessions(4, signer, nil)
+	service.ConfigureFileTransfer(policy)
+
+	if _, err := service.SetTransferDestinationDefault(ctx, userID, foreign.id); !errors.Is(err, ErrTransferDestinationInvalid) {
+		t.Fatalf("foreign default error = %v", err)
+	}
+	if selected, err := service.SetTransferDestinationDefault(ctx, userID, destination.id); err != nil || selected.ID != destination.id {
+		t.Fatalf("set user default = %+v, %v", selected, err)
+	}
+	if selected, err := service.TransferDestinationDefault(ctx, userID); err != nil || selected.ID != destination.id {
+		t.Fatalf("get user default = %+v, %v", selected, err)
+	}
+	if selected, err := service.SetTerminalSessionTransferDestination(ctx, userID, sessionID, destination.id); err != nil || selected.ID != destination.id {
+		t.Fatalf("set session default = %+v, %v", selected, err)
+	}
+	if selected, err := service.TerminalSessionTransferDestination(ctx, userID, sessionID); err != nil || selected.ID != destination.id {
+		t.Fatalf("get session default = %+v, %v", selected, err)
+	}
+
+	direct, err := service.FileTransferDescriptor(ctx, userID, source.id, destination.id, "cli_1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if direct.Endpoint != "https://destination-"+suffix+".example.test/v1/file-transfers" || direct.DestinationMachineID != destination.id || direct.Policy != policy {
+		t.Fatalf("direct descriptor = %+v", direct)
+	}
+	session, err := service.FileTransferDescriptor(ctx, userID, source.id, destination.id, "cli_1", sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.Endpoint != "https://host-"+suffix+".example.test/v1/file-transfers" || session.DestinationMachineID != destination.id {
+		t.Fatalf("session descriptor = %+v", session)
+	}
+	token, _ := session.Auth["token"].(string)
+	claims, err := signer.VerifyCredential(token, "https://api.paperboat.test", "file_transfer", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims.MachineID != host.id || claims.SourceMachineID != source.id || claims.SessionID != sessionID || claims.UserID != userID {
+		t.Fatalf("session credential bindings = %+v", claims)
+	}
+	if _, err := service.FileTransferDescriptor(ctx, userID, foreign.id, destination.id, "cli_1", ""); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("foreign source error = %v", err)
+	}
+
+	if err := service.ClearTerminalSessionTransferDestination(ctx, userID, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.TerminalSessionTransferDestination(ctx, userID, sessionID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cleared session default error = %v", err)
+	}
+	if err := service.ClearTransferDestinationDefault(ctx, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.TransferDestinationDefault(ctx, userID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cleared user default error = %v", err)
 	}
 }
 
@@ -803,6 +980,10 @@ func TestDisconnectRevokesMintedHelperSessionsAndRetriesOfflineConnector(t *test
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online,provider_route_route_id,provider_route_client_id,provider_route_http_base_url,provider_route_websocket_base_url) VALUES ($1,$2,$3,'Studio Mac','darwin','arm64','/Users/paperboat','online','occupied',true,'tun_1','cli_1','https://machine.example','wss://machine.example')`, userMachineID, userID, environmentID); err != nil {
+		t.Fatal(err)
+	}
+	sourceMachineID := "um_source_revoke_" + suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,'Source Mac','darwin','arm64','/Users/source','online','occupied',true)`, sourceMachineID, userID, "env_source_revoke_"+suffix); err != nil {
 		t.Fatal(err)
 	}
 	helperID := "helper_revoke_" + suffix
@@ -819,10 +1000,10 @@ func TestDisconnectRevokesMintedHelperSessionsAndRetriesOfflineConnector(t *test
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_tunnel_nodes (id,edge_pool,protocol_version,process_epoch,state,ready,last_heartbeat_at) VALUES ($1,'development','1.0',$2,'ready',true,now())`, edgeNodeID, "epoch_revoke_"+suffix); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_connector_generations (environment_id,helper_id,generation,edge_pool,edge_node_id,state) VALUES ($1,$2,1,'development',$3,'admitted')`, environmentID, helperID, edgeNodeID); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_connector_generations (environment_id,machine_id,generation,edge_pool,edge_node_id,state) VALUES ($1,$2,1,'development',$3,'admitted')`, environmentID, userMachineID, edgeNodeID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_routes (id,environment_id,kind,public_host,target_host,target_port,desired_revision,applied_revision,applied_node_id,applied_generation) VALUES ($1,$2,'helper_https_wss',$3,'127.0.0.1',8080,1,1,$4,1)`, "route_revoke_"+suffix, environmentID, "machine-revoke-"+suffix+".example.test", edgeNodeID); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_routes (id,environment_id,kind,public_host,target_host,target_port,desired_revision,applied_revision,applied_node_id,applied_generation) VALUES ($1,$2,'runtime_https_wss',$3,'127.0.0.1',8080,1,1,$4,1)`, "route_revoke_"+suffix, environmentID, "machine-revoke-"+suffix+".example.test", edgeNodeID); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Queries().CreateDefaultUserMachineTerminalSession(ctx, dbsqlc.CreateDefaultUserMachineTerminalSessionParams{ID: "umts_default_" + userMachineID, UserMachineID: userMachineID, LaunchCwd: "/Users/paperboat"}); err != nil {
@@ -832,7 +1013,7 @@ func TestDisconnectRevokesMintedHelperSessionsAndRetriesOfflineConnector(t *test
 	service := New(store, audit.NewWriter(store), Policy{}, nil)
 	service.ConfigureProvisioning(access.FakeClient{}, "test-key")
 	service.ConfigureAccess(issuer, "https://api.paperboat.test", 5*time.Minute)
-	if _, err := service.Connect(ctx, userID, userMachineID, "cls_1"); err != nil {
+	if _, err := service.Connect(ctx, userID, sourceMachineID, userMachineID, "cls_1"); err != nil {
 		t.Fatal(err)
 	}
 	var active int
@@ -900,10 +1081,10 @@ func TestEntitlementLossRevokesBYODControlPlaneWithoutActiveSessions(t *testing.
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_helper_enrollments (id,environment_id,helper_id,jti_hash,operation_key,request_hash,grant_ciphertext,state,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',now()+interval '10 minutes')`, "enroll_seat_"+suffix, environmentID, helperID, []byte("jti_seat_"+suffix), "operation_seat_"+suffix, []byte("request_seat_"+suffix), []byte("grant_seat_"+suffix)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_connector_generations (environment_id,helper_id,generation,edge_pool,state) VALUES ($1,$2,1,'development','admitted')`, environmentID, helperID); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_connector_generations (environment_id,machine_id,generation,edge_pool,state) VALUES ($1,$2,1,'development','admitted')`, environmentID, helperID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_routes (id,environment_id,kind,public_host,target_host,target_port) VALUES ($1,$2,'helper_https_wss',$3,'127.0.0.1',8080)`, "route_seat_"+suffix, environmentID, "seat-"+suffix+".example.test"); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_routes (id,environment_id,kind,public_host,target_host,target_port) VALUES ($1,$2,'runtime_https_wss',$3,'127.0.0.1',8080)`, "route_seat_"+suffix, environmentID, "seat-"+suffix+".example.test"); err != nil {
 		t.Fatal(err)
 	}
 	service := New(store, audit.NewWriter(store), Policy{}, nil)
@@ -959,10 +1140,10 @@ VALUES ($1,$2,$3,$4,'linux','amd64','/srv/workspace','online','occupied',true,no
 		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_helpers (id,environment_id,state) VALUES ($1,$2,'active')`, machine.helperID, machine.environmentID); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_connector_generations (environment_id,helper_id,generation,edge_pool,state) VALUES ($1,$2,1,'development','admitted')`, machine.environmentID, machine.helperID); err != nil {
+		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_connector_generations (environment_id,machine_id,generation,edge_pool,state) VALUES ($1,$2,1,'development','admitted')`, machine.environmentID, machine.helperID); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_routes (id,environment_id,kind,public_host,target_host,target_port) VALUES ($1,$2,'helper_https_wss',$3,'127.0.0.1',8080)`, "route_"+machine.id, machine.environmentID, machine.id+".example.test"); err != nil {
+		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_routes (id,environment_id,kind,public_host,target_host,target_port) VALUES ($1,$2,'runtime_https_wss',$3,'127.0.0.1',8080)`, "route_"+machine.id, machine.environmentID, machine.id+".example.test"); err != nil {
 			t.Fatal(err)
 		}
 	}

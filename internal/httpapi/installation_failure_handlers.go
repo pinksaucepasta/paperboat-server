@@ -39,7 +39,7 @@ func helperInstallationFailure(enrollments *controlplane.EnrollmentService, mach
 			return
 		}
 		var environmentID string
-		proof, proofErr := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Helper-Proof"))
+		proof, proofErr := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Machine-Proof"))
 		if proofErr == nil && len(proof) > 0 {
 			claims, verifyErr := enrollments.VerifyHelperRequest(r.Context(), parts[1], proof, r.Method, r.URL.Path, body)
 			if verifyErr != nil || claims.HelperID != input.HelperID {

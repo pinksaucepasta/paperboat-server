@@ -38,7 +38,7 @@ func (f *fakeRuntimeObservationRepository) RecordRuntimeObservation(_ context.Co
 	return f.recordErr
 }
 
-func TestRuntimeObservationValidatesSanitizesAndBoundsConfigStatus(t *testing.T) {
+func TestRuntimeObservationRejectsObsoleteConfigStatus(t *testing.T) {
 	repository := &fakeRuntimeObservationRepository{}
 	body := `{
 		"environment_id":"prj_test","resource_id":"machine_test",
@@ -53,15 +53,11 @@ func TestRuntimeObservationValidatesSanitizesAndBoundsConfigStatus(t *testing.T)
 	request := httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer machine-token")
 	runtimeObservation(repository, nil, 2).ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusAccepted {
+	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
-	if repository.recorded == nil || repository.recorded.ConfigSync == nil {
-		t.Fatal("config sync heartbeat was not recorded")
-	}
-	status := repository.recorded.ConfigSync
-	if len(status.Skipped) != 2 || status.ErrorCode != "git_auth_failed" || strings.Contains(status.ErrorMessage, "secret") {
-		t.Fatalf("normalized status = %#v", status)
+	if repository.recorded != nil {
+		t.Fatal("obsolete config sync heartbeat was recorded")
 	}
 }
 
@@ -71,7 +67,7 @@ func TestRuntimeObservationUsesProofBoundHelperIdentity(t *testing.T) {
 	body := `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-07-14T01:00:01Z"}`
 	request := httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer helper-identity")
-	request.Header.Set("X-Paperboat-Helper-Proof", "cHJvb2Y")
+	request.Header.Set("X-Paperboat-Machine-Proof", "cHJvb2Y")
 	recorder := httptest.NewRecorder()
 	runtimeObservation(repository, identity, 10).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusAccepted || identity.token != "helper-identity" || string(identity.proof) != "proof" || string(identity.body) != body || identity.projectID != "prj_test" || identity.machineID != "machine_test" {
@@ -103,7 +99,7 @@ func TestRuntimeObservationRejectsUnsafeSummaryAndWrongCredential(t *testing.T) 
 
 	repository = &fakeRuntimeObservationRepository{verifyErr: metering.ErrInvalidHeartbeatCredential}
 	recorder = httptest.NewRecorder()
-	request = httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(strings.TrimSuffix(validPrefix, `"config_sync":`)+`"signals":{}}`))
+	request = httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(`{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-07-14T01:00:01Z"}`))
 	request.Header.Set("Authorization", "Bearer wrong")
 	runtimeObservation(repository, nil, 10).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusUnauthorized {
@@ -123,16 +119,14 @@ func TestRuntimeObservationRepositoryFailureIsInternalError(t *testing.T) {
 	}
 }
 
-func TestRuntimeObservationReportsConfigStatusNewerThanItsSample(t *testing.T) {
-	repository := &fakeRuntimeObservationRepository{}
-	body := `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-07-14T01:00:01Z","config_sync":{"state":"healthy","pending_path_count":0,"max_file_bytes":10,"max_batch_bytes":20,"policy_revision":"1","updated_at":"2026-07-14T02:00:00Z"}}`
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(body))
+func TestRuntimeObservationReportsDuplicateMachineIdentity(t *testing.T) {
+	repository := &fakeRuntimeObservationRepository{recordErr: metering.ErrDuplicateMachineIdentity}
+	request := httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(`{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-07-14T01:00:01Z"}`))
 	request.Header.Set("Authorization", "Bearer machine-token")
+	recorder := httptest.NewRecorder()
 	runtimeObservation(repository, nil, 10).ServeHTTP(recorder, request)
-	sampledAt := time.Date(2026, 7, 14, 1, 0, 1, 0, time.UTC)
-	if recorder.Code != http.StatusAccepted || repository.recorded == nil || repository.recorded.ConfigSync == nil || repository.recorded.ConfigSync.State != "error" || repository.recorded.ConfigSync.ErrorCode != "status_clock_invalid" || repository.recorded.ConfigSync.UpdatedAt.After(sampledAt) {
-		t.Fatalf("future config status = %d recorded=%#v", recorder.Code, repository.recorded)
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), `"code":"duplicate_machine_identity"`) {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 

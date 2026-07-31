@@ -331,7 +331,7 @@ type fullTunnelDeployment struct {
 	CaddyHTTPListenAddress string        `json:"caddy_http_listen_address"`
 	CaddyAdminAddress      string        `json:"caddy_admin_address"`
 	PreviewBaseDomain      string        `json:"preview_base_domain"`
-	HelperBaseDomain       string        `json:"helper_base_domain"`
+	RuntimeBaseDomain      string        `json:"runtime_base_domain"`
 	TrustedProxyCIDRs      []string      `json:"trusted_proxy_cidrs"`
 	CertificateIssuer      string        `json:"certificate_issuer"`
 	NodeCapacity           uint32        `json:"node_capacity"`
@@ -399,7 +399,7 @@ func runFullTunnelConformance(ctx context.Context, store *db.DB, handler http.Ha
 		ControlURL: controlURL, CredentialIssuer: controlURL, ControlCredentialFile: credentialPath, ControlCAFile: caPath, JWKSFile: jwksPath, RevocationsFile: revocationsPath, UsageSigningKeyFile: usagePath,
 		FRPSBinary: frpsPath, FRPSSHA256: fileSHA256(frpsPath), CaddyBinary: caddyPath, CaddySHA256: fileSHA256(caddyPath), RuntimeDirectory: runtimeRoot,
 		HookAddress: "127.0.0.1:" + fmt.Sprint(ports[0]), HookPath: "/private/control-conformance-hook", ConnectorBindAddress: "127.0.0.1", ConnectorAdvertiseHost: "edge.example.test", ConnectorTCPPort: ports[1], ConnectorQUICPort: ports[2],
-		PrivateVhostAddress: "127.0.0.1:" + fmt.Sprint(ports[3]), EdgeGatewayAddress: "127.0.0.1:" + fmt.Sprint(ports[4]), CaddyListenAddress: "127.0.0.1:" + fmt.Sprint(ports[5]), CaddyHTTPListenAddress: "127.0.0.1:" + fmt.Sprint(ports[6]), CaddyAdminAddress: "127.0.0.1:" + fmt.Sprint(ports[7]), PreviewBaseDomain: "preview.example.test", HelperBaseDomain: "helper.example.test", TrustedProxyCIDRs: []string{"127.0.0.0/8"}, CertificateIssuer: "internal",
+		PrivateVhostAddress: "127.0.0.1:" + fmt.Sprint(ports[3]), EdgeGatewayAddress: "127.0.0.1:" + fmt.Sprint(ports[4]), CaddyListenAddress: "127.0.0.1:" + fmt.Sprint(ports[5]), CaddyHTTPListenAddress: "127.0.0.1:" + fmt.Sprint(ports[6]), CaddyAdminAddress: "127.0.0.1:" + fmt.Sprint(ports[7]), PreviewBaseDomain: "preview.example.test", RuntimeBaseDomain: "helper.example.test", TrustedProxyCIDRs: []string{"127.0.0.0/8"}, CertificateIssuer: "internal",
 		NodeCapacity: 8, ControlInterval: 250 * time.Millisecond, UsageInterval: 250 * time.Millisecond, ControlTimeout: 2 * time.Second,
 	}
 	if deployment.FRPSSHA256 == "" || deployment.CaddySHA256 == "" {
@@ -548,7 +548,7 @@ func resetAndSeed(ctx context.Context, store *db.DB) error {
 		`DELETE FROM paperboat.users WHERE id='usr_control_conformance'`,
 		`INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ('usr_control_conformance','workos_control_conformance','control-conformance@example.test','active')`,
 		`INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id) VALUES ('env_control_conformance','workspace_control_conformance','usr_control_conformance')`,
-		`INSERT INTO paperboat.control_routes (id,environment_id,kind,public_host,target_host,target_port) VALUES ('route_control_conformance','env_control_conformance','helper_https_wss','control-conformance.helper.example.test','127.0.0.1',8080)`,
+		`INSERT INTO paperboat.control_routes (id,environment_id,kind,public_host,target_host,target_port) VALUES ('route_control_conformance','env_control_conformance','runtime_https_wss','control-conformance.helper.example.test','127.0.0.1',8080)`,
 	}
 	return store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		for _, statement := range statements {

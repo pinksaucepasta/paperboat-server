@@ -73,6 +73,7 @@ CREATE TABLE control_config_assignments (
   id text NOT NULL UNIQUE,
   environment_id text PRIMARY KEY REFERENCES control_environments(id) ON DELETE CASCADE,
   repository_id text REFERENCES control_config_repositories(id) ON DELETE SET NULL,
+	mode text NOT NULL DEFAULT 'pull_only',
   consent_state text NOT NULL DEFAULT 'not_required',
   warning_revision text,
   accepted_at timestamptz,
@@ -81,6 +82,7 @@ CREATE TABLE control_config_assignments (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   CHECK (consent_state IN ('not_required','pending','accepted','revoked')),
+	CHECK (mode IN ('pull_only','push_only','bidirectional')),
   CHECK ((consent_state = 'pending' AND warning_revision IS NOT NULL) OR consent_state <> 'pending'),
   CHECK ((consent_state = 'accepted' AND warning_revision IS NOT NULL AND accepted_at IS NOT NULL) OR consent_state <> 'accepted')
 );
@@ -239,7 +241,7 @@ CREATE TABLE control_routes (
   version bigint NOT NULL DEFAULT 1,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
-  CHECK (kind IN ('helper_https_wss','preview_public_https_wss')),
+  CHECK (kind IN ('runtime_https_wss','preview_public_https_wss')),
   CHECK (target_host IN ('127.0.0.1','::1')),
   CHECK (desired_state IN ('attached','detaching','detached','replacing'))
 );

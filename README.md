@@ -48,12 +48,11 @@ external: set `PAPERBOAT_DATABASE_DSN` to its connection string. Start from
 Release container tags use `YYYY.MM.DD.X`. Run `tools/release-version.sh next`, create
 that exact tag without a `v` prefix, and push it.
 
-The server image contains only `paperboat-server`. Helper and CLI releases are built and
-published independently. Release CI signs a helper artifact manifest containing immutable
-URLs, byte lengths, and SHA-256 digests; mount that manifest and its Ed25519 public key at
-the paths configured by `PAPERBOAT_USER_MACHINES_HELPER_ARTIFACTS_JSON_FILE` and
-`PAPERBOAT_USER_MACHINES_HELPER_ARTIFACT_PUBLIC_KEY_FILE`. The CLI is never shipped by
-the server.
+The server image contains only `paperboat-server`. The unified `pb` release is built and
+published independently. Release CI signs machine artifact manifests containing immutable
+URLs, byte lengths, and SHA-256 digests; mount those manifests and their Ed25519 public key at
+the paths configured by `PAPERBOAT_USER_MACHINES_ARTIFACTS_JSON_FILE` and
+`PAPERBOAT_USER_MACHINES_ARTIFACT_PUBLIC_KEY_FILE`.
 
 The server exposes health/readiness, authentication, billing, usage, project, environment,
 and config-repository APIs. See [docs/api.md](docs/api.md) and
@@ -115,8 +114,8 @@ Common environment overrides:
 - `PAPERBOAT_FLY_IMAGE_REF`
 - `PAPERBOAT_FLY_OPERATION_TIMEOUT`
 - `PAPERBOAT_USER_MACHINES_BOOTSTRAP_COMMAND`
-- `PAPERBOAT_USER_MACHINES_HELPER_ARTIFACTS_JSON`
-- `PAPERBOAT_USER_MACHINES_HELPER_ARTIFACT_PUBLIC_KEY`
+- `PAPERBOAT_USER_MACHINES_ARTIFACTS_JSON`
+- `PAPERBOAT_USER_MACHINES_ARTIFACT_PUBLIC_KEY`
 - `PAPERBOAT_PREVIEW_BASE_DOMAIN`
 - `PAPERBOAT_PREVIEW_IDENTITY_KEY` or `PAPERBOAT_PREVIEW_IDENTITY_KEY_FILE`
 - `PAPERBOAT_FLY_ORCHESTRATION_LEASE`

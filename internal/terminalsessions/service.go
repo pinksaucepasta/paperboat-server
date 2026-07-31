@@ -140,10 +140,17 @@ func (s *Service) applyOperations(ctx context.Context, items []dbsqlc.ListDueTer
 		}
 		route, err := s.controlRoute(ctx, item.ProjectID)
 		if err == nil {
+			machineID, machineErr := s.db.Queries().GetHostedMachineIDForEnvironment(ctx, item.ProjectID)
+			if machineErr != nil {
+				if firstErr == nil {
+					firstErr = machineErr
+				}
+				continue
+			}
 			jti, jtiErr := randomID("jti")
 			if jtiErr == nil {
 				now := time.Now().UTC()
-				credential, signErr := s.signer.SignCredential(mint.CredentialInput{Issuer: s.issuer, Audience: "paperboat-helper", Subject: item.UserID, JTI: jti, IssuedAt: now, ExpiresAt: now.Add(mint.MaxProofTTL), CredentialClass: "terminal_operation", Scopes: []string{"terminal:operate"}, EnvironmentID: item.ProjectID, UserID: item.UserID, CLIClientSessionID: item.ID, SessionID: item.TerminalSessionID})
+				credential, signErr := s.signer.SignCredential(mint.CredentialInput{Issuer: s.issuer, Audience: "paperboat-machine", Subject: item.UserID, JTI: jti, IssuedAt: now, ExpiresAt: now.Add(mint.MaxProofTTL), CredentialClass: "terminal_operation", Scopes: []string{"terminal:operate"}, EnvironmentID: item.ProjectID, MachineID: machineID, UserID: item.UserID, CLIClientSessionID: item.ID, SessionID: item.TerminalSessionID})
 				if signErr == nil {
 					action := item.Operation
 					if action == "delete_history" {
@@ -286,6 +293,10 @@ func (s *Service) snapshot(ctx context.Context, projectID, userID string, rows [
 	if err != nil {
 		return nil, err
 	}
+	machineID, err := s.db.Queries().GetHostedMachineIDForEnvironment(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
 	runtime := make(map[string]helperruntime.Snapshot, len(rows))
 	for _, row := range rows {
 		jti, randomErr := randomID("jti")
@@ -297,7 +308,7 @@ func (s *Service) snapshot(ctx context.Context, projectID, userID string, rows [
 			return nil, randomErr
 		}
 		now := time.Now().UTC()
-		credential, signErr := s.signer.SignCredential(mint.CredentialInput{Issuer: s.issuer, Audience: "paperboat-helper", Subject: userID, JTI: jti, IssuedAt: now, ExpiresAt: now.Add(mint.MaxProofTTL), CredentialClass: "terminal_operation", Scopes: []string{"terminal:operate"}, EnvironmentID: projectID, UserID: userID, CLIClientSessionID: operationID, SessionID: row.ID})
+		credential, signErr := s.signer.SignCredential(mint.CredentialInput{Issuer: s.issuer, Audience: "paperboat-machine", Subject: userID, JTI: jti, IssuedAt: now, ExpiresAt: now.Add(mint.MaxProofTTL), CredentialClass: "terminal_operation", Scopes: []string{"terminal:operate"}, EnvironmentID: projectID, MachineID: machineID, UserID: userID, CLIClientSessionID: operationID, SessionID: row.ID})
 		if signErr != nil {
 			return nil, signErr
 		}

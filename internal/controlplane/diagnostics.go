@@ -66,6 +66,6 @@ func (s *DiagnosticsService) Metrics(ctx context.Context) (map[string]int64, err
 		"user_machine_availability_drift_depth":             userMachines.AvailabilityDriftDepth,
 		"user_machine_privileged_service_error_depth":       userMachines.PrivilegedServiceErrorDepth,
 		"user_machine_unsupported_host_scope_depth":         userMachines.UnsupportedHostScopeDepth,
-		"paperboat_helper_update_rollbacks_total":           userMachines.UpdateRollbacksTotal,
+		"paperboat_runtime_update_rollbacks_total":          userMachines.UpdateRollbacksTotal,
 	}, nil
 }

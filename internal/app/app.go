@@ -17,9 +17,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/auth"
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
 	"github.com/pinksaucepasta/paperboat-server/internal/catalog"
-	"github.com/pinksaucepasta/paperboat-server/internal/classifier"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
-	"github.com/pinksaucepasta/paperboat-server/internal/configsync"
 	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
@@ -112,17 +110,6 @@ func New(opts Options) (*App, error) {
 	meteringService := metering.NewRuntimeService(store, flyProvider, billingRepo)
 	meteringService.SetDownstreamRevoker(accessService)
 	checker := readinessChecker{cfg: opts.Config, db: store}
-	var classificationProvider classifier.Provider
-	if opts.Config.Secrets.ClassifierAPIKey != "" {
-		provider, providerErr := classifier.New(classifier.Config{BaseURL: opts.Config.Classifier.BaseURL, APIKey: opts.Config.Secrets.ClassifierAPIKey, Model: opts.Config.Classifier.Model, Revision: opts.Config.Classifier.Revision, Timeout: opts.Config.Classifier.Timeout, MaxCandidates: opts.Config.Classifier.MaxCandidates, SchemaMode: opts.Config.Classifier.SchemaMode})
-		if providerErr != nil {
-			_ = store.Close()
-			return nil, providerErr
-		}
-		classificationProvider = provider
-	}
-	classificationController := classifier.NewController(store, classificationProvider, opts.Config.Classifier, opts.Config.ConfigSync.PolicyRevision, auditWriter)
-	configSyncRepo := configsync.NewRepository(store, opts.Config.ConfigSync, opts.Config.Secrets.EncryptionKey, auditWriter)
 	userMachineService := usermachines.New(store, auditWriter, usermachines.Policy{PairingLifetime: opts.Config.UserMachines.PairingLifetime, OfflineAfter: opts.Config.UserMachines.OfflineAfter, AllowedPlatforms: opts.Config.UserMachines.AllowedPlatforms}, billingService)
 	userMachineService.ConfigureProvisioning(accessProvider, opts.Config.Secrets.EncryptionKey)
 	userMachineService.ConfigureAccess(credentialIssuer, normalizeHelperIssuer(opts.Config.HTTP.PublicBaseURL), opts.Config.CLIAuth.AccessTokenLifetime)
@@ -133,11 +120,12 @@ func New(opts Options) (*App, error) {
 		DeliveryTimeoutSeconds: int64(opts.Config.Access.FileTransfer.DeliveryTimeout / time.Second), MaxPendingSpoolBytes: opts.Config.Access.FileTransfer.MaxPendingSpoolBytes,
 	})
 	userMachineService.ConfigureTerminalSessions(opts.Config.TerminalSessions.MaxActivePerProject, mintKeys, &http.Client{Timeout: opts.Config.TerminalSessions.OperationTimeout})
+	userMachineService.ConfigureMachineControl(mintKeys, normalizeHelperIssuer(opts.Config.HTTP.PublicBaseURL))
 	userMachineService.ConfigureBootstrapCommand(opts.Config.UserMachines.BootstrapCommand)
-	if err := userMachineService.ConfigureHelperRoute(opts.Config.HelperBaseDomain, opts.Config.UserMachines.HelperListenPort); err != nil {
+	if err := userMachineService.ConfigureRuntimeRoute(opts.Config.RuntimeBaseDomain, opts.Config.UserMachines.RuntimeListenPort); err != nil {
 		return nil, err
 	}
-	if err := userMachineService.ConfigureHelperArtifacts(opts.Config.UserMachines.HelperArtifactsJSON, opts.Config.UserMachines.HelperArtifactPublicKey); err != nil {
+	if err := userMachineService.ConfigureMachineArtifacts(opts.Config.UserMachines.MachineArtifactsJSON, opts.Config.UserMachines.MachineArtifactPublicKey); err != nil {
 		return nil, err
 	}
 	billingService.SetUserMachineSessionRevoker(userMachineService)
@@ -248,12 +236,7 @@ func New(opts Options) (*App, error) {
 			},
 			Revoke: githubService.RevokeRepositoryAccess,
 		}, opts.Config.Secrets.EncryptionKey, auditWriter)
-	configRuntimeService := controlplane.NewConfigRuntimeService(store, configLeaseService,
-		controlplane.ConfigKeySourceFunc(func(ctx context.Context, userID string) (controlplane.ConfigKeyMaterial, error) {
-			key, keyErr := configSyncRepo.EnsureAccountKey(ctx, userID)
-			return controlplane.ConfigKeyMaterial{Version: key.Version, Recipient: key.Recipient, Identity: key.Identity}, keyErr
-		}), opts.Config.ConfigSync, opts.Config.Classifier)
-	configClassificationService := controlplane.NewConfigClassificationService(store, configLeaseService, classificationController, opts.Config.ConfigSync)
+	configRuntimeService := controlplane.NewConfigRuntimeService(store, configLeaseService, opts.Config.ConfigSync)
 	configConflictService := controlplane.NewConfigConflictService(store, configLeaseService, auditWriter)
 	routeService := controlplane.NewRouteService(store, auditWriter)
 	var previewService *controlplane.PreviewService
@@ -274,7 +257,7 @@ func New(opts Options) (*App, error) {
 		}
 	}
 	orchestratorService.SetHostedRouteEnsurer(func(ctx context.Context, actorID, operationKey, environmentID, publicHost string) error {
-		_, err := routeService.Create(ctx, actorID, operationKey, environmentID, "helper_https_wss", publicHost, "127.0.0.1", 8080)
+		_, err := routeService.Create(ctx, actorID, operationKey, environmentID, "runtime_https_wss", publicHost, "127.0.0.1", 8080)
 		return err
 	})
 	readinessClient := &http.Client{Timeout: opts.Config.Fly.OperationTimeout}
@@ -310,11 +293,9 @@ func New(opts Options) (*App, error) {
 		Projects:               projectService,
 		TerminalSessions:       terminalSessionService,
 		EnvironmentAccess:      accessService,
-		MeteringRepo:           metering.NewRuntimeRepository(store, opts.Config.Secrets.EncryptionKey),
+		MeteringRepo:           metering.NewRuntimeRepository(store, opts.Config.Secrets.EncryptionKey, opts.Config.ConfigSync.StaleHeartbeatAfter),
 		RuntimeIdentity:        enrollmentService,
-		ConfigSync:             configSyncRepo,
-		Classifier:             classificationController,
-		UserMachines:           userMachineService,
+		Machines:               userMachineService,
 		MintKeys:               mintKeys,
 		EdgeControl:            edgeControlHandler,
 		EdgeControlAdmin:       edgeControlService,
@@ -326,7 +307,6 @@ func New(opts Options) (*App, error) {
 		ConfigStatuses:         configStatusService,
 		ConfigRepositoryAccess: configRepositoryAccessService,
 		ConfigRuntime:          configRuntimeService,
-		ConfigClassification:   configClassificationService,
 		ConfigConflicts:        configConflictService,
 		Routes:                 routeService,
 		Previews:               previewService,
@@ -338,7 +318,6 @@ func New(opts Options) (*App, error) {
 		orchestratorService.Worker(2 * opts.Config.HTTP.RequestTimeout / 15),
 		meteringService.Worker(opts.Config.HTTP.RequestTimeout),
 		billingService.AutoTopupWorker(opts.Config.HTTP.RequestTimeout),
-		configSyncRepo.RotationWorker(time.Minute),
 		terminalSessionService.Worker(opts.Config.TerminalSessions.WorkerInterval),
 		userMachineService.Worker(opts.Config.TerminalSessions.WorkerInterval),
 		configAssignmentService.WarningReconciliationWorker(opts.Config.TerminalSessions.WorkerInterval),

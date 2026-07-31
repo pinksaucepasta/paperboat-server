@@ -6,20 +6,23 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
+	"github.com/pinksaucepasta/paperboat-server/internal/access"
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
 	"github.com/pinksaucepasta/paperboat-server/internal/usermachines"
 )
 
 func userMachinePairings(service *usermachines.Service) http.HandlerFunc {
 	type request struct {
-		Verifier        string          `json:"verifier"`
-		EnrollmentToken string          `json:"enrollment_token"`
-		DisplayName     string          `json:"display_name"`
-		Platform        string          `json:"platform"`
-		Architecture    string          `json:"architecture"`
-		WorkspaceRoot   string          `json:"workspace_root"`
-		RuntimeVersions json.RawMessage `json:"runtime_versions"`
+		Verifier          string          `json:"verifier"`
+		EnrollmentToken   string          `json:"enrollment_token"`
+		DisplayName       string          `json:"display_name"`
+		Platform          string          `json:"platform"`
+		Architecture      string          `json:"architecture"`
+		WorkspaceRoot     string          `json:"workspace_root"`
+		RuntimeVersions   json.RawMessage `json:"runtime_versions"`
+		PublicIdentityKey string          `json:"public_identity_key"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body request
@@ -27,12 +30,54 @@ func userMachinePairings(service *usermachines.Service) http.HandlerFunc {
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON.")
 			return
 		}
-		pairing, err := service.CreatePairing(r.Context(), usermachines.PairingInput{Verifier: body.Verifier, EnrollmentToken: body.EnrollmentToken, DisplayName: body.DisplayName, Platform: body.Platform, Architecture: body.Architecture, WorkspaceRoot: body.WorkspaceRoot, RuntimeVersions: body.RuntimeVersions})
+		pairing, err := service.CreatePairing(r.Context(), usermachines.PairingInput{Verifier: body.Verifier, EnrollmentToken: body.EnrollmentToken, DisplayName: body.DisplayName, Platform: body.Platform, Architecture: body.Architecture, WorkspaceRoot: body.WorkspaceRoot, RuntimeVersions: body.RuntimeVersions, PublicIdentityKey: body.PublicIdentityKey})
 		if err != nil {
 			writeError(w, r, http.StatusBadRequest, "invalid_user_machine_pairing", "Pairing details are invalid or unsupported.")
 			return
 		}
 		writeJSON(w, http.StatusCreated, SuccessResponse{Data: pairing})
+	}
+}
+
+func machineSetup(service *usermachines.Service) http.HandlerFunc {
+	type request struct {
+		DisplayName       string          `json:"display_name"`
+		Platform          string          `json:"platform"`
+		Architecture      string          `json:"architecture"`
+		WorkspaceRoot     string          `json:"workspace_root"`
+		PublicIdentityKey string          `json:"public_identity_key"`
+		RuntimeVersions   json.RawMessage `json:"runtime_versions"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := principalFromContext(r.Context())
+		if !ok || principal.Client == nil {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "CLI authentication is required.")
+			return
+		}
+		var body request
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&body); err != nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON.")
+			return
+		}
+		machine, err := service.Setup(r.Context(), principal.User.ID, usermachines.SetupInput{
+			DisplayName: body.DisplayName, Platform: body.Platform, Architecture: body.Architecture,
+			WorkspaceRoot: body.WorkspaceRoot, PublicIdentityKey: body.PublicIdentityKey,
+			RuntimeVersions: body.RuntimeVersions,
+		})
+		switch {
+		case errors.Is(err, usermachines.ErrInvalidSetup):
+			writeError(w, r, http.StatusBadRequest, "invalid_machine_setup", "Machine setup details are invalid or unsupported.")
+		case errors.Is(err, usermachines.ErrMachineIdentityConflict):
+			writeError(w, r, http.StatusConflict, "machine_identity_conflict", "This machine identity is already registered to another account.")
+		case errors.Is(err, usermachines.ErrMachineNameConflict):
+			writeError(w, r, http.StatusConflict, "machine_name_conflict", "A machine with this name already exists. Choose another name.")
+		case err != nil:
+			writeError(w, r, http.StatusInternalServerError, "machine_setup_failed", "Unable to set up this machine.")
+		default:
+			writeJSON(w, http.StatusOK, SuccessResponse{Data: machine})
+		}
 	}
 }
 
@@ -49,7 +94,7 @@ func userMachineEnrollmentStart(service *usermachines.Service) http.HandlerFunc 
 				writeError(w, r, http.StatusBadRequest, "idempotency_key_required", "A valid Idempotency-Key header is required.")
 				return
 			}
-			writeError(w, r, http.StatusInternalServerError, "user_machine_enrollment_start_failed", "Unable to start user-machine enrollment.")
+			writeError(w, r, http.StatusInternalServerError, "user_machine_enrollment_start_failed", "Unable to start machine enrollment.")
 			return
 		}
 		writeJSON(w, http.StatusCreated, SuccessResponse{Data: result})
@@ -135,7 +180,7 @@ func userMachineInstallationConsume(service *usermachines.Service) http.HandlerF
 	}
 }
 
-func userMachinesList(service *usermachines.Service) http.HandlerFunc {
+func machinesList(service *usermachines.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := principalFromContext(r.Context())
 		if !ok {
@@ -155,7 +200,7 @@ func userMachinesList(service *usermachines.Service) http.HandlerFunc {
 		}
 		items, total, err := service.List(r.Context(), p.User.ID, limit, offset)
 		if err != nil {
-			writeError(w, r, http.StatusInternalServerError, "internal_error", "Unable to list user machines.")
+			writeError(w, r, http.StatusInternalServerError, "internal_error", "Unable to list machines.")
 			return
 		}
 		var next any
@@ -176,10 +221,155 @@ func userMachineOverview(service *usermachines.Service) http.HandlerFunc {
 		}
 		overview, err := service.Overview(r.Context(), p.User.ID)
 		if err != nil {
-			writeError(w, r, http.StatusInternalServerError, "internal_error", "Unable to load user-machine usage.")
+			writeError(w, r, http.StatusInternalServerError, "internal_error", "Unable to load machine usage.")
 			return
 		}
 		writeJSON(w, http.StatusOK, SuccessResponse{Data: overview})
+	}
+}
+
+func transferDestinationDefault(service *usermachines.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			machine, err := service.TransferDestinationDefault(r.Context(), p.User.ID)
+			if errors.Is(err, usermachines.ErrNotFound) {
+				writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]any{"configured": false, "machine": nil}})
+				return
+			}
+			if err != nil {
+				writeError(w, r, http.StatusInternalServerError, "transfer_destination_default_failed", "Unable to load the default transfer destination.")
+				return
+			}
+			writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]any{"configured": true, "machine": machine}})
+		case http.MethodPut:
+			var body struct {
+				MachineID string `json:"machine_id"`
+			}
+			decoder := json.NewDecoder(r.Body)
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&body); err != nil || strings.TrimSpace(body.MachineID) == "" {
+				writeError(w, r, http.StatusBadRequest, "invalid_request", "A valid machine_id is required.")
+				return
+			}
+			machine, err := service.SetTransferDestinationDefault(r.Context(), p.User.ID, body.MachineID)
+			if errors.Is(err, usermachines.ErrTransferDestinationInvalid) {
+				writeError(w, r, http.StatusConflict, "transfer_destination_unavailable", "The selected transfer destination is unavailable.")
+				return
+			}
+			if err != nil {
+				writeError(w, r, http.StatusInternalServerError, "transfer_destination_default_failed", "Unable to set the default transfer destination.")
+				return
+			}
+			writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]any{"configured": true, "machine": machine}})
+		case http.MethodDelete:
+			if err := service.ClearTransferDestinationDefault(r.Context(), p.User.ID); err != nil {
+				writeError(w, r, http.StatusInternalServerError, "transfer_destination_default_failed", "Unable to clear the default transfer destination.")
+				return
+			}
+			writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]any{"configured": false, "machine": nil}})
+		}
+	}
+}
+
+func terminalSessionTransferDestination(service *usermachines.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		sessionID := r.PathValue("session_id")
+		switch r.Method {
+		case http.MethodGet:
+			machine, err := service.TerminalSessionTransferDestination(r.Context(), p.User.ID, sessionID)
+			if errors.Is(err, usermachines.ErrNotFound) {
+				writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]any{"configured": false, "machine": nil}})
+				return
+			}
+			if err != nil {
+				writeError(w, r, http.StatusInternalServerError, "transfer_destination_session_failed", "Unable to load the session transfer destination.")
+				return
+			}
+			writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]any{"configured": true, "machine": machine}})
+		case http.MethodPut:
+			var body struct {
+				MachineID string `json:"machine_id"`
+			}
+			decoder := json.NewDecoder(r.Body)
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&body); err != nil || strings.TrimSpace(body.MachineID) == "" {
+				writeError(w, r, http.StatusBadRequest, "invalid_request", "A valid machine_id is required.")
+				return
+			}
+			machine, err := service.SetTerminalSessionTransferDestination(r.Context(), p.User.ID, sessionID, body.MachineID)
+			if errors.Is(err, usermachines.ErrTransferDestinationInvalid) {
+				writeError(w, r, http.StatusConflict, "transfer_destination_unavailable", "The session or selected transfer destination is unavailable.")
+				return
+			}
+			if err != nil {
+				writeError(w, r, http.StatusInternalServerError, "transfer_destination_session_failed", "Unable to set the session transfer destination.")
+				return
+			}
+			writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]any{"configured": true, "machine": machine}})
+		case http.MethodDelete:
+			if err := service.ClearTerminalSessionTransferDestination(r.Context(), p.User.ID, sessionID); errors.Is(err, usermachines.ErrNotFound) {
+				writeError(w, r, http.StatusNotFound, "terminal_session_not_found", "Terminal session was not found.")
+				return
+			} else if err != nil {
+				writeError(w, r, http.StatusInternalServerError, "transfer_destination_session_failed", "Unable to clear the session transfer destination.")
+				return
+			}
+			writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]any{"configured": false, "machine": nil}})
+		}
+	}
+}
+
+func terminalSessionTransferDestinations(service *usermachines.Service, hosted *access.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok || p.Client == nil {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "CLI authentication is required.")
+			return
+		}
+		sessionID := r.PathValue("session_id")
+		var items []usermachines.UserMachine
+		var err error
+		if strings.HasPrefix(sessionID, "pts_") && hosted != nil {
+			var ids []string
+			ids, err = hosted.EligibleTerminalSessionTransferDestinationIDs(r.Context(), p.User.ID, p.Client.SessionID, sessionID)
+			if err == nil {
+				items, err = service.OwnedEligibleMachines(r.Context(), p.User.ID, ids)
+			}
+		} else {
+			items, err = service.EligibleTerminalSessionTransferDestinations(r.Context(), p.User.ID, p.Client.SessionID, sessionID)
+		}
+		if errors.Is(err, usermachines.ErrTerminalSessionNotFound) {
+			writeError(w, r, http.StatusNotFound, "terminal_session_not_found", "Terminal session was not found.")
+			return
+		}
+		if errors.Is(err, access.ErrTerminalSessionNotFound) {
+			writeError(w, r, http.StatusNotFound, "terminal_session_not_found", "Terminal session was not found.")
+			return
+		}
+		if errors.Is(err, access.ErrTunnelUnavailable) || errors.Is(err, access.ErrTerminalRuntimeUnavailable) {
+			writeError(w, r, http.StatusConflict, "machine_offline", "Session host is offline.")
+			return
+		}
+		if errors.Is(err, usermachines.ErrProvisioningUnavailable) {
+			writeError(w, r, http.StatusConflict, "machine_offline", "Session host is offline.")
+			return
+		}
+		if err != nil {
+			writeError(w, r, http.StatusServiceUnavailable, "transfer_destinations_unavailable", "Eligible transfer destinations are unavailable.")
+			return
+		}
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]any{"items": items}})
 	}
 }
 
@@ -190,9 +380,13 @@ func userMachineGet(service *usermachines.Service) http.HandlerFunc {
 			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
 			return
 		}
-		machine, err := service.Get(r.Context(), p.User.ID, r.PathValue("user_machine_id"))
+		machine, err := service.Get(r.Context(), p.User.ID, r.PathValue("machine_id"))
 		if errors.Is(err, usermachines.ErrNotFound) {
-			writeError(w, r, http.StatusNotFound, "user_machine_not_found", "User machine was not found.")
+			writeError(w, r, http.StatusNotFound, "user_machine_not_found", "Machine was not found.")
+			return
+		}
+		if errors.Is(err, usermachines.ErrTerminalSessionNotFound) {
+			writeError(w, r, http.StatusNotFound, "terminal_session_not_found", "Terminal session was not found.")
 			return
 		}
 		if err != nil {
@@ -212,14 +406,15 @@ func userMachineConnectionDescriptor(service *usermachines.Service) http.Handler
 		}
 		var body struct {
 			TerminalSessionID string `json:"terminal_session_id"`
+			SourceMachineID   string `json:"source_machine_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON.")
 			return
 		}
-		response, err := service.ConnectTerminalSession(r.Context(), p.User.ID, r.PathValue("user_machine_id"), p.Client.SessionID, body.TerminalSessionID)
+		response, err := service.ConnectTerminalSession(r.Context(), p.User.ID, body.SourceMachineID, r.PathValue("machine_id"), p.Client.SessionID, body.TerminalSessionID)
 		if errors.Is(err, usermachines.ErrNotFound) {
-			writeError(w, r, http.StatusNotFound, "user_machine_not_found", "User machine was not found.")
+			writeError(w, r, http.StatusNotFound, "user_machine_not_found", "Machine was not found.")
 			return
 		}
 		if errors.Is(err, usermachines.ErrTerminalSessionNotFound) {
@@ -227,10 +422,81 @@ func userMachineConnectionDescriptor(service *usermachines.Service) http.Handler
 			return
 		}
 		if err != nil {
-			writeError(w, r, http.StatusServiceUnavailable, "connector_unavailable", "User machine credentials are unavailable.")
+			writeError(w, r, http.StatusServiceUnavailable, "connector_unavailable", "Machine credentials are unavailable.")
 			return
 		}
 		writeJSON(w, http.StatusOK, SuccessResponse{Data: response})
+	}
+}
+
+func userMachineFileTransferDescriptor(service *usermachines.Service, hosted *access.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok || p.Client == nil {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "CLI authentication is required.")
+			return
+		}
+		var body struct {
+			SourceMachineID string `json:"source_machine_id"`
+			SessionID       string `json:"session_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON.")
+			return
+		}
+		var response any
+		var err error
+		if strings.HasPrefix(body.SessionID, "pts_") && hosted != nil {
+			response, err = hosted.FileTransferDescriptor(r.Context(), access.TransferDescriptorRequest{UserID: p.User.ID, SourceMachineID: body.SourceMachineID, DestinationMachineID: r.PathValue("machine_id"), CLIClientSessionID: p.Client.SessionID, SessionID: body.SessionID})
+		} else {
+			response, err = service.FileTransferDescriptor(r.Context(), p.User.ID, body.SourceMachineID, r.PathValue("machine_id"), p.Client.SessionID, body.SessionID)
+		}
+		if errors.Is(err, usermachines.ErrNotFound) {
+			writeError(w, r, http.StatusNotFound, "user_machine_not_found", "Source or destination machine was not found.")
+			return
+		}
+		if errors.Is(err, usermachines.ErrTerminalSessionNotFound) {
+			writeError(w, r, http.StatusNotFound, "terminal_session_not_found", "Terminal session was not found.")
+			return
+		}
+		if errors.Is(err, access.ErrTerminalSessionNotFound) {
+			writeError(w, r, http.StatusNotFound, "terminal_session_not_found", "Terminal session was not found.")
+			return
+		}
+		if errors.Is(err, access.ErrTunnelUnavailable) || errors.Is(err, access.ErrTerminalRuntimeUnavailable) {
+			writeError(w, r, http.StatusConflict, "machine_offline", "Session host is offline.")
+			return
+		}
+		if errors.Is(err, usermachines.ErrProvisioningUnavailable) {
+			writeError(w, r, http.StatusConflict, "machine_offline", "Destination machine is offline.")
+			return
+		}
+		if err != nil {
+			writeError(w, r, http.StatusServiceUnavailable, "file_transfer_unavailable", "File transfer credentials are unavailable.")
+			return
+		}
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: response})
+	}
+}
+
+func userMachinePreviewLaunchDescriptor(service *usermachines.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok || p.Client == nil {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "CLI authentication is required.")
+			return
+		}
+		response, err := service.PreviewLaunchDescriptor(r.Context(), p.User.ID, r.PathValue("machine_id"), p.Client.SessionID)
+		switch {
+		case errors.Is(err, usermachines.ErrNotFound):
+			writeError(w, r, http.StatusNotFound, "user_machine_not_found", "Machine was not found.")
+		case errors.Is(err, usermachines.ErrProvisioningUnavailable):
+			writeError(w, r, http.StatusConflict, "machine_offline", "Machine is offline.")
+		case err != nil:
+			writeError(w, r, http.StatusServiceUnavailable, "preview_launch_unavailable", "Preview launch credentials are unavailable.")
+		default:
+			writeJSON(w, http.StatusOK, SuccessResponse{Data: response})
+		}
 	}
 }
 
@@ -241,9 +507,9 @@ func userMachineConnectionReadiness(service *usermachines.Service) http.HandlerF
 			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
 			return
 		}
-		response, err := service.ConnectionReadinessForTerminalSession(r.Context(), p.User.ID, r.PathValue("user_machine_id"), r.URL.Query().Get("terminal_session_id"))
+		response, err := service.ConnectionReadinessForTerminalSession(r.Context(), p.User.ID, r.PathValue("machine_id"), r.URL.Query().Get("terminal_session_id"))
 		if errors.Is(err, usermachines.ErrNotFound) {
-			writeError(w, r, http.StatusNotFound, "user_machine_not_found", "User machine was not found.")
+			writeError(w, r, http.StatusNotFound, "user_machine_not_found", "Machine was not found.")
 			return
 		}
 		if errors.Is(err, usermachines.ErrTerminalSessionNotFound) {
@@ -251,7 +517,7 @@ func userMachineConnectionReadiness(service *usermachines.Service) http.HandlerF
 			return
 		}
 		if err != nil {
-			writeError(w, r, http.StatusServiceUnavailable, "connector_unavailable", "User machine status is unavailable.")
+			writeError(w, r, http.StatusServiceUnavailable, "connector_unavailable", "Machine status is unavailable.")
 			return
 		}
 		writeJSON(w, http.StatusOK, SuccessResponse{Data: response})
@@ -265,7 +531,7 @@ func userMachineTerminalSessionsList(service *usermachines.Service) http.Handler
 			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
 			return
 		}
-		items, err := service.ListTerminalSessions(r.Context(), p.User.ID, r.PathValue("user_machine_id"))
+		items, err := service.ListTerminalSessions(r.Context(), p.User.ID, r.PathValue("machine_id"))
 		if userMachineTerminalSessionError(w, r, err) {
 			return
 		}
@@ -287,7 +553,7 @@ func userMachineTerminalSessionsCreate(service *usermachines.Service) http.Handl
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON.")
 			return
 		}
-		item, err := service.CreateConfiguredTerminalSession(r.Context(), p.User.ID, r.PathValue("user_machine_id"), body.Name, r.Header.Get("Idempotency-Key"))
+		item, err := service.CreateConfiguredTerminalSession(r.Context(), p.User.ID, r.PathValue("machine_id"), body.Name, r.Header.Get("Idempotency-Key"))
 		if userMachineTerminalSessionError(w, r, err) {
 			return
 		}
@@ -309,7 +575,7 @@ func userMachineTerminalSessionsRename(service *usermachines.Service) http.Handl
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON.")
 			return
 		}
-		item, err := service.RenameTerminalSession(r.Context(), p.User.ID, r.PathValue("user_machine_id"), r.PathValue("session_id"), body.Name)
+		item, err := service.RenameTerminalSession(r.Context(), p.User.ID, r.PathValue("machine_id"), r.PathValue("session_id"), body.Name)
 		if userMachineTerminalSessionError(w, r, err) {
 			return
 		}
@@ -324,7 +590,7 @@ func userMachineTerminalSessionsClose(service *usermachines.Service) http.Handle
 			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
 			return
 		}
-		applied, err := service.CloseTerminalSession(r.Context(), p.User.ID, r.PathValue("user_machine_id"), r.PathValue("session_id"))
+		applied, err := service.CloseTerminalSession(r.Context(), p.User.ID, r.PathValue("machine_id"), r.PathValue("session_id"))
 		if userMachineTerminalSessionError(w, r, err) {
 			return
 		}
@@ -343,7 +609,7 @@ func userMachineTerminalSessionsDelete(service *usermachines.Service) http.Handl
 			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
 			return
 		}
-		applied, err := service.DeleteTerminalSession(r.Context(), p.User.ID, r.PathValue("user_machine_id"), r.PathValue("session_id"))
+		applied, err := service.DeleteTerminalSession(r.Context(), p.User.ID, r.PathValue("machine_id"), r.PathValue("session_id"))
 		if userMachineTerminalSessionError(w, r, err) {
 			return
 		}
@@ -361,13 +627,13 @@ func userMachineTerminalSessionError(w http.ResponseWriter, r *http.Request, err
 	}
 	switch {
 	case errors.Is(err, usermachines.ErrNotFound):
-		writeError(w, r, http.StatusNotFound, "user_machine_not_found", "User machine was not found.")
+		writeError(w, r, http.StatusNotFound, "user_machine_not_found", "Machine was not found.")
 	case errors.Is(err, usermachines.ErrTerminalSessionNotFound):
 		writeError(w, r, http.StatusNotFound, "terminal_session_not_found", "Terminal session was not found.")
 	case errors.Is(err, usermachines.ErrTerminalSessionReserved):
 		writeError(w, r, http.StatusConflict, "terminal_session_reserved", "The default terminal session cannot be changed this way.")
 	case errors.Is(err, usermachines.ErrTerminalSessionLimit):
-		writeError(w, r, http.StatusConflict, "terminal_session_limit_reached", "This user machine has reached its terminal session limit.")
+		writeError(w, r, http.StatusConflict, "terminal_session_limit_reached", "This machine has reached its terminal session limit.")
 	case errors.Is(err, usermachines.ErrTerminalSessionConflict):
 		writeError(w, r, http.StatusConflict, "terminal_session_name_conflict", "A terminal session already uses that name.")
 	case errors.Is(err, usermachines.ErrTerminalSessionInvalidName):
@@ -391,11 +657,15 @@ func userMachinePairingApprove(service *usermachines.Service) http.HandlerFunc {
 		if err != nil {
 			switch {
 			case errors.Is(err, usermachines.ErrSeatUnavailable), errors.Is(err, billing.ErrUserMachineSeatUnavailable):
-				writeError(w, r, http.StatusConflict, "user_machine_seat_unavailable", "An active user-machine subscription with an available seat is required.")
+				writeError(w, r, http.StatusConflict, "user_machine_seat_unavailable", "An active machine subscription with an available seat is required.")
 			case errors.Is(err, usermachines.ErrPairingExpired):
 				writeError(w, r, http.StatusGone, "user_machine_pairing_expired", "This pairing request has expired.")
 			case errors.Is(err, usermachines.ErrPairingUsed):
 				writeError(w, r, http.StatusConflict, "user_machine_pairing_used", "This pairing request has already been decided.")
+			case errors.Is(err, usermachines.ErrInvalidPairing):
+				writeError(w, r, http.StatusConflict, "machine_setup_required", "Run pb setup on this machine before approving its host role.")
+			case errors.Is(err, usermachines.ErrMachineIdentityConflict):
+				writeError(w, r, http.StatusConflict, "machine_identity_conflict", "This machine identity belongs to another account.")
 			default:
 				writeError(w, r, http.StatusNotFound, "user_machine_pairing_not_found", "Pairing request was not found.")
 			}
@@ -434,11 +704,31 @@ func userMachineDisconnect(service *usermachines.Service) http.HandlerFunc {
 			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
 			return
 		}
-		if err := service.Disconnect(r.Context(), p.User.ID, r.PathValue("user_machine_id")); err != nil {
-			writeError(w, r, http.StatusNotFound, "user_machine_not_found", "User machine was not found.")
+		if err := service.Disconnect(r.Context(), p.User.ID, r.PathValue("machine_id")); err != nil {
+			writeError(w, r, http.StatusNotFound, "user_machine_not_found", "Machine was not found.")
 			return
 		}
 		writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]bool{"disconnected": true}})
+	}
+}
+
+func machineUnpair(service *usermachines.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := principalFromContext(r.Context())
+		if !ok || principal.Client == nil {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "CLI authentication is required.")
+			return
+		}
+		machine, err := service.Unpair(r.Context(), principal.User.ID, r.PathValue("machine_id"))
+		if errors.Is(err, usermachines.ErrNotFound) {
+			writeError(w, r, http.StatusNotFound, "machine_not_found", "Machine was not found.")
+			return
+		}
+		if err != nil {
+			writeError(w, r, http.StatusInternalServerError, "machine_unpair_failed", "Unable to unpair this machine.")
+			return
+		}
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: machine})
 	}
 }
 
@@ -449,8 +739,8 @@ func userMachineDelete(service *usermachines.Service) http.HandlerFunc {
 			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
 			return
 		}
-		if err := service.Delete(r.Context(), p.User.ID, r.PathValue("user_machine_id")); err != nil {
-			writeError(w, r, http.StatusNotFound, "user_machine_not_found", "User machine was not found.")
+		if err := service.Delete(r.Context(), p.User.ID, r.PathValue("machine_id")); err != nil {
+			writeError(w, r, http.StatusNotFound, "user_machine_not_found", "Machine was not found.")
 			return
 		}
 		writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]bool{"deleted": true}})

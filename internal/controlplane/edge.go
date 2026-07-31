@@ -51,7 +51,8 @@ type ConnectorAdmission struct {
 	OperationID         string `json:"operation_id"`
 	Credential          string `json:"credential"`
 	EnvironmentID       string `json:"environment_id"`
-	HelperID            string `json:"helper_id"`
+	MachineID           string `json:"machine_id"`
+	ConnectorID         string `json:"connector_id"`
 	ConnectorGeneration int64  `json:"connector_generation"`
 	EdgePool            string `json:"edge_pool"`
 	EdgeNodeID          string `json:"edge_node_id"`
@@ -83,21 +84,23 @@ type ConnectorRouteHandoff struct {
 type connectorAdmissionRequest struct {
 	OperationID     string `json:"operation_id"`
 	EnvironmentID   string `json:"environment_id"`
-	HelperID        string `json:"helper_id"`
+	MachineID       string `json:"machine_id"`
+	ConnectorID     string `json:"connector_id"`
 	EdgePool        string `json:"edge_pool"`
 	ProtocolVersion string `json:"protocol_version"`
 }
 
 type RevocationDocument struct {
-	JTIs         []string                  `json:"jtis"`
-	Environments []string                  `json:"environments"`
-	Helpers      []RevokedHelperGeneration `json:"helper_generations"`
-	KeyIDs       []string                  `json:"key_ids"`
+	JTIs         []string                     `json:"jtis"`
+	Environments []string                     `json:"environments"`
+	Connectors   []RevokedConnectorGeneration `json:"connector_generations"`
+	KeyIDs       []string                     `json:"key_ids"`
 }
 
-type RevokedHelperGeneration struct {
-	HelperID   string `json:"helper_id"`
-	Generation uint64 `json:"connector_generation"`
+type RevokedConnectorGeneration struct {
+	MachineID   string `json:"machine_id"`
+	ConnectorID string `json:"connector_id"`
+	Generation  uint64 `json:"connector_generation"`
 }
 
 type RouteObservation struct {
@@ -158,7 +161,7 @@ func (s *EdgeService) Revocations(ctx context.Context) (RevocationDocument, erro
 	if err != nil {
 		return RevocationDocument{}, err
 	}
-	helpers, err := s.store.Queries().ListRevokedConnectorGenerations(ctx, 10000)
+	connectors, err := s.store.Queries().ListRevokedConnectorGenerations(ctx, 10000)
 	if err != nil {
 		return RevocationDocument{}, err
 	}
@@ -175,10 +178,10 @@ func (s *EdgeService) Revocations(ctx context.Context) (RevocationDocument, erro
 	if keyIDs == nil {
 		keyIDs = []string{}
 	}
-	document := RevocationDocument{JTIs: jtis, Environments: environments, Helpers: make([]RevokedHelperGeneration, 0, len(helpers)), KeyIDs: keyIDs}
-	for _, helper := range helpers {
-		if helper.Generation > 0 {
-			document.Helpers = append(document.Helpers, RevokedHelperGeneration{HelperID: helper.HelperID, Generation: uint64(helper.Generation)})
+	document := RevocationDocument{JTIs: jtis, Environments: environments, Connectors: make([]RevokedConnectorGeneration, 0, len(connectors)), KeyIDs: keyIDs}
+	for _, connector := range connectors {
+		if connector.Generation > 0 {
+			document.Connectors = append(document.Connectors, RevokedConnectorGeneration{MachineID: connector.MachineID, ConnectorID: connector.ConnectorID, Generation: uint64(connector.Generation)})
 		}
 	}
 	observability.ControlRevocationFetched()
@@ -211,21 +214,28 @@ func (s *EdgeService) IssueConnectorAdmission(ctx context.Context, identityToken
 	if s.signer == nil || s.issuer == "" || s.encryptionKey == "" || edgePool == "" {
 		return ConnectorAdmission{}, ErrHelperProof
 	}
-	claims, err := (&EnrollmentService{store: s.store, signer: s.signer, issuer: s.issuer, clock: s.clock}).VerifyHelperRequest(ctx, identityToken, proof, method, path, body)
+	claims, err := (&EnrollmentService{store: s.store, signer: s.signer, issuer: s.issuer, clock: s.clock}).VerifyMachineRequest(ctx, identityToken, proof, method, path, body)
 	if err != nil {
 		return ConnectorAdmission{}, err
 	}
 	var request connectorAdmissionRequest
-	if strictProofJSON(body, &request) != nil || request.OperationID != claims.OperationID || request.EnvironmentID != claims.EnvironmentID || request.HelperID != claims.HelperID || request.EdgePool != edgePool || request.ProtocolVersion != "1.0" {
+	if strictProofJSON(body, &request) != nil || request.OperationID != claims.OperationID || request.EnvironmentID != claims.EnvironmentID || request.MachineID != claims.MachineID || !validConnectorID(request.ConnectorID) || request.EdgePool != edgePool || request.ProtocolVersion != "1.0" {
 		return ConnectorAdmission{}, ErrHelperProof
 	}
 	now := s.clock().UTC()
-	requestHash := sha256.Sum256(append([]byte(claims.HelperID+"\x00"+claims.EnvironmentID+"\x00"+edgePool+"\x00"), body...))
-	operationKey := "connector-admission:" + claims.HelperID + ":" + claims.OperationID
+	requestHash := sha256.Sum256(append([]byte(claims.MachineID+"\x00"+claims.EnvironmentID+"\x00"+request.ConnectorID+"\x00"+edgePool+"\x00"), body...))
+	operationKey := "connector-admission:" + claims.MachineID + ":" + request.ConnectorID + ":" + claims.OperationID
 	var result ConnectorAdmission
 	err = s.store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		generation, err := tx.Queries().GetControlConnectorGenerationForUpdate(ctx, claims.EnvironmentID)
-		if err != nil || generation.HelperID != claims.HelperID || generation.State == "revoked" {
+		routes, err := tx.Queries().ListControlRoutesForEnvironmentAdmission(ctx, dbsqlc.ListControlRoutesForEnvironmentAdmissionParams{EnvironmentID: claims.EnvironmentID, ConnectorID: request.ConnectorID})
+		if err != nil || len(routes) == 0 || len(routes) > 128 {
+			return ErrHelperProof
+		}
+		generation, err := tx.Queries().GetControlConnectorGenerationForUpdate(ctx, dbsqlc.GetControlConnectorGenerationForUpdateParams{EnvironmentID: claims.EnvironmentID, ConnectorID: request.ConnectorID})
+		if errors.Is(err, sql.ErrNoRows) {
+			generation, err = tx.Queries().EnsureControlConnectorMachine(ctx, dbsqlc.EnsureControlConnectorMachineParams{EnvironmentID: claims.EnvironmentID, ConnectorID: request.ConnectorID, MachineID: claims.MachineID, EdgePool: edgePool})
+		}
+		if err != nil || generation.MachineID != claims.MachineID || generation.State == "revoked" {
 			return ErrHelperProof
 		}
 		if generation.AdmissionOperationKey.Valid {
@@ -253,15 +263,11 @@ func (s *EdgeService) IssueConnectorAdmission(ctx context.Context, identityToken
 		if policy.Revision == "" {
 			policy = mint.DefaultFileTransferPolicy
 		}
-		token, err := s.signer.SignCredential(mint.CredentialInput{Issuer: s.issuer, Audience: "paperboat-edge", Subject: claims.HelperID, JTI: jti, IssuedAt: now, ExpiresAt: expiresAt, CredentialClass: "connector_admission", Scopes: []string{"connector:admit"}, EnvironmentID: claims.EnvironmentID, HelperID: claims.HelperID, ConnectorGeneration: generation.Generation, EdgePool: edgePool, EdgeNodeID: node.ID, FileTransferPolicy: &policy})
+		token, err := s.signer.SignCredential(mint.CredentialInput{Issuer: s.issuer, Audience: "paperboat-edge", Subject: claims.MachineID, JTI: jti, IssuedAt: now, ExpiresAt: expiresAt, CredentialClass: "connector_admission", Scopes: []string{"connector:admit"}, EnvironmentID: claims.EnvironmentID, MachineID: claims.MachineID, InstallationGeneration: claims.InstallationGeneration, ConnectorID: request.ConnectorID, ConnectorGeneration: generation.Generation, EdgePool: edgePool, EdgeNodeID: node.ID, FileTransferPolicy: &policy})
 		if err != nil {
 			return err
 		}
-		routes, err := tx.Queries().ListControlRoutesForEnvironmentAdmission(ctx, claims.EnvironmentID)
-		if err != nil || len(routes) == 0 || len(routes) > 128 {
-			return ErrHelperProof
-		}
-		result = ConnectorAdmission{OperationID: claims.OperationID, Credential: token, EnvironmentID: claims.EnvironmentID, HelperID: claims.HelperID, ConnectorGeneration: generation.Generation, EdgePool: edgePool, EdgeNodeID: node.ID, Routes: make([]ConnectorRouteHandoff, 0, len(routes)), ProtocolVersion: "1.0", FileTransferPolicy: policy, ExpiresAt: expiresAt}
+		result = ConnectorAdmission{OperationID: claims.OperationID, Credential: token, EnvironmentID: claims.EnvironmentID, MachineID: claims.MachineID, ConnectorID: request.ConnectorID, ConnectorGeneration: generation.Generation, EdgePool: edgePool, EdgeNodeID: node.ID, Routes: make([]ConnectorRouteHandoff, 0, len(routes)), ProtocolVersion: "1.0", FileTransferPolicy: policy, ExpiresAt: expiresAt}
 		result.EdgeEndpoint.Host, result.EdgeEndpoint.Port = node.EndpointHost.String, node.EndpointTcpPort.Int32
 		result.EdgeEndpoint.TCPPort, result.EdgeEndpoint.QUICPort = node.EndpointTcpPort.Int32, node.EndpointQuicPort.Int32
 		for _, route := range routes {
@@ -278,10 +284,17 @@ func (s *EdgeService) IssueConnectorAdmission(ctx context.Context, identityToken
 			return err
 		}
 		jtiHash := sha256.Sum256([]byte(jti))
-		_, err = tx.Queries().SetControlConnectorAdmission(ctx, dbsqlc.SetControlConnectorAdmissionParams{EnvironmentID: claims.EnvironmentID, Generation: generation.Generation, EdgeNodeID: sql.NullString{String: node.ID, Valid: true}, AdmissionJtiHash: jtiHash[:], AdmissionOperationKey: sql.NullString{String: operationKey, Valid: true}, AdmissionRequestHash: requestHash[:], AdmissionCredentialCiphertext: ciphertext, ExpiresAt: sql.NullTime{Time: expiresAt, Valid: true}, UpdatedAt: now})
+		_, err = tx.Queries().SetControlConnectorAdmission(ctx, dbsqlc.SetControlConnectorAdmissionParams{EnvironmentID: claims.EnvironmentID, ConnectorID: request.ConnectorID, Generation: generation.Generation, EdgeNodeID: sql.NullString{String: node.ID, Valid: true}, AdmissionJtiHash: jtiHash[:], AdmissionOperationKey: sql.NullString{String: operationKey, Valid: true}, AdmissionRequestHash: requestHash[:], AdmissionCredentialCiphertext: ciphertext, ExpiresAt: sql.NullTime{Time: expiresAt, Valid: true}, UpdatedAt: now})
 		return err
 	})
 	return result, err
+}
+
+func validConnectorID(value string) bool {
+	if value == "runtime" {
+		return true
+	}
+	return strings.HasPrefix(value, "p-") && len(value) == 28
 }
 
 func (s *EdgeService) ProvisionUsageKey(ctx context.Context, actorID, idempotencyKey, keyID, nodeID string, publicKey []byte, notBefore, expiresAt time.Time) error {
@@ -384,8 +397,8 @@ func (s *EdgeService) Heartbeat(ctx context.Context, r edgeNodeObservation) erro
 	return nil
 }
 
-func (s *EdgeService) Assignment(ctx context.Context, environment, helper string) (dbsqlc.GetControlConnectorAssignmentRow, error) {
-	return s.store.Queries().GetControlConnectorAssignment(ctx, dbsqlc.GetControlConnectorAssignmentParams{EnvironmentID: environment, HelperID: helper})
+func (s *EdgeService) Assignment(ctx context.Context, environment, machine, connector string) (dbsqlc.GetControlConnectorAssignmentRow, error) {
+	return s.store.Queries().GetControlConnectorAssignment(ctx, dbsqlc.GetControlConnectorAssignmentParams{EnvironmentID: environment, MachineID: machine, ConnectorID: connector})
 }
 
 func (s *EdgeService) Routes(ctx context.Context, nodeID string) ([]dbsqlc.ListControlRoutesForNodeRow, error) {
@@ -468,7 +481,7 @@ func (s *EdgeService) handleConnectorAdmission(w http.ResponseWriter, r *http.Re
 		return
 	}
 	identity := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	proof, err := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Helper-Proof"))
+	proof, err := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Machine-Proof"))
 	if err != nil {
 		writeEdgeError(w, r, http.StatusUnauthorized, "credential_invalid", false, 0)
 		return
@@ -532,12 +545,13 @@ func (s *EdgeService) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 func (s *EdgeService) handleAssignment(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Environment string `json:"environment_id"`
-		Helper      string `json:"helper_id"`
+		Machine     string `json:"machine_id"`
+		Connector   string `json:"connector_id"`
 	}
 	if !s.decode(w, r, &input) {
 		return
 	}
-	row, err := s.Assignment(r.Context(), input.Environment, input.Helper)
+	row, err := s.Assignment(r.Context(), input.Environment, input.Machine, input.Connector)
 	if err != nil {
 		writeEdgeError(w, r, http.StatusNotFound, "assignment_unavailable", false, 0)
 		return
@@ -559,7 +573,7 @@ func (s *EdgeService) handleRoutes(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, map[string]any{"route_id": row.RouteID, "route_revision": row.RouteRevision, "environment_id": row.EnvironmentID, "connector_generation": row.ConnectorGeneration, "edge_node_id": row.EdgeNodeID.String, "kind": row.Kind, "public_host": row.PublicHost, "preview_state": row.PreviewState, "preview_reason": row.PreviewReason, "target": map[string]any{"host": row.TargetHost, "port": row.TargetPort}})
+		items = append(items, map[string]any{"route_id": row.RouteID, "route_revision": row.RouteRevision, "environment_id": row.EnvironmentID, "connector_id": row.ConnectorID, "connector_generation": row.ConnectorGeneration, "edge_node_id": row.EdgeNodeID.String, "kind": row.Kind, "public_host": row.PublicHost, "preview_state": row.PreviewState, "preview_reason": row.PreviewReason, "target": map[string]any{"host": row.TargetHost, "port": row.TargetPort}})
 	}
 	writeEdgeJSON(w, http.StatusOK, map[string]any{"routes": items})
 }

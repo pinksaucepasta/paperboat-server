@@ -29,8 +29,8 @@ func configRepositoryAccessIssue(service *controlplane.ConfigRepositoryAccessSer
 			writeError(w, r, http.StatusBadRequest, "access_invalid", "Repository access request is invalid.")
 			return
 		}
-		proof, proofErr := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Helper-Proof"))
-		identity := strings.TrimSpace(r.Header.Get("X-Paperboat-Helper-Identity"))
+		proof, proofErr := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Machine-Proof"))
+		identity := strings.TrimSpace(r.Header.Get("X-Paperboat-Machine-Identity"))
 		credential, credentialOK := bearerToken(r)
 		if proofErr != nil || identity == "" || !credentialOK {
 			writeError(w, r, http.StatusUnauthorized, "access_invalid", "Repository access authorization is invalid.")

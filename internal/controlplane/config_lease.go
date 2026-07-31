@@ -60,12 +60,12 @@ func (s *ConfigLeaseService) ConfigureRollout(mode string, byodEnabled bool, env
 }
 
 type ConfigLeaseHolder struct {
-	RepositoryID       string
-	AssignmentID       string
-	EnvironmentID      string
-	HelperID           string
-	HelperGeneration   int64
-	BaseRemoteRevision string
+	RepositoryID           string
+	AssignmentID           string
+	EnvironmentID          string
+	MachineID              string
+	InstallationGeneration int64
+	BaseRemoteRevision     string
 }
 
 type ConfigLease struct {
@@ -73,7 +73,7 @@ type ConfigLease struct {
 	RepositoryID  string    `json:"repository_id"`
 	AssignmentID  string    `json:"assignment_id"`
 	EnvironmentID string    `json:"environment_id"`
-	HelperID      string    `json:"helper_id"`
+	MachineID     string    `json:"machine_id"`
 	FencingToken  int64     `json:"fencing_token"`
 	BaseRevision  string    `json:"base_remote_revision"`
 	ExpiresAt     time.Time `json:"expires_at"`
@@ -83,23 +83,23 @@ func (s *ConfigLeaseService) Authenticate(ctx context.Context, identityToken, cr
 	if s == nil || s.store == nil || s.identities == nil || s.signer == nil || s.issuer == "" {
 		return ConfigLeaseHolder{}, ErrConfigLeaseInvalid
 	}
-	identity, err := s.identities.VerifyHelperRequest(ctx, identityToken, proof, method, path, body)
+	identity, err := s.identities.VerifyMachineRequest(ctx, identityToken, proof, method, path, body)
 	if err != nil {
 		return ConfigLeaseHolder{}, ErrConfigLeaseInvalid
 	}
 	claims, err := s.signer.VerifyCredential(credential, s.issuer, "config_sync", s.clock())
-	if err != nil || claims.EnvironmentID != identity.EnvironmentID || claims.HelperID != identity.HelperID || claims.Subject != identity.HelperID {
+	if err != nil || claims.EnvironmentID != identity.EnvironmentID || claims.MachineID != identity.MachineID || claims.Subject != identity.MachineID {
 		return ConfigLeaseHolder{}, ErrConfigLeaseInvalid
 	}
 	persistedCredential, err := s.store.Queries().GetActiveControlConfigCredentialByJTI(ctx, dbsqlc.GetActiveControlConfigCredentialByJTIParams{
-		Jti: claims.JTI, EnvironmentID: claims.EnvironmentID, HelperID: claims.HelperID,
+		Jti: claims.JTI, EnvironmentID: claims.EnvironmentID, MachineID: claims.MachineID,
 		AssignmentID: claims.AssignmentID, Now: s.clock().UTC(),
 	})
 	if err != nil || !persistedCredential.WarningRevision.Valid || persistedCredential.WarningRevision.String != claims.WarningRevision {
 		return ConfigLeaseHolder{}, ErrConfigLeaseInvalid
 	}
 	assignment, err := s.store.Queries().GetEligibleControlConfigAssignment(ctx, dbsqlc.GetEligibleControlConfigAssignmentParams{
-		EnvironmentID: identity.EnvironmentID, HelperID: identity.HelperID,
+		EnvironmentID: identity.EnvironmentID, MachineID: identity.MachineID, InstallationGeneration: identity.InstallationGeneration,
 	})
 	if err != nil || assignment.ID != claims.AssignmentID || !assignment.RepositoryID.Valid ||
 		!assignment.WarningRevision.Valid || assignment.WarningRevision.String != claims.WarningRevision {
@@ -111,13 +111,9 @@ func (s *ConfigLeaseService) Authenticate(ctx context.Context, identityToken, cr
 		(byod && (!s.byodEnabled || s.warningRevision == "" || assignment.WarningRevision.String != s.warningRevision)) {
 		return ConfigLeaseHolder{}, ErrConfigLeaseInvalid
 	}
-	helper, err := s.store.Queries().GetActiveControlHelperForEnvironment(ctx, identity.EnvironmentID)
-	if err != nil || helper.ID != identity.HelperID {
-		return ConfigLeaseHolder{}, ErrConfigLeaseInvalid
-	}
 	return ConfigLeaseHolder{
 		RepositoryID: assignment.RepositoryID.String, AssignmentID: assignment.ID, EnvironmentID: identity.EnvironmentID,
-		HelperID: identity.HelperID, HelperGeneration: helper.Generation,
+		MachineID: identity.MachineID, InstallationGeneration: identity.InstallationGeneration,
 	}, nil
 }
 
@@ -142,13 +138,10 @@ func (s *ConfigLeaseService) Acquire(ctx context.Context, operationID string, ho
 			return replayErr
 		}
 		assignment, err := tx.Queries().GetEligibleControlConfigAssignment(ctx, dbsqlc.GetEligibleControlConfigAssignmentParams{
-			EnvironmentID: holder.EnvironmentID, HelperID: holder.HelperID,
+			EnvironmentID: holder.EnvironmentID, MachineID: holder.MachineID, InstallationGeneration: holder.InstallationGeneration,
 		})
-		if err != nil || assignment.ID != holder.AssignmentID || !assignment.RepositoryID.Valid || assignment.RepositoryID.String != holder.RepositoryID {
-			return ErrConfigLeaseInvalid
-		}
-		helper, err := tx.Queries().GetActiveControlHelperForEnvironment(ctx, holder.EnvironmentID)
-		if err != nil || helper.ID != holder.HelperID || helper.Generation != holder.HelperGeneration {
+		if err != nil || assignment.ID != holder.AssignmentID || assignment.Mode == ConfigModePullOnly ||
+			!assignment.RepositoryID.Valid || assignment.RepositoryID.String != holder.RepositoryID {
 			return ErrConfigLeaseInvalid
 		}
 		if _, err = tx.Queries().EnsureControlConfigLeaseAuthority(ctx, holder.RepositoryID); err != nil {
@@ -161,9 +154,9 @@ func (s *ConfigLeaseService) Acquire(ctx context.Context, operationID string, ho
 		expiresAt := now.Add(ttl)
 		row, err := tx.Queries().GrantControlConfigRepositoryLease(ctx, dbsqlc.GrantControlConfigRepositoryLeaseParams{
 			LeaseID: sql.NullString{String: leaseID, Valid: true}, AssignmentID: sql.NullString{String: holder.AssignmentID, Valid: true},
-			EnvironmentID: sql.NullString{String: holder.EnvironmentID, Valid: true}, HelperID: sql.NullString{String: holder.HelperID, Valid: true},
-			HelperGeneration:   sql.NullInt64{Int64: holder.HelperGeneration, Valid: true},
-			BaseRemoteRevision: nullableString(holder.BaseRemoteRevision), OperationID: sql.NullString{String: operationID, Valid: true},
+			EnvironmentID: sql.NullString{String: holder.EnvironmentID, Valid: true}, MachineID: sql.NullString{String: holder.MachineID, Valid: true},
+			InstallationGeneration: sql.NullInt64{Int64: holder.InstallationGeneration, Valid: true},
+			BaseRemoteRevision:     nullableString(holder.BaseRemoteRevision), OperationID: sql.NullString{String: operationID, Valid: true},
 			Now: sql.NullTime{Time: now, Valid: true}, ExpiresAt: sql.NullTime{Time: expiresAt, Valid: true}, RepositoryID: holder.RepositoryID,
 		})
 		state := "acquired"
@@ -177,7 +170,7 @@ func (s *ConfigLeaseService) Acquire(ctx context.Context, operationID string, ho
 		if _, err = tx.Queries().CreateControlConfigLeaseOperation(ctx, dbsqlc.CreateControlConfigLeaseOperationParams{
 			OperationID: operationID, OperationType: "acquire", RequestHash: requestHash, RepositoryID: holder.RepositoryID,
 			AssignmentID: nullableString(holder.AssignmentID), EnvironmentID: nullableString(holder.EnvironmentID),
-			HelperID: nullableString(holder.HelperID), BaseRemoteRevision: nullableString(holder.BaseRemoteRevision),
+			MachineID: nullableString(holder.MachineID), BaseRemoteRevision: nullableString(holder.BaseRemoteRevision),
 			LeaseID: nullableString(result.LeaseID), FencingToken: nullableInt64(result.FencingToken),
 			ResultState: state, ExpiresAt: nullableTime(result.ExpiresAt),
 		}); err != nil {
@@ -185,7 +178,7 @@ func (s *ConfigLeaseService) Acquire(ctx context.Context, operationID string, ho
 		}
 		return s.audit.WriteTx(ctx, tx, audit.Event{ActorType: audit.ActorSystem, EventType: "config.lease_" + state,
 			ResourceType: "config_repository", ResourceID: holder.RepositoryID, IdempotencyKey: "config.lease:" + operationID,
-			Metadata: map[string]any{"assignment_id": holder.AssignmentID, "environment_id": holder.EnvironmentID, "helper_id": holder.HelperID}})
+			Metadata: map[string]any{"assignment_id": holder.AssignmentID, "environment_id": holder.EnvironmentID, "machine_id": holder.MachineID}})
 	})
 	if err != nil {
 		return ConfigLease{}, err
@@ -274,13 +267,9 @@ func (s *ConfigLeaseService) Release(ctx context.Context, operationID string, ho
 
 func validateEligibleLeaseHolder(ctx context.Context, tx *db.Tx, holder ConfigLeaseHolder) error {
 	assignment, err := tx.Queries().GetEligibleControlConfigAssignment(ctx, dbsqlc.GetEligibleControlConfigAssignmentParams{
-		EnvironmentID: holder.EnvironmentID, HelperID: holder.HelperID,
+		EnvironmentID: holder.EnvironmentID, MachineID: holder.MachineID, InstallationGeneration: holder.InstallationGeneration,
 	})
 	if err != nil || assignment.ID != holder.AssignmentID || !assignment.RepositoryID.Valid || assignment.RepositoryID.String != holder.RepositoryID {
-		return ErrConfigLeaseLost
-	}
-	helper, err := tx.Queries().GetActiveControlHelperForEnvironment(ctx, holder.EnvironmentID)
-	if err != nil || helper.ID != holder.HelperID || helper.Generation != holder.HelperGeneration {
 		return ErrConfigLeaseLost
 	}
 	return nil
@@ -294,7 +283,7 @@ func (s *ConfigLeaseService) recordLeaseOperation(ctx context.Context, tx *db.Tx
 	if _, err := tx.Queries().CreateControlConfigLeaseOperation(ctx, dbsqlc.CreateControlConfigLeaseOperationParams{
 		OperationID: operationID, OperationType: operationType, RequestHash: requestHash, RepositoryID: holder.RepositoryID,
 		AssignmentID: nullableString(holder.AssignmentID), EnvironmentID: nullableString(holder.EnvironmentID),
-		HelperID: nullableString(holder.HelperID), BaseRemoteRevision: nullableString(baseRevision),
+		MachineID: nullableString(holder.MachineID), BaseRemoteRevision: nullableString(baseRevision),
 		LeaseID: nullableString(lease.LeaseID), FencingToken: nullableInt64(lease.FencingToken),
 		ResultState: state, ExpiresAt: nullableTime(lease.ExpiresAt),
 	}); err != nil {
@@ -302,13 +291,13 @@ func (s *ConfigLeaseService) recordLeaseOperation(ctx context.Context, tx *db.Tx
 	}
 	return s.audit.WriteTx(ctx, tx, audit.Event{ActorType: audit.ActorSystem, EventType: "config.lease_" + state,
 		ResourceType: "config_repository", ResourceID: holder.RepositoryID, IdempotencyKey: "config.lease:" + operationID,
-		Metadata: map[string]any{"assignment_id": holder.AssignmentID, "environment_id": holder.EnvironmentID, "helper_id": holder.HelperID}})
+		Metadata: map[string]any{"assignment_id": holder.AssignmentID, "environment_id": holder.EnvironmentID, "machine_id": holder.MachineID}})
 }
 
 func validateConfigLeaseRequest(operationID string, holder ConfigLeaseHolder, ttl time.Duration) error {
 	if strings.TrimSpace(operationID) == "" || len(operationID) > 256 || holder.RepositoryID == "" ||
-		holder.AssignmentID == "" || holder.EnvironmentID == "" || holder.HelperID == "" ||
-		holder.HelperGeneration < 1 || ttl < minConfigLeaseTTL || ttl > maxConfigLeaseTTL ||
+		holder.AssignmentID == "" || holder.EnvironmentID == "" || holder.MachineID == "" ||
+		holder.InstallationGeneration < 1 || ttl < minConfigLeaseTTL || ttl > maxConfigLeaseTTL ||
 		len(holder.BaseRemoteRevision) > 256 {
 		return ErrConfigLeaseInvalid
 	}
@@ -344,13 +333,13 @@ func replayConfigLeaseOperation(ctx context.Context, tx *db.Tx, operationID stri
 		return leaseReplay{}, nil
 	case "acquired", "renewed":
 		if !row.LeaseID.Valid || !row.FencingToken.Valid || !row.AssignmentID.Valid ||
-			!row.EnvironmentID.Valid || !row.HelperID.Valid || !row.ExpiresAt.Valid {
+			!row.EnvironmentID.Valid || !row.MachineID.Valid || !row.ExpiresAt.Valid {
 			return leaseReplay{}, ErrConfigLeaseReplay
 		}
 		return leaseReplay{lease: ConfigLease{
 			LeaseID: row.LeaseID.String, RepositoryID: row.RepositoryID,
 			AssignmentID: row.AssignmentID.String, EnvironmentID: row.EnvironmentID.String,
-			HelperID: row.HelperID.String, FencingToken: row.FencingToken.Int64,
+			MachineID: row.MachineID.String, FencingToken: row.FencingToken.Int64,
 			BaseRevision: row.BaseRemoteRevision.String, ExpiresAt: row.ExpiresAt.Time,
 		}}, nil
 	default:
@@ -373,7 +362,7 @@ func configLeaseRequestHash(kind, operationID string, holder ConfigLeaseHolder, 
 func leaseFromAuthority(row dbsqlc.ControlConfigRepositoryLeaseAuthority) ConfigLease {
 	return ConfigLease{
 		LeaseID: row.LeaseID.String, RepositoryID: row.RepositoryID, AssignmentID: row.AssignmentID.String,
-		EnvironmentID: row.EnvironmentID.String, HelperID: row.HelperID.String, FencingToken: row.LastFencingToken,
+		EnvironmentID: row.EnvironmentID.String, MachineID: row.MachineID.String, FencingToken: row.LastFencingToken,
 		BaseRevision: row.BaseRemoteRevision.String, ExpiresAt: row.ExpiresAt.Time,
 	}
 }

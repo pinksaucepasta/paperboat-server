@@ -26,7 +26,7 @@ func helperPreviewCredential(identities *controlplane.EnrollmentService) http.Ha
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "Preview credential request is invalid.")
 			return
 		}
-		proof, err := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Helper-Proof"))
+		proof, err := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Machine-Proof"))
 		if err != nil {
 			writeError(w, r, http.StatusUnauthorized, "credential_invalid", "Credential is invalid.")
 			return

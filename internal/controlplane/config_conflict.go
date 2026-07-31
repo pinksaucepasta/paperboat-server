@@ -2,7 +2,9 @@ package controlplane
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -16,6 +18,7 @@ import (
 var (
 	ErrConfigConflictResolutionInvalid = errors.New("config conflict resolution is invalid")
 	ErrConfigConflictResolutionStale   = errors.New("config conflict resolution is stale")
+	ErrConfigConflictResolutionMode    = errors.New("config conflict resolution is forbidden by assignment mode")
 )
 
 type ConfigConflictResolution struct {
@@ -23,7 +26,9 @@ type ConfigConflictResolution struct {
 	Path                   string `json:"path"`
 	ConflictRevision       string `json:"conflict_revision"`
 	ExpectedRemoteRevision string `json:"expected_remote_revision"`
+	Scope                  string `json:"scope"`
 	Action                 string `json:"action"`
+	Confirmation           string `json:"-"`
 }
 
 type ConfigConflictService struct {
@@ -56,24 +61,37 @@ func (s *ConfigConflictService) Request(ctx context.Context, userID, environment
 			current.RemoteRevision.String != resolution.ExpectedRemoteRevision {
 			return ErrConfigConflictResolutionStale
 		}
+		if resolution.Action == "keep_local" && current.AssignmentMode == "pull_only" {
+			return ErrConfigConflictResolutionMode
+		}
+		if resolution.Action == "force_push" && current.AssignmentMode == "pull_only" {
+			return ErrConfigConflictResolutionMode
+		}
 		var conflicts []ConfigStatusPath
 		if json.Unmarshal(current.Conflicts, &conflicts) != nil {
 			return ErrConfigConflictResolutionStale
 		}
-		found := false
-		for _, conflict := range conflicts {
-			if conflict.Path == resolution.Path && conflict.Revision == resolution.ConflictRevision {
-				found = true
-				break
+		if resolution.Scope == "config" {
+			resolution.Path = "."
+			resolution.ConflictRevision = forceRequestRevision(
+				current.AssignmentID, current.RemoteRevision.String, resolution.Action,
+			)
+		} else {
+			found := false
+			for _, conflict := range conflicts {
+				if conflict.Path == resolution.Path && conflict.Revision == resolution.ConflictRevision {
+					found = true
+					break
+				}
 			}
-		}
-		if !found {
-			return ErrConfigConflictResolutionStale
+			if !found {
+				return ErrConfigConflictResolutionStale
+			}
 		}
 		result, queryErr = tx.Queries().CreateControlConfigConflictResolution(ctx, dbsqlc.CreateControlConfigConflictResolutionParams{
 			ID: id, EnvironmentID: environmentID, RepositoryID: current.RepositoryID.String,
 			AssignmentID: current.AssignmentID, ConflictRevision: resolution.ConflictRevision,
-			Path: resolution.Path, Action: resolution.Action,
+			Path: resolution.Path, Scope: resolution.Scope, Action: resolution.Action,
 			ExpectedRemoteRevision: resolution.ExpectedRemoteRevision, RequestedByUserID: userID,
 		})
 		if errors.Is(queryErr, sql.ErrNoRows) {
@@ -88,7 +106,7 @@ func (s *ConfigConflictService) Request(ctx context.Context, userID, environment
 			IdempotencyKey: "config.conflict_resolution:" + result.ID,
 			Metadata: map[string]any{
 				"assignment_id": current.AssignmentID, "repository_id": current.RepositoryID.String,
-				"conflict_revision": resolution.ConflictRevision, "action": resolution.Action,
+				"conflict_revision": resolution.ConflictRevision, "scope": resolution.Scope, "action": resolution.Action,
 			},
 		})
 	})
@@ -136,7 +154,7 @@ func (s *ConfigConflictService) Acknowledge(ctx context.Context, identityToken, 
 			IdempotencyKey: "config.conflict_resolution_applied:" + resolutionID + ":" + landedRevision,
 			Metadata: map[string]any{
 				"assignment_id": holder.AssignmentID, "repository_id": holder.RepositoryID,
-				"helper_id": holder.HelperID, "helper_generation": holder.HelperGeneration,
+				"machine_id": holder.MachineID, "installation_generation": holder.InstallationGeneration,
 				"resolution_id": resolutionID, "landed_revision": landedRevision,
 			},
 		})
@@ -159,14 +177,39 @@ func (s *ConfigConflictService) authenticate(ctx context.Context, identityToken,
 }
 
 func validConfigConflictResolution(value ConfigConflictResolution) bool {
-	return safeConfigStatusPath(value.Path) && conflictRevisionPattern.MatchString(value.ConflictRevision) &&
-		len(value.ExpectedRemoteRevision) > 0 && len(value.ExpectedRemoteRevision) <= 256 &&
-		(value.Action == "keep_local" || value.Action == "keep_remote" || value.Action == "externally_resolved")
+	if len(value.ExpectedRemoteRevision) == 0 || len(value.ExpectedRemoteRevision) > 256 {
+		return false
+	}
+	force := value.Action == "force_pull" || value.Action == "force_push"
+	if value.Scope == "config" {
+		return force && value.Path == "" && value.ConflictRevision == "" &&
+			value.Confirmation == forceConfirmation(value.Action)
+	}
+	if value.Scope != "path" || !safeConfigStatusPath(value.Path) || !conflictRevisionPattern.MatchString(value.ConflictRevision) {
+		return false
+	}
+	return value.Action == "keep_local" || value.Action == "keep_remote" ||
+		force && value.Confirmation == forceConfirmation(value.Action)
+}
+
+func forceConfirmation(action string) string {
+	if action == "force_pull" {
+		return "FORCE PULL"
+	}
+	if action == "force_push" {
+		return "FORCE PUSH"
+	}
+	return ""
+}
+
+func forceRequestRevision(assignmentID, remoteRevision, action string) string {
+	hash := sha256.Sum256([]byte(assignmentID + "\x00" + remoteRevision + "\x00" + action))
+	return hex.EncodeToString(hash[:])
 }
 
 func conflictResolutionFromRow(row dbsqlc.ControlConfigConflictResolution) ConfigConflictResolution {
 	return ConfigConflictResolution{
 		ID: row.ID, Path: row.Path, ConflictRevision: row.ConflictRevision,
-		ExpectedRemoteRevision: row.ExpectedRemoteRevision, Action: row.Action,
+		ExpectedRemoteRevision: row.ExpectedRemoteRevision, Scope: row.Scope, Action: row.Action,
 	}
 }

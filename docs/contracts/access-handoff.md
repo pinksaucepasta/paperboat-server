@@ -6,11 +6,11 @@ Status: implementation contract pending the current contract freeze.
 
 `paperboat-server` authorizes and brokers access. It never carries terminal,
 file-transfer, preview, HTTP, WebSocket, or QUIC payload bytes. Ready project and
-user-machine endpoints return the common `paperboat.environment-connection/v1`
+machine endpoints return the common `paperboat.environment-connection/v1`
 descriptor defined by `contracts/schemas/environment/connection-v1.schema.json`.
 
 Before returning a ready descriptor, the server verifies ownership, entitlement,
-environment state, active helper generation, applied route, ready edge assignment,
+environment state, active machine installation and connector generation, applied route, ready edge assignment,
 and the selected terminal session. A not-ready response contains no operation
 credentials.
 
@@ -38,7 +38,7 @@ helper loopback tokens, VM addresses, or reusable infrastructure credentials.
   "helper": {"id": "hlp_...", "generation": 7},
   "capabilities": ["terminal", "file_transfer", "preview"],
   "terminal": {
-    "protocol": "paperboat.terminal.v2",
+    "protocol": "paperboat.terminal.v1",
     "endpoints": {
       "quic": "quic://environment.example:443",
       "wss": "wss://environment.example/v1/runtime"
@@ -50,7 +50,7 @@ helper loopback tokens, VM addresses, or reusable infrastructure credentials.
       "scopes": ["terminal:operate"]
     },
     "session_id": "ses_...",
-    "thread_id": "paperboat-cli",
+    "thread_id": "paperboat",
     "terminal_id": "default",
     "cwd": "/workspace/project"
   },
@@ -79,12 +79,12 @@ helper loopback tokens, VM addresses, or reusable infrastructure credentials.
 }
 ```
 
-Hosted environments use `kind=hosted` and a project resource ID. User machines use
-`kind=byod` and a user-machine resource ID. The stable environment ID is distinct
+Hosted environments use `kind=hosted` and a project resource ID. Machines use
+`kind=byod` and a machine resource ID. The stable environment ID is distinct
 from either resource ID.
 
 `POST /v1/projects/{project_id}/connection-descriptor` and
-`POST /v1/user-machines/{user_machine_id}/connection-descriptor` accept the selected
+`POST /v1/machines/{machine_id}/connection-descriptor` accept the selected
 terminal session. Their readiness endpoints retain that selection while polling but
 never return operation credentials.
 
@@ -102,7 +102,7 @@ not expire terminal state, transfer IDs, committed offsets, staged content, pend
 deliveries, partial inbox files, or completed records. Session/client revocation does
 stop access immediately.
 
-The helper agent uses its durable private loopback token for `pbh send`; that token is
+The `pb` host runtime uses its durable private loopback token for machine-addressed sends; that token is
 never returned in a connection descriptor and does not depend on the short-lived CLI
 credential.
 
@@ -112,7 +112,7 @@ The descriptor policy must exactly match the helper `/healthz` capability respon
 The CLI disables file transfer, without disabling the terminal, if they differ.
 
 All file bytes are opaque. The helper exposes one resumable resource API at
-`/v1/file-transfers` for both `pb -> pbh` staging and `pbh send -> pb` delivery. It
+`/v1/file-transfers` for both directions of `pb send` delivery. It
 accepts regular files, including empty files, without MIME policy. Authorization
 determines which direction may be created and binds every resource to its session and
 CLI client. See `contracts/helper/operations.md` for methods, states, receipts, and

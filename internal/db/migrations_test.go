@@ -24,19 +24,137 @@ func TestMigrateRequiresPostgresIntegrationDSN(t *testing.T) {
 	if err := db.Migrate(context.Background(), store); err != nil {
 		t.Fatal(err)
 	}
-	var applied bool
-	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (SELECT 1 FROM paperboat.goose_db_version WHERE version_id = 16 AND is_applied)`).Scan(&applied); err != nil {
-		t.Fatal(err)
-	}
-	if !applied {
-		t.Fatal("Goose migration version 16 was not recorded")
-	}
 	var controlPlaneMigrationApplied bool
 	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (SELECT 1 FROM paperboat.goose_db_version WHERE version_id = 28 AND is_applied)`).Scan(&controlPlaneMigrationApplied); err != nil {
 		t.Fatal(err)
 	}
 	if !controlPlaneMigrationApplied {
 		t.Fatal("Goose control-plane foundation migration was not recorded")
+	}
+	var unifiedMachineMigrationApplied bool
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (SELECT 1 FROM paperboat.goose_db_version WHERE version_id = 65 AND is_applied)`).Scan(&unifiedMachineMigrationApplied); err != nil {
+		t.Fatal(err)
+	}
+	if !unifiedMachineMigrationApplied {
+		t.Fatal("unified machine identity migration was not recorded")
+	}
+	for _, column := range []string{"setup_roles", "public_identity_key", "installation_generation"} {
+		var exists bool
+		if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema='paperboat' AND table_name='user_machines' AND column_name=$1
+		)`, column).Scan(&exists); err != nil {
+			t.Fatal(err)
+		}
+		if !exists {
+			t.Fatalf("unified machine column %s was not created", column)
+		}
+	}
+	var hostedMachineMigrationApplied bool
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (SELECT 1 FROM paperboat.goose_db_version WHERE version_id = 67 AND is_applied)`).Scan(&hostedMachineMigrationApplied); err != nil {
+		t.Fatal(err)
+	}
+	if !hostedMachineMigrationApplied {
+		t.Fatal("hosted canonical machine migration was not recorded")
+	}
+	for table, column := range map[string]string{"user_machines": "machine_kind", "fly_machines": "user_machine_id"} {
+		var exists bool
+		if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema='paperboat' AND table_name=$1 AND column_name=$2
+		)`, table, column).Scan(&exists); err != nil {
+			t.Fatal(err)
+		}
+		if !exists {
+			t.Fatalf("hosted canonical machine column %s.%s was not created", table, column)
+		}
+	}
+	var machineConfigMigrationApplied bool
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (SELECT 1 FROM paperboat.goose_db_version WHERE version_id = 68 AND is_applied)`).Scan(&machineConfigMigrationApplied); err != nil {
+		t.Fatal(err)
+	}
+	if !machineConfigMigrationApplied {
+		t.Fatal("machine-scoped config assignment migration was not recorded")
+	}
+	var configMachineColumn bool
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema='paperboat' AND table_name='control_config_assignments' AND column_name='machine_id' AND is_nullable='NO'
+	)`).Scan(&configMachineColumn); err != nil {
+		t.Fatal(err)
+	}
+	if !configMachineColumn {
+		t.Fatal("machine-scoped config assignment key was not created")
+	}
+	for _, version := range []int{69, 70, 71, 72, 73, 74} {
+		var applied bool
+		if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (SELECT 1 FROM paperboat.goose_db_version WHERE version_id=$1 AND is_applied)`, version).Scan(&applied); err != nil {
+			t.Fatal(err)
+		}
+		if !applied {
+			t.Fatalf("unified runtime migration %d was not recorded", version)
+		}
+	}
+	if _, err := store.SQL().ExecContext(context.Background(), `SELECT paperboat.revoke_config_sync_for_environment('migration_machine_authority_probe')`); err != nil {
+		t.Fatalf("machine-authority config revocation function failed: %v", err)
+	}
+	var configCredentialMachineForeignKey bool
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (
+		SELECT 1 FROM pg_constraint
+		WHERE conrelid='paperboat.control_config_credentials'::regclass
+		  AND confrelid='paperboat.user_machines'::regclass
+		  AND conname='control_config_credentials_environment_id_machine_id_fkey'
+	)`).Scan(&configCredentialMachineForeignKey); err != nil {
+		t.Fatal(err)
+	}
+	if !configCredentialMachineForeignKey {
+		t.Fatal("config credentials are not bound to canonical machines")
+	}
+	var renewalTable bool
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT to_regclass('paperboat.machine_control_renewals') IS NOT NULL`).Scan(&renewalTable); err != nil {
+		t.Fatal(err)
+	}
+	if !renewalTable {
+		t.Fatal("machine-control renewal table was not created")
+	}
+	for table, column := range map[string]string{"control_connector_generations": "connector_id", "control_routes": "connector_id"} {
+		var exists bool
+		if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema='paperboat' AND table_name=$1 AND column_name=$2 AND is_nullable='NO'
+		)`, table, column).Scan(&exists); err != nil {
+			t.Fatal(err)
+		}
+		if !exists {
+			t.Fatalf("connector-instance column %s.%s was not created", table, column)
+		}
+	}
+	var connectorPrimaryKey bool
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (
+		SELECT 1
+		FROM pg_constraint constraint_row
+		JOIN pg_class table_row ON table_row.oid = constraint_row.conrelid
+		JOIN pg_namespace namespace_row ON namespace_row.oid = table_row.relnamespace
+		WHERE namespace_row.nspname='paperboat'
+		  AND table_row.relname='control_connector_generations'
+		  AND constraint_row.contype='p'
+		  AND pg_get_constraintdef(constraint_row.oid) = 'PRIMARY KEY (environment_id, connector_id)'
+	)`).Scan(&connectorPrimaryKey); err != nil {
+		t.Fatal(err)
+	}
+	if !connectorPrimaryKey {
+		t.Fatal("connector generation primary key is not environment plus connector")
+	}
+	for _, table := range []string{"project_terminal_sessions", "user_machine_terminal_sessions"} {
+		var defaultValue string
+		if err := store.SQL().QueryRowContext(context.Background(), `SELECT column_default
+			FROM information_schema.columns
+			WHERE table_schema='paperboat' AND table_name=$1 AND column_name='thread_id'`, table).Scan(&defaultValue); err != nil {
+			t.Fatal(err)
+		}
+		if defaultValue != "'paperboat'::text" {
+			t.Fatalf("%s.thread_id default = %q", table, defaultValue)
+		}
 	}
 	for _, version := range []int{29, 30, 31, 32} {
 		var applied bool
@@ -107,59 +225,6 @@ DELETE FROM paperboat.users WHERE id='usr_migration_client_revocation_probe'`); 
 	}
 	if !hasClientRevocationTrigger {
 		t.Fatal("account lifecycle client-revocation trigger was not applied")
-	}
-	var hasConfigSyncStatus bool
-	if err := store.SQL().QueryRowContext(context.Background(), `SELECT to_regclass('paperboat.config_sync_statuses') IS NOT NULL`).Scan(&hasConfigSyncStatus); err != nil {
-		t.Fatal(err)
-	}
-	if !hasConfigSyncStatus {
-		t.Fatal("config_sync_statuses migration was not applied")
-	}
-	var hasStatusUpdatedAt bool
-	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (
-		SELECT 1 FROM information_schema.columns
-		WHERE table_schema = 'paperboat' AND table_name = 'config_sync_statuses' AND column_name = 'status_updated_at' AND is_nullable = 'NO'
-	)`).Scan(&hasStatusUpdatedAt); err != nil {
-		t.Fatal(err)
-	}
-	if !hasStatusUpdatedAt {
-		t.Fatal("config_sync_statuses.status_updated_at migration was not applied")
-	}
-	var hasReceivedAt bool
-	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (
-		SELECT 1 FROM information_schema.columns
-		WHERE table_schema = 'paperboat' AND table_name = 'config_sync_statuses' AND column_name = 'received_at' AND is_nullable = 'NO'
-	)`).Scan(&hasReceivedAt); err != nil {
-		t.Fatal(err)
-	}
-	if !hasReceivedAt {
-		t.Fatal("config_sync_statuses.received_at migration was not applied")
-	}
-	var hasStatusObservedAt bool
-	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (
-		SELECT 1 FROM information_schema.columns
-		WHERE table_schema = 'paperboat' AND table_name = 'config_sync_statuses' AND column_name = 'status_observed_at' AND is_nullable = 'NO'
-	)`).Scan(&hasStatusObservedAt); err != nil {
-		t.Fatal(err)
-	}
-	if !hasStatusObservedAt {
-		t.Fatal("config_sync_statuses.status_observed_at migration was not applied")
-	}
-	for _, table := range []string{"account_config_keys", "config_classification_overrides", "config_classification_cache"} {
-		var exists bool
-		if err := store.SQL().QueryRowContext(context.Background(), `SELECT to_regclass('paperboat.' || $1) IS NOT NULL`, table).Scan(&exists); err != nil {
-			t.Fatal(err)
-		}
-		if !exists {
-			t.Fatalf("migration did not create %s", table)
-		}
-	}
-	var hasEncryptionVersion bool
-	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='paperboat' AND table_name='config_sync_statuses' AND column_name='encryption_key_version')`).Scan(&hasEncryptionVersion); err != nil {
-		t.Fatal(err)
-	}
-	if !hasEncryptionVersion {
-		t.Fatal("config sync encryption version column missing")
 	}
 	for _, table := range []string{
 		"control_environments",

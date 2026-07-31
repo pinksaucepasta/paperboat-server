@@ -1,6 +1,6 @@
 {
   "environment": "development",
-  "helper_base_domain": "helper.paperboat.local",
+  "runtime_base_domain": "runtime.paperboat.local",
   "http": {
     "address": "127.0.0.1:8080",
     "public_base_url": "http://127.0.0.1:8080",
@@ -36,7 +36,7 @@
       "darwin",
       "linux"
     ],
-    "helper_listen_port": 38080,
+    "runtime_listen_port": 38080,
     "bootstrap_command": "",
     "helper_artifacts_json": "",
     "helper_artifact_public_key": ""
@@ -50,7 +50,7 @@
   },
   "cli_auth": {
     "verification_url": "http://localhost:3000/cli/authorize",
-    "client_id": "paperboat-cli",
+    "client_id": "paperboat",
     "allowed_scopes": [
       "account:read",
       "clients:revoke",
@@ -87,8 +87,8 @@
     "machine_name_prefix": "pbvm",
     "mount_path": "/workspace",
     "boot_command": [
-      "/usr/local/bin/pbh",
-      "run"
+      "/usr/local/bin/pb",
+      "__runtime-host"
     ],
     "operation_timeout": 30000000000,
     "orchestration_lease": 300000000000

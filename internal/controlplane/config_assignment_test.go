@@ -20,6 +20,7 @@ func TestConfigAssignmentOwnershipConcurrencyAndBYODConsent(t *testing.T) {
 	suffix := strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())
 	userA, userB := "cfg_a_"+suffix, "cfg_b_"+suffix
 	env := "cfg_env_" + suffix
+	machineID := "cfg_machine_" + suffix
 	for _, user := range []string{userA, userB} {
 		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active') ON CONFLICT (id) DO NOTHING`, user, "workos_"+user, user+"@example.test"); err != nil {
 			t.Fatal(err)
@@ -28,7 +29,7 @@ func TestConfigAssignmentOwnershipConcurrencyAndBYODConsent(t *testing.T) {
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id) VALUES ($1,$2,$3) ON CONFLICT (id) DO UPDATE SET owner_user_id=EXCLUDED.owner_user_id, desired_state='active'`, env, "workspace_"+suffix, userA); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root) VALUES ($1,$2,$3,'BYOD','linux','arm64','/workspace')`, "cfg_machine_"+suffix, userA, env); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root) VALUES ($1,$2,$3,'BYOD','linux','arm64','/workspace')`, machineID, userA, env); err != nil {
 		t.Fatal(err)
 	}
 	service := NewConfigAssignmentService(store, nil, "warning-1")
@@ -40,39 +41,39 @@ func TestConfigAssignmentOwnershipConcurrencyAndBYODConsent(t *testing.T) {
 	if _, err := service.ConnectRepository(ctx, userB, "github", "repo-b", "B"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Assignment(ctx, userB, env); !errors.Is(err, ErrAssignmentForbidden) {
+	if _, err := service.Assignment(ctx, userB, machineID); !errors.Is(err, ErrAssignmentForbidden) {
 		t.Fatalf("cross-user assignment error = %v", err)
 	}
-	assignment, err := service.Assign(ctx, userA, env, repoA.ID, "warning-1", 0)
+	assignment, err := service.Assign(ctx, userA, machineID, repoA.ID, ConfigModePushOnly, "warning-1", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if assignment.ConsentState != "pending" || assignment.Version != 1 {
+	if assignment.ConsentState != "pending" || assignment.Mode != ConfigModePushOnly || assignment.Version != 1 {
 		t.Fatalf("assignment = %#v", assignment)
 	}
-	if _, err := service.AcceptConsent(ctx, userA, env, "warning-wrong", assignment.Version); !errors.Is(err, ErrAssignmentConflict) {
+	if _, err := service.AcceptConsent(ctx, userA, machineID, "warning-wrong", assignment.Version); !errors.Is(err, ErrAssignmentConflict) {
 		t.Fatalf("wrong warning error = %v", err)
 	}
-	accepted, err := service.AcceptConsent(ctx, userA, env, "warning-1", assignment.Version)
+	accepted, err := service.AcceptConsent(ctx, userA, machineID, "warning-1", assignment.Version)
 	if err != nil || accepted.ConsentState != "accepted" {
 		t.Fatalf("accepted = %#v, %v", accepted, err)
 	}
-	warning, err := service.Warning(ctx, userA, env)
-	if err != nil || warning.Revision != "warning-1" || warning.MachineName != "BYOD" || warning.RepositoryName != "R" || warning.CanonicalScope != "/workspace" {
+	warning, err := service.Warning(ctx, userA, machineID)
+	if err != nil || warning.Revision != "warning-1" || warning.MachineName != "BYOD" || warning.RepositoryName != "R" || warning.CanonicalScope != "/workspace" || !strings.Contains(warning.RepositoryVisibility, "ordinary plaintext") || !strings.Contains(warning.HistoryRetention, "Git history") || !strings.Contains(warning.AccessConsequence, "may read") {
 		t.Fatalf("warning = %#v, %v", warning, err)
 	}
-	pending, err := service.RemoveConsent(ctx, userA, env, accepted.Version)
+	pending, err := service.RemoveConsent(ctx, userA, machineID, accepted.Version)
 	if err != nil || pending.ConsentState != "pending" || pending.AcceptedAt.Valid {
 		t.Fatalf("removed consent = %#v, %v", pending, err)
 	}
-	accepted, err = service.AcceptConsent(ctx, userA, env, "warning-1", pending.Version)
+	accepted, err = service.AcceptConsent(ctx, userA, machineID, "warning-1", pending.Version)
 	if err != nil || accepted.ConsentState != "accepted" {
 		t.Fatalf("reaccepted = %#v, %v", accepted, err)
 	}
-	if err := service.Clear(ctx, userA, env, assignment.Version); !errors.Is(err, ErrAssignmentConflict) {
+	if err := service.Clear(ctx, userA, machineID, assignment.Version); !errors.Is(err, ErrAssignmentConflict) {
 		t.Fatalf("stale clear error = %v", err)
 	}
-	if err := service.Clear(ctx, userA, env, accepted.Version); err != nil {
+	if err := service.Clear(ctx, userA, machineID, accepted.Version); err != nil {
 		t.Fatal(err)
 	}
 	var state string
@@ -110,7 +111,7 @@ func TestConfigCredentialIsBoundReplaySafeAndRevokedWithAssignment(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	helperPrivate := ed25519.NewKeyFromSeed([]byte(strings.Repeat("h", ed25519.SeedSize)))
+	helperPrivate := enrollmentTestPrivateKey(environmentID)
 	identity, err := enrollment.Exchange(ctx, grant.Credential, helperPrivate.Public().(ed25519.PublicKey))
 	if err != nil {
 		t.Fatal(err)
@@ -122,11 +123,11 @@ func TestConfigCredentialIsBoundReplaySafeAndRevokedWithAssignment(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assignment, err := assignments.Assign(ctx, user, environmentID, repository.ID, "warning-7", 0)
+	assignment, err := assignments.Assign(ctx, user, identity.MachineID, repository.ID, ConfigModeBidirectional, "warning-7", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assignment, err = assignments.AcceptConsent(ctx, user, environmentID, "warning-7", assignment.Version)
+	assignment, err = assignments.AcceptConsent(ctx, user, identity.MachineID, "warning-7", assignment.Version)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +145,7 @@ func TestConfigCredentialIsBoundReplaySafeAndRevokedWithAssignment(t *testing.T)
 		t.Fatal(err)
 	}
 	claims, err := signer.VerifyCredential(issued.Credential, "https://api.example.test", "config_sync", now)
-	if err != nil || claims.AssignmentID != assignment.ID || claims.WarningRevision != "warning-7" || claims.HelperID != identity.HelperID {
+	if err != nil || claims.AssignmentID != assignment.ID || claims.WarningRevision != "warning-7" || claims.MachineID != identity.MachineID {
 		t.Fatalf("claims = %#v, %v", claims, err)
 	}
 	replay, err := credentials.Issue(ctx, identity.Credential, proof, body, "POST", "/v1/config/credentials")
@@ -153,14 +154,14 @@ func TestConfigCredentialIsBoundReplaySafeAndRevokedWithAssignment(t *testing.T)
 	}
 	updatedAssignments := NewConfigAssignmentService(store, nil, "warning-8")
 	updatedAssignments.clock = func() time.Time { return now }
-	replacement, err := updatedAssignments.Assign(ctx, user, environmentID, repository.ID, "warning-8", assignment.Version)
+	replacement, err := updatedAssignments.Assign(ctx, user, identity.MachineID, repository.ID, ConfigModePullOnly, "warning-8", assignment.Version)
 	if err != nil || replacement.ID == assignment.ID {
 		t.Fatalf("replacement = %#v, %v", replacement, err)
 	}
 	if _, err := credentials.Issue(ctx, identity.Credential, proof, body, "POST", "/v1/config/credentials"); !errors.Is(err, ErrConfigCredentialReplay) {
 		t.Fatalf("replaced assignment replay error = %v", err)
 	}
-	if err := assignments.Clear(ctx, user, environmentID, replacement.Version); err != nil {
+	if err := assignments.Clear(ctx, user, identity.MachineID, replacement.Version); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := credentials.Issue(ctx, identity.Credential, proof, body, "POST", "/v1/config/credentials"); !errors.Is(err, ErrConfigCredentialReplay) {
@@ -209,10 +210,14 @@ func TestConfigAssignmentHostedDoesNotRequireConsent(t *testing.T) {
 	suffix := strings.ReplaceAll(t.Name(), "/", "_")
 	user := "cfg_hosted_" + suffix
 	env := "cfg_hosted_env_" + suffix
+	machineID := "cfg_hosted_machine_" + suffix
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active') ON CONFLICT (id) DO NOTHING`, user, "workos_"+user, user+"@example.test"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id) VALUES ($1,$2,$3) ON CONFLICT (id) DO UPDATE SET owner_user_id=EXCLUDED.owner_user_id, desired_state='active'`, env, "workspace_"+suffix, user); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,machine_kind) VALUES ($1,$2,$3,'Hosted','linux','unknown','/workspace','hosted')`, machineID, user, env); err != nil {
 		t.Fatal(err)
 	}
 	service := NewConfigAssignmentService(store, nil, "warning-1")
@@ -221,8 +226,8 @@ func TestConfigAssignmentHostedDoesNotRequireConsent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assignment, err := service.Assign(ctx, user, env, repo.ID, "", 0)
-	if err != nil || assignment.ConsentState != "not_required" {
+	assignment, err := service.Assign(ctx, user, machineID, repo.ID, "", "", 0)
+	if err != nil || assignment.ConsentState != "not_required" || assignment.Mode != ConfigModePullOnly {
 		t.Fatalf("assignment = %#v, %v", assignment, err)
 	}
 }

@@ -55,7 +55,7 @@ type AvailabilityObservation struct {
 
 type AvailabilityResolution struct {
 	Schema        string `json:"schema"`
-	UserMachineID string `json:"user_machine_id"`
+	UserMachineID string `json:"machine_id"`
 	Mode          string `json:"mode"`
 	Version       int64  `json:"version"`
 }

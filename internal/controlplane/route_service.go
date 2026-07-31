@@ -67,7 +67,7 @@ func (s *RouteService) Create(ctx context.Context, userID, operationKey, environ
 		if reserved.ResultRevision.Valid {
 			return json.Unmarshal(reserved.Result, &route)
 		}
-		route, err = tx.Queries().CreateControlRoute(ctx, dbsqlc.CreateControlRouteParams{ID: id, EnvironmentID: environmentID, Kind: kind, PublicHost: publicHost, TargetHost: targetHost, TargetPort: targetPort})
+		route, err = tx.Queries().CreateControlRoute(ctx, dbsqlc.CreateControlRouteParams{ID: id, EnvironmentID: environmentID, ConnectorID: "runtime", Kind: kind, PublicHost: publicHost, TargetHost: targetHost, TargetPort: targetPort})
 		if err != nil {
 			return err
 		}
@@ -138,7 +138,7 @@ func routeRequestHash(values ...any) [32]byte {
 	return sha256.Sum256(data)
 }
 func validRouteKind(kind string) bool {
-	return kind == "helper_https_wss" || kind == "preview_public_https_wss"
+	return kind == "runtime_https_wss" || kind == "preview_public_https_wss"
 }
 func validRouteHost(host string) bool {
 	host = strings.TrimSpace(host)

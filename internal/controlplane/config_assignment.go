@@ -19,6 +19,16 @@ var (
 	ErrAssignmentForbidden = errors.New("config assignment is unavailable")
 )
 
+const (
+	ConfigModePullOnly      = "pull_only"
+	ConfigModePushOnly      = "push_only"
+	ConfigModeBidirectional = "bidirectional"
+)
+
+func validConfigMode(mode string) bool {
+	return mode == ConfigModePullOnly || mode == ConfigModePushOnly || mode == ConfigModeBidirectional
+}
+
 type ConfigAssignmentService struct {
 	store              *db.DB
 	audit              *audit.Writer
@@ -174,16 +184,25 @@ func (s *ConfigAssignmentService) DisconnectRepository(ctx context.Context, user
 	return err
 }
 
-func (s *ConfigAssignmentService) Assignment(ctx context.Context, userID, environmentID string) (dbsqlc.ControlConfigAssignment, error) {
-	if !s.ownsEnvironment(ctx, userID, environmentID) {
+func (s *ConfigAssignmentService) Assignment(ctx context.Context, userID, machineID string) (dbsqlc.ControlConfigAssignment, error) {
+	environmentID, ok := s.ownedMachineEnvironment(ctx, userID, machineID)
+	if !ok {
 		return dbsqlc.ControlConfigAssignment{}, ErrAssignmentForbidden
 	}
 	return s.store.Queries().GetControlConfigAssignment(ctx, environmentID)
 }
 
-func (s *ConfigAssignmentService) Assign(ctx context.Context, userID, environmentID, repositoryID, warningRevision string, expectedVersion int64) (dbsqlc.ControlConfigAssignment, error) {
-	if userID == "" || environmentID == "" || repositoryID == "" || expectedVersion < 0 {
+func (s *ConfigAssignmentService) Assign(ctx context.Context, userID, machineID, repositoryID, mode, warningRevision string, expectedVersion int64) (dbsqlc.ControlConfigAssignment, error) {
+	mode = strings.TrimSpace(mode)
+	if mode == "" {
+		mode = ConfigModePullOnly
+	}
+	if userID == "" || machineID == "" || repositoryID == "" || !validConfigMode(mode) || expectedVersion < 0 {
 		return dbsqlc.ControlConfigAssignment{}, ErrAssignmentInvalid
+	}
+	environmentID, ok := s.ownedMachineEnvironment(ctx, userID, machineID)
+	if !ok {
+		return dbsqlc.ControlConfigAssignment{}, ErrAssignmentForbidden
 	}
 	environment, err := s.store.Queries().GetControlEnvironment(ctx, environmentID)
 	if err != nil || !environment.OwnerUserID.Valid || environment.OwnerUserID.String != userID || environment.DesiredState != "active" {
@@ -215,7 +234,7 @@ func (s *ConfigAssignmentService) Assign(ctx context.Context, userID, environmen
 	now := s.clock().UTC()
 	err = s.store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		var err error
-		assignment, err = tx.Queries().SetControlConfigAssignment(ctx, dbsqlc.SetControlConfigAssignmentParams{AssignmentID: assignmentID, EnvironmentID: environmentID, RepositoryID: sql.NullString{String: repositoryID, Valid: true}, ConsentState: consent, WarningRevision: sql.NullString{String: warningRevision, Valid: true}, ExpectedVersion: expectedVersion, Now: now})
+		assignment, err = tx.Queries().SetControlConfigAssignment(ctx, dbsqlc.SetControlConfigAssignmentParams{AssignmentID: assignmentID, EnvironmentID: environmentID, RepositoryID: sql.NullString{String: repositoryID, Valid: true}, Mode: mode, ConsentState: consent, WarningRevision: sql.NullString{String: warningRevision, Valid: true}, ExpectedVersion: expectedVersion, Now: now})
 		if err != nil {
 			return err
 		}
@@ -228,7 +247,7 @@ func (s *ConfigAssignmentService) Assign(ctx context.Context, userID, environmen
 		if _, err = tx.Queries().RevokeControlConfigRepositoryLeasesForEnvironment(ctx, dbsqlc.RevokeControlConfigRepositoryLeasesForEnvironmentParams{EnvironmentID: sql.NullString{String: environmentID, Valid: true}, Now: sql.NullTime{Time: now, Valid: true}}); err != nil {
 			return err
 		}
-		return s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "config.assignment_set", ResourceType: "environment", ResourceID: environmentID, IdempotencyKey: "config.assignment:" + environmentID + ":" + strconv.FormatInt(assignment.Version, 10), Metadata: map[string]any{"repository_id": repositoryID, "consent_state": consent}})
+		return s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "config.assignment_set", ResourceType: "environment", ResourceID: environmentID, IdempotencyKey: "config.assignment:" + environmentID + ":" + strconv.FormatInt(assignment.Version, 10), Metadata: map[string]any{"repository_id": repositoryID, "mode": mode, "consent_state": consent}})
 	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return dbsqlc.ControlConfigAssignment{}, ErrAssignmentConflict
@@ -239,14 +258,15 @@ func (s *ConfigAssignmentService) Assign(ctx context.Context, userID, environmen
 	return assignment, nil
 }
 
-func (s *ConfigAssignmentService) AcceptConsent(ctx context.Context, userID, environmentID, warningRevision string, expectedVersion int64) (dbsqlc.ControlConfigAssignment, error) {
-	if userID == "" || environmentID == "" || warningRevision == "" || expectedVersion < 1 {
+func (s *ConfigAssignmentService) AcceptConsent(ctx context.Context, userID, machineID, warningRevision string, expectedVersion int64) (dbsqlc.ControlConfigAssignment, error) {
+	if userID == "" || machineID == "" || warningRevision == "" || expectedVersion < 1 {
 		return dbsqlc.ControlConfigAssignment{}, ErrAssignmentInvalid
 	}
 	if warningRevision != s.warningRevision {
 		return dbsqlc.ControlConfigAssignment{}, ErrAssignmentConflict
 	}
-	if !s.ownsEnvironment(ctx, userID, environmentID) {
+	environmentID, ok := s.ownedMachineEnvironment(ctx, userID, machineID)
+	if !ok {
 		return dbsqlc.ControlConfigAssignment{}, ErrAssignmentForbidden
 	}
 	assignment, err := s.store.Queries().AcceptControlConfigConsent(ctx, dbsqlc.AcceptControlConfigConsentParams{EnvironmentID: environmentID, WarningRevision: sql.NullString{String: warningRevision, Valid: true}, ExpectedVersion: expectedVersion, Now: sql.NullTime{Time: s.clock().UTC(), Valid: true}})
@@ -260,23 +280,28 @@ func (s *ConfigAssignmentService) AcceptConsent(ctx context.Context, userID, env
 }
 
 type ConfigWarningFacts struct {
-	Revision                     string   `json:"revision"`
-	MachineName                  string   `json:"machine_name"`
-	RepositoryName               string   `json:"repository_name"`
-	CanonicalScope               string   `json:"canonical_scope"`
-	FileCategories               []string `json:"file_categories"`
-	Encrypted                    bool     `json:"encrypted"`
-	AutomaticPullAndPush         bool     `json:"automatic_pull_and_push"`
-	ConflictBehavior             string   `json:"conflict_behavior"`
-	DisableAction                string   `json:"disable_action"`
-	OfflineBehavior              string   `json:"offline_behavior"`
-	RecoveryConsequence          string   `json:"recovery_consequence"`
-	ClassifierMetadataDisclosure string   `json:"classifier_metadata_disclosure"`
+	Revision             string `json:"revision"`
+	MachineName          string `json:"machine_name"`
+	RepositoryName       string `json:"repository_name"`
+	CanonicalScope       string `json:"canonical_scope"`
+	Mode                 string `json:"mode"`
+	ManifestScope        string `json:"manifest_scope"`
+	RepositoryVisibility string `json:"repository_visibility"`
+	HistoryRetention     string `json:"history_retention"`
+	ConflictBehavior     string `json:"conflict_behavior"`
+	ForceBehavior        string `json:"force_behavior"`
+	DisableAction        string `json:"disable_action"`
+	OfflineBehavior      string `json:"offline_behavior"`
+	AccessConsequence    string `json:"access_consequence"`
 }
 
-func (s *ConfigAssignmentService) Warning(ctx context.Context, userID, environmentID string) (ConfigWarningFacts, error) {
-	if userID == "" || environmentID == "" || s.warningRevision == "" {
+func (s *ConfigAssignmentService) Warning(ctx context.Context, userID, machineID string) (ConfigWarningFacts, error) {
+	if userID == "" || machineID == "" || s.warningRevision == "" {
 		return ConfigWarningFacts{}, ErrAssignmentInvalid
+	}
+	environmentID, ok := s.ownedMachineEnvironment(ctx, userID, machineID)
+	if !ok {
+		return ConfigWarningFacts{}, ErrAssignmentForbidden
 	}
 	item, err := s.store.Queries().GetControlConfigWarningContext(ctx, dbsqlc.GetControlConfigWarningContextParams{
 		EnvironmentID: environmentID, OwnerUserID: sql.NullString{String: userID, Valid: true},
@@ -286,18 +311,21 @@ func (s *ConfigAssignmentService) Warning(ctx context.Context, userID, environme
 	}
 	return ConfigWarningFacts{
 		Revision: s.warningRevision, MachineName: item.MachineName, RepositoryName: item.RepositoryName,
-		CanonicalScope: item.CanonicalScope, FileCategories: []string{"agent settings", "developer tool settings", "shell configuration"},
-		Encrypted: true, AutomaticPullAndPush: true,
-		ConflictBehavior:             "Conflicting local and remote versions are both preserved and automatic writes stop until you resolve them.",
-		DisableAction:                "Remove consent or unassign the repository to stop synchronization immediately.",
-		OfflineBehavior:              "Offline changes remain local; synchronization requires fresh server authorization after reconnecting.",
-		RecoveryConsequence:          "Keep the recovery identity offline. Losing it can make encrypted repository contents unrecoverable.",
-		ClassifierMetadataDisclosure: "Normalized relative paths and bounded file metadata may be sent to the configured classifier; file contents are never sent.",
+		CanonicalScope: item.CanonicalScope, Mode: item.Mode,
+		ManifestScope:        "Only home-relative files and directories explicitly listed in the repository .pbinclude are managed; .pbignore can narrow that scope.",
+		RepositoryVisibility: "Selected configuration content is stored as ordinary plaintext in the connected private Git repository.",
+		HistoryRetention:     "Git history can retain earlier and removed versions after files are changed, un-managed, or deleted.",
+		ConflictBehavior:     "Only conflicting paths pause; choose this machine's version or the repository version while unrelated paths continue.",
+		ForceBehavior:        "Confirmed force pull or force push can replace selected managed paths while preserving displaced versions in normal history.",
+		DisableAction:        "Remove consent or unassign the repository to stop synchronization immediately.",
+		OfflineBehavior:      "Offline changes remain local; synchronization requires fresh server authorization after reconnecting.",
+		AccessConsequence:    "Anyone who gains repository or provider-account access may read selected configuration content and retained history.",
 	}, nil
 }
 
-func (s *ConfigAssignmentService) RemoveConsent(ctx context.Context, userID, environmentID string, expectedVersion int64) (dbsqlc.ControlConfigAssignment, error) {
-	if userID == "" || environmentID == "" || expectedVersion < 1 || s.warningRevision == "" || !s.ownsEnvironment(ctx, userID, environmentID) {
+func (s *ConfigAssignmentService) RemoveConsent(ctx context.Context, userID, machineID string, expectedVersion int64) (dbsqlc.ControlConfigAssignment, error) {
+	environmentID, ok := s.ownedMachineEnvironment(ctx, userID, machineID)
+	if userID == "" || machineID == "" || expectedVersion < 1 || s.warningRevision == "" || !ok {
 		return dbsqlc.ControlConfigAssignment{}, ErrAssignmentForbidden
 	}
 	now := s.clock().UTC()
@@ -377,8 +405,9 @@ func (s *ConfigAssignmentService) WarningReconciliationWorker(interval time.Dura
 	}
 }
 
-func (s *ConfigAssignmentService) Clear(ctx context.Context, userID, environmentID string, expectedVersion int64) error {
-	if userID == "" || environmentID == "" || expectedVersion < 1 || !s.ownsEnvironment(ctx, userID, environmentID) {
+func (s *ConfigAssignmentService) Clear(ctx context.Context, userID, machineID string, expectedVersion int64) error {
+	environmentID, ok := s.ownedMachineEnvironment(ctx, userID, machineID)
+	if userID == "" || machineID == "" || expectedVersion < 1 || !ok {
 		return ErrAssignmentForbidden
 	}
 	var assignment dbsqlc.ControlConfigAssignment
@@ -409,7 +438,11 @@ func (s *ConfigAssignmentService) Clear(ctx context.Context, userID, environment
 	return nil
 }
 
-func (s *ConfigAssignmentService) ownsEnvironment(ctx context.Context, userID, environmentID string) bool {
-	environment, err := s.store.Queries().GetControlEnvironment(ctx, environmentID)
-	return err == nil && environment.OwnerUserID.Valid && environment.OwnerUserID.String == userID && environment.DesiredState == "active"
+func (s *ConfigAssignmentService) ownedMachineEnvironment(ctx context.Context, userID, machineID string) (string, bool) {
+	machine, err := s.store.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: machineID, UserID: userID})
+	if err != nil {
+		return "", false
+	}
+	environment, err := s.store.Queries().GetControlEnvironment(ctx, machine.EnvironmentID)
+	return machine.EnvironmentID, err == nil && environment.OwnerUserID.Valid && environment.OwnerUserID.String == userID && environment.DesiredState == "active"
 }

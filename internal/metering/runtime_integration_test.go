@@ -2,6 +2,7 @@ package metering_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -39,6 +40,35 @@ func TestUserMachineRuntimeObservationCommitsServerReceiptTime(t *testing.T) {
 	}
 	if state != "online" || !online || lastSeen.Before(started) {
 		t.Fatalf("heartbeat state=%s online=%v last_seen_at=%s", state, online, lastSeen)
+	}
+}
+
+func TestUserMachineRuntimeObservationRejectsConcurrentCopiedIdentity(t *testing.T) {
+	store := openRuntimeTestDB(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID, machineID, environmentID := "usr_duplicate_"+suffix, "um_duplicate_"+suffix, "env_duplicate_"+suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_"+suffix, "duplicate-"+suffix+"@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,'Duplicate','linux','amd64','/home/test','offline','occupied',false)`, machineID, userID, environmentID); err != nil {
+		t.Fatal(err)
+	}
+	repository := metering.NewRuntimeRepository(store, "", 2*time.Minute)
+	observation := metering.RuntimeObservation{ProjectID: environmentID, MachineID: machineID, ObservedAt: time.Now().UTC(), ReporterVersion: "test", WorkerGeneration: 1, OSBootID: "boot-a", WorkerServiceScope: "user", ConnectorState: "ready", ConnectorGeneration: 1, DiagnosticsObservedAt: time.Now().UTC()}
+	if err := repository.RecordRuntimeObservation(ctx, observation); err != nil {
+		t.Fatal(err)
+	}
+	observation.OSBootID = "boot-b"
+	observation.DiagnosticsObservedAt = observation.DiagnosticsObservedAt.Add(time.Second)
+	if err := repository.RecordRuntimeObservation(ctx, observation); !errors.Is(err, metering.ErrDuplicateMachineIdentity) {
+		t.Fatalf("concurrent copied identity error = %v", err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machines SET last_seen_at=now()-interval '3 minutes' WHERE id=$1`, machineID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.RecordRuntimeObservation(ctx, observation); err != nil {
+		t.Fatalf("stale identity takeover: %v", err)
 	}
 }
 
@@ -454,6 +484,10 @@ func seedMeteredProjectForUser(t *testing.T, store *db.DB, suffix, userID, label
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.projects (id, user_id, name, state, idempotency_key) VALUES ($1, $2, $3, 'running', $4)`, projectID, userID, "Meter "+label, "idem-"+label+"-"+suffix); err != nil {
 		t.Fatal(err)
 	}
+	canonicalMachineID := "mch_" + label + "_" + suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,setup_roles,machine_kind) VALUES ($1,$2,$3,$4,'linux','unknown','/workspace','online','occupied',ARRAY['host']::text[],'hosted')`, canonicalMachineID, userID, projectID, "Meter "+label); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.project_repositories (project_id, provider, source_url) VALUES ($1, 'github', 'https://github.com/example/repo')`, projectID); err != nil {
 		t.Fatal(err)
 	}
@@ -476,7 +510,7 @@ INSERT INTO paperboat.project_runtime_configs
 VALUES ($1, $2, $3, 'hash', 10, $2, $3, 'hash')`, projectID, machineTypeVersionID, regionID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.fly_machines (id, project_id, fly_machine_id, state, image_ref, region) VALUES ($1, $2, $3, 'running', 'image', 'iad')`, "flm_"+label+"_"+suffix, projectID, machineID); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.fly_machines (id, project_id, user_machine_id, fly_machine_id, state, image_ref, region) VALUES ($1, $2, $3, $4, 'running', 'image', 'iad')`, "flm_"+label+"_"+suffix, projectID, canonicalMachineID, machineID); err != nil {
 		t.Fatal(err)
 	}
 }

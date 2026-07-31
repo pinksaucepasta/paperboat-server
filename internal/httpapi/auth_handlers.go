@@ -62,52 +62,6 @@ func workOSCallback(service *auth.Service) http.HandlerFunc {
 	}
 }
 
-func workOSReauthState(service *auth.Service) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		p, ok := principalFromContext(r.Context())
-		if !ok {
-			writeError(w, r, 401, "unauthenticated", "Authentication is required.")
-			return
-		}
-		purpose := r.URL.Query().Get("purpose")
-		state, err := service.NewReauthState(p.User.ID, purpose)
-		if err != nil {
-			writeError(w, r, 400, "invalid_request", "Reauthentication purpose is invalid.")
-			return
-		}
-		service.SetOAuthStateCookie(w, state)
-		writeJSON(w, 200, SuccessResponse{Data: map[string]any{"state": state}})
-	}
-}
-
-func workOSReauthCallback(service *auth.Service) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Code        string `json:"code"`
-			RedirectURI string `json:"redirect_uri"`
-			State       string `json:"state"`
-			Purpose     string `json:"purpose"`
-		}
-		if json.NewDecoder(r.Body).Decode(&body) != nil {
-			writeError(w, r, 400, "invalid_request", "Request body must be valid JSON.")
-			return
-		}
-		p, ok := principalFromContext(r.Context())
-		if !ok {
-			writeError(w, r, 401, "unauthenticated", "Authentication is required.")
-			return
-		}
-		proof, err := service.VerifyReauthentication(r.Context(), r, auth.CallbackInput{Code: body.Code, RedirectURI: body.RedirectURI, State: body.State}, p.User, body.Purpose)
-		if err != nil {
-			writeError(w, r, 401, "reauthentication_failed", "Reauthentication could not be verified.")
-			return
-		}
-		service.ClearOAuthStateCookie(w)
-		service.SetReauthProofCookie(w, proof)
-		writeJSON(w, 200, SuccessResponse{Data: map[string]any{"reauthenticated": true, "purpose": body.Purpose}})
-	}
-}
-
 func logout(service *auth.Service, access *access.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if unsafeMethod(r.Method) {

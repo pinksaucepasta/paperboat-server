@@ -337,7 +337,7 @@ func (s *PreviewService) createIdentity(ctx context.Context, tx *db.Tx, environm
 		if err != nil {
 			return dbsqlc.ControlPreview{}, err
 		}
-		if _, err = tx.Queries().CreateControlRoute(ctx, dbsqlc.CreateControlRouteParams{ID: routeID, EnvironmentID: environmentID, Kind: "preview_public_https_wss", PublicHost: host, TargetHost: targetHost, TargetPort: targetPort}); err != nil {
+		if _, err = tx.Queries().CreateControlRoute(ctx, dbsqlc.CreateControlRouteParams{ID: routeID, EnvironmentID: environmentID, ConnectorID: key, Kind: "preview_public_https_wss", PublicHost: host, TargetHost: targetHost, TargetPort: targetPort}); err != nil {
 			return dbsqlc.ControlPreview{}, err
 		}
 		return tx.Queries().SetControlPreviewRoute(ctx, dbsqlc.SetControlPreviewRouteParams{RouteID: sql.NullString{String: routeID, Valid: true}, Now: s.clock(), ID: preview.ID})

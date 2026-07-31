@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,6 +35,9 @@ import (
 
 var (
 	ErrInvalidPairing             = errors.New("invalid user-machine pairing")
+	ErrInvalidSetup               = errors.New("invalid machine setup")
+	ErrMachineIdentityConflict    = errors.New("machine identity belongs to another account")
+	ErrMachineNameConflict        = errors.New("machine name is already in use")
 	ErrPairingExpired             = errors.New("user-machine pairing expired")
 	ErrPairingUsed                = errors.New("user-machine pairing is no longer pending")
 	ErrSeatUnavailable            = errors.New("user-machine seat unavailable")
@@ -54,6 +58,7 @@ var (
 	ErrTerminalSessionConflict    = errors.New("user-machine terminal session name conflict")
 	ErrTerminalSessionInvalidName = errors.New("invalid user-machine terminal session name")
 	ErrTerminalSessionIdempotency = errors.New("terminal session idempotency key is required")
+	ErrTransferDestinationInvalid = errors.New("transfer destination is unavailable")
 )
 
 var (
@@ -130,7 +135,7 @@ type Service struct {
 	controlRuntime     userMachineHelperRuntime
 	bootstrapCommand   string
 	helperGrant        func(context.Context, string, string, string, time.Duration) (HelperEnrollmentGrant, error)
-	helperArtifacts    map[string]HelperArtifact
+	machineArtifacts   map[string]MachineArtifact
 	artifactPublicKey  string
 	helperBaseDomain   string
 	helperListenPort   int32
@@ -163,7 +168,7 @@ func (s *Service) FailInstallation(ctx context.Context, enrollmentID, environmen
 	})
 }
 
-type HelperArtifact struct {
+type MachineArtifact struct {
 	Schema       string `json:"schema"`
 	Kind         string `json:"kind"`
 	Version      string `json:"version"`
@@ -225,10 +230,10 @@ func (s *Service) ConfigureBootstrapCommand(command string) {
 	s.bootstrapCommand = strings.TrimSpace(command)
 }
 
-func (s *Service) ConfigureHelperRoute(baseDomain string, listenPort int32) error {
+func (s *Service) ConfigureRuntimeRoute(baseDomain string, listenPort int32) error {
 	baseDomain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(baseDomain), "."))
 	if baseDomain == "" || listenPort < 1024 || listenPort > 65535 {
-		return errors.New("user-machine helper route configuration is invalid")
+		return errors.New("machine runtime route configuration is invalid")
 	}
 	s.helperBaseDomain, s.helperListenPort = baseDomain, listenPort
 	return nil
@@ -238,18 +243,18 @@ func (s *Service) ConfigureHelperEnrollment(issuer func(context.Context, string,
 	s.helperGrant = issuer
 }
 
-func (s *Service) ConfigureHelperArtifacts(encoded, publicKey string) error {
+func (s *Service) ConfigureMachineArtifacts(encoded, publicKey string) error {
 	if strings.TrimSpace(encoded) == "" && strings.TrimSpace(publicKey) == "" {
 		return nil
 	}
-	var artifacts []HelperArtifact
+	var artifacts []MachineArtifact
 	decoder := json.NewDecoder(strings.NewReader(encoded))
 	decoder.DisallowUnknownFields()
 	decodedPublicKey, keyErr := decodeArtifactBase64(strings.TrimSpace(publicKey))
-	if err := decoder.Decode(&artifacts); err != nil || len(artifacts) < 2 || len(artifacts) > 8 || len(artifacts)%2 != 0 || keyErr != nil || len(decodedPublicKey) != ed25519.PublicKeySize {
-		return errors.New("user-machine helper artifacts are invalid")
+	if err := decoder.Decode(&artifacts); err != nil || len(artifacts) < 1 || len(artifacts) > 4 || keyErr != nil || len(decodedPublicKey) != ed25519.PublicKeySize {
+		return errors.New("user-machine artifacts are invalid")
 	}
-	configured := make(map[string]HelperArtifact, len(artifacts))
+	configured := make(map[string]MachineArtifact, len(artifacts))
 	for _, artifact := range artifacts {
 		key := artifact.Platform + "-" + artifact.Architecture + "-" + artifact.Kind
 		parsedURL, urlErr := url.Parse(artifact.URL)
@@ -265,25 +270,15 @@ func (s *Service) ConfigureHelperArtifacts(encoded, publicKey string) error {
 			URL          string `json:"url"`
 			Version      string `json:"version"`
 		}{artifact.Architecture, artifact.ByteLength, artifact.Kind, artifact.Platform, artifact.Schema, artifact.SHA256, artifact.URL, artifact.Version})
-		if artifact.Schema != "paperboat.helper-artifact/v2" || !slices.Contains([]string{"worker", "host_service"}, artifact.Kind) || artifact.Version == "" || !slices.Contains([]string{"darwin", "linux"}, artifact.Platform) || !slices.Contains([]string{"amd64", "arm64"}, artifact.Architecture) || urlErr != nil || parsedURL.Scheme != "https" || parsedURL.User != nil || parsedURL.Hostname() == "" || parsedURL.RawQuery != "" || parsedURL.Fragment != "" || artifact.ByteLength < 1 || artifact.ByteLength > 256<<20 || digestErr != nil || len(digest) != sha256.Size || signatureErr != nil || len(signature) != ed25519.SignatureSize || payloadErr != nil || !ed25519.Verify(ed25519.PublicKey(decodedPublicKey), payload, signature) || configured[key].Schema != "" {
-			return errors.New("user-machine helper artifacts are invalid")
+		if artifact.Schema != "paperboat.machine-artifact/v1" || artifact.Kind != "pb" || artifact.Version == "" || !slices.Contains([]string{"darwin", "linux"}, artifact.Platform) || !slices.Contains([]string{"amd64", "arm64"}, artifact.Architecture) || urlErr != nil || parsedURL.Scheme != "https" || parsedURL.User != nil || parsedURL.Hostname() == "" || parsedURL.RawQuery != "" || parsedURL.Fragment != "" || artifact.ByteLength < 1 || artifact.ByteLength > 256<<20 || digestErr != nil || len(digest) != sha256.Size || signatureErr != nil || len(signature) != ed25519.SignatureSize || payloadErr != nil || !ed25519.Verify(ed25519.PublicKey(decodedPublicKey), payload, signature) || configured[key].Schema != "" {
+			return errors.New("user-machine artifacts are invalid")
 		}
 		configured[key] = artifact
 	}
-	for _, artifact := range configured {
-		counterpartKind := "worker"
-		if artifact.Kind == "worker" {
-			counterpartKind = "host_service"
-		}
-		counterpart, ok := configured[artifact.Platform+"-"+artifact.Architecture+"-"+counterpartKind]
-		if !ok || counterpart.Version != artifact.Version {
-			return errors.New("user-machine helper artifacts are invalid")
-		}
-	}
 	if len(configured) != len(artifacts) {
-		return errors.New("user-machine helper artifacts are invalid")
+		return errors.New("user-machine artifacts are invalid")
 	}
-	s.helperArtifacts, s.artifactPublicKey = configured, strings.TrimSpace(publicKey)
+	s.machineArtifacts, s.artifactPublicKey = configured, strings.TrimSpace(publicKey)
 	return nil
 }
 
@@ -302,8 +297,8 @@ func New(store *db.DB, auditWriter *audit.Writer, policy Policy, seats SeatAutho
 }
 
 type PairingInput struct {
-	Verifier, EnrollmentToken, DisplayName, Platform, Architecture, WorkspaceRoot string
-	RuntimeVersions                                                               json.RawMessage
+	Verifier, EnrollmentToken, DisplayName, Platform, Architecture, WorkspaceRoot, PublicIdentityKey string
+	RuntimeVersions                                                                                  json.RawMessage
 }
 
 type Enrollment struct {
@@ -313,7 +308,7 @@ type Enrollment struct {
 	Generation           int64      `json:"generation"`
 	PairingID            string     `json:"pairing_id,omitempty"`
 	UserCode             string     `json:"user_code,omitempty"`
-	UserMachineID        string     `json:"user_machine_id,omitempty"`
+	UserMachineID        string     `json:"machine_id,omitempty"`
 	RequestedDisplayName string     `json:"requested_display_name,omitempty"`
 	Platform             string     `json:"platform,omitempty"`
 	Architecture         string     `json:"architecture,omitempty"`
@@ -445,6 +440,65 @@ type Pairing struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
+type SetupInput struct {
+	DisplayName, Platform, Architecture, WorkspaceRoot, PublicIdentityKey string
+	RuntimeVersions                                                       json.RawMessage
+}
+
+func (s *Service) Setup(ctx context.Context, userID string, in SetupInput) (UserMachine, error) {
+	userID = strings.TrimSpace(userID)
+	publicKey, keyErr := base64.RawURLEncoding.DecodeString(strings.TrimSpace(in.PublicIdentityKey))
+	if userID == "" || strings.TrimSpace(in.DisplayName) == "" || strings.TrimSpace(in.Architecture) == "" ||
+		!filepath.IsAbs(in.WorkspaceRoot) || filepath.Clean(in.WorkspaceRoot) != in.WorkspaceRoot ||
+		!slices.Contains(s.policy.AllowedPlatforms, strings.ToLower(strings.TrimSpace(in.Platform))) ||
+		keyErr != nil || len(publicKey) != ed25519.PublicKeySize {
+		return UserMachine{}, ErrInvalidSetup
+	}
+	if len(in.RuntimeVersions) == 0 {
+		in.RuntimeVersions = json.RawMessage(`{}`)
+	}
+	var result UserMachine
+	err := s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		key := sql.NullString{String: strings.TrimSpace(in.PublicIdentityKey), Valid: true}
+		row, err := tx.Queries().GetUserMachineByPublicIdentityForUpdate(ctx, key)
+		if err == nil {
+			if row.UserID != userID {
+				return ErrMachineIdentityConflict
+			}
+			if row.Platform != strings.ToLower(strings.TrimSpace(in.Platform)) || row.Architecture != strings.ToLower(strings.TrimSpace(in.Architecture)) || row.WorkspaceRoot != in.WorkspaceRoot {
+				return ErrInvalidSetup
+			}
+			row, err = tx.Queries().AddUserMachineInteractiveRole(ctx, dbsqlc.AddUserMachineInteractiveRoleParams{ID: row.ID, UserID: userID, DisplayName: strings.TrimSpace(in.DisplayName), RuntimeVersions: in.RuntimeVersions})
+			if err != nil {
+				return err
+			}
+			result = mapMachine(row)
+			return s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "machine.setup_resumed", ResourceType: "machine", ResourceID: row.ID, IdempotencyKey: "machine.setup_resumed:" + row.ID + ":" + strconv.FormatInt(row.Version, 10)})
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		environmentID := newID("env")
+		row, err = tx.Queries().CreateInteractiveMachine(ctx, dbsqlc.CreateInteractiveMachineParams{
+			ID: newID("mch"), UserID: userID, EnvironmentID: environmentID, DisplayName: strings.TrimSpace(in.DisplayName),
+			Platform: strings.ToLower(strings.TrimSpace(in.Platform)), Architecture: strings.ToLower(strings.TrimSpace(in.Architecture)),
+			WorkspaceRoot: in.WorkspaceRoot, RuntimeVersions: in.RuntimeVersions, PublicIdentityKey: key,
+		})
+		if userMachineTerminalSessionUniqueViolation(err) {
+			return ErrMachineNameConflict
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Queries().CreateControlEnvironment(ctx, dbsqlc.CreateControlEnvironmentParams{ID: environmentID, WorkspaceID: row.ID, OwnerUserID: sql.NullString{String: userID, Valid: true}, DesiredState: "active"}); err != nil {
+			return err
+		}
+		result = mapMachine(row)
+		return s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "machine.setup", ResourceType: "machine", ResourceID: row.ID, IdempotencyKey: "machine.setup:" + row.ID})
+	})
+	return result, err
+}
+
 func (s *Service) CreatePairing(ctx context.Context, in PairingInput) (Pairing, error) {
 	if err := s.validatePairing(in); err != nil {
 		return Pairing{}, err
@@ -458,7 +512,7 @@ func (s *Service) CreatePairing(ctx context.Context, in PairingInput) (Pairing, 
 		in.RuntimeVersions = json.RawMessage(`{}`)
 	}
 	expires := s.now().UTC().Add(s.policy.PairingLifetime)
-	params := dbsqlc.CreateUserMachinePairingParams{ID: newID("ump"), VerifierHash: verifierHash[:], UserCode: code, RequestedDisplayName: strings.TrimSpace(in.DisplayName), Platform: strings.ToLower(strings.TrimSpace(in.Platform)), Architecture: strings.ToLower(strings.TrimSpace(in.Architecture)), WorkspaceRoot: filepath.Clean(in.WorkspaceRoot), RuntimeVersions: in.RuntimeVersions, ExpiresAt: expires}
+	params := dbsqlc.CreateUserMachinePairingParams{ID: newID("ump"), VerifierHash: verifierHash[:], UserCode: code, RequestedDisplayName: strings.TrimSpace(in.DisplayName), Platform: strings.ToLower(strings.TrimSpace(in.Platform)), Architecture: strings.ToLower(strings.TrimSpace(in.Architecture)), WorkspaceRoot: filepath.Clean(in.WorkspaceRoot), RuntimeVersions: in.RuntimeVersions, PublicIdentityKey: strings.TrimSpace(in.PublicIdentityKey), ExpiresAt: expires}
 	var row dbsqlc.UserMachinePairing
 	if strings.TrimSpace(in.EnrollmentToken) == "" {
 		row, err = s.db.Queries().CreateUserMachinePairing(ctx, params)
@@ -499,20 +553,24 @@ func (s *Service) CreatePairing(ctx context.Context, in PairingInput) (Pairing, 
 }
 
 type UserMachine struct {
-	ID                 string             `json:"id"`
-	EnvironmentID      string             `json:"environment_id"`
-	DisplayName        string             `json:"display_name"`
-	Platform           string             `json:"platform"`
-	Architecture       string             `json:"architecture"`
-	WorkspaceRoot      string             `json:"workspace_root"`
-	State              string             `json:"state"`
-	SeatState          string             `json:"seat_state"`
-	Online             bool               `json:"online"`
-	RuntimeVersions    json.RawMessage    `json:"runtime_versions"`
-	EnrolledAt         *time.Time         `json:"enrolled_at,omitempty"`
-	LastSeenAt         *time.Time         `json:"last_seen_at,omitempty"`
-	Availability       AvailabilityPolicy `json:"availability"`
-	RuntimeDiagnostics RuntimeDiagnostics `json:"runtime_diagnostics"`
+	ID                     string             `json:"id"`
+	EnvironmentID          string             `json:"environment_id"`
+	DisplayName            string             `json:"display_name"`
+	Platform               string             `json:"platform"`
+	Architecture           string             `json:"architecture"`
+	WorkspaceRoot          string             `json:"workspace_root"`
+	State                  string             `json:"state"`
+	SeatState              string             `json:"seat_state"`
+	Online                 bool               `json:"online"`
+	RuntimeVersions        json.RawMessage    `json:"runtime_versions"`
+	SetupRoles             []string           `json:"setup_roles"`
+	MachineKind            string             `json:"machine_kind"`
+	PublicIdentityKey      string             `json:"public_identity_key"`
+	InstallationGeneration int64              `json:"installation_generation"`
+	EnrolledAt             *time.Time         `json:"enrolled_at,omitempty"`
+	LastSeenAt             *time.Time         `json:"last_seen_at,omitempty"`
+	Availability           AvailabilityPolicy `json:"availability"`
+	RuntimeDiagnostics     RuntimeDiagnostics `json:"runtime_diagnostics"`
 }
 
 type RuntimeDiagnostics struct {
@@ -600,12 +658,148 @@ type BandwidthReservation struct {
 	Exhausted    bool  `json:"exhausted"`
 }
 
+func (s *Service) TransferDestinationDefault(ctx context.Context, userID string) (UserMachine, error) {
+	row, err := s.db.Queries().GetUserTransferDestinationDefault(ctx, userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return UserMachine{}, ErrNotFound
+	}
+	if err != nil {
+		return UserMachine{}, err
+	}
+	return mapMachine(row), nil
+}
+
+func (s *Service) SetTransferDestinationDefault(ctx context.Context, userID, machineID string) (UserMachine, error) {
+	var result UserMachine
+	err := s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if _, err := tx.Queries().SetUserTransferDestinationDefault(ctx, dbsqlc.SetUserTransferDestinationDefaultParams{UserID: userID, MachineID: machineID}); errors.Is(err, sql.ErrNoRows) {
+			return ErrTransferDestinationInvalid
+		} else if err != nil {
+			return err
+		}
+		row, err := tx.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: machineID, UserID: userID})
+		if err != nil {
+			return err
+		}
+		result = mapMachine(row)
+		return s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "transfer_destination.default_set", ResourceType: "user", ResourceID: userID, Metadata: map[string]any{"machine_id": machineID}})
+	})
+	return result, err
+}
+
+func (s *Service) ClearTransferDestinationDefault(ctx context.Context, userID string) error {
+	return s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		changed, err := tx.Queries().ClearUserTransferDestinationDefault(ctx, userID)
+		if err != nil || changed == 0 {
+			return err
+		}
+		return s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "transfer_destination.default_cleared", ResourceType: "user", ResourceID: userID})
+	})
+}
+
+func (s *Service) TerminalSessionTransferDestination(ctx context.Context, userID, sessionID string) (UserMachine, error) {
+	row, err := s.db.Queries().GetTerminalSessionTransferDestination(ctx, dbsqlc.GetTerminalSessionTransferDestinationParams{SessionID: sessionID, UserID: userID})
+	if errors.Is(err, sql.ErrNoRows) {
+		return UserMachine{}, ErrNotFound
+	}
+	if err != nil {
+		return UserMachine{}, err
+	}
+	return mapMachine(row), nil
+}
+
+func (s *Service) SetTerminalSessionTransferDestination(ctx context.Context, userID, sessionID, machineID string) (UserMachine, error) {
+	var result UserMachine
+	err := s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		row, err := tx.Queries().SetTerminalSessionTransferDestination(ctx, dbsqlc.SetTerminalSessionTransferDestinationParams{MachineID: machineID, UserID: userID, SessionID: sessionID})
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrTransferDestinationInvalid
+		}
+		if err != nil {
+			return err
+		}
+		result = mapMachine(row)
+		return s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "transfer_destination.session_set", ResourceType: "terminal_session", ResourceID: sessionID, Metadata: map[string]any{"machine_id": machineID}})
+	})
+	return result, err
+}
+
+func (s *Service) ClearTerminalSessionTransferDestination(ctx context.Context, userID, sessionID string) error {
+	return s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if _, err := tx.Queries().ClearTerminalSessionTransferDestination(ctx, dbsqlc.ClearTerminalSessionTransferDestinationParams{SessionID: sessionID, UserID: userID}); errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		return s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "transfer_destination.session_cleared", ResourceType: "terminal_session", ResourceID: sessionID})
+	})
+}
+
+func (s *Service) EligibleTerminalSessionTransferDestinations(ctx context.Context, userID, cliClientSessionID, sessionID string) ([]UserMachine, error) {
+	if s.controlSigner == nil || cliClientSessionID == "" {
+		return nil, ErrProvisioningUnavailable
+	}
+	host, err := s.db.Queries().GetUserMachineTerminalSessionHostForUser(ctx, dbsqlc.GetUserMachineTerminalSessionHostForUserParams{SessionID: sessionID, UserID: userID})
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrTerminalSessionNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	route, err := s.db.Queries().GetActiveHelperRouteForEnvironment(ctx, host.EnvironmentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrProvisioningUnavailable
+	}
+	if err != nil {
+		return nil, err
+	}
+	now := s.now().UTC()
+	expires := now.Add(2 * time.Minute)
+	token, err := s.controlSigner.SignCredential(mint.CredentialInput{
+		Issuer: s.issuer, Audience: "paperboat-machine", Subject: userID, JTI: newID("jti_helper_terminal"),
+		IssuedAt: now, ExpiresAt: expires, CredentialClass: "terminal_operation", Scopes: []string{"terminal:operate"},
+		EnvironmentID: host.EnvironmentID, MachineID: host.ID, UserID: userID, CLIClientSessionID: cliClientSessionID, SessionID: sessionID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	snapshot, err := s.controlRuntime.Terminal(ctx, "https://"+route.PublicHost, token, "transfer-destinations", sessionID, newID("op_transfer_destinations"))
+	if err != nil {
+		return nil, err
+	}
+	result := make([]UserMachine, 0, len(snapshot.EligibleTransferDestinationMachineIDs))
+	for _, machineID := range snapshot.EligibleTransferDestinationMachineIDs {
+		row, lookupErr := s.db.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: machineID, UserID: userID})
+		if lookupErr == nil && row.State != "revoked" && row.State != "disconnected" && row.State != "deleted" && row.SeatState == "occupied" {
+			result = append(result, mapMachine(row))
+		}
+	}
+	return result, nil
+}
+
+func (s *Service) OwnedEligibleMachines(ctx context.Context, userID string, machineIDs []string) ([]UserMachine, error) {
+	result := make([]UserMachine, 0, len(machineIDs))
+	for _, machineID := range machineIDs {
+		row, err := s.db.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: machineID, UserID: userID})
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if row.State != "revoked" && row.State != "disconnected" && row.State != "deleted" && row.SeatState == "occupied" {
+			result = append(result, mapMachine(row))
+		}
+	}
+	return result, nil
+}
+
 type ConnectionDescriptor struct {
 	Schema            string         `json:"schema,omitempty"`
 	Capabilities      []string       `json:"capabilities,omitempty"`
 	Issuer            string         `json:"issuer,omitempty"`
-	UserMachineID     string         `json:"user_machine_id"`
-	UserMachineState  string         `json:"user_machine_state"`
+	UserMachineID     string         `json:"machine_id"`
+	UserMachineState  string         `json:"machine_state"`
 	Connectable       bool           `json:"connectable"`
 	ExpiresAt         time.Time      `json:"expires_at"`
 	Environment       map[string]any `json:"environment,omitempty"`
@@ -614,6 +808,136 @@ type ConnectionDescriptor struct {
 	Status            string         `json:"status,omitempty"`
 	Reason            string         `json:"reason,omitempty"`
 	RetryAfterSeconds int            `json:"retry_after_seconds,omitempty"`
+}
+
+type FileTransferDescriptor struct {
+	Endpoint             string                              `json:"endpoint"`
+	SourceMachineID      string                              `json:"source_machine_id"`
+	DestinationMachineID string                              `json:"destination_machine_id"`
+	InitiatingUserID     string                              `json:"initiating_user_id"`
+	Auth                 map[string]any                      `json:"auth"`
+	Policy               accessdescriptor.FileTransferPolicy `json:"policy"`
+}
+
+type PreviewLaunchDescriptor struct {
+	Endpoint  string         `json:"endpoint"`
+	MachineID string         `json:"machine_id"`
+	ExpiresAt time.Time      `json:"expires_at"`
+	Auth      map[string]any `json:"auth"`
+}
+
+func (s *Service) PreviewLaunchDescriptor(ctx context.Context, userID, machineID, cliClientSessionID string) (PreviewLaunchDescriptor, error) {
+	if userID == "" || machineID == "" || cliClientSessionID == "" || s.controlSigner == nil {
+		return PreviewLaunchDescriptor{}, ErrProvisioningUnavailable
+	}
+	row, err := s.db.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: machineID, UserID: userID})
+	if errors.Is(err, sql.ErrNoRows) {
+		return PreviewLaunchDescriptor{}, ErrNotFound
+	}
+	if err != nil {
+		return PreviewLaunchDescriptor{}, err
+	}
+	if row.State == "revoked" || row.State == "disconnected" || row.State == "deleted" || row.SeatState != "occupied" {
+		return PreviewLaunchDescriptor{}, ErrProvisioningUnavailable
+	}
+	route, err := s.db.Queries().GetActiveHelperRouteForEnvironment(ctx, row.EnvironmentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PreviewLaunchDescriptor{}, ErrProvisioningUnavailable
+	}
+	if err != nil {
+		return PreviewLaunchDescriptor{}, err
+	}
+	now := s.now().UTC()
+	expires := now.Add(2 * time.Minute)
+	token, err := s.controlSigner.SignCredential(mint.CredentialInput{
+		Issuer: s.issuer, Audience: "paperboat-machine", Subject: userID, JTI: newID("jti_preview_launch"),
+		IssuedAt: now, ExpiresAt: expires, CredentialClass: "preview_launch", Scopes: []string{"preview:launch"},
+		EnvironmentID: row.EnvironmentID, MachineID: row.ID, UserID: userID, CLIClientSessionID: cliClientSessionID,
+	})
+	if err != nil {
+		return PreviewLaunchDescriptor{}, err
+	}
+	return PreviewLaunchDescriptor{
+		Endpoint: "https://" + route.PublicHost + "/v1/preview-launches", MachineID: row.ID, ExpiresAt: expires,
+		Auth: map[string]any{"method": "bearer", "token": token, "expires_at": expires, "scopes": []string{"preview:launch"}},
+	}, nil
+}
+
+func (s *Service) FileTransferDescriptor(ctx context.Context, userID, sourceMachineID, destinationMachineID, cliClientSessionID, sessionID string) (FileTransferDescriptor, error) {
+	if sourceMachineID == "" || destinationMachineID == "" || sourceMachineID == destinationMachineID || cliClientSessionID == "" || s.controlSigner == nil {
+		return FileTransferDescriptor{}, ErrNotFound
+	}
+	if _, err := s.db.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: sourceMachineID, UserID: userID}); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return FileTransferDescriptor{}, ErrNotFound
+		}
+		return FileTransferDescriptor{}, err
+	}
+	if sessionID != "" {
+		owned, err := s.db.Queries().UserOwnsTerminalSession(ctx, dbsqlc.UserOwnsTerminalSessionParams{SessionID: sessionID, UserID: userID})
+		if err != nil {
+			return FileTransferDescriptor{}, err
+		}
+		if !owned {
+			return FileTransferDescriptor{}, ErrTerminalSessionNotFound
+		}
+	}
+	destination, err := s.db.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: destinationMachineID, UserID: userID})
+	if errors.Is(err, sql.ErrNoRows) {
+		return FileTransferDescriptor{}, ErrNotFound
+	}
+	if err != nil {
+		return FileTransferDescriptor{}, err
+	}
+	if destination.State == "revoked" || destination.State == "disconnected" || destination.State == "deleted" || destination.SeatState != "occupied" {
+		return FileTransferDescriptor{}, ErrNotFound
+	}
+	routeMachine := destination
+	if sessionID != "" {
+		host, hostErr := s.db.Queries().GetUserMachineTerminalSessionHostForUser(ctx, dbsqlc.GetUserMachineTerminalSessionHostForUserParams{SessionID: sessionID, UserID: userID})
+		if hostErr == nil {
+			routeMachine = host
+		} else if !errors.Is(hostErr, sql.ErrNoRows) {
+			return FileTransferDescriptor{}, hostErr
+		}
+	}
+	if routeMachine.State == "revoked" || routeMachine.State == "disconnected" || routeMachine.State == "deleted" || routeMachine.SeatState != "occupied" {
+		return FileTransferDescriptor{}, ErrProvisioningUnavailable
+	}
+	route, err := s.db.Queries().GetActiveHelperRouteForEnvironment(ctx, routeMachine.EnvironmentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return FileTransferDescriptor{}, ErrProvisioningUnavailable
+	}
+	if err != nil {
+		return FileTransferDescriptor{}, err
+	}
+	ttl := s.ttl
+	if ttl <= 0 || ttl > 5*time.Minute {
+		ttl = 5 * time.Minute
+	}
+	expiresAt := s.now().UTC().Add(ttl)
+	jti := newID("jti_helper_file_transfer")
+	token, err := s.controlSigner.SignCredential(mint.CredentialInput{
+		Issuer: s.issuer, Audience: "paperboat-machine", Subject: userID, JTI: jti,
+		IssuedAt: s.now().UTC(), ExpiresAt: expiresAt, CredentialClass: "file_transfer", Scopes: []string{"file:transfer"},
+		EnvironmentID: routeMachine.EnvironmentID, MachineID: routeMachine.ID, SourceMachineID: sourceMachineID,
+		UserID: userID, CLIClientSessionID: cliClientSessionID, SessionID: sessionID,
+	})
+	if err != nil {
+		return FileTransferDescriptor{}, err
+	}
+	httpBaseURL := "https://" + route.PublicHost
+	if err := s.db.Queries().CreateUserMachineAccessSession(ctx, dbsqlc.CreateUserMachineAccessSessionParams{
+		ID: newID("umas"), UserMachineID: routeMachine.ID, UserID: userID, EnvironmentID: routeMachine.EnvironmentID,
+		CLIClientSessionID: cliClientSessionID, HttpBaseUrl: httpBaseURL, HelperFileSessionID: jti, ExpiresAt: expiresAt,
+	}); err != nil {
+		return FileTransferDescriptor{}, err
+	}
+	return FileTransferDescriptor{
+		Endpoint: httpBaseURL + "/v1/file-transfers", SourceMachineID: sourceMachineID,
+		DestinationMachineID: destination.ID, InitiatingUserID: userID, Policy: s.fileTransferPolicy,
+		Auth: map[string]any{"method": "bearer", "token": token, "expires_at": expiresAt, "scopes": []string{"file:transfer"}},
+	}, nil
 }
 
 func (r ConnectionDescriptor) MarshalJSON() ([]byte, error) {
@@ -686,11 +1010,17 @@ func setCanonicalMachineIdentity(response *ConnectionDescriptor, row dbsqlc.User
 	response.Environment = map[string]any{"id": row.EnvironmentID, "kind": accessdescriptor.EnvironmentBYOD, "resource_id": row.ID, "display_name": row.DisplayName, "state": machineConnectionState(response.Connectable, row.State), "root": row.WorkspaceRoot}
 }
 
-func (s *Service) Connect(ctx context.Context, userID, userMachineID, cliClientSessionID string) (ConnectionDescriptor, error) {
-	return s.ConnectTerminalSession(ctx, userID, userMachineID, cliClientSessionID, "")
+func (s *Service) Connect(ctx context.Context, userID, sourceMachineID, userMachineID, cliClientSessionID string) (ConnectionDescriptor, error) {
+	return s.ConnectTerminalSession(ctx, userID, sourceMachineID, userMachineID, cliClientSessionID, "")
 }
 
-func (s *Service) ConnectTerminalSession(ctx context.Context, userID, userMachineID, cliClientSessionID, terminalSessionID string) (ConnectionDescriptor, error) {
+func (s *Service) ConnectTerminalSession(ctx context.Context, userID, sourceMachineID, userMachineID, cliClientSessionID, terminalSessionID string) (ConnectionDescriptor, error) {
+	if sourceMachineID == "" || sourceMachineID == userMachineID {
+		return ConnectionDescriptor{}, ErrNotFound
+	}
+	if _, err := s.db.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: sourceMachineID, UserID: userID}); err != nil {
+		return ConnectionDescriptor{}, ErrNotFound
+	}
 	row, err := s.db.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: userMachineID, UserID: userID})
 	if errors.Is(err, sql.ErrNoRows) {
 		return ConnectionDescriptor{}, ErrNotFound
@@ -728,7 +1058,7 @@ func (s *Service) ConnectTerminalSession(ctx context.Context, userID, userMachin
 	if cliClientSessionID == "" || s.controlSigner == nil && s.credentials == nil {
 		return ConnectionDescriptor{}, errors.New("user-machine credential issuer is unavailable")
 	}
-	input := access.CredentialInput{UserID: userID, ProjectID: row.ID, EnvironmentID: row.EnvironmentID, CLIClientSessionID: cliClientSessionID, HTTPBaseURL: httpBaseURL, ExpiresAt: expires}
+	input := access.CredentialInput{UserID: userID, ProjectID: row.ID, EnvironmentID: row.EnvironmentID, SourceMachineID: sourceMachineID, CLIClientSessionID: cliClientSessionID, HTTPBaseURL: httpBaseURL, ExpiresAt: expires}
 	if s.controlSigner == nil {
 		if err := s.credentials.CheckCLI(ctx, input); err != nil {
 			return ConnectionDescriptor{}, err
@@ -770,9 +1100,9 @@ func (s *Service) ConnectTerminalSession(ctx context.Context, userID, userMachin
 	}
 	response.Connectable, response.Status, response.Reason, response.RetryAfterSeconds = true, "ready", "ready", 0
 	setCanonicalMachineIdentity(&response, row)
-	response.Terminal = map[string]any{"protocol": "paperboat.terminal.v2", "endpoints": machineTerminalEndpoints(websocketBaseURL), "session_id": terminalSession.ID, "thread_id": terminalSession.ThreadID, "terminal_id": terminalSession.TerminalID, "cwd": terminalSession.LaunchCwd, "auth": credentials.TerminalAuth}
+	response.Terminal = map[string]any{"protocol": "paperboat.terminal.v1", "endpoints": machineTerminalEndpoints(websocketBaseURL), "session_id": terminalSession.ID, "thread_id": terminalSession.ThreadID, "terminal_id": terminalSession.TerminalID, "cwd": terminalSession.LaunchCwd, "auth": credentials.TerminalAuth}
 	if credentials.FileTransferAuth != nil {
-		response.FileTransfer = map[string]any{"endpoint": httpBaseURL + "/v1/file-transfers", "policy": s.fileTransferPolicy, "auth": credentials.FileTransferAuth}
+		response.FileTransfer = map[string]any{"endpoint": httpBaseURL + "/v1/file-transfers", "source_machine_id": sourceMachineID, "destination_machine_id": row.ID, "initiating_user_id": userID, "policy": s.fileTransferPolicy, "auth": credentials.FileTransferAuth}
 	}
 	return response, nil
 }
@@ -798,9 +1128,9 @@ func (s *Service) issueUserMachineCredentials(ctx context.Context, input access.
 	transferJTI := newID("jti_helper_file_transfer")
 	sign := func(class string, scopes []string, jti string) (string, error) {
 		return s.controlSigner.SignCredential(mint.CredentialInput{
-			Issuer: s.issuer, Audience: "paperboat-helper", Subject: input.UserID, JTI: jti,
+			Issuer: s.issuer, Audience: "paperboat-machine", Subject: input.UserID, JTI: jti,
 			IssuedAt: issuedAt, ExpiresAt: input.ExpiresAt, CredentialClass: class, Scopes: scopes,
-			EnvironmentID: input.EnvironmentID, UserID: input.UserID, CLIClientSessionID: input.CLIClientSessionID, SessionID: terminalSessionID,
+			EnvironmentID: input.EnvironmentID, MachineID: input.ProjectID, SourceMachineID: input.SourceMachineID, UserID: input.UserID, CLIClientSessionID: input.CLIClientSessionID, SessionID: terminalSessionID,
 		})
 	}
 	terminalToken, err := sign("terminal_operation", []string{"terminal:operate"}, terminalJTI)
@@ -949,46 +1279,67 @@ func (s *Service) Approve(ctx context.Context, userID, userCode string) (UserMac
 			out, pairingID = mapMachine(row), pairing.ID
 			return s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "user_machine.installation_retried", ResourceType: "user_machine", ResourceID: row.ID, IdempotencyKey: "user_machine.installation_retried:" + pairing.ID, Metadata: map[string]any{"environment_id": row.EnvironmentID, "generation": enrollment.Generation}})
 		}
-		if s.seats == nil {
-			return ErrSeatUnavailable
-		}
-		if err := s.seats.ReserveUserMachineSeat(ctx, tx, userID); err != nil {
-			return err
-		}
-		row, err := tx.Queries().CreateUserMachine(ctx, dbsqlc.CreateUserMachineParams{ID: newID("um"), UserID: userID, EnvironmentID: newID("env"), DisplayName: pairing.RequestedDisplayName, Platform: pairing.Platform, Architecture: pairing.Architecture, WorkspaceRoot: pairing.WorkspaceRoot, RuntimeVersions: pairing.RuntimeVersions})
-		if err != nil {
-			return err
-		}
-		if _, err := tx.Queries().CreateControlEnvironment(ctx, dbsqlc.CreateControlEnvironmentParams{ID: row.EnvironmentID, WorkspaceID: row.ID, OwnerUserID: sql.NullString{String: userID, Valid: true}, DesiredState: "active"}); err != nil {
-			return err
-		}
-		if err := s.ensureHelperRoute(ctx, tx, row.ID, row.EnvironmentID); err != nil {
-			return err
-		}
-		if err := tx.Queries().CreateDefaultUserMachineTerminalSession(ctx, dbsqlc.CreateDefaultUserMachineTerminalSessionParams{ID: "umts_default_" + row.ID, UserMachineID: row.ID, LaunchCwd: row.WorkspaceRoot}); err != nil {
-			return err
-		}
-		if _, err := s.ensureCurrentBandwidthPeriod(ctx, tx, row); err != nil {
-			return err
-		}
-		if n, err := tx.Queries().ApproveUserMachinePairing(ctx, dbsqlc.ApproveUserMachinePairingParams{UserID: sql.NullString{String: userID, Valid: true}, UserMachineID: sql.NullString{String: row.ID, Valid: true}, ID: pairing.ID}); err != nil || n != 1 {
-			if err != nil {
-				return err
+		existing, identityErr := tx.Queries().GetUserMachineByPublicIdentityForUpdate(ctx, sql.NullString{String: pairing.PublicIdentityKey, Valid: true})
+		if identityErr == nil {
+			if existing.UserID != userID {
+				return ErrMachineIdentityConflict
 			}
-			return ErrPairingUsed
-		}
-		if enrollmentErr == nil {
-			n, err := tx.Queries().ApproveUserMachineEnrollment(ctx, dbsqlc.ApproveUserMachineEnrollmentParams{UserMachineID: sql.NullString{String: row.ID, Valid: true}, PairingID: sql.NullString{String: pairing.ID, Valid: true}, UserID: userID})
-			if err != nil {
-				return err
+			if existing.Platform != pairing.Platform || existing.Architecture != pairing.Architecture || existing.WorkspaceRoot != pairing.WorkspaceRoot {
+				return ErrInvalidPairing
 			}
-			if n != 1 {
+			if existing.SeatState == "released" {
+				if s.seats == nil {
+					return ErrSeatUnavailable
+				}
+				if err := s.seats.ReserveUserMachineSeat(ctx, tx, userID); err != nil {
+					return err
+				}
+				if n, err := tx.Queries().OccupyUserMachineSeat(ctx, dbsqlc.OccupyUserMachineSeatParams{ID: existing.ID, UserID: userID}); err != nil || n != 1 {
+					if err != nil {
+						return err
+					}
+					return ErrEnrollmentState
+				}
+			} else if existing.SeatState != "occupied" {
 				return ErrEnrollmentState
 			}
+			row, err := tx.Queries().AddUserMachineHostRole(ctx, dbsqlc.AddUserMachineHostRoleParams{
+				ID: existing.ID, UserID: userID, DisplayName: pairing.RequestedDisplayName,
+				WorkspaceRoot: pairing.WorkspaceRoot, RuntimeVersions: pairing.RuntimeVersions,
+			})
+			if err != nil {
+				return err
+			}
+			if err := s.ensureHelperRoute(ctx, tx, row.ID, row.EnvironmentID); err != nil {
+				return err
+			}
+			if err := tx.Queries().CreateDefaultUserMachineTerminalSession(ctx, dbsqlc.CreateDefaultUserMachineTerminalSessionParams{ID: "umts_default_" + row.ID, UserMachineID: row.ID, LaunchCwd: row.WorkspaceRoot}); err != nil {
+				return err
+			}
+			if _, err := s.ensureCurrentBandwidthPeriod(ctx, tx, row); err != nil {
+				return err
+			}
+			if n, err := tx.Queries().ApproveUserMachinePairing(ctx, dbsqlc.ApproveUserMachinePairingParams{UserID: sql.NullString{String: userID, Valid: true}, UserMachineID: sql.NullString{String: row.ID, Valid: true}, ID: pairing.ID}); err != nil || n != 1 {
+				if err != nil {
+					return err
+				}
+				return ErrPairingUsed
+			}
+			if enrollmentErr == nil {
+				if n, err := tx.Queries().ApproveUserMachineEnrollment(ctx, dbsqlc.ApproveUserMachineEnrollmentParams{UserMachineID: sql.NullString{String: row.ID, Valid: true}, PairingID: sql.NullString{String: pairing.ID, Valid: true}, UserID: userID}); err != nil || n != 1 {
+					if err != nil {
+						return err
+					}
+					return ErrEnrollmentState
+				}
+			}
+			out, pairingID = mapMachine(row), pairing.ID
+			return s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "machine.host_role_added", ResourceType: "machine", ResourceID: row.ID, IdempotencyKey: "machine.host_role_added:" + pairing.ID})
 		}
-		out = mapMachine(row)
-		pairingID = pairing.ID
-		return s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "user_machine.approved", ResourceType: "user_machine", ResourceID: row.ID, IdempotencyKey: "user_machine.approved:" + pairing.ID, Metadata: map[string]any{"platform": row.Platform, "architecture": row.Architecture}})
+		if !errors.Is(identityErr, sql.ErrNoRows) {
+			return identityErr
+		}
+		return ErrInvalidPairing
 	})
 	if pairingExpired {
 		return UserMachine{}, ErrPairingExpired
@@ -1016,7 +1367,7 @@ func (s *Service) ensureHelperRoute(ctx context.Context, tx *db.Tx, userMachineI
 	}
 	publicHost := strings.ReplaceAll(strings.ToLower(userMachineID), "_", "-") + "." + s.helperBaseDomain
 	_, err := tx.Queries().CreateControlRoute(ctx, dbsqlc.CreateControlRouteParams{
-		ID: newID("rte"), EnvironmentID: environmentID, Kind: "helper_https_wss",
+		ID: newID("rte"), EnvironmentID: environmentID, ConnectorID: "runtime", Kind: "runtime_https_wss",
 		PublicHost: publicHost, TargetHost: "127.0.0.1", TargetPort: s.helperListenPort,
 	})
 	return err
@@ -1087,14 +1438,20 @@ func (s *Service) provisionApprovedUserMachine(ctx context.Context, userID, pair
 	if s.helperGrant == nil {
 		return ErrProvisioningUnavailable
 	}
-	artifact, ok := s.helperArtifacts[machine.Platform+"-"+machine.Architecture+"-worker"]
-	hostArtifact, hostOK := s.helperArtifacts[machine.Platform+"-"+machine.Architecture+"-host_service"]
-	if !ok || !hostOK || s.artifactPublicKey == "" {
-		return errors.New("user-machine helper artifact is unavailable")
+	artifact, ok := s.machineArtifacts[machine.Platform+"-"+machine.Architecture+"-pb"]
+	if !ok || s.artifactPublicKey == "" {
+		return errors.New("user-machine artifact is unavailable")
 	}
 	enrollment, err := s.db.Queries().GetUserMachineEnrollmentForPairingUpdate(ctx, sql.NullString{String: pairingID, Valid: true})
-	if err != nil {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
+	}
+	// Identity-based setup-to-pair requests do not create a legacy enrollment
+	// row. The pairing itself remains the durable installation correlation.
+	installationEnrollmentID := pairingID
+	hasEnrollment := err == nil
+	if err == nil {
+		installationEnrollmentID = enrollment.ID
 	}
 	var grant HelperEnrollmentGrant
 	reuseIdentity := false
@@ -1110,10 +1467,10 @@ func (s *Service) provisionApprovedUserMachine(ctx context.Context, userID, pair
 		}
 	}
 	material, err := json.Marshal(map[string]any{
-		"schema": "paperboat.byod-installation/v1", "user_machine_id": machine.ID, "user_machine_enrollment_id": enrollment.ID, "environment_id": machine.EnvironmentID,
+		"schema": "paperboat.byod-installation/v1", "user_machine_id": machine.ID, "user_machine_enrollment_id": installationEnrollmentID, "environment_id": machine.EnvironmentID,
 		"control_url": s.issuer, "helper_id": grant.HelperID, "enrollment_id": grant.EnrollmentID,
 		"enrollment_credential": grant.Credential, "reuse_identity": reuseIdentity, "expires_at": grant.ExpiresAt,
-		"artifact": artifact, "host_service_artifact": hostArtifact, "artifact_public_key": s.artifactPublicKey,
+		"artifact": artifact, "artifact_public_key": s.artifactPublicKey,
 		"helper_listen_address": fmt.Sprintf("127.0.0.1:%d", s.helperListenPort),
 	})
 	if err != nil {
@@ -1130,6 +1487,9 @@ func (s *Service) provisionApprovedUserMachine(ctx context.Context, userID, pair
 		}
 		if n != 1 {
 			return ErrPairingUsed
+		}
+		if !hasEnrollment {
+			return nil
 		}
 		_, err = tx.Queries().MarkUserMachineEnrollmentMaterialIssued(ctx, sql.NullString{String: pairingID, Valid: true})
 		return err
@@ -1551,9 +1911,9 @@ func (s *Service) applyTerminalSessionOperation(ctx context.Context, operationID
 	}
 	now := s.now().UTC()
 	credential, err := s.controlSigner.SignCredential(mint.CredentialInput{
-		Issuer: s.issuer, Audience: "paperboat-helper", Subject: userID, JTI: newID("jti"),
+		Issuer: s.issuer, Audience: "paperboat-machine", Subject: userID, JTI: newID("jti"),
 		IssuedAt: now, ExpiresAt: now.Add(mint.MaxProofTTL), CredentialClass: "terminal_operation", Scopes: []string{"terminal:operate"},
-		EnvironmentID: environmentID, UserID: userID, CLIClientSessionID: operationID, SessionID: terminalSessionID,
+		EnvironmentID: environmentID, MachineID: userMachineID, UserID: userID, CLIClientSessionID: operationID, SessionID: terminalSessionID,
 	})
 	if err == nil {
 		action := operation
@@ -1617,6 +1977,40 @@ func (s *Service) Disconnect(ctx context.Context, userID, userMachineID string) 
 	}
 	auditErr := s.audit.Write(ctx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "user_machine.disconnected", ResourceType: "user_machine", ResourceID: userMachineID, IdempotencyKey: "user_machine.disconnected:" + userMachineID, Metadata: map[string]any{}})
 	return errors.Join(auditErr, s.RevokeUserMachineSessions(ctx, userMachineID, "user_machine_disconnected"))
+}
+
+func (s *Service) Unpair(ctx context.Context, userID, machineID string) (UserMachine, error) {
+	userID, machineID = strings.TrimSpace(userID), strings.TrimSpace(machineID)
+	if userID == "" || machineID == "" {
+		return UserMachine{}, ErrNotFound
+	}
+	var result UserMachine
+	err := s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		machine, err := tx.Queries().GetUserMachineForUpdate(ctx, dbsqlc.GetUserMachineForUpdateParams{ID: machineID, UserID: userID})
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if !slices.Contains(machine.SetupRoles, "host") {
+			result = mapMachine(machine)
+			return nil
+		}
+		machine, err = tx.Queries().RemoveUserMachineHostRole(ctx, dbsqlc.RemoveUserMachineHostRoleParams{ID: machineID, UserID: userID})
+		if err != nil {
+			return err
+		}
+		if err := s.revokeEnvironmentControlTx(ctx, tx, machine.EnvironmentID, s.now().UTC()); err != nil {
+			return err
+		}
+		result = mapMachine(machine)
+		return s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "machine.host_role_removed", ResourceType: "machine", ResourceID: machineID, IdempotencyKey: "machine.host_role_removed:" + machineID + ":" + strconv.FormatInt(machine.InstallationGeneration, 10)})
+	})
+	if err != nil {
+		return UserMachine{}, err
+	}
+	return result, s.RevokeUserMachineSessions(ctx, machineID, "machine_unpaired")
 }
 
 func (s *Service) Delete(ctx context.Context, userID, userMachineID string) error {
@@ -1858,7 +2252,8 @@ func compactSessionIDs(values ...string) []string {
 
 func (s *Service) validatePairing(in PairingInput) error {
 	token := strings.TrimSpace(in.EnrollmentToken)
-	if s.policy.PairingLifetime <= 0 || strings.TrimSpace(in.Verifier) == "" || strings.TrimSpace(in.DisplayName) == "" || strings.TrimSpace(in.Architecture) == "" || !filepath.IsAbs(in.WorkspaceRoot) || filepath.Clean(in.WorkspaceRoot) != in.WorkspaceRoot || !slices.Contains(s.policy.AllowedPlatforms, strings.ToLower(strings.TrimSpace(in.Platform))) || token != "" && (len(token) < 32 || len(token) > 256) {
+	publicKey, keyErr := base64.RawURLEncoding.DecodeString(strings.TrimSpace(in.PublicIdentityKey))
+	if s.policy.PairingLifetime <= 0 || strings.TrimSpace(in.Verifier) == "" || strings.TrimSpace(in.DisplayName) == "" || strings.TrimSpace(in.Architecture) == "" || !filepath.IsAbs(in.WorkspaceRoot) || filepath.Clean(in.WorkspaceRoot) != in.WorkspaceRoot || !slices.Contains(s.policy.AllowedPlatforms, strings.ToLower(strings.TrimSpace(in.Platform))) || token != "" && (len(token) < 32 || len(token) > 256) || keyErr != nil || len(publicKey) != ed25519.PublicKeySize {
 		return ErrInvalidPairing
 	}
 	return nil
@@ -1869,7 +2264,7 @@ func mapMachine(row dbsqlc.UserMachine) UserMachine {
 		observed := row.RuntimeDiagnosticsObservedAt.Time
 		diagnostics.ObservedAt = &observed
 	}
-	m := UserMachine{ID: row.ID, EnvironmentID: row.EnvironmentID, DisplayName: row.DisplayName, Platform: row.Platform, Architecture: row.Architecture, WorkspaceRoot: row.WorkspaceRoot, State: row.State, SeatState: row.SeatState, Online: row.Online, RuntimeVersions: row.RuntimeVersions, Availability: mapAvailability(row), RuntimeDiagnostics: diagnostics}
+	m := UserMachine{ID: row.ID, EnvironmentID: row.EnvironmentID, DisplayName: row.DisplayName, Platform: row.Platform, Architecture: row.Architecture, WorkspaceRoot: row.WorkspaceRoot, State: row.State, SeatState: row.SeatState, Online: row.Online, RuntimeVersions: row.RuntimeVersions, SetupRoles: append([]string(nil), row.SetupRoles...), MachineKind: row.MachineKind, PublicIdentityKey: row.PublicIdentityKey.String, InstallationGeneration: row.InstallationGeneration, Availability: mapAvailability(row), RuntimeDiagnostics: diagnostics}
 	if row.EnrolledAt.Valid {
 		v := row.EnrolledAt.Time
 		m.EnrolledAt = &v

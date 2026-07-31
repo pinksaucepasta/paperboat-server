@@ -35,12 +35,12 @@ func helperPreviewObservation(previews *controlplane.PreviewService, identities 
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "Preview observation is invalid.")
 			return
 		}
-		proof, err := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Helper-Proof"))
+		proof, err := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Machine-Proof"))
 		if err != nil {
 			writeError(w, r, http.StatusUnauthorized, "credential_invalid", "Credential is invalid.")
 			return
 		}
-		claims, err := identities.VerifyPreviewRequest(r.Context(), r.Header.Get("X-Paperboat-Helper-Identity"), mustBearer(r), proof, body, r.Method, r.URL.Path)
+		claims, err := identities.VerifyPreviewRequest(r.Context(), r.Header.Get("X-Paperboat-Machine-Identity"), mustBearer(r), proof, body, r.Method, r.URL.Path)
 		if err != nil {
 			writeError(w, r, http.StatusUnauthorized, "credential_invalid", "Credential is invalid.")
 			return

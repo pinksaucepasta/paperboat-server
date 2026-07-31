@@ -13,9 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/bmatcuk/doublestar/v4"
-	"github.com/pinksaucepasta/paperboat-server/internal/configsyncpolicy"
 )
 
 type Environment string
@@ -27,24 +24,23 @@ const (
 )
 
 type Config struct {
-	Environment      Environment      `json:"environment"`
-	HelperBaseDomain string           `json:"helper_base_domain"`
-	HTTP             HTTPConfig       `json:"http"`
-	Database         Database         `json:"database"`
-	Catalogs         Catalogs         `json:"catalogs"`
-	Billing          Billing          `json:"billing"`
-	Metering         Metering         `json:"metering"`
-	UserMachines     UserMachines     `json:"user_machines"`
-	TerminalSessions TerminalSessions `json:"terminal_sessions"`
-	Preview          Preview          `json:"preview"`
-	ConfigSync       ConfigSync       `json:"config_sync"`
-	Classifier       Classifier       `json:"classifier"`
-	CLIAuth          CLIAuth          `json:"cli_auth"`
-	GitHub           GitHub           `json:"github"`
-	Fly              Fly              `json:"fly"`
-	Access           Access           `json:"access"`
-	Providers        Providers        `json:"providers"`
-	Secrets          Secrets          `json:"secrets"`
+	Environment       Environment      `json:"environment"`
+	RuntimeBaseDomain string           `json:"runtime_base_domain"`
+	HTTP              HTTPConfig       `json:"http"`
+	Database          Database         `json:"database"`
+	Catalogs          Catalogs         `json:"catalogs"`
+	Billing           Billing          `json:"billing"`
+	Metering          Metering         `json:"metering"`
+	UserMachines      UserMachines     `json:"user_machines"`
+	TerminalSessions  TerminalSessions `json:"terminal_sessions"`
+	Preview           Preview          `json:"preview"`
+	ConfigSync        ConfigSync       `json:"config_sync"`
+	CLIAuth           CLIAuth          `json:"cli_auth"`
+	GitHub            GitHub           `json:"github"`
+	Fly               Fly              `json:"fly"`
+	Access            Access           `json:"access"`
+	Providers         Providers        `json:"providers"`
+	Secrets           Secrets          `json:"secrets"`
 }
 
 type HTTPConfig struct {
@@ -107,13 +103,13 @@ type Metering struct {
 }
 
 type UserMachines struct {
-	PairingLifetime         time.Duration `json:"pairing_lifetime"`
-	OfflineAfter            time.Duration `json:"offline_after"`
-	AllowedPlatforms        []string      `json:"allowed_platforms"`
-	HelperListenPort        int32         `json:"helper_listen_port"`
-	BootstrapCommand        string        `json:"bootstrap_command"`
-	HelperArtifactsJSON     string        `json:"helper_artifacts_json"`
-	HelperArtifactPublicKey string        `json:"helper_artifact_public_key"`
+	PairingLifetime          time.Duration `json:"pairing_lifetime"`
+	OfflineAfter             time.Duration `json:"offline_after"`
+	AllowedPlatforms         []string      `json:"allowed_platforms"`
+	RuntimeListenPort        int32         `json:"runtime_listen_port"`
+	BootstrapCommand         string        `json:"bootstrap_command"`
+	MachineArtifactsJSON     string        `json:"machine_artifacts_json"`
+	MachineArtifactPublicKey string        `json:"machine_artifact_public_key"`
 }
 
 type TerminalSessions struct {
@@ -129,49 +125,33 @@ type Preview struct {
 }
 
 type ConfigSync struct {
-	Mode                  string        `json:"mode"`
-	BYODEnabled           bool          `json:"byod_enabled"`
-	EnvironmentAllowlist  []string      `json:"environment_allowlist"`
-	HomeOverride          string        `json:"home_override"`
-	Includes              []string      `json:"includes"`
-	Excludes              []string      `json:"excludes"`
-	MandatoryExcludes     []string      `json:"mandatory_excludes"`
-	MaxFileBytes          int64         `json:"max_file_bytes"`
-	MaxBatchBytes         int64         `json:"max_batch_bytes"`
-	Debounce              time.Duration `json:"debounce"`
-	MinPushInterval       time.Duration `json:"min_push_interval"`
-	MaxDirtyDelay         time.Duration `json:"max_dirty_delay"`
-	RemotePollInterval    time.Duration `json:"remote_poll_interval"`
-	RetryLimit            int           `json:"retry_limit"`
-	ShutdownFlushTimeout  time.Duration `json:"shutdown_flush_timeout"`
-	ShutdownGracePeriod   time.Duration `json:"shutdown_grace_period"`
-	ShutdownReportTimeout time.Duration `json:"shutdown_report_timeout"`
-	StaleHeartbeatAfter   time.Duration `json:"stale_heartbeat_after"`
-	SummaryLimit          int           `json:"summary_limit"`
-	PolicyRevision        string        `json:"policy_revision"`
-	WarningRevision       string        `json:"warning_revision"`
-}
-
-type Classifier struct {
-	BaseURL             string        `json:"base_url"`
-	Model               string        `json:"model"`
-	ModelRevision       string        `json:"model_revision"`
-	Revision            string        `json:"revision"`
-	Timeout             time.Duration `json:"timeout"`
-	RetryLimit          int           `json:"retry_limit"`
-	RetryBackoff        time.Duration `json:"retry_backoff"`
-	MaxCandidates       int           `json:"max_candidates"`
-	CacheTTL            time.Duration `json:"cache_ttl"`
-	SchemaMode          string        `json:"schema_mode"`
-	RequestsPerMinute   int           `json:"requests_per_minute"`
-	PortablePatterns    []string      `json:"portable_patterns"`
-	ProjectOnlyPatterns []string      `json:"project_only_patterns"`
-	ExcludePatterns     []string      `json:"exclude_patterns"`
+	Mode                    string        `json:"mode"`
+	BYODEnabled             bool          `json:"byod_enabled"`
+	EnvironmentAllowlist    []string      `json:"environment_allowlist"`
+	HomeOverride            string        `json:"home_override"`
+	ManifestContract        string        `json:"manifest_contract"`
+	ManifestMaxBytes        int           `json:"manifest_max_bytes"`
+	ManifestMaxLines        int           `json:"manifest_max_lines"`
+	ManifestMaxPatternBytes int           `json:"manifest_max_pattern_bytes"`
+	MaxFileBytes            int64         `json:"max_file_bytes"`
+	MaxBatchBytes           int64         `json:"max_batch_bytes"`
+	Debounce                time.Duration `json:"debounce"`
+	MinPushInterval         time.Duration `json:"min_push_interval"`
+	MaxDirtyDelay           time.Duration `json:"max_dirty_delay"`
+	RemotePollInterval      time.Duration `json:"remote_poll_interval"`
+	RetryLimit              int           `json:"retry_limit"`
+	ShutdownFlushTimeout    time.Duration `json:"shutdown_flush_timeout"`
+	ShutdownGracePeriod     time.Duration `json:"shutdown_grace_period"`
+	ShutdownReportTimeout   time.Duration `json:"shutdown_report_timeout"`
+	StaleHeartbeatAfter     time.Duration `json:"stale_heartbeat_after"`
+	SummaryLimit            int           `json:"summary_limit"`
+	PolicyRevision          string        `json:"policy_revision"`
+	WarningRevision         string        `json:"warning_revision"`
 }
 
 type CLIAuth struct {
 	VerificationURL          string        `json:"verification_url"`
-	UserMachinesURL          string        `json:"user_machines_url"`
+	MachinesURL              string        `json:"machines_url"`
 	ClientID                 string        `json:"client_id"`
 	AllowedScopes            []string      `json:"allowed_scopes"`
 	DeviceGrantLifetime      time.Duration `json:"device_grant_lifetime"`
@@ -256,7 +236,6 @@ type Secrets struct {
 	EdgeControlCredential string   `json:"edge_control_credential"`
 	PreviewIdentityKey    string   `json:"preview_identity_key"`
 	MintSigningKeys       []string `json:"mint_signing_keys"`
-	ClassifierAPIKey      string   `json:"classifier_api_key"`
 }
 
 type LoadOptions struct {
@@ -290,7 +269,6 @@ func Load(ctx context.Context, opts LoadOptions) (Config, error) {
 	if err := overlayEnv(&cfg, opts.LookupEnv, opts.ReadFile); err != nil {
 		return Config{}, err
 	}
-	cfg.ConfigSync.MandatoryExcludes = appendUnique(configsyncpolicy.MandatoryExcludes(), cfg.ConfigSync.MandatoryExcludes...)
 	return cfg, nil
 }
 
@@ -321,26 +299,23 @@ func Default() Config {
 		Metering: Metering{
 			MinimumStartCreditWindow: 5 * time.Minute,
 		},
-		HelperBaseDomain: "localhost",
-		UserMachines:     UserMachines{PairingLifetime: 10 * time.Minute, OfflineAfter: 2 * time.Minute, AllowedPlatforms: []string{"darwin", "linux"}, HelperListenPort: 38080},
-		TerminalSessions: TerminalSessions{MaxActivePerProject: 20, OperationTimeout: 15 * time.Second, RetryBackoff: time.Second, WorkerInterval: time.Second, MaxAttemptsBeforeAlert: 10},
+		RuntimeBaseDomain: "localhost",
+		UserMachines:      UserMachines{PairingLifetime: 10 * time.Minute, OfflineAfter: 2 * time.Minute, AllowedPlatforms: []string{"darwin", "linux"}, RuntimeListenPort: 38080},
+		TerminalSessions:  TerminalSessions{MaxActivePerProject: 20, OperationTimeout: 15 * time.Second, RetryBackoff: time.Second, WorkerInterval: time.Second, MaxAttemptsBeforeAlert: 10},
 		ConfigSync: ConfigSync{
-			Mode:              "disabled",
-			MandatoryExcludes: configsyncpolicy.MandatoryExcludes(),
-			MaxFileBytes:      5 << 20, MaxBatchBytes: 25 << 20,
+			Mode:             "disabled",
+			ManifestContract: "paperboat-manifest-v1", ManifestMaxBytes: 256 << 10,
+			ManifestMaxLines: 4096, ManifestMaxPatternBytes: 1024,
+			MaxFileBytes: 5 << 20, MaxBatchBytes: 25 << 20,
 			Debounce: 10 * time.Second, MinPushInterval: 5 * time.Minute, MaxDirtyDelay: 5 * time.Minute,
 			RemotePollInterval: time.Minute, RetryLimit: 5, ShutdownFlushTimeout: 30 * time.Second,
 			ShutdownGracePeriod: 2 * time.Second, ShutdownReportTimeout: 10 * time.Second,
-			StaleHeartbeatAfter: 2 * time.Minute, SummaryLimit: 50, PolicyRevision: "3", WarningRevision: "config-sync-warning-v1",
+			StaleHeartbeatAfter: 2 * time.Minute, SummaryLimit: 50, PolicyRevision: "1", WarningRevision: "config-sync-warning-v1",
 		},
-		Classifier: Classifier{BaseURL: "https://api.openai.com/v1", Model: "gpt-5-mini", ModelRevision: "gpt-5-mini", Revision: "1", Timeout: 15 * time.Second, RetryLimit: 2, RetryBackoff: 500 * time.Millisecond, MaxCandidates: 20, CacheTTL: 7 * 24 * time.Hour, SchemaMode: "json_schema", RequestsPerMinute: 60,
-			PortablePatterns:    []string{".claude/.credentials.json", ".claude.json", ".codex/auth.json", ".config/opencode/auth.json", ".local/share/opencode/auth.json", ".npmrc", ".config/npm/npmrc"},
-			ProjectOnlyPatterns: []string{"**/.vscode/**", "**/.idea/**"},
-			ExcludePatterns:     []string{"**/*.db", "**/*.db-wal", "**/*.db-shm", "**/*.sqlite", "**/*.sqlite3"}},
 		CLIAuth: CLIAuth{
 			VerificationURL:          "http://localhost:3000/cli/authorize",
-			UserMachinesURL:          "http://localhost:3000/dashboard/user-machines",
-			ClientID:                 "paperboat-cli",
+			MachinesURL:              "http://localhost:3000/dashboard/machines",
+			ClientID:                 "paperboat",
 			AllowedScopes:            []string{"account:read", "clients:revoke", "projects:read", "projects:connect", "session:refresh"},
 			DeviceGrantLifetime:      10 * time.Minute,
 			AccessTokenLifetime:      15 * time.Minute,
@@ -384,7 +359,7 @@ func Default() Config {
 			MachineNamePrefix:  "pbvm",
 			Hostname:           "paperboat",
 			MountPath:          "/workspace",
-			BootCommand:        []string{"/usr/local/bin/pbh", "run"},
+			BootCommand:        []string{"/usr/local/bin/pb", "__runtime-host"},
 			OperationTimeout:   30 * time.Second,
 			OrchestrationLease: 5 * time.Minute,
 		},
@@ -449,8 +424,8 @@ func (c Config) Validate() error {
 		}
 	}
 	if c.Environment == EnvironmentProduction {
-		if strings.TrimSpace(c.UserMachines.BootstrapCommand) == "" || strings.TrimSpace(c.UserMachines.HelperArtifactsJSON) == "" || strings.TrimSpace(c.UserMachines.HelperArtifactPublicKey) == "" || strings.TrimSpace(c.HelperBaseDomain) == "" || c.UserMachines.HelperListenPort < 1024 {
-			errs = append(errs, fmt.Errorf("user_machines bootstrap command and signed helper artifacts are required in production"))
+		if strings.TrimSpace(c.UserMachines.BootstrapCommand) == "" || strings.TrimSpace(c.UserMachines.MachineArtifactsJSON) == "" || strings.TrimSpace(c.UserMachines.MachineArtifactPublicKey) == "" || strings.TrimSpace(c.RuntimeBaseDomain) == "" || c.UserMachines.RuntimeListenPort < 1024 {
+			errs = append(errs, fmt.Errorf("user_machines pairing command and signed pb artifacts are required in production"))
 		}
 		if strings.TrimSpace(c.Preview.BaseDomain) == "" || strings.TrimSpace(c.Secrets.PreviewIdentityKey) == "" {
 			errs = append(errs, fmt.Errorf("preview base domain and identity key are required in production"))
@@ -461,17 +436,14 @@ func (c Config) Validate() error {
 	}
 	if c.ConfigSync.MaxFileBytes < 1 || c.ConfigSync.MaxFileBytes > 100<<20 ||
 		c.ConfigSync.MaxBatchBytes < c.ConfigSync.MaxFileBytes || c.ConfigSync.MaxBatchBytes > 500<<20 ||
-		!containsAll(c.ConfigSync.MandatoryExcludes, configsyncpolicy.MandatoryExcludes()) {
-		errs = append(errs, fmt.Errorf("config_sync exclusions and size limits are invalid"))
+		c.ConfigSync.ManifestContract != "paperboat-manifest-v1" ||
+		c.ConfigSync.ManifestMaxBytes < 1 || c.ConfigSync.ManifestMaxBytes > 4<<20 ||
+		c.ConfigSync.ManifestMaxLines < 1 || c.ConfigSync.ManifestMaxLines > 65536 ||
+		c.ConfigSync.ManifestMaxPatternBytes < 1 || c.ConfigSync.ManifestMaxPatternBytes > 8192 {
+		errs = append(errs, fmt.Errorf("config_sync manifest and size limits are invalid"))
 	}
 	if c.ConfigSync.Mode != "disabled" && c.ConfigSync.Mode != "read_only" && c.ConfigSync.Mode != "leased_writes" {
 		errs = append(errs, fmt.Errorf("config_sync.mode must be disabled, read_only, or leased_writes"))
-	}
-	if (c.ConfigSync.Mode != "disabled" || c.ConfigSync.BYODEnabled) && len(c.ConfigSync.Includes) == 0 {
-		errs = append(errs, fmt.Errorf("config_sync.includes must contain at least one explicit path pattern when config sync is enabled"))
-	}
-	if len(c.ConfigSync.Includes) > 256 || len(c.ConfigSync.Excludes) > 512 || len(c.ConfigSync.MandatoryExcludes) > 1024 {
-		errs = append(errs, fmt.Errorf("config_sync path pattern counts exceed runtime limits"))
 	}
 	for _, environmentID := range c.ConfigSync.EnvironmentAllowlist {
 		if strings.TrimSpace(environmentID) == "" || len(environmentID) > 128 {
@@ -480,11 +452,6 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.ConfigSync.HomeOverride) != "" && !filepath.IsAbs(c.ConfigSync.HomeOverride) {
 		errs = append(errs, fmt.Errorf("config_sync.home_override must be an absolute path"))
-	}
-	for _, pattern := range append(append(append([]string{}, c.ConfigSync.Includes...), c.ConfigSync.Excludes...), c.ConfigSync.MandatoryExcludes...) {
-		if err := validateConfigSyncPattern(pattern); err != nil {
-			errs = append(errs, err)
-		}
 	}
 	if c.ConfigSync.Debounce < time.Second || c.ConfigSync.Debounce > 5*time.Minute ||
 		c.ConfigSync.MinPushInterval < time.Minute || c.ConfigSync.MinPushInterval > 24*time.Hour ||
@@ -497,28 +464,14 @@ func (c Config) Validate() error {
 		strings.TrimSpace(c.ConfigSync.PolicyRevision) == "" || strings.TrimSpace(c.ConfigSync.WarningRevision) == "" {
 		errs = append(errs, fmt.Errorf("config_sync timing, retention, and policy revision are required"))
 	}
-	if u, err := url.Parse(c.Classifier.BaseURL); err != nil || u.Scheme == "" || u.Host == "" || strings.TrimSpace(c.Classifier.Model) == "" || strings.TrimSpace(c.Classifier.ModelRevision) == "" || strings.TrimSpace(c.Classifier.Revision) == "" {
-		errs = append(errs, fmt.Errorf("classifier provider and revisions are required"))
-	}
-	if c.Classifier.Timeout <= 0 || c.Classifier.RetryLimit < 0 || c.Classifier.RetryBackoff <= 0 || c.Classifier.MaxCandidates <= 0 || c.Classifier.MaxCandidates > 100 || c.Classifier.CacheTTL <= 0 || c.Classifier.RequestsPerMinute <= 0 {
-		errs = append(errs, fmt.Errorf("classifier limits are invalid"))
-	}
-	if c.Classifier.SchemaMode != "json_schema" && c.Classifier.SchemaMode != "json_object" {
-		errs = append(errs, fmt.Errorf("classifier.schema_mode must be json_schema or json_object"))
-	}
-	for _, pattern := range append(append(append([]string{}, c.Classifier.PortablePatterns...), c.Classifier.ProjectOnlyPatterns...), c.Classifier.ExcludePatterns...) {
-		if err := validateConfigSyncPattern(pattern); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	if strings.TrimSpace(c.CLIAuth.VerificationURL) == "" || strings.TrimSpace(c.CLIAuth.UserMachinesURL) == "" || strings.TrimSpace(c.CLIAuth.ClientID) == "" || len(c.CLIAuth.AllowedScopes) == 0 {
-		errs = append(errs, fmt.Errorf("cli_auth verification_url, user_machines_url, client_id, and allowed_scopes are required"))
+	if strings.TrimSpace(c.CLIAuth.VerificationURL) == "" || strings.TrimSpace(c.CLIAuth.MachinesURL) == "" || strings.TrimSpace(c.CLIAuth.ClientID) == "" || len(c.CLIAuth.AllowedScopes) == 0 {
+		errs = append(errs, fmt.Errorf("cli_auth verification_url, machines_url, client_id, and allowed_scopes are required"))
 	}
 	if verificationURL, err := url.Parse(c.CLIAuth.VerificationURL); err != nil || (verificationURL.Scheme != "http" && verificationURL.Scheme != "https") || verificationURL.Host == "" {
 		errs = append(errs, fmt.Errorf("cli_auth.verification_url must be an absolute http or https URL"))
 	}
-	if userMachinesURL, err := url.Parse(c.CLIAuth.UserMachinesURL); err != nil || (userMachinesURL.Scheme != "http" && userMachinesURL.Scheme != "https") || userMachinesURL.Host == "" {
-		errs = append(errs, fmt.Errorf("cli_auth.user_machines_url must be an absolute http or https URL"))
+	if machinesURL, err := url.Parse(c.CLIAuth.MachinesURL); err != nil || (machinesURL.Scheme != "http" && machinesURL.Scheme != "https") || machinesURL.Host == "" {
+		errs = append(errs, fmt.Errorf("cli_auth.machines_url must be an absolute http or https URL"))
 	}
 	if c.CLIAuth.DeviceGrantLifetime <= 0 || c.CLIAuth.AccessTokenLifetime <= 0 || c.CLIAuth.RefreshTokenLifetime <= 0 || c.CLIAuth.PollInterval <= 0 {
 		errs = append(errs, fmt.Errorf("cli_auth lifetimes and poll_interval must be positive"))
@@ -554,8 +507,8 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.GitHub.ConfigRepoName) == "" || strings.TrimSpace(c.GitHub.ConfigRepoBranch) == "" {
 		errs = append(errs, fmt.Errorf("github config repo name and branch are required"))
 	}
-	if strings.TrimSpace(c.Fly.AppName) == "" || strings.TrimSpace(c.Fly.ImageRef) == "" || strings.TrimSpace(c.Fly.VolumeNamePrefix) == "" || strings.TrimSpace(c.Fly.MachineNamePrefix) == "" || strings.TrimSpace(c.Fly.MountPath) == "" || strings.TrimSpace(c.HelperBaseDomain) == "" {
-		errs = append(errs, fmt.Errorf("fly app, image, naming prefixes, mount path, and helper base domain are required"))
+	if strings.TrimSpace(c.Fly.AppName) == "" || strings.TrimSpace(c.Fly.ImageRef) == "" || strings.TrimSpace(c.Fly.VolumeNamePrefix) == "" || strings.TrimSpace(c.Fly.MachineNamePrefix) == "" || strings.TrimSpace(c.Fly.MountPath) == "" || strings.TrimSpace(c.RuntimeBaseDomain) == "" {
+		errs = append(errs, fmt.Errorf("fly app, image, naming prefixes, mount path, and runtime base domain are required"))
 	}
 	if c.Fly.OperationTimeout <= 0 {
 		errs = append(errs, fmt.Errorf("fly.operation_timeout must be positive"))
@@ -563,8 +516,8 @@ func (c Config) Validate() error {
 	if c.Fly.OrchestrationLease <= c.Fly.OperationTimeout {
 		errs = append(errs, fmt.Errorf("fly.orchestration_lease must exceed operation_timeout"))
 	}
-	if helperDomain, err := url.Parse("https://" + strings.TrimSpace(c.HelperBaseDomain)); err != nil || helperDomain.Hostname() != strings.TrimSpace(c.HelperBaseDomain) || helperDomain.Port() != "" {
-		errs = append(errs, fmt.Errorf("helper_base_domain must be a DNS hostname"))
+	if helperDomain, err := url.Parse("https://" + strings.TrimSpace(c.RuntimeBaseDomain)); err != nil || helperDomain.Hostname() != strings.TrimSpace(c.RuntimeBaseDomain) || helperDomain.Port() != "" {
+		errs = append(errs, fmt.Errorf("runtime_base_domain must be a DNS hostname"))
 	}
 	if value := strings.TrimSpace(c.Fly.HostedReadinessBaseURL); value != "" {
 		readinessURL, err := url.Parse(value)
@@ -594,7 +547,7 @@ func (c Config) Validate() error {
 		if len(c.HTTP.AllowedOrigins) == 0 {
 			errs = append(errs, fmt.Errorf("http.allowed_origins is required in production"))
 		}
-		if c.Secrets.WorkOSAPIKey == "" || c.Secrets.WorkOSClientID == "" || c.Secrets.WorkOSClientSecret == "" || c.Secrets.PolarAPIKey == "" || c.Secrets.PolarWebhookSecret == "" || c.Secrets.GitHubClientID == "" || c.Secrets.GitHubClientSecret == "" || c.Secrets.FlyAPIToken == "" || c.Secrets.ClassifierAPIKey == "" {
+		if c.Secrets.WorkOSAPIKey == "" || c.Secrets.WorkOSClientID == "" || c.Secrets.WorkOSClientSecret == "" || c.Secrets.PolarAPIKey == "" || c.Secrets.PolarWebhookSecret == "" || c.Secrets.GitHubClientID == "" || c.Secrets.GitHubClientSecret == "" || c.Secrets.FlyAPIToken == "" {
 			errs = append(errs, fmt.Errorf("production provider secrets are required"))
 		}
 		if c.ConfigSync.Mode != "disabled" &&
@@ -660,13 +613,9 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_CONFIG_SYNC_MODE", &c.ConfigSync.Mode)
 	setString("PAPERBOAT_CONFIG_SYNC_POLICY_REVISION", &c.ConfigSync.PolicyRevision)
 	setString("PAPERBOAT_CONFIG_SYNC_WARNING_REVISION", &c.ConfigSync.WarningRevision)
-	setString("PAPERBOAT_CLASSIFIER_BASE_URL", &c.Classifier.BaseURL)
-	setString("PAPERBOAT_CLASSIFIER_MODEL", &c.Classifier.Model)
-	setString("PAPERBOAT_CLASSIFIER_MODEL_REVISION", &c.Classifier.ModelRevision)
-	setString("PAPERBOAT_CLASSIFIER_REVISION", &c.Classifier.Revision)
-	setString("PAPERBOAT_CLASSIFIER_SCHEMA_MODE", &c.Classifier.SchemaMode)
+	setString("PAPERBOAT_CONFIG_SYNC_MANIFEST_CONTRACT", &c.ConfigSync.ManifestContract)
 	setString("PAPERBOAT_CLI_VERIFICATION_URL", &c.CLIAuth.VerificationURL)
-	setString("PAPERBOAT_USER_MACHINES_URL", &c.CLIAuth.UserMachinesURL)
+	setString("PAPERBOAT_MACHINES_URL", &c.CLIAuth.MachinesURL)
 	setString("PAPERBOAT_CLI_CLIENT_ID", &c.CLIAuth.ClientID)
 	setString("PAPERBOAT_MINT_ACTIVE_KEY_ID", &c.CLIAuth.MintActiveKeyID)
 	setString("PAPERBOAT_GITHUB_OAUTH_AUTHORIZE_URL", &c.GitHub.OAuthAuthorizeURL)
@@ -681,7 +630,7 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_FLY_MACHINE_NAME_PREFIX", &c.Fly.MachineNamePrefix)
 	setString("PAPERBOAT_FLY_HOSTNAME", &c.Fly.Hostname)
 	setString("PAPERBOAT_FLY_MOUNT_PATH", &c.Fly.MountPath)
-	setString("PAPERBOAT_HELPER_BASE_DOMAIN", &c.HelperBaseDomain)
+	setString("PAPERBOAT_RUNTIME_BASE_DOMAIN", &c.RuntimeBaseDomain)
 	setString("PAPERBOAT_FLY_HOSTED_READINESS_BASE_URL", &c.Fly.HostedReadinessBaseURL)
 	setString("PAPERBOAT_WORKOS_BASE_URL", &c.Providers.WorkOS.BaseURL)
 	setString("PAPERBOAT_POLAR_BASE_URL", &c.Providers.Polar.BaseURL)
@@ -689,10 +638,10 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_FLY_BASE_URL", &c.Providers.Fly.BaseURL)
 	setString("PAPERBOAT_PREVIEW_SUBDOMAIN_PREFIX", &c.Access.RouteSubdomainPrefix)
 	setString("PAPERBOAT_USER_MACHINES_BOOTSTRAP_COMMAND", &c.UserMachines.BootstrapCommand)
-	if err := setSecret("PAPERBOAT_USER_MACHINES_HELPER_ARTIFACTS_JSON", &c.UserMachines.HelperArtifactsJSON); err != nil {
+	if err := setSecret("PAPERBOAT_USER_MACHINES_ARTIFACTS_JSON", &c.UserMachines.MachineArtifactsJSON); err != nil {
 		return err
 	}
-	if err := setSecret("PAPERBOAT_USER_MACHINES_HELPER_ARTIFACT_PUBLIC_KEY", &c.UserMachines.HelperArtifactPublicKey); err != nil {
+	if err := setSecret("PAPERBOAT_USER_MACHINES_ARTIFACT_PUBLIC_KEY", &c.UserMachines.MachineArtifactPublicKey); err != nil {
 		return err
 	}
 	if value, ok := lookup("PAPERBOAT_USER_MACHINES_OFFLINE_AFTER_SECONDS"); ok {
@@ -707,7 +656,7 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 		if err != nil {
 			return fmt.Errorf("parse PAPERBOAT_USER_MACHINES_HELPER_LISTEN_PORT: %w", err)
 		}
-		c.UserMachines.HelperListenPort = int32(parsed)
+		c.UserMachines.RuntimeListenPort = int32(parsed)
 	}
 	setString("PAPERBOAT_PREVIEW_BASE_DOMAIN", &c.Preview.BaseDomain)
 	if err := setSecret("PAPERBOAT_PREVIEW_IDENTITY_KEY", &c.Secrets.PreviewIdentityKey); err != nil {
@@ -768,26 +717,8 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	if v, ok := lookup("PAPERBOAT_CLI_ALLOWED_SCOPES"); ok {
 		c.CLIAuth.AllowedScopes = splitCSV(v)
 	}
-	if v, ok := lookup("PAPERBOAT_CONFIG_SYNC_INCLUDES"); ok {
-		c.ConfigSync.Includes = splitCSV(v)
-	}
-	if v, ok := lookup("PAPERBOAT_CONFIG_SYNC_EXCLUDES"); ok {
-		c.ConfigSync.Excludes = splitCSV(v)
-	}
-	if v, ok := lookup("PAPERBOAT_CONFIG_SYNC_MANDATORY_EXCLUDES"); ok {
-		c.ConfigSync.MandatoryExcludes = appendUnique(c.ConfigSync.MandatoryExcludes, splitCSV(v)...)
-	}
 	if v, ok := lookup("PAPERBOAT_CONFIG_SYNC_ENVIRONMENT_ALLOWLIST"); ok {
 		c.ConfigSync.EnvironmentAllowlist = splitCSV(v)
-	}
-	if v, ok := lookup("PAPERBOAT_CLASSIFIER_PORTABLE_PATTERNS"); ok {
-		c.Classifier.PortablePatterns = splitCSV(v)
-	}
-	if v, ok := lookup("PAPERBOAT_CLASSIFIER_PROJECT_ONLY_PATTERNS"); ok {
-		c.Classifier.ProjectOnlyPatterns = splitCSV(v)
-	}
-	if v, ok := lookup("PAPERBOAT_CLASSIFIER_EXCLUDE_PATTERNS"); ok {
-		c.Classifier.ExcludePatterns = splitCSV(v)
 	}
 	for name, target := range map[string]*int64{
 		"PAPERBOAT_CONFIG_SYNC_MAX_FILE_BYTES":  &c.ConfigSync.MaxFileBytes,
@@ -804,9 +735,6 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	for name, target := range map[string]*time.Duration{
 		"PAPERBOAT_FLY_OPERATION_TIMEOUT":               &c.Fly.OperationTimeout,
 		"PAPERBOAT_FLY_ORCHESTRATION_LEASE":             &c.Fly.OrchestrationLease,
-		"PAPERBOAT_CLASSIFIER_TIMEOUT":                  &c.Classifier.Timeout,
-		"PAPERBOAT_CLASSIFIER_RETRY_BACKOFF":            &c.Classifier.RetryBackoff,
-		"PAPERBOAT_CLASSIFIER_CACHE_TTL":                &c.Classifier.CacheTTL,
 		"PAPERBOAT_CONFIG_SYNC_DEBOUNCE":                &c.ConfigSync.Debounce,
 		"PAPERBOAT_CONFIG_SYNC_MIN_PUSH_INTERVAL":       &c.ConfigSync.MinPushInterval,
 		"PAPERBOAT_CONFIG_SYNC_MAX_DIRTY_DELAY":         &c.ConfigSync.MaxDirtyDelay,
@@ -825,11 +753,11 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 		}
 	}
 	for name, target := range map[string]*int{
-		"PAPERBOAT_CLASSIFIER_RETRY_LIMIT":         &c.Classifier.RetryLimit,
-		"PAPERBOAT_CLASSIFIER_MAX_CANDIDATES":      &c.Classifier.MaxCandidates,
-		"PAPERBOAT_CLASSIFIER_REQUESTS_PER_MINUTE": &c.Classifier.RequestsPerMinute,
-		"PAPERBOAT_CONFIG_SYNC_RETRY_LIMIT":        &c.ConfigSync.RetryLimit,
-		"PAPERBOAT_CONFIG_SYNC_SUMMARY_LIMIT":      &c.ConfigSync.SummaryLimit,
+		"PAPERBOAT_CONFIG_SYNC_MANIFEST_MAX_BYTES":         &c.ConfigSync.ManifestMaxBytes,
+		"PAPERBOAT_CONFIG_SYNC_MANIFEST_MAX_LINES":         &c.ConfigSync.ManifestMaxLines,
+		"PAPERBOAT_CONFIG_SYNC_MANIFEST_MAX_PATTERN_BYTES": &c.ConfigSync.ManifestMaxPatternBytes,
+		"PAPERBOAT_CONFIG_SYNC_RETRY_LIMIT":                &c.ConfigSync.RetryLimit,
+		"PAPERBOAT_CONFIG_SYNC_SUMMARY_LIMIT":              &c.ConfigSync.SummaryLimit,
 	} {
 		if v, ok := lookup(name); ok {
 			parsed, err := strconv.Atoi(v)
@@ -971,9 +899,6 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	if err := setSecret("PAPERBOAT_EDGE_CONTROL_CREDENTIAL", &c.Secrets.EdgeControlCredential); err != nil {
 		return err
 	}
-	if err := setSecret("PAPERBOAT_CLASSIFIER_API_KEY", &c.Secrets.ClassifierAPIKey); err != nil {
-		return err
-	}
 	if v, ok := lookup("PAPERBOAT_SESSION_KEYS"); ok {
 		c.Secrets.SessionKeys = splitCSV(v)
 	}
@@ -1024,34 +949,4 @@ func appendUnique(existing []string, values ...string) []string {
 		out = append(out, value)
 	}
 	return out
-}
-
-func containsAll(values, required []string) bool {
-	set := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		set[filepath.ToSlash(strings.TrimSpace(value))] = struct{}{}
-	}
-	for _, value := range required {
-		if _, ok := set[filepath.ToSlash(strings.TrimSpace(value))]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
-func validateConfigSyncPattern(pattern string) error {
-	pattern = filepath.ToSlash(strings.TrimSpace(pattern))
-	if pattern == "" || len(pattern) > 512 || filepath.IsAbs(pattern) || strings.HasPrefix(pattern, "/") ||
-		strings.Contains(pattern, "\\") || strings.Contains(pattern, "\x00") {
-		return fmt.Errorf("config_sync path pattern %q is unsafe", pattern)
-	}
-	for _, part := range strings.Split(pattern, "/") {
-		if part == ".." {
-			return fmt.Errorf("config_sync path pattern %q contains traversal", pattern)
-		}
-	}
-	if _, err := doublestar.Match(pattern, "probe"); err != nil {
-		return fmt.Errorf("config_sync path pattern %q is invalid", pattern)
-	}
-	return nil
 }

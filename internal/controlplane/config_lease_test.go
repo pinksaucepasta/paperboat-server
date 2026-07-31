@@ -35,18 +35,22 @@ func TestConfigRepositoryLeaseSerializesFencesAndRevokes(t *testing.T) {
 		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id) VALUES ($1,$2,$3)`, fixture.environment, "workspace_"+fixture.environment, user); err != nil {
 			t.Fatal(err)
 		}
+		machineID := "machine_" + fixture.environment
+		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,machine_kind) VALUES ($1,$2,$3,$3,'linux','unknown','/workspace','hosted')`, machineID, user, fixture.environment); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_helpers (id,environment_id,state,generation) VALUES ($1,$2,'active',1)`, fixture.helper, fixture.environment); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_config_assignments (id,environment_id,repository_id,consent_state,warning_revision) VALUES ($1,$2,$3,'not_required','hosted')`, fixture.assignment, fixture.environment, repositoryID); err != nil {
+		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_config_assignments (id,machine_id,environment_id,repository_id,mode,consent_state,warning_revision) VALUES ($1,$2,$3,$4,'bidirectional','not_required','hosted')`, fixture.assignment, machineID, fixture.environment, repositoryID); err != nil {
 			t.Fatal(err)
 		}
 	}
 	service := NewConfigLeaseService(store, nil)
 	service.ConfigureRollout("leased_writes", true, nil)
 	service.clock = func() time.Time { return now }
-	holderA := ConfigLeaseHolder{RepositoryID: repositoryID, AssignmentID: assignmentA, EnvironmentID: environmentA, HelperID: helperA, HelperGeneration: 1, BaseRemoteRevision: "head-1"}
-	holderB := ConfigLeaseHolder{RepositoryID: repositoryID, AssignmentID: assignmentB, EnvironmentID: environmentB, HelperID: helperB, HelperGeneration: 1, BaseRemoteRevision: "head-1"}
+	holderA := ConfigLeaseHolder{RepositoryID: repositoryID, AssignmentID: assignmentA, EnvironmentID: environmentA, MachineID: "machine_" + environmentA, InstallationGeneration: 1, BaseRemoteRevision: "head-1"}
+	holderB := ConfigLeaseHolder{RepositoryID: repositoryID, AssignmentID: assignmentB, EnvironmentID: environmentB, MachineID: "machine_" + environmentB, InstallationGeneration: 1, BaseRemoteRevision: "head-1"}
 
 	first, err := service.Acquire(ctx, "acquire-a", holderA, 30*time.Second)
 	if err != nil || first.FencingToken != 1 {
@@ -93,7 +97,7 @@ func TestConfigRepositoryLeaseSerializesFencesAndRevokes(t *testing.T) {
 
 	assignments := NewConfigAssignmentService(store, nil, "warning-1")
 	assignments.clock = func() time.Time { return now }
-	if err := assignments.Clear(ctx, user, environmentB, 1); err != nil {
+	if err := assignments.Clear(ctx, user, "machine_"+environmentB, 1); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.Renew(ctx, "renew-revoked", holderB, second.LeaseID, second.FencingToken, 30*time.Second); !errors.Is(err, ErrConfigLeaseLost) {
@@ -136,10 +140,11 @@ func TestConfigSyncAccountSuspensionRevokesAndPreventsAuthority(t *testing.T) {
 		{`INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, []any{user, "workos_" + user, user + "@example.test"}},
 		{`INSERT INTO paperboat.control_config_repositories (id,owner_user_id,provider,external_ref,display_name) VALUES ($1,$2,'github',$1,'Config')`, []any{repositoryID, user}},
 		{`INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id) VALUES ($1,$2,$3)`, []any{environmentID, "workspace_" + suffix, user}},
+		{`INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,machine_kind) VALUES ($1,$2,$3,'Hosted','linux','unknown','/workspace','hosted')`, []any{"machine_" + suffix, user, environmentID}},
 		{`INSERT INTO paperboat.control_helpers (id,environment_id,state,generation) VALUES ($1,$2,'active',1)`, []any{helperID, environmentID}},
-		{`INSERT INTO paperboat.control_config_assignments (id,environment_id,repository_id,consent_state,warning_revision) VALUES ($1,$2,$3,'not_required','hosted')`, []any{assignmentID, environmentID, repositoryID}},
-		{`INSERT INTO paperboat.control_config_credentials (jti_hash,jti,operation_key,request_hash,environment_id,helper_id,assignment_id,warning_revision,credential_ciphertext,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,'hosted',$8,$9)`, []any{[]byte("account-jti-hash-" + suffix), "account-jti-" + suffix, "account-credential-" + suffix, []byte("request"), environmentID, helperID, assignmentID, []byte("ciphertext"), now.Add(time.Hour)}},
-		{`INSERT INTO paperboat.control_config_repository_access_operations (operation_id,request_hash,repository_id,assignment_id,environment_id,helper_id,helper_generation,warning_revision,state,access_ciphertext,expires_at) VALUES ($1,$2,$3,$4,$5,$6,1,'hosted','issued',$7,$8)`, []any{"account-access-" + suffix, []byte("request"), repositoryID, assignmentID, environmentID, helperID, []byte("ciphertext"), now.Add(time.Hour)}},
+		{`INSERT INTO paperboat.control_config_assignments (id,machine_id,environment_id,repository_id,mode,consent_state,warning_revision) VALUES ($1,$2,$3,$4,'bidirectional','not_required','hosted')`, []any{assignmentID, "machine_" + suffix, environmentID, repositoryID}},
+		{`INSERT INTO paperboat.control_config_credentials (jti_hash,jti,operation_key,request_hash,environment_id,machine_id,assignment_id,warning_revision,credential_ciphertext,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,'hosted',$8,$9)`, []any{[]byte("account-jti-hash-" + suffix), "account-jti-" + suffix, "account-credential-" + suffix, []byte("request"), environmentID, "machine_" + suffix, assignmentID, []byte("ciphertext"), now.Add(time.Hour)}},
+		{`INSERT INTO paperboat.control_config_repository_access_operations (operation_id,request_hash,repository_id,assignment_id,environment_id,machine_id,installation_generation,warning_revision,state,access_ciphertext,expires_at) VALUES ($1,$2,$3,$4,$5,$6,1,'hosted','issued',$7,$8)`, []any{"account-access-" + suffix, []byte("request"), repositoryID, assignmentID, environmentID, "machine_" + suffix, []byte("ciphertext"), now.Add(time.Hour)}},
 	}
 	for _, statement := range statements {
 		if _, err := store.SQL().ExecContext(ctx, statement.query, statement.args...); err != nil {
@@ -149,7 +154,7 @@ func TestConfigSyncAccountSuspensionRevokesAndPreventsAuthority(t *testing.T) {
 	service := NewConfigLeaseService(store, nil)
 	service.ConfigureRollout("leased_writes", true, nil)
 	service.clock = func() time.Time { return now }
-	holder := ConfigLeaseHolder{RepositoryID: repositoryID, AssignmentID: assignmentID, EnvironmentID: environmentID, HelperID: helperID, HelperGeneration: 1}
+	holder := ConfigLeaseHolder{RepositoryID: repositoryID, AssignmentID: assignmentID, EnvironmentID: environmentID, MachineID: "machine_" + suffix, InstallationGeneration: 1}
 	lease, err := service.Acquire(ctx, "account-acquire-"+suffix, holder, 30*time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -198,7 +203,7 @@ func cleanupConfigLeaseFixture(store interface {
 
 func TestConfigRepositoryLeaseRejectsUnsafeRequests(t *testing.T) {
 	service := NewConfigLeaseService(nil, nil)
-	holder := ConfigLeaseHolder{RepositoryID: "repo", AssignmentID: "assignment", EnvironmentID: "environment", HelperID: "helper", HelperGeneration: 1}
+	holder := ConfigLeaseHolder{RepositoryID: "repo", AssignmentID: "assignment", EnvironmentID: "environment", MachineID: "helper", InstallationGeneration: 1}
 	for _, ttl := range []time.Duration{time.Second, 3 * time.Minute} {
 		if _, err := service.Acquire(context.Background(), "operation", holder, ttl); !errors.Is(err, ErrConfigLeaseInvalid) {
 			t.Fatalf("ttl %s error = %v", ttl, err)

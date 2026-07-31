@@ -119,7 +119,7 @@ func TestDeviceGrantPollConsumptionIsSingleUse(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			body, _ := json.Marshal(map[string]any{"client_id": "paperboat-cli", "device_code": grant.DeviceCode})
+			body, _ := json.Marshal(map[string]any{"client_id": "paperboat", "device_code": grant.DeviceCode})
 			r := httptest.NewRequest(http.MethodPost, "/v1/auth/device/token", bytes.NewReader(body))
 			r.RemoteAddr = "198.51.100.20:1234"
 			w := httptest.NewRecorder()
@@ -282,8 +282,8 @@ VALUES ($1,$2,$3,$4,'linux','amd64','/home/paperboat','online','occupied',true)`
 	}
 
 	for _, mutation := range []struct{ method, path string }{
-		{http.MethodPost, "/v1/user-machines/um_disconnect/disconnect"},
-		{http.MethodDelete, "/v1/user-machines/um_delete"},
+		{http.MethodPost, "/v1/machines/um_disconnect/disconnect"},
+		{http.MethodDelete, "/v1/machines/um_delete"},
 	} {
 		req := httptest.NewRequest(mutation.method, mutation.path, nil)
 		req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
@@ -294,7 +294,7 @@ VALUES ($1,$2,$3,$4,'linux','amd64','/home/paperboat','online','occupied',true)`
 		}
 	}
 
-	grantBody, _ := json.Marshal(map[string]any{"client_id": "paperboat-cli", "client_label": "Read-only CLI", "device_type": "desktop", "os": "linux", "scopes": cliScopes})
+	grantBody, _ := json.Marshal(map[string]any{"client_id": "paperboat", "client_label": "Read-only CLI", "device_type": "desktop", "os": "linux", "scopes": cliScopes})
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/device/authorize", bytes.NewReader(grantBody))
 	req.RemoteAddr = "198.51.100.30:1234"
 	rec := httptest.NewRecorder()
@@ -320,7 +320,7 @@ VALUES ($1,$2,$3,$4,'linux','amd64','/home/paperboat','online','occupied',true)`
 	if _, err := store.SQL().Exec(`UPDATE paperboat.cli_client_sessions SET scopes=ARRAY['projects:read']::text[] WHERE id=$1`, readOnly.CLIClientSessionID); err != nil {
 		t.Fatal(err)
 	}
-	req = httptest.NewRequest(http.MethodPost, "/v1/user-machines/um_cookie/disconnect", nil)
+	req = httptest.NewRequest(http.MethodPost, "/v1/machines/um_cookie/disconnect", nil)
 	req.Header.Set("Authorization", "Bearer "+readOnly.AccessToken)
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -328,7 +328,7 @@ VALUES ($1,$2,$3,$4,'linux','amd64','/home/paperboat','online','occupied',true)`
 		t.Fatalf("insufficient scope status=%d body=%s", rec.Code, rec.Body.String())
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/v1/user-machines/um_cookie/disconnect", nil)
+	req = httptest.NewRequest(http.MethodPost, "/v1/machines/um_cookie/disconnect", nil)
 	addCookies(req, cookies)
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -385,7 +385,7 @@ type tokenResponse struct {
 
 func authorizeDevice(t *testing.T, router http.Handler) deviceGrant {
 	t.Helper()
-	body, _ := json.Marshal(map[string]any{"client_id": "paperboat-cli", "client_label": "Test CLI", "device_type": "desktop", "os": "darwin", "scopes": cliScopes})
+	body, _ := json.Marshal(map[string]any{"client_id": "paperboat", "client_label": "Test CLI", "device_type": "desktop", "os": "darwin", "scopes": cliScopes})
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/device/authorize", bytes.NewReader(body))
 	req.RemoteAddr = "198.51.100.10:1234"
 	rec := httptest.NewRecorder()
@@ -403,7 +403,7 @@ func authorizeDevice(t *testing.T, router http.Handler) deviceGrant {
 }
 func pollDevice(t *testing.T, router http.Handler, code string, want int) tokenResponse {
 	t.Helper()
-	body, _ := json.Marshal(map[string]string{"client_id": "paperboat-cli", "device_code": code})
+	body, _ := json.Marshal(map[string]string{"client_id": "paperboat", "device_code": code})
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/device/token", bytes.NewReader(body))
 	req.RemoteAddr = "198.51.100.11:1234"
 	rec := httptest.NewRecorder()

@@ -69,7 +69,7 @@
         "required": [
           "version",
           "cli_verification_url",
-          "user_machines_url"
+          "machines_url"
         ],
         "properties": {
           "version": {
@@ -79,7 +79,7 @@
             "type": "string",
             "format": "uri"
           },
-          "user_machines_url": {
+          "machines_url": {
             "type": "string",
             "format": "uri"
           }
@@ -135,7 +135,7 @@
         ],
         "properties": {
           "client_id": {
-            "const": "paperboat-cli"
+            "const": "paperboat"
           },
           "client_label": {
             "type": "string",
@@ -218,7 +218,7 @@
         ],
         "properties": {
           "client_id": {
-            "const": "paperboat-cli"
+            "const": "paperboat"
           },
           "device_code": {
             "type": "string",
@@ -597,6 +597,9 @@
         "additionalProperties": false,
         "required": [
           "endpoint",
+          "source_machine_id",
+          "destination_machine_id",
+          "initiating_user_id",
           "auth",
           "policy"
         ],
@@ -606,6 +609,9 @@
             "format": "uri",
             "pattern": "^https://"
           },
+          "source_machine_id": { "type": "string", "minLength": 1 },
+          "destination_machine_id": { "type": "string", "minLength": 1 },
+          "initiating_user_id": { "type": "string", "minLength": 1 },
           "auth": {
             "type": "object",
             "additionalProperties": false,
@@ -648,16 +654,53 @@
       "FileTransferPolicy": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["revision", "max_file_bytes", "max_batch_files", "max_batch_bytes", "max_concurrent_transfers", "retention_seconds", "delivery_timeout_seconds", "max_pending_spool_bytes"],
+        "required": [
+          "revision",
+          "max_file_bytes",
+          "max_batch_files",
+          "max_batch_bytes",
+          "max_concurrent_transfers",
+          "retention_seconds",
+          "delivery_timeout_seconds",
+          "max_pending_spool_bytes"
+        ],
         "properties": {
-          "revision": {"type": "string", "minLength": 1},
-          "max_file_bytes": {"type": "integer", "minimum": 1, "maximum": 52428800},
-          "max_batch_files": {"type": "integer", "minimum": 1, "maximum": 10},
-          "max_batch_bytes": {"type": "integer", "minimum": 1, "maximum": 524288000},
-          "max_concurrent_transfers": {"type": "integer", "minimum": 1, "maximum": 2},
-          "retention_seconds": {"type": "integer", "minimum": 1},
-          "delivery_timeout_seconds": {"type": "integer", "minimum": 1},
-          "max_pending_spool_bytes": {"type": "integer", "minimum": 1}
+          "revision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "max_file_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 52428800
+          },
+          "max_batch_files": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10
+          },
+          "max_batch_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 524288000
+          },
+          "max_concurrent_transfers": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2
+          },
+          "retention_seconds": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "delivery_timeout_seconds": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "max_pending_spool_bytes": {
+            "type": "integer",
+            "minimum": 1
+          }
         }
       },
       "CLIClientSession": {
@@ -683,7 +726,7 @@
             "type": "string"
           },
           "client_id": {
-            "const": "paperboat-cli"
+            "const": "paperboat"
           },
           "client_label": {
             "type": "string"
@@ -1202,146 +1245,18 @@
           }
         }
       },
-      "ConfigSyncHeartbeat": {
+      "ConfigSyncStatus": {
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "state",
-          "pending_path_count",
-          "max_file_bytes",
-          "max_batch_bytes",
-          "policy_revision",
-          "updated_at"
-        ],
-        "properties": {
-          "state": {
-            "type": "string",
-            "enum": [
-              "restoring",
-              "watching",
-              "pending",
-              "syncing",
-              "healthy",
-              "warning",
-              "conflict",
-              "error",
-              "offline"
-            ]
-          },
-          "last_attempt_at": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "last_successful_sync_at": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "remote_commit": {
-            "type": "string",
-            "maxLength": 128
-          },
-          "pending_path_count": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "classifier_pending": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ConfigSyncPathSummary"
-            }
-          },
-          "skipped": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ConfigSyncPathSummary"
-            }
-          },
-          "conflicts": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ConfigSyncPathSummary"
-            }
-          },
-          "error_code": {
-            "type": "string"
-          },
-          "error_message": {
-            "type": "string",
-            "maxLength": 240
-          },
-          "max_file_bytes": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 1
-          },
-          "max_batch_bytes": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 1
-          },
-          "policy_revision": {
-            "type": "string",
-            "maxLength": 64
-          },
-          "classifier_policy_revision": {
-            "type": "string"
-          },
-          "classifier_model_revision": {
-            "type": "string"
-          },
-          "classifier_health": {
-            "type": "string",
-            "enum": [
-              "healthy",
-              "degraded",
-              "unavailable",
-              "disabled"
-            ]
-          },
-          "encryption_key_version": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "updated_at": {
-            "type": "string",
-            "format": "date-time"
-          }
-        }
-      },
-      "ConfigSyncStatus": {
-        "type": "object",
-        "required": [
-          "repository",
           "policy",
           "state",
-          "projects"
+          "environments"
         ],
         "properties": {
-          "repository": {
-            "type": "object",
-            "required": [
-              "owner",
-              "name",
-              "branch",
-              "web_url"
-            ],
-            "properties": {
-              "owner": {
-                "type": "string"
-              },
-              "name": {
-                "type": "string"
-              },
-              "branch": {
-                "type": "string"
-              },
-              "web_url": {
-                "type": "string"
-              }
-            }
-          },
           "policy": {
             "type": "object",
+            "additionalProperties": false,
             "required": [
               "mode",
               "byod_enabled",
@@ -1349,7 +1264,10 @@
               "max_file_bytes",
               "max_batch_bytes",
               "format",
-              "mandatory_exclusions"
+              "manifest_contract",
+              "manifest_max_bytes",
+              "manifest_max_lines",
+              "manifest_max_pattern_bytes"
             ],
             "properties": {
               "mode": {
@@ -1377,85 +1295,96 @@
               "format": {
                 "type": "string"
               },
-              "mandatory_exclusions": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
+              "manifest_contract": {
+                "type": "string",
+                "const": "paperboat-manifest-v1"
+              },
+              "manifest_max_bytes": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "manifest_max_lines": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "manifest_max_pattern_bytes": {
+                "type": "integer",
+                "minimum": 1
               }
             }
           },
           "state": {
-            "type": "string",
-            "enum": [
-              "restoring",
-              "watching",
-              "pending",
-              "syncing",
-              "healthy",
-              "warning",
-              "conflict",
-              "error",
-              "offline",
-              "idle"
-            ]
+            "type": "string"
           },
-          "projects": {
+          "environments": {
             "type": "array",
             "items": {
               "type": "object",
+              "additionalProperties": false,
               "required": [
-                "project_id",
-                "project_name",
-                "project_state",
-                "machine_id",
+                "environment_id",
+                "display_name",
+                "profile",
+                "environment_state",
                 "state",
-                "pending_path_count",
-                "classifier_pending",
+                "managed_path_count",
+                "pending_clean_path_count",
                 "skipped",
                 "conflicts",
-                "max_file_bytes",
-                "max_batch_bytes",
-                "policy_revision"
+                "recovery_actions"
               ],
               "properties": {
-                "project_id": {
+                "environment_id": {
                   "type": "string"
                 },
-                "project_name": {
+                "display_name": {
                   "type": "string"
                 },
-                "project_state": {
+                "profile": {
+                  "type": "string",
+                  "enum": ["hosted", "byod"]
+                },
+                "environment_state": {
                   "type": "string"
                 },
-                "machine_id": {
+                "assignment_id": {
                   "type": "string"
+                },
+                "assignment_version": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "repository_id": {
+                  "type": "string"
+                },
+                "repository_name": {
+                  "type": "string"
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": ["pull_only", "push_only", "bidirectional"]
                 },
                 "state": {
                   "type": "string"
                 },
-                "last_result_state": {
+                "remote_revision": {
                   "type": "string"
                 },
-                "last_attempt_at": {
+                "manifest_health": {
                   "type": "string",
-                  "format": "date-time"
+                  "enum": ["healthy", "empty", "missing", "invalid"]
                 },
-                "last_successful_sync_at": {
+                "manifest_revision": {
                   "type": "string",
-                  "format": "date-time"
+                  "pattern": "^[a-f0-9]{64}$"
                 },
-                "remote_commit": {
-                  "type": "string"
+                "managed_path_count": {
+                  "type": "integer",
+                  "minimum": 0
                 },
-                "pending_path_count": {
-                  "type": "integer"
-                },
-                "classifier_pending": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/ConfigSyncPathSummary"
-                  }
+                "pending_clean_path_count": {
+                  "type": "integer",
+                  "minimum": 0
                 },
                 "skipped": {
                   "type": "array",
@@ -1472,46 +1401,25 @@
                 "error_code": {
                   "type": "string"
                 },
-                "error_message": {
+                "last_applied_revision": {
                   "type": "string"
                 },
-                "heartbeat_at": {
+                "last_published_revision": {
+                  "type": "string"
+                },
+                "last_attempt_at": {
                   "type": "string",
                   "format": "date-time"
                 },
-                "status_updated_at": {
+                "last_successful_sync_at": {
                   "type": "string",
                   "format": "date-time"
                 },
-                "max_file_bytes": {
-                  "type": "integer",
-                  "format": "int64"
-                },
-                "max_batch_bytes": {
-                  "type": "integer",
-                  "format": "int64"
-                },
-                "policy_revision": {
-                  "type": "string"
-                },
-                "classifier_policy_revision": {
-                  "type": "string"
-                },
-                "classifier_model_revision": {
-                  "type": "string"
-                },
-                "classifier_health": {
-                  "type": "string",
-                  "enum": [
-                    "healthy",
-                    "degraded",
-                    "unavailable",
-                    "disabled"
-                  ]
-                },
-                "encryption_key_version": {
-                  "type": "integer",
-                  "minimum": 0
+                "recovery_actions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 }
               }
             }
@@ -1644,7 +1552,8 @@
         "required": [
           "operation_id",
           "environment_id",
-          "helper_id",
+          "machine_id",
+          "connector_id",
           "edge_pool",
           "protocol_version"
         ],
@@ -1659,7 +1568,12 @@
             "minLength": 1,
             "maxLength": 128
           },
-          "helper_id": {
+          "machine_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "connector_id": {
             "type": "string",
             "minLength": 1,
             "maxLength": 128
@@ -1697,7 +1611,7 @@
           "kind": {
             "type": "string",
             "enum": [
-              "helper_https_wss",
+              "runtime_https_wss",
               "preview_public_https_wss"
             ]
           },
@@ -1740,7 +1654,8 @@
         "required": [
           "operation_id",
           "environment_id",
-          "helper_id",
+          "machine_id",
+          "connector_id",
           "connector_generation",
           "edge_pool",
           "edge_node_id",
@@ -1760,7 +1675,12 @@
             "minLength": 1,
             "maxLength": 128
           },
-          "helper_id": {
+          "machine_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "connector_id": {
             "type": "string",
             "minLength": 1,
             "maxLength": 128
@@ -2021,9 +1941,6 @@
             "type": "string",
             "format": "date-time"
           },
-          "config_sync": {
-            "$ref": "#/components/schemas/ConfigSyncHeartbeat"
-          },
           "availability": {
             "$ref": "#/components/schemas/AvailabilityObservation"
           },
@@ -2253,7 +2170,7 @@
         ],
         "parameters": [
           {
-            "name": "X-Paperboat-Helper-Proof",
+            "name": "X-Paperboat-Machine-Proof",
             "in": "header",
             "required": true,
             "schema": {
@@ -2370,7 +2287,7 @@
         ],
         "parameters": [
           {
-            "name": "X-Paperboat-Helper-Proof",
+            "name": "X-Paperboat-Machine-Proof",
             "in": "header",
             "required": true,
             "schema": {
@@ -2400,7 +2317,7 @@
         "security": [],
         "parameters": [
           {
-            "name": "X-Paperboat-Helper-Proof",
+            "name": "X-Paperboat-Machine-Proof",
             "in": "header",
             "required": true,
             "schema": {
@@ -2447,6 +2364,26 @@
         "operationId": "post_v1_helper_identity_renewals"
       }
     },
+    "/v1/machine-control-renewals": {
+      "post": {
+        "summary": "Renew a machine control credential",
+        "description": "Accepts a current or recently expired machine-control bearer credential and an exact Ed25519 request proof from the registered machine key.",
+        "security": [{"bearerAccess": []}],
+        "parameters": [
+          {"name": "X-Paperboat-Machine-Proof", "in": "header", "required": true, "schema": {"type": "string"}}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["operation_id"], "properties": {"operation_id": {"type": "string", "minLength": 8, "maxLength": 128}}}}}
+        },
+        "responses": {
+          "201": {"description": "Renewed machine control credential."},
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"}
+        },
+        "operationId": "post_v1_machine_control_renewals"
+      }
+    },
     "/v1/helper-runtime-policies/resolve": {
       "post": {
         "summary": "Resolve the authoritative BYOD runtime availability policy",
@@ -2458,7 +2395,7 @@
         ],
         "parameters": [
           {
-            "name": "X-Paperboat-Helper-Proof",
+            "name": "X-Paperboat-Machine-Proof",
             "in": "header",
             "required": true,
             "schema": {
@@ -2505,7 +2442,7 @@
         ],
         "parameters": [
           {
-            "name": "X-Paperboat-Helper-Proof",
+            "name": "X-Paperboat-Machine-Proof",
             "in": "header",
             "required": true,
             "schema": {
@@ -2541,9 +2478,9 @@
         "operationId": "post_v1_helper_trust_revocations"
       }
     },
-    "/v1/user-machine-installation-failures": {
+    "/v1/machine-installation-failures": {
       "post": {
-        "summary": "Report a retryable user-machine installation failure",
+        "summary": "Report a retryable machine installation failure",
         "description": "Requires the active helper identity and an Ed25519 proof over the exact request. Transitions only the matching installing or connecting enrollment to failed_retryable.",
         "security": [
           {
@@ -2552,7 +2489,7 @@
         ],
         "parameters": [
           {
-            "name": "X-Paperboat-Helper-Proof",
+            "name": "X-Paperboat-Machine-Proof",
             "in": "header",
             "required": true,
             "schema": {
@@ -2635,7 +2572,7 @@
     "/v1/config/leases/acquire": {
       "post": {
         "summary": "Acquire an exclusive config-repository writer lease",
-        "description": "Helper-proof authenticated endpoint. Eligibility, assignment, warning revision, helper generation, and repository are revalidated before issuing a monotonic fencing token.",
+        "description": "Machine-proof authenticated endpoint. Eligibility, assignment, warning revision, installation generation, and repository are revalidated before issuing a monotonic fencing token.",
         "security": [],
         "responses": {
           "200": {
@@ -2701,7 +2638,7 @@
     "/v1/config/status": {
       "post": {
         "summary": "Record canonical helper config-sync status",
-        "description": "Helper-proof authenticated endpoint. Accepts only bounded, monotonic status bound to the current environment, assignment, repository, helper generation, and warning revision.",
+        "description": "Machine-proof authenticated endpoint. Accepts only bounded, monotonic status bound to the current environment, assignment, repository, installation generation, and warning revision.",
         "security": [],
         "responses": {
           "202": {
@@ -2747,8 +2684,8 @@
     },
     "/v1/config/runtime": {
       "post": {
-        "summary": "Read the assignment-bound config runtime policy and key material",
-        "description": "Requires both helper identity proof and current config-sync credential. Returns the server-owned policy revision, limits, classifier revisions, encrypted-repository format, current/overlap age identities for helper memory only, and the authoritative sync-revision floor needed to preserve monotonic status across restarts.",
+        "summary": "Read the assignment-bound config runtime policy",
+        "description": "Requires helper identity proof and a current assignment-bound config credential. Returns assignment mode, plaintext manifest contract and limits, and the authoritative sync-revision floor needed to preserve monotonic status across restarts.",
         "security": [],
         "responses": {
           "200": {
@@ -2762,28 +2699,6 @@
           }
         },
         "operationId": "post_v1_config_runtime"
-      }
-    },
-    "/v1/config/classify": {
-      "post": {
-        "summary": "Classify bounded config-path metadata",
-        "description": "Requires helper identity proof and a current assignment-bound config-sync credential. Only the allowlisted metadata schema is accepted; file contents, absolute paths, identities, repository coordinates, credentials, and keys are forbidden.",
-        "security": [],
-        "responses": {
-          "200": {
-            "description": "Ordered classification decisions and authoritative revisions."
-          },
-          "400": {
-            "$ref": "#/components/responses/Error"
-          },
-          "401": {
-            "$ref": "#/components/responses/Error"
-          },
-          "429": {
-            "$ref": "#/components/responses/Error"
-          }
-        },
-        "operationId": "post_v1_config_classify"
       }
     },
     "/v1/config/conflict-resolutions/pending": {
@@ -3002,9 +2917,9 @@
         "operationId": "post_v1_environments_environment_id_helpers_helper_id_replace"
       }
     },
-    "/v1/environments/{environment_id}/config-assignment": {
+    "/v1/machines/{machine_id}/config-assignment": {
       "get": {
-        "summary": "Read environment config assignment",
+        "summary": "Read machine config assignment",
         "security": [
           {
             "cookieSession": []
@@ -3024,7 +2939,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "operationId": "get_v1_environments_environment_id_config_assignment"
+        "operationId": "get_v1_machines_machine_id_config_assignment"
       },
       "put": {
         "summary": "Assign config repository",
@@ -3048,7 +2963,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "operationId": "put_v1_environments_environment_id_config_assignment"
+        "operationId": "put_v1_machines_machine_id_config_assignment"
       },
       "delete": {
         "summary": "Clear config assignment",
@@ -3072,10 +2987,10 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "operationId": "delete_v1_environments_environment_id_config_assignment"
+        "operationId": "delete_v1_machines_machine_id_config_assignment"
       }
     },
-    "/v1/environments/{environment_id}/config-assignment/consent": {
+    "/v1/machines/{machine_id}/config-assignment/consent": {
       "post": {
         "summary": "Accept config warning revision",
         "security": [
@@ -3094,7 +3009,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "operationId": "post_v1_environments_environment_id_config_assignment_consent"
+        "operationId": "post_v1_machines_machine_id_config_assignment_consent"
       },
       "delete": {
         "summary": "Remove config warning consent and immediately revoke sync eligibility",
@@ -3114,10 +3029,10 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "operationId": "delete_v1_environments_environment_id_config_assignment_consent"
+        "operationId": "delete_v1_machines_machine_id_config_assignment_consent"
       }
     },
-    "/v1/environments/{environment_id}/config-assignment/warning": {
+    "/v1/machines/{machine_id}/config-assignment/warning": {
       "get": {
         "summary": "Read the current server-authoritative BYOD config warning",
         "security": [
@@ -3139,7 +3054,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "operationId": "get_v1_environments_environment_id_config_assignment_warning"
+        "operationId": "get_v1_machines_machine_id_config_assignment_warning"
       }
     },
     "/v1/tls/authorizations/previews": {
@@ -3207,7 +3122,7 @@
         ],
         "parameters": [
           {
-            "name": "X-Paperboat-Helper-Proof",
+            "name": "X-Paperboat-Machine-Proof",
             "in": "header",
             "required": true,
             "schema": {
@@ -3252,7 +3167,7 @@
         ],
         "parameters": [
           {
-            "name": "X-Paperboat-Helper-Identity",
+            "name": "X-Paperboat-Machine-Identity",
             "in": "header",
             "required": true,
             "schema": {
@@ -3261,7 +3176,7 @@
             }
           },
           {
-            "name": "X-Paperboat-Helper-Proof",
+            "name": "X-Paperboat-Machine-Proof",
             "in": "header",
             "required": true,
             "schema": {
@@ -3340,7 +3255,7 @@
         ],
         "parameters": [
           {
-            "name": "X-Paperboat-Helper-Identity",
+            "name": "X-Paperboat-Machine-Identity",
             "in": "header",
             "required": true,
             "schema": {
@@ -3349,7 +3264,7 @@
             }
           },
           {
-            "name": "X-Paperboat-Helper-Proof",
+            "name": "X-Paperboat-Machine-Proof",
             "in": "header",
             "required": true,
             "schema": {
@@ -3420,7 +3335,7 @@
     "/v1/previews": {
       "get": {
         "summary": "List the user's active public previews",
-        "description": "Returns active previews with project or machine and owner context. Preview creation is available only to in-environment agents through paperboat-helper.",
+        "description": "Returns active previews with project or machine and owner context. Preview creation is available locally or through an authenticated selected machine's pb host runtime.",
         "security": [
           {
             "cookieSession": []
@@ -3932,124 +3847,83 @@
         "operationId": "post_v1_config_sync_environments_environment_id_conflict_resolutions"
       }
     },
-    "/v1/config-sync/overrides": {
-      "get": {
-        "summary": "List exact path classification overrides",
-        "responses": {
-          "200": {
-            "description": "Overrides."
-          }
-        },
-        "operationId": "get_v1_config_sync_overrides"
-      },
-      "put": {
-        "summary": "Set exact path classification override",
-        "security": [
-          {
-            "cookieSession": []
-          },
-          {
-            "csrfHeader": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Override saved."
-          },
-          "409": {
-            "$ref": "#/components/responses/Error"
-          }
-        },
-        "operationId": "put_v1_config_sync_overrides"
-      },
-      "delete": {
-        "summary": "Remove exact path classification override",
-        "security": [
-          {
-            "cookieSession": []
-          },
-          {
-            "csrfHeader": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Override removed."
-          }
-        },
-        "operationId": "delete_v1_config_sync_overrides"
-      }
-    },
-    "/v1/config-sync/recovery-key/export": {
+    "/v1/config-sync/environments/{environment_id}/force": {
       "post": {
-        "summary": "Export age recovery identity after purpose-bound reauthentication",
+        "summary": "Queue a confirmed path-scoped or config-scoped force operation",
+        "parameters": [
+          {
+            "name": "environment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "security": [
           {
-            "cookieSession": []
-          },
-          {
+            "cookieSession": [],
             "csrfHeader": []
           }
         ],
-        "responses": {
-          "200": {
-            "description": "Recovery identity. Never cache."
-          },
-          "401": {
-            "$ref": "#/components/responses/Error"
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "scope",
+                  "expected_remote_revision",
+                  "expected_assignment_version",
+                  "action",
+                  "confirmation"
+                ],
+                "properties": {
+                  "scope": {
+                    "type": "string",
+                    "enum": ["path", "config"]
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "conflict_revision": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "expected_remote_revision": {
+                    "type": "string"
+                  },
+                  "expected_assignment_version": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "action": {
+                    "type": "string",
+                    "enum": ["force_pull", "force_push"]
+                  },
+                  "confirmation": {
+                    "type": "string",
+                    "enum": ["FORCE PULL", "FORCE PUSH"]
+                  }
+                }
+              }
+            }
           }
         },
-        "operationId": "post_v1_config_sync_recovery_key_export"
-      }
-    },
-    "/v1/config-sync/recovery-key/rotate": {
-      "post": {
-        "summary": "Rotate account config encryption identity",
-        "security": [
-          {
-            "cookieSession": []
-          },
-          {
-            "csrfHeader": []
-          }
-        ],
         "responses": {
           "202": {
-            "description": "Rotation pending re-encryption."
+            "description": "Force operation queued for the bound helper."
           },
-          "401": {
+          "400": {
             "$ref": "#/components/responses/Error"
           },
           "409": {
             "$ref": "#/components/responses/Error"
           }
         },
-        "operationId": "post_v1_config_sync_recovery_key_rotate"
-      }
-    },
-    "/v1/auth/workos/reauth/state": {
-      "get": {
-        "summary": "Create purpose-bound WorkOS reauthentication state",
-        "responses": {
-          "200": {
-            "description": "Reauthentication state."
-          }
-        },
-        "operationId": "get_v1_auth_workos_reauth_state"
-      }
-    },
-    "/v1/auth/workos/reauth/callback": {
-      "post": {
-        "summary": "Verify purpose-bound WorkOS reauthentication",
-        "responses": {
-          "200": {
-            "description": "Short-lived proof issued."
-          },
-          "401": {
-            "$ref": "#/components/responses/Error"
-          }
-        },
-        "operationId": "post_v1_auth_workos_reauth_callback"
+        "operationId": "post_v1_config_sync_environments_environment_id_force"
       }
     },
     "/v1/auth/device/authorize": {
@@ -5818,9 +5692,91 @@
         "operationId": "get_v1_projects_project_id_connection_readiness"
       }
     },
-    "/v1/user-machines": {
+    "/v1/machines/setup": {
+      "post": {
+        "summary": "Set up this client machine",
+        "description": "Registers or resumes the authenticated CLI machine's interactive role using its stable Ed25519 identity.",
+        "security": [
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["display_name", "platform", "architecture", "workspace_root", "public_identity_key", "runtime_versions"],
+                "properties": {
+                  "display_name": {"type": "string", "minLength": 1, "maxLength": 128},
+                  "platform": {"type": "string", "enum": ["darwin", "linux", "windows"]},
+                  "architecture": {"type": "string", "minLength": 1},
+                  "workspace_root": {"type": "string", "minLength": 1},
+                  "public_identity_key": {"type": "string", "minLength": 40, "maxLength": 256},
+                  "runtime_versions": {"type": "object", "additionalProperties": {"type": "string"}}
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {"description": "Machine setup completed or resumed."},
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"},
+          "409": {"$ref": "#/components/responses/Error"}
+        },
+        "operationId": "post_v1_machines_setup"
+      }
+    },
+    "/v1/machines/{machine_id}/control-credentials": {
+      "parameters": [
+        {"name": "machine_id", "in": "path", "required": true, "schema": {"type": "string"}}
+      ],
+      "post": {
+        "summary": "Issue a machine control credential",
+        "description": "Issues a renewable control credential to an owned machine after validating an exact Ed25519 request proof from its registered key.",
+        "security": [{"bearerAccess": []}],
+        "x-required-bearer-scopes": ["projects:connect"],
+        "parameters": [
+          {"name": "X-Paperboat-Machine-Proof", "in": "header", "required": true, "schema": {"type": "string"}}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["operation_id"], "properties": {"operation_id": {"type": "string", "minLength": 8, "maxLength": 128}}}}}
+        },
+        "responses": {
+          "201": {"description": "Machine control credential issued."},
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"}
+        },
+        "operationId": "post_v1_machines_machine_id_control_credentials"
+      }
+    },
+    "/v1/machines/{machine_id}/unpair": {
+      "parameters": [
+        {"name": "machine_id", "in": "path", "required": true, "schema": {"type": "string"}}
+      ],
+      "post": {
+        "summary": "Remove this machine's host role",
+        "description": "Revokes host authority and releases its seat while preserving machine identity and interactive setup.",
+        "security": [{"bearerAccess": []}],
+        "x-required-bearer-scopes": ["projects:connect"],
+        "responses": {
+          "200": {"description": "Host role removed, or the machine was already unpaired."},
+          "401": {"$ref": "#/components/responses/Error"},
+          "404": {"$ref": "#/components/responses/Error"}
+        },
+        "operationId": "post_v1_machines_machine_id_unpair"
+      }
+    },
+    "/v1/machines": {
       "get": {
-        "summary": "List user machines",
+        "summary": "List machines",
         "security": [
           {
             "cookieSession": []
@@ -5840,9 +5796,9 @@
         "operationId": "get_v1_user_machines"
       }
     },
-    "/v1/user-machine-enrollments": {
+    "/v1/machine-enrollments": {
       "post": {
-        "summary": "Start dashboard-owned user-machine enrollment",
+        "summary": "Start dashboard-owned machine enrollment",
         "security": [
           {
             "cookieSession": []
@@ -5867,7 +5823,7 @@
         "operationId": "post_v1_user_machine_enrollments"
       }
     },
-    "/v1/user-machine-enrollments/{enrollment_id}": {
+    "/v1/machine-enrollments/{enrollment_id}": {
       "parameters": [
         {
           "name": "enrollment_id",
@@ -5879,7 +5835,7 @@
         }
       ],
       "get": {
-        "summary": "Read user-machine enrollment state",
+        "summary": "Read machine enrollment state",
         "security": [
           {
             "cookieSession": []
@@ -5896,7 +5852,7 @@
         "operationId": "get_v1_user_machine_enrollments_enrollment_id"
       }
     },
-    "/v1/user-machine-enrollments/{enrollment_id}/cancel": {
+    "/v1/machine-enrollments/{enrollment_id}/cancel": {
       "parameters": [
         {
           "name": "enrollment_id",
@@ -5908,7 +5864,7 @@
         }
       ],
       "post": {
-        "summary": "Cancel user-machine enrollment",
+        "summary": "Cancel machine enrollment",
         "security": [
           {
             "cookieSession": []
@@ -5928,7 +5884,7 @@
         "operationId": "post_v1_user_machine_enrollments_enrollment_id_cancel"
       }
     },
-    "/v1/user-machine-enrollments/{enrollment_id}/retry": {
+    "/v1/machine-enrollments/{enrollment_id}/retry": {
       "parameters": [
         {
           "name": "enrollment_id",
@@ -5940,7 +5896,7 @@
         }
       ],
       "post": {
-        "summary": "Retry user-machine enrollment with a new generation",
+        "summary": "Retry machine enrollment with a new generation",
         "security": [
           {
             "cookieSession": []
@@ -5960,9 +5916,9 @@
         "operationId": "post_v1_user_machine_enrollments_enrollment_id_retry"
       }
     },
-    "/v1/user-machines/overview": {
+    "/v1/machines/overview": {
       "get": {
-        "summary": "Read user-machine seats and bandwidth",
+        "summary": "Read machine seats and bandwidth",
         "security": [
           {
             "cookieSession": []
@@ -5982,9 +5938,9 @@
         "operationId": "get_v1_user_machines_overview"
       }
     },
-    "/v1/user-machines/pairings": {
+    "/v1/machines/pairings": {
       "post": {
-        "summary": "Create user-machine pairing",
+        "summary": "Create machine pairing",
         "security": [],
         "responses": {
           "201": {
@@ -5997,9 +5953,9 @@
         "operationId": "post_v1_user_machines_pairings"
       }
     },
-    "/v1/user-machines/pairings/installation": {
+    "/v1/machines/pairings/installation": {
       "post": {
-        "summary": "Consume approved user-machine installation material",
+        "summary": "Consume approved machine installation material",
         "description": "Exchanges the one-time pairing verifier for installation material. The material is returned at most once.",
         "security": [],
         "requestBody": {
@@ -6042,7 +5998,7 @@
         "operationId": "post_v1_user_machines_pairings_installation"
       }
     },
-    "/v1/user-machines/pairings/{user_code}/approve": {
+    "/v1/machines/pairings/{user_code}/approve": {
       "parameters": [
         {
           "name": "user_code",
@@ -6054,7 +6010,7 @@
         }
       ],
       "post": {
-        "summary": "Approve user-machine pairing",
+        "summary": "Approve machine pairing",
         "security": [
           {
             "cookieSession": []
@@ -6074,7 +6030,7 @@
         "operationId": "post_v1_user_machines_pairings_user_code_approve"
       }
     },
-    "/v1/user-machines/pairings/{user_code}/deny": {
+    "/v1/machines/pairings/{user_code}/deny": {
       "parameters": [
         {
           "name": "user_code",
@@ -6086,7 +6042,7 @@
         }
       ],
       "post": {
-        "summary": "Deny user-machine pairing",
+        "summary": "Deny machine pairing",
         "security": [
           {
             "cookieSession": []
@@ -6112,10 +6068,10 @@
         "operationId": "post_v1_user_machines_pairings_user_code_deny"
       }
     },
-    "/v1/user-machines/{user_machine_id}": {
+    "/v1/machines/{machine_id}": {
       "parameters": [
         {
-          "name": "user_machine_id",
+          "name": "machine_id",
           "in": "path",
           "required": true,
           "schema": {
@@ -6124,7 +6080,7 @@
         }
       ],
       "get": {
-        "summary": "Read user machine",
+        "summary": "Read machine",
         "responses": {
           "200": {
             "description": "User machine."
@@ -6133,10 +6089,10 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "operationId": "get_v1_user_machines_user_machine_id"
+        "operationId": "get_v1_user_machines_machine_id"
       },
       "delete": {
-        "summary": "Delete user machine",
+        "summary": "Delete machine",
         "security": [
           {
             "cookieSession": []
@@ -6153,13 +6109,13 @@
             "description": "Machine deleted."
           }
         },
-        "operationId": "delete_v1_user_machines_user_machine_id"
+        "operationId": "delete_v1_user_machines_machine_id"
       }
     },
-    "/v1/user-machines/{user_machine_id}/disconnect": {
+    "/v1/machines/{machine_id}/disconnect": {
       "parameters": [
         {
-          "name": "user_machine_id",
+          "name": "machine_id",
           "in": "path",
           "required": true,
           "schema": {
@@ -6168,7 +6124,7 @@
         }
       ],
       "post": {
-        "summary": "Disconnect user machine",
+        "summary": "Disconnect machine",
         "security": [
           {
             "cookieSession": []
@@ -6185,13 +6141,13 @@
             "description": "Machine disconnected."
           }
         },
-        "operationId": "post_v1_user_machines_user_machine_id_disconnect"
+        "operationId": "post_v1_user_machines_machine_id_disconnect"
       }
     },
-    "/v1/user-machines/{user_machine_id}/availability-policy": {
+    "/v1/machines/{machine_id}/availability-policy": {
       "parameters": [
         {
-          "name": "user_machine_id",
+          "name": "machine_id",
           "in": "path",
           "required": true,
           "schema": {
@@ -6203,7 +6159,7 @@
         }
       ],
       "put": {
-        "summary": "Set a user machine availability policy",
+        "summary": "Set a machine availability policy",
         "description": "Uses optimistic expected_version and returns applied or durably pending state. keep_awake applies on battery and AC after explicit client confirmation.",
         "security": [
           {
@@ -6282,13 +6238,74 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "operationId": "put_v1_user_machines_user_machine_id_availability_policy"
+        "operationId": "put_v1_user_machines_machine_id_availability_policy"
       }
     },
-    "/v1/user-machines/{user_machine_id}/connection-descriptor": {
+    "/v1/terminal-sessions/{session_id}/transfer-destinations": {
+      "parameters": [{ "name": "session_id", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "get": {
+        "summary": "List live machine destinations attached to a terminal session",
+        "security": [{ "bearerAccess": [] }], "x-required-bearer-scopes": ["projects:read"],
+        "responses": { "200": { "description": "Eligible attached machine destinations." }, "401": { "$ref": "#/components/responses/Error" }, "404": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" } },
+        "operationId": "get_v1_terminal_session_transfer_destinations"
+      }
+    },
+    "/v1/terminal-sessions/{session_id}/transfer-destination": {
+      "parameters": [{ "name": "session_id", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "get": {
+        "summary": "Get a terminal session's transfer destination",
+        "security": [{ "bearerAccess": [] }], "x-required-bearer-scopes": ["projects:read"],
+        "responses": { "200": { "description": "Current session destination." }, "401": { "$ref": "#/components/responses/Error" } },
+        "operationId": "get_v1_terminal_session_transfer_destination"
+      },
+      "put": {
+        "summary": "Set a terminal session's transfer destination",
+        "security": [{ "bearerAccess": [] }], "x-required-bearer-scopes": ["projects:connect"],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "additionalProperties": false, "required": ["machine_id"],
+          "properties": { "machine_id": { "type": "string", "minLength": 1 } }
+        } } } },
+        "responses": { "200": { "description": "Updated session destination." }, "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" } },
+        "operationId": "put_v1_terminal_session_transfer_destination"
+      },
+      "delete": {
+        "summary": "Clear a terminal session's transfer destination",
+        "security": [{ "bearerAccess": [] }], "x-required-bearer-scopes": ["projects:connect"],
+        "responses": { "200": { "description": "Session destination cleared." }, "401": { "$ref": "#/components/responses/Error" }, "404": { "$ref": "#/components/responses/Error" } },
+        "operationId": "delete_v1_terminal_session_transfer_destination"
+      }
+    },
+    "/v1/transfer-destination-default": {
+      "get": {
+        "summary": "Get the user's default transfer destination",
+        "security": [{ "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["projects:read"],
+        "responses": { "200": { "description": "Current default destination." }, "401": { "$ref": "#/components/responses/Error" } },
+        "operationId": "get_v1_transfer_destination_default"
+      },
+      "put": {
+        "summary": "Set the user's default transfer destination",
+        "security": [{ "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["projects:connect"],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "additionalProperties": false, "required": ["machine_id"],
+          "properties": { "machine_id": { "type": "string", "minLength": 1 } }
+        } } } },
+        "responses": { "200": { "description": "Updated default destination." }, "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" } },
+        "operationId": "put_v1_transfer_destination_default"
+      },
+      "delete": {
+        "summary": "Clear the user's default transfer destination",
+        "security": [{ "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["projects:connect"],
+        "responses": { "200": { "description": "Default destination cleared." }, "401": { "$ref": "#/components/responses/Error" } },
+        "operationId": "delete_v1_transfer_destination_default"
+      }
+    },
+    "/v1/machines/{machine_id}/connection-descriptor": {
       "parameters": [
         {
-          "name": "user_machine_id",
+          "name": "machine_id",
           "in": "path",
           "required": true,
           "schema": {
@@ -6297,7 +6314,7 @@
         }
       ],
       "post": {
-        "summary": "Create user-machine CLI descriptor",
+        "summary": "Create machine CLI descriptor",
         "description": "The optional body selects a terminal_session_id; omission selects default.",
         "security": [
           {
@@ -6309,7 +6326,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Fresh user-machine CLI descriptor."
+            "description": "Fresh machine CLI descriptor."
           },
           "401": {
             "$ref": "#/components/responses/Error"
@@ -6318,13 +6335,57 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "operationId": "post_v1_user_machines_user_machine_id_connection_descriptor"
+        "operationId": "post_v1_user_machines_machine_id_connection_descriptor"
       }
     },
-    "/v1/user-machines/{user_machine_id}/connection-readiness": {
+    "/v1/machines/{machine_id}/file-transfer-descriptor": {
+      "parameters": [{ "name": "machine_id", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "post": {
+        "summary": "Create a machine file-transfer descriptor",
+        "description": "Authorizes an owned source machine to send to the addressed live destination without creating a terminal session.",
+        "security": [{ "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["projects:connect"],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "additionalProperties": false,
+            "required": ["source_machine_id"],
+            "properties": {
+              "source_machine_id": { "type": "string", "minLength": 1 },
+              "session_id": { "type": "string" }
+            }
+          } } }
+        },
+        "responses": {
+          "200": { "description": "Fresh file-transfer descriptor." },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "409": { "$ref": "#/components/responses/Error" }
+        },
+        "operationId": "post_v1_machines_machine_id_file_transfer_descriptor"
+      }
+    },
+    "/v1/machines/{machine_id}/preview-launch-descriptor": {
+      "parameters": [{ "name": "machine_id", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "post": {
+        "summary": "Create a machine preview-launch descriptor",
+        "description": "Returns a short-lived credential and routed machine endpoint authorized only to launch one isolated preview runner.",
+        "security": [{ "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["projects:connect"],
+        "responses": {
+          "200": { "description": "Fresh preview-launch descriptor." },
+          "401": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "409": { "$ref": "#/components/responses/Error" }
+        },
+        "operationId": "post_v1_machines_machine_id_preview_launch_descriptor"
+      }
+    },
+    "/v1/machines/{machine_id}/connection-readiness": {
       "parameters": [
         {
-          "name": "user_machine_id",
+          "name": "machine_id",
           "in": "path",
           "required": true,
           "schema": {
@@ -6342,7 +6403,7 @@
         }
       ],
       "get": {
-        "summary": "Read user-machine connection status",
+        "summary": "Read machine connection status",
         "security": [
           {
             "bearerAccess": []
@@ -6362,13 +6423,13 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "operationId": "get_v1_user_machines_user_machine_id_connection_readiness"
+        "operationId": "get_v1_user_machines_machine_id_connection_readiness"
       }
     },
-    "/v1/user-machines/{user_machine_id}/terminal-sessions": {
+    "/v1/machines/{machine_id}/terminal-sessions": {
       "parameters": [
         {
-          "name": "user_machine_id",
+          "name": "machine_id",
           "in": "path",
           "required": true,
           "schema": {
@@ -6377,7 +6438,7 @@
         }
       ],
       "get": {
-        "summary": "List user-machine terminal sessions",
+        "summary": "List machine terminal sessions",
         "security": [
           {
             "bearerAccess": []
@@ -6391,10 +6452,10 @@
             "description": "Terminal session page."
           }
         },
-        "operationId": "get_v1_user_machines_user_machine_id_terminal_sessions"
+        "operationId": "get_v1_user_machines_machine_id_terminal_sessions"
       },
       "post": {
-        "summary": "Create user-machine terminal session",
+        "summary": "Create machine terminal session",
         "security": [
           {
             "bearerAccess": []
@@ -6419,13 +6480,13 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "operationId": "post_v1_user_machines_user_machine_id_terminal_sessions"
+        "operationId": "post_v1_user_machines_machine_id_terminal_sessions"
       }
     },
-    "/v1/user-machines/{user_machine_id}/terminal-sessions/{session_id}": {
+    "/v1/machines/{machine_id}/terminal-sessions/{session_id}": {
       "parameters": [
         {
-          "name": "user_machine_id",
+          "name": "machine_id",
           "in": "path",
           "required": true,
           "schema": {
@@ -6442,7 +6503,7 @@
         }
       ],
       "patch": {
-        "summary": "Rename user-machine terminal session",
+        "summary": "Rename machine terminal session",
         "security": [
           {
             "bearerAccess": []
@@ -6456,10 +6517,10 @@
             "description": "Terminal session renamed."
           }
         },
-        "operationId": "patch_v1_user_machines_user_machine_id_terminal_sessions_session_id"
+        "operationId": "patch_v1_user_machines_machine_id_terminal_sessions_session_id"
       },
       "delete": {
-        "summary": "Delete user-machine terminal session history",
+        "summary": "Delete machine terminal session history",
         "security": [
           {
             "bearerAccess": []
@@ -6476,13 +6537,13 @@
             "description": "History purge queued."
           }
         },
-        "operationId": "delete_v1_user_machines_user_machine_id_terminal_sessions_session_id"
+        "operationId": "delete_v1_user_machines_machine_id_terminal_sessions_session_id"
       }
     },
-    "/v1/user-machines/{user_machine_id}/terminal-sessions/{session_id}/close": {
+    "/v1/machines/{machine_id}/terminal-sessions/{session_id}/close": {
       "parameters": [
         {
-          "name": "user_machine_id",
+          "name": "machine_id",
           "in": "path",
           "required": true,
           "schema": {
@@ -6499,7 +6560,7 @@
         }
       ],
       "post": {
-        "summary": "Close user-machine terminal session",
+        "summary": "Close machine terminal session",
         "security": [
           {
             "bearerAccess": []
@@ -6516,7 +6577,7 @@
             "description": "Terminal close queued."
           }
         },
-        "operationId": "post_v1_user_machines_user_machine_id_terminal_sessions_session_id_close"
+        "operationId": "post_v1_user_machines_machine_id_terminal_sessions_session_id_close"
       }
     },
     "/v1/runtime-observations": {

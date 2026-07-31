@@ -65,6 +65,7 @@ type EnrollmentGrant struct {
 
 type HelperIdentity struct {
 	HelperID      string    `json:"helper_id"`
+	MachineID     string    `json:"machine_id"`
 	EnvironmentID string    `json:"environment_id"`
 	Credential    string    `json:"credential"`
 	ExpiresAt     time.Time `json:"expires_at"`
@@ -141,7 +142,7 @@ func (s *EnrollmentService) ExchangeHostedWorkloadIdentity(ctx context.Context, 
 	tokenIDHash := sha256.Sum256([]byte(identity.TokenID))
 	if helper, helperErr := s.store.Queries().GetActiveControlHelperForEnvironment(ctx, environment.ID); helperErr == nil {
 		if !bytes.Equal(helper.PublicKey, publicKey) || !helper.KeyThumbprint.Valid {
-			connector, connectorErr := s.store.Queries().GetControlConnectorGenerationForUpdate(ctx, environment.ID)
+			connector, connectorErr := s.store.Queries().GetControlConnectorGenerationForUpdate(ctx, dbsqlc.GetControlConnectorGenerationForUpdateParams{EnvironmentID: environment.ID, ConnectorID: "runtime"})
 			if connectorErr != nil || connector.EdgePool == "" {
 				return HelperIdentity{}, errors.Join(ErrEnrollmentInvalid, errEnrollmentConsume, connectorErr)
 			}
@@ -153,7 +154,7 @@ func (s *EnrollmentService) ExchangeHostedWorkloadIdentity(ctx context.Context, 
 				return HelperIdentity{}, errors.Join(ErrEnrollmentInvalid, errEnrollmentConsume, replaceErr)
 			}
 		} else {
-			result, issueErr := s.issueActiveHelperIdentity(helper)
+			result, issueErr := s.issueActiveHelperIdentity(ctx, helper)
 			if issueErr != nil {
 				return HelperIdentity{}, errors.Join(ErrEnrollmentInvalid, errEnrollmentConsume, issueErr)
 			}
@@ -183,8 +184,12 @@ func (s *EnrollmentService) ExchangeHostedWorkloadIdentity(ctx context.Context, 
 	return s.Exchange(ctx, grant.Credential, publicKey)
 }
 
-func (s *EnrollmentService) issueActiveHelperIdentity(helper dbsqlc.ControlHelper) (HelperIdentity, error) {
+func (s *EnrollmentService) issueActiveHelperIdentity(ctx context.Context, helper dbsqlc.ControlHelper) (HelperIdentity, error) {
 	now := s.clock().UTC()
+	machine, err := s.store.Queries().GetCanonicalMachineForEnvironment(ctx, helper.EnvironmentID)
+	if err != nil {
+		return HelperIdentity{}, err
+	}
 	jti, err := randomHex("jti_", 24)
 	if err != nil {
 		return HelperIdentity{}, err
@@ -194,13 +199,13 @@ func (s *EnrollmentService) issueActiveHelperIdentity(helper dbsqlc.ControlHelpe
 		Issuer: s.issuer, Audience: "paperboat-control", Subject: helper.ID, JTI: jti,
 		IssuedAt: now, ExpiresAt: expiresAt, CredentialClass: "helper_identity",
 		Scopes: []string{"helper:connect", "helper:renew"}, EnvironmentID: helper.EnvironmentID,
-		HelperID: helper.ID, KeyThumbprint: helper.KeyThumbprint.String,
+		HelperID: helper.ID, MachineID: machine.ID, KeyThumbprint: helper.KeyThumbprint.String,
 	})
 	if err != nil {
 		return HelperIdentity{}, err
 	}
 	return HelperIdentity{
-		HelperID: helper.ID, EnvironmentID: helper.EnvironmentID,
+		HelperID: helper.ID, MachineID: machine.ID, EnvironmentID: helper.EnvironmentID,
 		Credential: token, ExpiresAt: expiresAt,
 	}, nil
 }
@@ -260,9 +265,6 @@ func (s *EnrollmentService) Issue(ctx context.Context, actorID, operationKey, en
 			return errEnrollmentReplay
 		}
 		if err != nil {
-			return err
-		}
-		if _, err := tx.Queries().BindControlConnectorHelper(ctx, dbsqlc.BindControlConnectorHelperParams{EnvironmentID: environmentID, HelperID: helperID, EdgePool: "default", UpdatedAt: now}); err != nil {
 			return err
 		}
 		return s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: actorID, ActorType: audit.ActorUser, EventType: "helper.enrollment_issued", ResourceType: "helper", ResourceID: helperID, IdempotencyKey: "helper.enrollment_issued:" + enrollmentID, Metadata: map[string]any{"environment_id": environmentID, "expires_at": expiresAt}})
@@ -353,14 +355,21 @@ func (s *EnrollmentService) Exchange(ctx context.Context, credential string, pub
 		if err != nil {
 			return errors.Join(err, errEnrollmentActivate)
 		}
-		token, err := s.signer.SignCredential(mint.CredentialInput{Issuer: s.issuer, Audience: "paperboat-control", Subject: helper.ID, JTI: identityJTI, IssuedAt: now, ExpiresAt: expiresAt, CredentialClass: "helper_identity", Scopes: []string{"helper:connect", "helper:renew"}, EnvironmentID: helper.EnvironmentID, HelperID: helper.ID, KeyThumbprint: keyThumbprint})
+		machine, err := tx.Queries().BindCanonicalMachineIdentity(ctx, dbsqlc.BindCanonicalMachineIdentityParams{EnvironmentID: helper.EnvironmentID, PublicIdentityKey: sql.NullString{String: base64.RawURLEncoding.EncodeToString(publicKey), Valid: true}, Now: now})
+		if err != nil {
+			return errors.Join(err, errEnrollmentActivate)
+		}
+		if _, err := tx.Queries().BindControlConnectorMachine(ctx, dbsqlc.BindControlConnectorMachineParams{EnvironmentID: helper.EnvironmentID, ConnectorID: "runtime", MachineID: machine.ID, EdgePool: "default", UpdatedAt: now}); err != nil {
+			return errors.Join(err, errEnrollmentActivate)
+		}
+		token, err := s.signer.SignCredential(mint.CredentialInput{Issuer: s.issuer, Audience: "paperboat-control", Subject: helper.ID, JTI: identityJTI, IssuedAt: now, ExpiresAt: expiresAt, CredentialClass: "helper_identity", Scopes: []string{"helper:connect", "helper:renew"}, EnvironmentID: helper.EnvironmentID, HelperID: helper.ID, MachineID: machine.ID, KeyThumbprint: keyThumbprint})
 		if err != nil {
 			return err
 		}
 		if err := s.audit.WriteTx(ctx, tx, audit.Event{ActorType: audit.ActorSystem, EventType: "helper.enrollment_consumed", ResourceType: "helper", ResourceID: helper.ID, IdempotencyKey: "helper.enrollment_consumed:" + enrollment.ID, Metadata: map[string]any{"environment_id": helper.EnvironmentID}}); err != nil {
 			return errors.Join(err, errEnrollmentPersist)
 		}
-		result = HelperIdentity{HelperID: helper.ID, EnvironmentID: helper.EnvironmentID, Credential: token, ExpiresAt: expiresAt}
+		result = HelperIdentity{HelperID: helper.ID, MachineID: machine.ID, EnvironmentID: helper.EnvironmentID, Credential: token, ExpiresAt: expiresAt}
 		return nil
 	})
 	return result, err
@@ -439,17 +448,21 @@ func (s *EnrollmentService) Renew(ctx context.Context, proof, body []byte) (Help
 	if err != nil || !helper.KeyThumbprint.Valid {
 		return HelperIdentity{}, ErrHelperProof
 	}
+	machine, err := s.store.Queries().GetCanonicalMachineForEnvironment(ctx, helper.EnvironmentID)
+	if err != nil {
+		return HelperIdentity{}, ErrHelperProof
+	}
 	now := s.clock().UTC()
 	jti, err := randomHex("jti_", 24)
 	if err != nil {
 		return HelperIdentity{}, err
 	}
 	expiresAt := now.Add(time.Hour)
-	token, err := s.signer.SignCredential(mint.CredentialInput{Issuer: s.issuer, Audience: "paperboat-control", Subject: helper.ID, JTI: jti, IssuedAt: now, ExpiresAt: expiresAt, CredentialClass: "helper_identity", Scopes: []string{"helper:connect", "helper:renew"}, EnvironmentID: helper.EnvironmentID, HelperID: helper.ID, KeyThumbprint: helper.KeyThumbprint.String})
+	token, err := s.signer.SignCredential(mint.CredentialInput{Issuer: s.issuer, Audience: "paperboat-control", Subject: helper.ID, JTI: jti, IssuedAt: now, ExpiresAt: expiresAt, CredentialClass: "helper_identity", Scopes: []string{"helper:connect", "helper:renew"}, EnvironmentID: helper.EnvironmentID, HelperID: helper.ID, MachineID: machine.ID, KeyThumbprint: helper.KeyThumbprint.String})
 	if err != nil {
 		return HelperIdentity{}, err
 	}
-	result := HelperIdentity{HelperID: helper.ID, EnvironmentID: helper.EnvironmentID, Credential: token, ExpiresAt: expiresAt}
+	result := HelperIdentity{HelperID: helper.ID, MachineID: machine.ID, EnvironmentID: helper.EnvironmentID, Credential: token, ExpiresAt: expiresAt}
 	encoded, err := json.Marshal(result)
 	if err != nil {
 		return HelperIdentity{}, err
@@ -478,7 +491,7 @@ func (s *EnrollmentService) replayIdentityRenewal(storedHash, ciphertext []byte,
 		return HelperIdentity{}, ErrEnrollmentInvalid
 	}
 	var result HelperIdentity
-	if json.Unmarshal([]byte(plaintext), &result) != nil || result.HelperID == "" || result.EnvironmentID == "" || result.Credential == "" || result.ExpiresAt.IsZero() {
+	if json.Unmarshal([]byte(plaintext), &result) != nil || result.HelperID == "" || result.MachineID == "" || result.EnvironmentID == "" || result.Credential == "" || result.ExpiresAt.IsZero() {
 		return HelperIdentity{}, ErrEnrollmentInvalid
 	}
 	return result, nil
@@ -535,7 +548,11 @@ func (s *EnrollmentService) ReplaceHelper(ctx context.Context, actorID, operatio
 		if _, err := tx.Queries().RevokeControlConfigRepositoryLeasesForEnvironment(ctx, dbsqlc.RevokeControlConfigRepositoryLeasesForEnvironmentParams{EnvironmentID: sql.NullString{String: environmentID, Valid: true}, Now: sql.NullTime{Time: now, Valid: true}}); err != nil {
 			return err
 		}
-		generation, err := tx.Queries().AdvanceControlConnectorGeneration(ctx, dbsqlc.AdvanceControlConnectorGenerationParams{EnvironmentID: environmentID, HelperID: helperID, EdgePool: edgePool, UpdatedAt: now})
+		currentGeneration, err := tx.Queries().GetControlConnectorGenerationForUpdate(ctx, dbsqlc.GetControlConnectorGenerationForUpdateParams{EnvironmentID: environmentID, ConnectorID: "runtime"})
+		if err != nil {
+			return err
+		}
+		generation, err := tx.Queries().AdvanceControlConnectorGeneration(ctx, dbsqlc.AdvanceControlConnectorGenerationParams{EnvironmentID: environmentID, ConnectorID: "runtime", MachineID: currentGeneration.MachineID, EdgePool: edgePool, UpdatedAt: now})
 		if err != nil {
 			return err
 		}

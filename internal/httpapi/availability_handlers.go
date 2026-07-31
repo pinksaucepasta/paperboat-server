@@ -31,10 +31,10 @@ func userMachineAvailabilityPolicy(service *usermachines.Service) http.HandlerFu
 			writeError(w, r, http.StatusBadRequest, "validation_failed", "Request body must match the documented schema.")
 			return
 		}
-		result, err := service.SetAvailabilityPolicy(r.Context(), principal.User.ID, r.PathValue("user_machine_id"), r.Header.Get("Idempotency-Key"), input.Mode, input.ExpectedVersion)
+		result, err := service.SetAvailabilityPolicy(r.Context(), principal.User.ID, r.PathValue("machine_id"), r.Header.Get("Idempotency-Key"), input.Mode, input.ExpectedVersion)
 		switch {
 		case errors.Is(err, usermachines.ErrNotFound):
-			writeError(w, r, http.StatusNotFound, "user_machine_not_found", "User machine was not found.")
+			writeError(w, r, http.StatusNotFound, "user_machine_not_found", "Machine was not found.")
 		case errors.Is(err, usermachines.ErrAvailabilityInvalid):
 			writeError(w, r, http.StatusBadRequest, "validation_failed", "A valid Idempotency-Key, expected_version, and mode are required.")
 		case errors.Is(err, usermachines.ErrAvailabilityIdempotencyConflict):
@@ -70,7 +70,7 @@ func helperRuntimePolicyResolve(enrollments *controlplane.EnrollmentService, mac
 			return
 		}
 		parts := strings.Fields(r.Header.Get("Authorization"))
-		proof, proofErr := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Helper-Proof"))
+		proof, proofErr := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Machine-Proof"))
 		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || proofErr != nil || len(proof) == 0 {
 			writeError(w, r, http.StatusUnauthorized, "credential_invalid", "Helper identity is invalid.")
 			return
@@ -82,7 +82,7 @@ func helperRuntimePolicyResolve(enrollments *controlplane.EnrollmentService, mac
 		}
 		result, err := machines.ResolveAvailabilityPolicy(r.Context(), claims.HelperID, claims.EnvironmentID)
 		if errors.Is(err, usermachines.ErrNotFound) {
-			writeError(w, r, http.StatusForbidden, "helper_machine_unavailable", "Helper is not assigned to an active user machine.")
+			writeError(w, r, http.StatusForbidden, "helper_machine_unavailable", "Helper is not assigned to an active machine.")
 			return
 		}
 		if err != nil {

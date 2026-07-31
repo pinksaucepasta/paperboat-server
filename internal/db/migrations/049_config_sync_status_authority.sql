@@ -7,14 +7,18 @@ CREATE TABLE control_config_sync_statuses (
   helper_generation bigint NOT NULL CHECK (helper_generation > 0),
   warning_revision text NOT NULL,
   policy_revision text NOT NULL,
-  key_version bigint NOT NULL CHECK (key_version >= 0),
   sync_revision bigint NOT NULL CHECK (sync_revision >= 0),
   state text NOT NULL,
+  mode text NOT NULL DEFAULT 'pull_only',
   remote_revision text,
+  manifest_health text NOT NULL DEFAULT '',
+  manifest_revision text,
+  managed_path_count integer NOT NULL DEFAULT 0 CHECK (managed_path_count >= 0),
+  pending_clean_path_count integer NOT NULL DEFAULT 0 CHECK (pending_clean_path_count >= 0),
+  last_applied_revision text,
+  last_published_revision text,
   lease_id text,
   fencing_token bigint,
-  pending_path_count integer NOT NULL DEFAULT 0 CHECK (pending_path_count >= 0),
-  classifier_pending jsonb NOT NULL DEFAULT '[]'::jsonb,
   skipped jsonb NOT NULL DEFAULT '[]'::jsonb,
   conflicts jsonb NOT NULL DEFAULT '[]'::jsonb,
   error_code text,
@@ -24,8 +28,10 @@ CREATE TABLE control_config_sync_statuses (
   helper_updated_at timestamptz NOT NULL,
   observed_at timestamptz NOT NULL DEFAULT now(),
   CHECK (state IN ('disabled','consent_required','restoring','watching','pending','syncing','healthy','warning','conflict','offline','revoked','error','sync_uncertain')),
+  CHECK (mode IN ('pull_only','push_only','bidirectional')),
+  CHECK (manifest_health IN ('','healthy','empty','missing','invalid')),
   CHECK (fencing_token IS NULL OR (fencing_token > 0 AND lease_id IS NOT NULL)),
-  CHECK (jsonb_typeof(classifier_pending) = 'array' AND jsonb_typeof(skipped) = 'array' AND jsonb_typeof(conflicts) = 'array' AND jsonb_typeof(recovery_actions) = 'array')
+	CHECK (jsonb_typeof(skipped) = 'array' AND jsonb_typeof(conflicts) = 'array' AND jsonb_typeof(recovery_actions) = 'array')
 );
 CREATE INDEX control_config_sync_statuses_repository_state
   ON control_config_sync_statuses(repository_id, state, observed_at);

@@ -27,7 +27,7 @@ func TestPreviewLifecyclePreservesIdentityAndTombstonesRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	helperHost := "helper-" + strings.ToLower(suffix) + ".example.test"
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_routes (id,environment_id,kind,public_host,target_host,target_port) VALUES ($1,$2,'helper_https_wss',$3,'127.0.0.1',38080)`, "route_helper_"+suffix, environmentID, helperHost); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_routes (id,environment_id,kind,public_host,target_host,target_port) VALUES ($1,$2,'runtime_https_wss',$3,'127.0.0.1',38080)`, "route_helper_"+suffix, environmentID, helperHost); err != nil {
 		t.Fatal(err)
 	}
 	if allowed, err := service.CanIssueCertificate(ctx, helperHost); err != nil || !allowed {

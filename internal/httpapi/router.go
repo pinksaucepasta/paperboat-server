@@ -18,9 +18,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/auth"
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
 	"github.com/pinksaucepasta/paperboat-server/internal/catalog"
-	"github.com/pinksaucepasta/paperboat-server/internal/classifier"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
-	"github.com/pinksaucepasta/paperboat-server/internal/configsync"
 	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
@@ -53,9 +51,7 @@ type Options struct {
 	EnvironmentAccess      *access.Service
 	MeteringRepo           *metering.RuntimeRepository
 	RuntimeIdentity        *controlplane.EnrollmentService
-	ConfigSync             *configsync.Repository
-	Classifier             *classifier.Controller
-	UserMachines           *usermachines.Service
+	Machines               *usermachines.Service
 	MintKeys               *mint.Provider
 	EdgeControl            http.Handler
 	EdgeControlAdmin       *controlplane.EdgeService
@@ -67,7 +63,6 @@ type Options struct {
 	ConfigStatuses         *controlplane.ConfigStatusService
 	ConfigRepositoryAccess *controlplane.ConfigRepositoryAccessService
 	ConfigRuntime          *controlplane.ConfigRuntimeService
-	ConfigClassification   *controlplane.ConfigClassificationService
 	ConfigConflicts        *controlplane.ConfigConflictService
 	Routes                 *controlplane.RouteService
 	Previews               *controlplane.PreviewService
@@ -107,9 +102,9 @@ func NewRouter(opts Options) http.Handler {
 			if opts.EdgeControlAdmin != nil {
 				mux.HandleFunc("POST /v1/helper-trust/revocations", helperRevocations(opts.EdgeControlAdmin, opts.Enrollment))
 			}
-			if opts.UserMachines != nil {
-				mux.Handle("POST /v1/user-machine-installation-failures", helperInstallationFailure(opts.Enrollment, opts.UserMachines))
-				mux.Handle("POST /v1/helper-runtime-policies/resolve", helperRuntimePolicyResolve(opts.Enrollment, opts.UserMachines))
+			if opts.Machines != nil {
+				mux.Handle("POST /v1/machine-installation-failures", helperInstallationFailure(opts.Enrollment, opts.Machines))
+				mux.Handle("POST /v1/helper-runtime-policies/resolve", helperRuntimePolicyResolve(opts.Enrollment, opts.Machines))
 			}
 			if opts.Previews != nil {
 				mux.Handle("POST /v1/previews/credentials", helperPreviewCredential(opts.Enrollment))
@@ -140,9 +135,6 @@ func NewRouter(opts Options) http.Handler {
 		}
 		if opts.ConfigRuntime != nil {
 			mux.HandleFunc("POST /v1/config/runtime", configRuntimeGet(opts.ConfigRuntime))
-		}
-		if opts.ConfigClassification != nil {
-			mux.HandleFunc("POST /v1/config/classify", configClassification(opts.ConfigClassification))
 		}
 		if opts.ConfigConflicts != nil {
 			mux.HandleFunc("POST /v1/config/conflict-resolutions/pending", configConflictPending(opts.ConfigConflicts))
@@ -175,54 +167,69 @@ func NewRouter(opts Options) http.Handler {
 				mux.Handle("GET /v1/config-repositories/candidates", configAuth("projects:read", configRepositoryCandidates(opts.ConfigAssignments)))
 				mux.Handle("POST /v1/config-repositories", requireAuth(opts.Auth, requireCSRF(opts.Auth, configRepositoryConnect(opts.ConfigAssignments))))
 				mux.Handle("DELETE /v1/config-repositories/{repository_id}", requireAuth(opts.Auth, requireCSRF(opts.Auth, configRepositoryDisconnect(opts.ConfigAssignments))))
-				mux.Handle("GET /v1/environments/{environment_id}/config-assignment", configAuth("projects:read", configAssignmentGet(opts.ConfigAssignments)))
-				mux.Handle("PUT /v1/environments/{environment_id}/config-assignment", configAuth("projects:connect", requireCSRF(opts.Auth, configAssignmentSet(opts.ConfigAssignments))))
-				mux.Handle("GET /v1/environments/{environment_id}/config-assignment/warning", configAuth("projects:read", configWarning(opts.ConfigAssignments)))
-				mux.Handle("POST /v1/environments/{environment_id}/config-assignment/consent", requireAuth(opts.Auth, requireCSRF(opts.Auth, configConsent(opts.ConfigAssignments))))
-				mux.Handle("DELETE /v1/environments/{environment_id}/config-assignment/consent", requireAuth(opts.Auth, requireCSRF(opts.Auth, configConsentRemove(opts.ConfigAssignments))))
-				mux.Handle("DELETE /v1/environments/{environment_id}/config-assignment", configAuth("projects:connect", requireCSRF(opts.Auth, configAssignmentClear(opts.ConfigAssignments))))
+				mux.Handle("GET /v1/machines/{machine_id}/config-assignment", configAuth("projects:read", configAssignmentGet(opts.ConfigAssignments)))
+				mux.Handle("PUT /v1/machines/{machine_id}/config-assignment", configAuth("projects:connect", requireCSRF(opts.Auth, configAssignmentSet(opts.ConfigAssignments))))
+				mux.Handle("GET /v1/machines/{machine_id}/config-assignment/warning", configAuth("projects:read", configWarning(opts.ConfigAssignments)))
+				mux.Handle("POST /v1/machines/{machine_id}/config-assignment/consent", requireAuth(opts.Auth, requireCSRF(opts.Auth, configConsent(opts.ConfigAssignments))))
+				mux.Handle("DELETE /v1/machines/{machine_id}/config-assignment/consent", requireAuth(opts.Auth, requireCSRF(opts.Auth, configConsentRemove(opts.ConfigAssignments))))
+				mux.Handle("DELETE /v1/machines/{machine_id}/config-assignment", configAuth("projects:connect", requireCSRF(opts.Auth, configAssignmentClear(opts.ConfigAssignments))))
 			}
 		}
-		if opts.UserMachines != nil {
+		if opts.Machines != nil {
+			mux.HandleFunc("POST /v1/machine-control-renewals", machineControlRenew(opts.Machines))
 			userMachineAuth := func(scope string, next http.Handler) http.Handler {
 				if opts.DeviceAuth != nil {
 					return requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope(scope, next))
 				}
 				return requireAuth(opts.Auth, next)
 			}
-			mux.HandleFunc("POST /v1/user-machines/pairings", userMachinePairings(opts.UserMachines))
-			mux.Handle("POST /v1/user-machine-enrollments", requireAuth(opts.Auth, requireCSRF(opts.Auth, userMachineEnrollmentStart(opts.UserMachines))))
-			mux.Handle("GET /v1/user-machine-enrollments/{enrollment_id}", requireAuth(opts.Auth, userMachineEnrollmentStatus(opts.UserMachines)))
-			mux.Handle("POST /v1/user-machine-enrollments/{enrollment_id}/cancel", requireAuth(opts.Auth, requireCSRF(opts.Auth, userMachineEnrollmentCancel(opts.UserMachines))))
-			mux.Handle("POST /v1/user-machine-enrollments/{enrollment_id}/retry", requireAuth(opts.Auth, requireCSRF(opts.Auth, userMachineEnrollmentRetry(opts.UserMachines))))
-			mux.Handle("GET /v1/user-machines/overview", userMachineAuth("projects:read", userMachineOverview(opts.UserMachines)))
-			mux.Handle("GET /v1/user-machines/{user_machine_id}", requireAuth(opts.Auth, userMachineGet(opts.UserMachines)))
-			mux.Handle("PUT /v1/user-machines/{user_machine_id}/availability-policy", userMachineAuth("projects:connect", requireCSRF(opts.Auth, userMachineAvailabilityPolicy(opts.UserMachines))))
+			mux.HandleFunc("POST /v1/machines/pairings", userMachinePairings(opts.Machines))
 			if opts.DeviceAuth != nil {
-				mux.Handle("POST /v1/user-machines/{user_machine_id}/connection-descriptor", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", userMachineConnectionDescriptor(opts.UserMachines))))
-				mux.Handle("GET /v1/user-machines/{user_machine_id}/connection-readiness", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", userMachineConnectionReadiness(opts.UserMachines))))
+				mux.Handle("POST /v1/machines/setup", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", machineSetup(opts.Machines))))
+				mux.Handle("POST /v1/machines/{machine_id}/control-credentials", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", machineControlIssue(opts.Machines))))
+				mux.Handle("POST /v1/machines/{machine_id}/unpair", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", machineUnpair(opts.Machines))))
 			}
-			mux.Handle("GET /v1/user-machines/{user_machine_id}/terminal-sessions", userMachineAuth("projects:read", userMachineTerminalSessionsList(opts.UserMachines)))
-			mux.Handle("POST /v1/user-machines/{user_machine_id}/terminal-sessions", userMachineAuth("projects:connect", userMachineTerminalSessionsCreate(opts.UserMachines)))
-			mux.Handle("PATCH /v1/user-machines/{user_machine_id}/terminal-sessions/{session_id}", userMachineAuth("projects:connect", userMachineTerminalSessionsRename(opts.UserMachines)))
-			mux.Handle("POST /v1/user-machines/{user_machine_id}/terminal-sessions/{session_id}/close", userMachineAuth("projects:connect", userMachineTerminalSessionsClose(opts.UserMachines)))
-			mux.Handle("DELETE /v1/user-machines/{user_machine_id}/terminal-sessions/{session_id}", userMachineAuth("projects:connect", userMachineTerminalSessionsDelete(opts.UserMachines)))
-			mux.HandleFunc("POST /v1/user-machines/pairings/installation", userMachineInstallationConsume(opts.UserMachines))
-			mux.Handle("POST /v1/user-machines/pairings/{user_code}/approve", requireAuth(opts.Auth, requireCSRF(opts.Auth, userMachinePairingApprove(opts.UserMachines))))
-			mux.Handle("POST /v1/user-machines/pairings/{user_code}/deny", requireAuth(opts.Auth, requireCSRF(opts.Auth, userMachinePairingDeny(opts.UserMachines))))
-			mux.Handle("POST /v1/user-machines/{user_machine_id}/disconnect", userMachineAuth("projects:connect", requireCSRF(opts.Auth, userMachineDisconnect(opts.UserMachines))))
-			mux.Handle("DELETE /v1/user-machines/{user_machine_id}", userMachineAuth("projects:connect", requireCSRF(opts.Auth, userMachineDelete(opts.UserMachines))))
+			mux.Handle("POST /v1/machine-enrollments", requireAuth(opts.Auth, requireCSRF(opts.Auth, userMachineEnrollmentStart(opts.Machines))))
+			mux.Handle("GET /v1/machine-enrollments/{enrollment_id}", requireAuth(opts.Auth, userMachineEnrollmentStatus(opts.Machines)))
+			mux.Handle("POST /v1/machine-enrollments/{enrollment_id}/cancel", requireAuth(opts.Auth, requireCSRF(opts.Auth, userMachineEnrollmentCancel(opts.Machines))))
+			mux.Handle("POST /v1/machine-enrollments/{enrollment_id}/retry", requireAuth(opts.Auth, requireCSRF(opts.Auth, userMachineEnrollmentRetry(opts.Machines))))
+			mux.Handle("GET /v1/machines/overview", userMachineAuth("projects:read", userMachineOverview(opts.Machines)))
+			mux.Handle("GET /v1/transfer-destination-default", userMachineAuth("projects:read", transferDestinationDefault(opts.Machines)))
+			mux.Handle("PUT /v1/transfer-destination-default", userMachineAuth("projects:connect", transferDestinationDefault(opts.Machines)))
+			mux.Handle("DELETE /v1/transfer-destination-default", userMachineAuth("projects:connect", transferDestinationDefault(opts.Machines)))
+			mux.Handle("GET /v1/terminal-sessions/{session_id}/transfer-destination", userMachineAuth("projects:read", terminalSessionTransferDestination(opts.Machines)))
+			mux.Handle("PUT /v1/terminal-sessions/{session_id}/transfer-destination", userMachineAuth("projects:connect", terminalSessionTransferDestination(opts.Machines)))
+			mux.Handle("DELETE /v1/terminal-sessions/{session_id}/transfer-destination", userMachineAuth("projects:connect", terminalSessionTransferDestination(opts.Machines)))
+			mux.Handle("GET /v1/machines/{machine_id}", requireAuth(opts.Auth, userMachineGet(opts.Machines)))
+			mux.Handle("PUT /v1/machines/{machine_id}/availability-policy", userMachineAuth("projects:connect", requireCSRF(opts.Auth, userMachineAvailabilityPolicy(opts.Machines))))
 			if opts.DeviceAuth != nil {
-				mux.Handle("GET /v1/user-machines", requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope("projects:read", userMachinesList(opts.UserMachines))))
+				mux.Handle("POST /v1/machines/{machine_id}/connection-descriptor", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", userMachineConnectionDescriptor(opts.Machines))))
+				mux.Handle("POST /v1/machines/{machine_id}/preview-launch-descriptor", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", userMachinePreviewLaunchDescriptor(opts.Machines))))
+				mux.Handle("POST /v1/machines/{machine_id}/file-transfer-descriptor", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", userMachineFileTransferDescriptor(opts.Machines, opts.EnvironmentAccess))))
+				mux.Handle("GET /v1/machines/{machine_id}/connection-readiness", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", userMachineConnectionReadiness(opts.Machines))))
+				mux.Handle("GET /v1/terminal-sessions/{session_id}/transfer-destinations", requireBearerAuth(opts.DeviceAuth, requireScope("projects:read", terminalSessionTransferDestinations(opts.Machines, opts.EnvironmentAccess))))
+			}
+			mux.Handle("GET /v1/machines/{machine_id}/terminal-sessions", userMachineAuth("projects:read", userMachineTerminalSessionsList(opts.Machines)))
+			mux.Handle("POST /v1/machines/{machine_id}/terminal-sessions", userMachineAuth("projects:connect", userMachineTerminalSessionsCreate(opts.Machines)))
+			mux.Handle("PATCH /v1/machines/{machine_id}/terminal-sessions/{session_id}", userMachineAuth("projects:connect", userMachineTerminalSessionsRename(opts.Machines)))
+			mux.Handle("POST /v1/machines/{machine_id}/terminal-sessions/{session_id}/close", userMachineAuth("projects:connect", userMachineTerminalSessionsClose(opts.Machines)))
+			mux.Handle("DELETE /v1/machines/{machine_id}/terminal-sessions/{session_id}", userMachineAuth("projects:connect", userMachineTerminalSessionsDelete(opts.Machines)))
+			mux.HandleFunc("POST /v1/machines/pairings/installation", userMachineInstallationConsume(opts.Machines))
+			mux.Handle("POST /v1/machines/pairings/{user_code}/approve", requireAuth(opts.Auth, requireCSRF(opts.Auth, userMachinePairingApprove(opts.Machines))))
+			mux.Handle("POST /v1/machines/pairings/{user_code}/deny", requireAuth(opts.Auth, requireCSRF(opts.Auth, userMachinePairingDeny(opts.Machines))))
+			mux.Handle("POST /v1/machines/{machine_id}/disconnect", userMachineAuth("projects:connect", requireCSRF(opts.Auth, userMachineDisconnect(opts.Machines))))
+			mux.Handle("DELETE /v1/machines/{machine_id}", userMachineAuth("projects:connect", requireCSRF(opts.Auth, userMachineDelete(opts.Machines))))
+			if opts.DeviceAuth != nil {
+				mux.Handle("GET /v1/machines", requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope("projects:read", machinesList(opts.Machines))))
 			} else {
-				mux.Handle("GET /v1/user-machines", requireAuth(opts.Auth, userMachinesList(opts.UserMachines)))
+				mux.Handle("GET /v1/machines", requireAuth(opts.Auth, machinesList(opts.Machines)))
 			}
 		}
 		if opts.Billing != nil {
 			mux.HandleFunc("POST /v1/webhooks/polar", polarWebhook(opts.Billing, opts.Config.Secrets.PolarWebhookSecret, opts.Config.Billing.PolarWebhookTolerance))
 		}
 		if opts.MeteringRepo != nil {
-			mux.HandleFunc("POST /v1/runtime-observations", runtimeObservation(opts.MeteringRepo, opts.RuntimeIdentity, opts.Config.ConfigSync.SummaryLimit, opts.UserMachines))
+			mux.HandleFunc("POST /v1/runtime-observations", runtimeObservation(opts.MeteringRepo, opts.RuntimeIdentity, opts.Config.ConfigSync.SummaryLimit, opts.Machines))
 		}
 		mux.HandleFunc("/", notFound)
 		handler = mux
@@ -300,8 +307,6 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 	}
 	mux.HandleFunc("GET /v1/auth/workos/state", workOSState(opts.Auth))
 	mux.HandleFunc("POST /v1/auth/workos/callback", workOSCallback(opts.Auth))
-	mux.Handle("GET /v1/auth/workos/reauth/state", requireAuth(opts.Auth, workOSReauthState(opts.Auth)))
-	mux.Handle("POST /v1/auth/workos/reauth/callback", requireAuth(opts.Auth, workOSReauthCallback(opts.Auth)))
 	mux.Handle("POST /v1/auth/logout", requireAuth(opts.Auth, logout(opts.Auth, opts.EnvironmentAccess)))
 	mux.Handle("GET /v1/auth/csrf", requireAuth(opts.Auth, csrf(opts.Auth)))
 	meHandler := requireAuth(opts.Auth, me(opts.Auth))
@@ -314,13 +319,7 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 	}
 	if opts.ConfigConflicts != nil {
 		mux.Handle("POST /v1/config-sync/environments/{environment_id}/conflict-resolutions", requireAuth(opts.Auth, requireCSRF(opts.Auth, configConflictRequest(opts.ConfigConflicts))))
-	}
-	if opts.ConfigSync != nil {
-		mux.Handle("GET /v1/config-sync/overrides", requireAuth(opts.Auth, requireEntitlement(opts.Auth, configSyncOverrides(opts.ConfigSync))))
-		mux.Handle("PUT /v1/config-sync/overrides", requireAuth(opts.Auth, requireEntitlement(opts.Auth, configSyncOverridePut(opts.ConfigSync))))
-		mux.Handle("DELETE /v1/config-sync/overrides", requireAuth(opts.Auth, requireEntitlement(opts.Auth, configSyncOverrideDelete(opts.ConfigSync))))
-		mux.Handle("POST /v1/config-sync/recovery-key/export", requireAuth(opts.Auth, requireEntitlement(opts.Auth, configSyncRecoveryExport(opts.Auth, opts.ConfigSync))))
-		mux.Handle("POST /v1/config-sync/recovery-key/rotate", requireAuth(opts.Auth, requireEntitlement(opts.Auth, configSyncKeyRotate(opts.Auth, opts.ConfigSync))))
+		mux.Handle("POST /v1/config-sync/environments/{environment_id}/force", requireAuth(opts.Auth, requireCSRF(opts.Auth, configForceRequest(opts.ConfigConflicts))))
 	}
 	if opts.DeviceAuth != nil {
 		requestNetwork := newRequestNetwork(opts.Config.HTTP.TrustedProxyCIDRs)

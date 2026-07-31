@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"testing"
 	"time"
@@ -23,10 +24,11 @@ func TestRoutesExcludeExpiredConnectorAssignments(t *testing.T) {
 	seedUsageScope(t, store, suffix)
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	environmentID, nodeID, helperID := "env_"+suffix, "node_"+suffix, "hlp_"+suffix
+	machineID := seedConnectorTestMachine(t, store, environmentID)
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_helpers (id,environment_id,key_thumbprint,public_key,state) VALUES ($1,$2,'sha256:test',$3,'active')`, helperID, environmentID, make([]byte, 32)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_connector_generations (environment_id,helper_id,generation,edge_pool,edge_node_id,state,expires_at) VALUES ($1,$2,1,'default',$3,'admitted',$4)`, environmentID, helperID, nodeID, now.Add(-time.Second)); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_connector_generations (environment_id,machine_id,generation,edge_pool,edge_node_id,state,expires_at) VALUES ($1,$2,1,'default',$3,'admitted',$4)`, environmentID, machineID, nodeID, now.Add(-time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	service := NewEdgeService(store, "test")
@@ -56,13 +58,14 @@ func TestReconcileStaleNodesFencesConnectorAndAdvancesRoute(t *testing.T) {
 	seedUsageScope(t, store, suffix)
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	environmentID, nodeID, routeID, helperID := "env_"+suffix, "node_"+suffix, "route_"+suffix, "hlp_"+suffix
+	machineID := seedConnectorTestMachine(t, store, environmentID)
 	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.control_tunnel_nodes SET state='ready',ready=true,last_heartbeat_at=$2 WHERE id=$1`, nodeID, now.Add(-time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_helpers (id,environment_id,key_thumbprint,public_key,state) VALUES ($1,$2,'sha256:test',$3,'active')`, helperID, environmentID, make([]byte, 32)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_connector_generations (environment_id,helper_id,generation,edge_pool,edge_node_id,state,admission_jti_hash,expires_at) VALUES ($1,$2,1,'default',$3,'admitted',$4,$5)`, environmentID, helperID, nodeID, []byte("admission-hash"), now.Add(time.Minute)); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_connector_generations (environment_id,machine_id,generation,edge_pool,edge_node_id,state,admission_jti_hash,expires_at) VALUES ($1,$2,1,'default',$3,'admitted',$4,$5)`, environmentID, machineID, nodeID, []byte("admission-hash"), now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.control_routes SET applied_revision=1,applied_node_id=$2,applied_generation=1 WHERE id=$1`, routeID, nodeID); err != nil {
@@ -109,7 +112,8 @@ func TestObserveRoutesFencesRevisionNodeAndGeneration(t *testing.T) {
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_helpers (id,environment_id,key_thumbprint,public_key,state) VALUES ($1,$2,'sha256:test',$3,'active')`, helperID, environmentID, make([]byte, 32)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_connector_generations (environment_id,helper_id,generation,edge_pool,edge_node_id,state) VALUES ($1,$2,4,'default',$3,'admitted')`, environmentID, helperID, nodeID); err != nil {
+	machineID := seedConnectorTestMachine(t, store, environmentID)
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_connector_generations (environment_id,machine_id,generation,edge_pool,edge_node_id,state) VALUES ($1,$2,4,'default',$3,'admitted')`, environmentID, machineID, nodeID); err != nil {
 		t.Fatal(err)
 	}
 	service := NewEdgeService(store, "test")
@@ -150,4 +154,20 @@ func TestObserveRoutesFencesRevisionNodeAndGeneration(t *testing.T) {
 	if state != "detached" || appliedRevision != 2 || stillAssigned {
 		t.Fatalf("detached route = %s/%d assigned=%v", state, appliedRevision, stillAssigned)
 	}
+}
+
+func seedConnectorTestMachine(t *testing.T, store interface{ SQL() *sql.DB }, environmentID string) string {
+	t.Helper()
+	userID, machineID := "user_"+environmentID, "machine_"+environmentID
+	ctx := context.Background()
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_"+userID, userID+"@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.control_environments SET owner_user_id=$2 WHERE id=$1`, environmentID, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root) VALUES ($1,$2,$3,$1,'linux','unknown','/workspace')`, machineID, userID, environmentID); err != nil {
+		t.Fatal(err)
+	}
+	return machineID
 }

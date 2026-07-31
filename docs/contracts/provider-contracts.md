@@ -121,14 +121,14 @@ Approved baseline:
   unusable when provider validation/refresh fails.
 - Project clone credential handoff may use VM-scoped secret injection. Config-sync
   repository access is a separate short-lived credential bound to the current repository,
-  assignment, environment, helper generation, and operation. User-facing APIs return
+  assignment, environment, machine installation generation, and operation. User-facing APIs return
   neither credential class.
 
 Implementation constraints:
 
 - Token material is encrypted.
 - Private config repo provisioning is idempotent.
-- `paperboat-helper` owns ongoing config-sync pull/apply/commit/push behavior and obtains
+- The `pb` config worker owns ongoing config-sync pull/apply/commit/push behavior and obtains
   scoped repository access through its authenticated control-plane identity.
 - The server owns repository authorization, assignment eligibility, scoped-access
   issuance/revocation, and writer leases; it never proxies configuration bytes.

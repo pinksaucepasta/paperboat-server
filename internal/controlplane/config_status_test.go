@@ -33,9 +33,9 @@ func TestMarshalConfigStatusListCanonicalizesNilAsArray(t *testing.T) {
 func TestConfigStatusValidationRejectsStaleLeakingAndInconsistentReports(t *testing.T) {
 	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
 	valid := ConfigStatusReport{
-		State: "healthy", RepositoryID: "repository", AssignmentID: "assignment",
-		EnvironmentID: "environment", HelperID: "helper", HelperGeneration: 1,
-		WarningRevision: "warning-1", PolicyRevision: "policy-1", KeyVersion: 1,
+		State: "healthy", Mode: ConfigModeBidirectional, RepositoryID: "repository", AssignmentID: "assignment",
+		EnvironmentID: "environment", MachineID: "helper", InstallationGeneration: 1,
+		WarningRevision: "warning-1", PolicyRevision: "policy-1",
 		SyncRevision: 1, RemoteRevision: "head", UpdatedAt: now,
 	}
 	if err := validateConfigStatus(valid, 10, now); err != nil {
@@ -67,9 +67,9 @@ func TestConfigStatusValidationRejectsStaleLeakingAndInconsistentReports(t *test
 func TestConfigStatusValidationAcceptsHelperWarningWithSafeSkippedSpecialFiles(t *testing.T) {
 	now := time.Date(2026, 7, 24, 7, 32, 39, 0, time.UTC)
 	report := ConfigStatusReport{
-		State: "revoked", RepositoryID: "cfgrepo_fixture", AssignmentID: "cfgasn_fixture",
-		EnvironmentID: "environment_fixture", HelperID: "helper_fixture", HelperGeneration: 1,
-		WarningRevision: "hosted", PolicyRevision: "2", KeyVersion: 1, SyncRevision: 12,
+		State: "revoked", Mode: ConfigModePullOnly, RepositoryID: "cfgrepo_fixture", AssignmentID: "cfgasn_fixture",
+		EnvironmentID: "environment_fixture", MachineID: "helper_fixture", InstallationGeneration: 1,
+		WarningRevision: "hosted", PolicyRevision: "1", SyncRevision: 12,
 		RemoteRevision: "b08059618b070ee1673a0db2301c36ca7696e07a",
 		LastAttemptAt:  &now, LastSuccessfulAt: &now, UpdatedAt: now,
 		Skipped: []ConfigStatusPath{{
@@ -118,14 +118,14 @@ func TestConfigAccountStatusUsesCanonicalAssignmentsConsentAndStatus(t *testing.
 		{`INSERT INTO paperboat.control_config_repositories (id,owner_user_id,provider,external_ref,display_name,state) VALUES ($1,$2,'github',$1,'owner/config','active')`, []any{repository, user}},
 		{`INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id) VALUES ($1,$1,$3),($2,$2,$3)`, []any{hostedEnvironment, byodEnvironment, user}},
 		{`INSERT INTO paperboat.control_helpers (id,environment_id,state,generation) VALUES ($1,$2,'active',1),($3,$4,'active',1)`, []any{hostedHelper, hostedEnvironment, byodHelper, byodEnvironment}},
-		{`INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state) VALUES ($1,$2,$3,'Laptop','darwin','arm64','/Users/test','online')`, []any{"machine_" + suffix, user, byodEnvironment}},
-		{`INSERT INTO paperboat.control_config_assignments (id,environment_id,repository_id,consent_state,warning_revision) VALUES ($1,$2,$3,'not_required','warning-1'),($4,$5,$3,'pending','warning-1')`, []any{hostedAssignment, hostedEnvironment, repository, byodAssignment, byodEnvironment}},
+		{`INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,machine_kind) VALUES ($1,$3,$4,'Hosted','linux','unknown','/workspace','online','hosted'),($2,$3,$5,'Laptop','darwin','arm64','/Users/test','online','personal')`, []any{"hosted_machine_" + suffix, "machine_" + suffix, user, hostedEnvironment, byodEnvironment}},
+		{`INSERT INTO paperboat.control_config_assignments (id,machine_id,environment_id,repository_id,consent_state,warning_revision) VALUES ($1,$2,$3,$4,'not_required','warning-1'),($5,$6,$7,$4,'pending','warning-1')`, []any{hostedAssignment, "hosted_machine_" + suffix, hostedEnvironment, repository, byodAssignment, "machine_" + suffix, byodEnvironment}},
 		{`INSERT INTO paperboat.control_config_sync_statuses
-		  (environment_id,repository_id,assignment_id,helper_id,helper_generation,
-		   warning_revision,policy_revision,key_version,sync_revision,state,
-		   pending_path_count,helper_updated_at,observed_at)
-		  VALUES ($1,$2,$3,$4,1,'warning-1','policy-1',1,2,'healthy',0,$5,$5)`,
-			[]any{hostedEnvironment, repository, hostedAssignment, hostedHelper, now}},
+		  (environment_id,repository_id,assignment_id,machine_id,installation_generation,
+		   warning_revision,policy_revision,sync_revision,state,
+		   pending_clean_path_count,machine_updated_at,observed_at)
+		  VALUES ($1,$2,$3,$4,1,'warning-1','policy-1',2,'healthy',0,$5,$5)`,
+			[]any{hostedEnvironment, repository, hostedAssignment, "hosted_machine_" + suffix, now}},
 	}
 	for _, statement := range statements {
 		if _, err := store.SQL().ExecContext(ctx, statement.query, statement.args...); err != nil {
@@ -140,7 +140,8 @@ func TestConfigAccountStatusUsesCanonicalAssignmentsConsentAndStatus(t *testing.
 	service.SetAccountPolicy(config.ConfigSync{
 		Mode: "leased_writes", BYODEnabled: true,
 		PolicyRevision: "policy-1", MaxFileBytes: 10, MaxBatchBytes: 20,
-		MandatoryExcludes:   []string{".ssh"},
+		ManifestContract: "paperboat-manifest-v1", ManifestMaxBytes: 1024,
+		ManifestMaxLines: 10, ManifestMaxPatternBytes: 128,
 		StaleHeartbeatAfter: time.Minute,
 	})
 	status, err := service.Account(ctx, user)

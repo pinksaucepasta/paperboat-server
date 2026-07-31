@@ -27,8 +27,8 @@ func configRuntimeGet(service *controlplane.ConfigRuntimeService) http.HandlerFu
 			writeError(w, r, http.StatusBadRequest, "runtime_invalid", "Configuration runtime request is invalid.")
 			return
 		}
-		proof, proofErr := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Helper-Proof"))
-		identity := strings.TrimSpace(r.Header.Get("X-Paperboat-Helper-Identity"))
+		proof, proofErr := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Machine-Proof"))
+		identity := strings.TrimSpace(r.Header.Get("X-Paperboat-Machine-Identity"))
 		credential, ok := bearerToken(r)
 		if proofErr != nil || identity == "" || !ok {
 			writeError(w, r, http.StatusUnauthorized, "runtime_invalid", "Configuration runtime authorization is invalid.")

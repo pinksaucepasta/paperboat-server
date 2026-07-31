@@ -1,10 +1,10 @@
 -- name: CreateUserMachinePairing :one
 INSERT INTO user_machine_pairings (
   id, verifier_hash, user_code, requested_display_name, platform, architecture,
-  workspace_root, runtime_versions, expires_at
+  workspace_root, runtime_versions, public_identity_key, expires_at
 ) VALUES (
   sqlc.arg(id), sqlc.arg(verifier_hash), sqlc.arg(user_code), sqlc.arg(requested_display_name),
-  sqlc.arg(platform), sqlc.arg(architecture), sqlc.arg(workspace_root), sqlc.arg(runtime_versions),
+  sqlc.arg(platform), sqlc.arg(architecture), sqlc.arg(workspace_root), sqlc.arg(runtime_versions), sqlc.arg(public_identity_key),
   sqlc.arg(expires_at)
 ) RETURNING *;
 
@@ -223,15 +223,95 @@ SELECT * FROM user_machine_pairings WHERE id = sqlc.arg(id);
 UPDATE user_machine_pairings SET state = 'expired', updated_at = now()
 WHERE id = sqlc.arg(id) AND state = 'pending' AND expires_at <= now();
 
--- name: CreateUserMachine :one
+-- name: CreateInteractiveMachine :one
 INSERT INTO user_machines (
   id, user_id, environment_id, display_name, platform, architecture, workspace_root,
-  state, seat_state, runtime_versions, enrolled_at
+  state, seat_state, runtime_versions, setup_roles, public_identity_key, enrolled_at
 ) VALUES (
   sqlc.arg(id), sqlc.arg(user_id), sqlc.arg(environment_id), sqlc.arg(display_name),
   sqlc.arg(platform), sqlc.arg(architecture), sqlc.arg(workspace_root),
-  'offline', 'occupied', sqlc.arg(runtime_versions), now()
+  'offline', 'released', sqlc.arg(runtime_versions), ARRAY['interactive']::text[], sqlc.arg(public_identity_key), now()
 ) RETURNING *;
+
+-- name: CreateHostedMachine :one
+INSERT INTO user_machines (
+  id, user_id, environment_id, display_name, platform, architecture, workspace_root,
+  state, seat_state, runtime_versions, setup_roles, machine_kind
+) VALUES (
+  sqlc.arg(id), sqlc.arg(user_id), sqlc.arg(environment_id), sqlc.arg(display_name),
+  'linux', 'unknown', '/workspace', 'pending', 'occupied', '{}'::jsonb,
+  ARRAY['host']::text[], 'hosted'
+) RETURNING *;
+
+-- name: GetUserMachineByPublicIdentityForUpdate :one
+SELECT * FROM user_machines
+WHERE public_identity_key = sqlc.arg(public_identity_key) AND deleted_at IS NULL
+FOR UPDATE;
+
+-- name: GetCanonicalMachineForEnvironment :one
+SELECT * FROM user_machines
+WHERE environment_id = sqlc.arg(environment_id) AND deleted_at IS NULL;
+
+-- name: GetActiveUserMachineForControl :one
+SELECT * FROM user_machines
+WHERE id = sqlc.arg(id) AND deleted_at IS NULL AND revoked_at IS NULL
+  AND public_identity_key IS NOT NULL;
+
+-- name: GetOwnedActiveUserMachineForControl :one
+SELECT * FROM user_machines
+WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id)
+  AND deleted_at IS NULL AND revoked_at IS NULL AND public_identity_key IS NOT NULL;
+
+-- name: CreateMachineControlRenewal :one
+INSERT INTO machine_control_renewals (
+  operation_id, machine_id, installation_generation, credential_jti, issued_at, expires_at
+) VALUES (
+  sqlc.arg(operation_id), sqlc.arg(machine_id), sqlc.arg(installation_generation),
+  sqlc.arg(credential_jti), sqlc.arg(issued_at), sqlc.arg(expires_at)
+) ON CONFLICT (operation_id) DO UPDATE SET operation_id = EXCLUDED.operation_id
+RETURNING *;
+
+-- name: DeleteExpiredMachineControlRenewals :execrows
+DELETE FROM machine_control_renewals
+WHERE expires_at < sqlc.arg(cutoff);
+
+-- name: BindCanonicalMachineIdentity :one
+UPDATE user_machines
+SET public_identity_key = sqlc.arg(public_identity_key),
+    installation_generation = installation_generation +
+      CASE WHEN public_identity_key IS NOT NULL AND public_identity_key <> sqlc.arg(public_identity_key) THEN 1 ELSE 0 END,
+    enrolled_at = coalesce(enrolled_at, sqlc.arg(now)), updated_at = sqlc.arg(now),
+    version = version + CASE WHEN public_identity_key IS DISTINCT FROM sqlc.arg(public_identity_key) THEN 1 ELSE 0 END
+WHERE environment_id = sqlc.arg(environment_id) AND deleted_at IS NULL
+RETURNING *;
+
+-- name: AddUserMachineHostRole :one
+UPDATE user_machines
+SET setup_roles = ARRAY(SELECT DISTINCT role FROM unnest(setup_roles || ARRAY['host']::text[]) role ORDER BY role),
+    display_name = sqlc.arg(display_name), workspace_root = sqlc.arg(workspace_root),
+    runtime_versions = sqlc.arg(runtime_versions),
+    updated_at = CASE WHEN NOT ('host' = ANY(setup_roles)) OR display_name IS DISTINCT FROM sqlc.arg(display_name) OR workspace_root IS DISTINCT FROM sqlc.arg(workspace_root) OR runtime_versions IS DISTINCT FROM sqlc.arg(runtime_versions) THEN now() ELSE updated_at END,
+    version = version + CASE WHEN NOT ('host' = ANY(setup_roles)) OR display_name IS DISTINCT FROM sqlc.arg(display_name) OR workspace_root IS DISTINCT FROM sqlc.arg(workspace_root) OR runtime_versions IS DISTINCT FROM sqlc.arg(runtime_versions) THEN 1 ELSE 0 END
+WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND deleted_at IS NULL
+RETURNING *;
+
+-- name: AddUserMachineInteractiveRole :one
+UPDATE user_machines
+SET setup_roles = ARRAY(SELECT DISTINCT role FROM unnest(setup_roles || ARRAY['interactive']::text[]) role ORDER BY role),
+    display_name = sqlc.arg(display_name), runtime_versions = sqlc.arg(runtime_versions),
+    updated_at = CASE WHEN NOT ('interactive' = ANY(setup_roles)) OR display_name IS DISTINCT FROM sqlc.arg(display_name) OR runtime_versions IS DISTINCT FROM sqlc.arg(runtime_versions) THEN now() ELSE updated_at END,
+    version = version + CASE WHEN NOT ('interactive' = ANY(setup_roles)) OR display_name IS DISTINCT FROM sqlc.arg(display_name) OR runtime_versions IS DISTINCT FROM sqlc.arg(runtime_versions) THEN 1 ELSE 0 END
+WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND deleted_at IS NULL
+RETURNING *;
+
+-- name: RemoveUserMachineHostRole :one
+UPDATE user_machines
+SET setup_roles = array_remove(setup_roles, 'host'), state = 'offline', seat_state = 'released',
+    online = false, installation_generation = installation_generation + 1,
+    updated_at = now(), version = version + 1
+WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND deleted_at IS NULL
+  AND 'host' = ANY(setup_roles)
+RETURNING *;
 
 -- name: OccupyUserMachineSeat :execrows
 UPDATE user_machines
@@ -339,6 +419,13 @@ UPDATE user_machines
 SET state = 'online', online = true, last_seen_at = now(), updated_at = now(), version = version + 1
 WHERE id = sqlc.arg(id) AND environment_id = sqlc.arg(environment_id)
   AND seat_state = 'occupied' AND deleted_at IS NULL AND state IN ('pending','offline','online');
+
+-- name: GetUserMachineRuntimeInstanceForUpdate :one
+SELECT online, last_seen_at, os_boot_id
+FROM user_machines
+WHERE id = sqlc.arg(id) AND environment_id = sqlc.arg(environment_id)
+  AND seat_state = 'occupied' AND deleted_at IS NULL
+FOR UPDATE;
 
 -- name: MarkStaleUserMachinesOffline :execrows
 UPDATE user_machines
@@ -485,6 +572,95 @@ INSERT INTO user_machine_access_sessions (
   sqlc.arg(http_base_url), nullif(sqlc.arg(helper_terminal_session_id), ''), nullif(sqlc.arg(helper_file_session_id), ''), sqlc.arg(expires_at)
 );
 
+-- name: GetUserTransferDestinationDefault :one
+SELECT m.* FROM user_transfer_destination_defaults d
+JOIN user_machines m ON m.id = d.machine_id
+WHERE d.user_id = sqlc.arg(user_id)
+  AND m.user_id = d.user_id
+  AND m.deleted_at IS NULL;
+
+-- name: SetUserTransferDestinationDefault :one
+INSERT INTO user_transfer_destination_defaults (user_id, machine_id)
+SELECT sqlc.arg(user_id), m.id FROM user_machines m
+WHERE m.id = sqlc.arg(machine_id)
+  AND m.user_id = sqlc.arg(user_id)
+  AND m.deleted_at IS NULL
+  AND m.state NOT IN ('revoked', 'disconnected', 'deleted')
+  AND m.seat_state = 'occupied'
+  AND m.online
+  AND m.setup_roles @> ARRAY['host']::text[]
+ON CONFLICT (user_id) DO UPDATE
+SET machine_id = EXCLUDED.machine_id,
+    version = user_transfer_destination_defaults.version + 1,
+    updated_at = now()
+RETURNING *;
+
+-- name: ClearUserTransferDestinationDefault :execrows
+DELETE FROM user_transfer_destination_defaults WHERE user_id = sqlc.arg(user_id);
+
+-- name: UserOwnsTerminalSession :one
+SELECT EXISTS (
+  SELECT 1 FROM project_terminal_sessions s
+  JOIN projects p ON p.id = s.project_id
+  WHERE s.id = sqlc.arg(session_id) AND p.user_id = sqlc.arg(user_id) AND s.deleted_at IS NULL
+  UNION ALL
+  SELECT 1 FROM user_machine_terminal_sessions s
+  JOIN user_machines m ON m.id = s.user_machine_id
+  WHERE s.id = sqlc.arg(session_id) AND m.user_id = sqlc.arg(user_id) AND s.deleted_at IS NULL
+) AS owned;
+
+-- name: GetUserMachineTerminalSessionHostForUser :one
+SELECT m.* FROM user_machine_terminal_sessions s
+JOIN user_machines m ON m.id = s.user_machine_id
+WHERE s.id = sqlc.arg(session_id) AND m.user_id = sqlc.arg(user_id)
+  AND s.deleted_at IS NULL AND m.deleted_at IS NULL;
+
+-- name: GetTerminalSessionTransferDestination :one
+SELECT m.* FROM project_terminal_sessions s
+JOIN projects p ON p.id = s.project_id
+JOIN user_machines m ON m.id = s.transfer_destination_machine_id
+WHERE s.id = sqlc.arg(session_id) AND p.user_id = sqlc.arg(user_id) AND s.deleted_at IS NULL
+UNION ALL
+SELECT m.* FROM user_machine_terminal_sessions s
+JOIN user_machines owner ON owner.id = s.user_machine_id
+JOIN user_machines m ON m.id = s.transfer_destination_machine_id
+WHERE s.id = sqlc.arg(session_id) AND owner.user_id = sqlc.arg(user_id) AND s.deleted_at IS NULL
+LIMIT 1;
+
+-- name: SetTerminalSessionTransferDestination :one
+WITH destination AS (
+  SELECT candidate.id FROM user_machines candidate
+  WHERE candidate.id = sqlc.arg(machine_id) AND candidate.user_id = sqlc.arg(user_id)
+    AND candidate.deleted_at IS NULL AND candidate.state NOT IN ('revoked','disconnected','deleted')
+    AND candidate.seat_state = 'occupied'
+), project_updated AS (
+  UPDATE project_terminal_sessions s SET transfer_destination_machine_id = destination.id, version = s.version + 1, updated_at = now()
+  FROM projects p, destination
+  WHERE s.id = sqlc.arg(session_id) AND s.project_id = p.id AND p.user_id = sqlc.arg(user_id) AND s.deleted_at IS NULL
+  RETURNING destination.id
+), machine_updated AS (
+  UPDATE user_machine_terminal_sessions s SET transfer_destination_machine_id = destination.id, version = s.version + 1, updated_at = now()
+  FROM user_machines owner, destination
+  WHERE s.id = sqlc.arg(session_id) AND s.user_machine_id = owner.id AND owner.user_id = sqlc.arg(user_id) AND s.deleted_at IS NULL
+  RETURNING destination.id
+)
+SELECT m.* FROM user_machines m
+WHERE m.id = (SELECT id FROM project_updated UNION ALL SELECT id FROM machine_updated LIMIT 1);
+
+-- name: ClearTerminalSessionTransferDestination :one
+WITH project_updated AS (
+  UPDATE project_terminal_sessions s SET transfer_destination_machine_id = NULL, version = s.version + 1, updated_at = now()
+  FROM projects p
+  WHERE s.id = sqlc.arg(session_id) AND s.project_id = p.id AND p.user_id = sqlc.arg(user_id) AND s.deleted_at IS NULL
+  RETURNING s.id
+), machine_updated AS (
+  UPDATE user_machine_terminal_sessions s SET transfer_destination_machine_id = NULL, version = s.version + 1, updated_at = now()
+  FROM user_machines owner
+  WHERE s.id = sqlc.arg(session_id) AND s.user_machine_id = owner.id AND owner.user_id = sqlc.arg(user_id) AND s.deleted_at IS NULL
+  RETURNING s.id
+)
+SELECT id FROM project_updated UNION ALL SELECT id FROM machine_updated LIMIT 1;
+
 -- name: RevokeUserMachineAccessSessions :many
 UPDATE user_machine_access_sessions
 SET state = 'revoked', revoked_at = now(), revocation_reason = sqlc.arg(reason), updated_at = now()
@@ -603,13 +779,14 @@ SELECT o.id,o.user_machine_id,o.terminal_session_id,o.operation,o.attempts,
   m.user_id,m.environment_id,coalesce((SELECT 'https://' || r.public_host
     FROM control_routes r
     JOIN control_environments e ON e.id = r.environment_id
-    JOIN control_connector_generations c ON c.environment_id = r.environment_id
-    JOIN control_helpers h ON h.id = c.helper_id AND h.environment_id = r.environment_id
+    JOIN control_connector_generations c ON c.environment_id = r.environment_id AND c.connector_id = r.connector_id
+    JOIN user_machines connector_machine ON connector_machine.id = c.machine_id AND connector_machine.environment_id = r.environment_id
     JOIN control_tunnel_nodes n ON n.id = c.edge_node_id AND n.id = r.applied_node_id
-    WHERE r.environment_id = m.environment_id AND r.kind = 'helper_https_wss'
+    WHERE r.environment_id = m.environment_id AND r.kind = 'runtime_https_wss'
       AND r.desired_state IN ('attached','replacing') AND r.applied_revision >= r.desired_revision
       AND r.applied_generation = c.generation AND e.desired_state = 'active'
-      AND h.state = 'active' AND c.state = 'admitted' AND n.state = 'ready' AND n.ready = true
+      AND connector_machine.revoked_at IS NULL AND connector_machine.deleted_at IS NULL
+      AND c.state = 'admitted' AND n.state = 'ready' AND n.ready = true
     ORDER BY r.id LIMIT 1), '')::text AS provider_route_http_base_url,s.thread_id,s.terminal_id
 FROM user_machine_terminal_session_operations o
 JOIN user_machines m ON m.id=o.user_machine_id
@@ -622,13 +799,14 @@ SELECT o.id,o.user_machine_id,o.terminal_session_id,o.operation,o.attempts,
   m.user_id,m.environment_id,coalesce((SELECT 'https://' || r.public_host
     FROM control_routes r
     JOIN control_environments e ON e.id = r.environment_id
-    JOIN control_connector_generations c ON c.environment_id = r.environment_id
-    JOIN control_helpers h ON h.id = c.helper_id AND h.environment_id = r.environment_id
+    JOIN control_connector_generations c ON c.environment_id = r.environment_id AND c.connector_id = r.connector_id
+    JOIN user_machines connector_machine ON connector_machine.id = c.machine_id AND connector_machine.environment_id = r.environment_id
     JOIN control_tunnel_nodes n ON n.id = c.edge_node_id AND n.id = r.applied_node_id
-    WHERE r.environment_id = m.environment_id AND r.kind = 'helper_https_wss'
+    WHERE r.environment_id = m.environment_id AND r.kind = 'runtime_https_wss'
       AND r.desired_state IN ('attached','replacing') AND r.applied_revision >= r.desired_revision
       AND r.applied_generation = c.generation AND e.desired_state = 'active'
-      AND h.state = 'active' AND c.state = 'admitted' AND n.state = 'ready' AND n.ready = true
+      AND connector_machine.revoked_at IS NULL AND connector_machine.deleted_at IS NULL
+      AND c.state = 'admitted' AND n.state = 'ready' AND n.ready = true
     ORDER BY r.id LIMIT 1), '')::text AS provider_route_http_base_url,s.thread_id,s.terminal_id
 FROM user_machine_terminal_session_operations o
 JOIN user_machines m ON m.id=o.user_machine_id

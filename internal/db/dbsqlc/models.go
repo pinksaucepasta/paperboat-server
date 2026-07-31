@@ -30,18 +30,6 @@ type AccessSession struct {
 	HttpBaseUrl             string
 }
 
-type AccountConfigKey struct {
-	UserID                    string
-	KeyVersion                int32
-	Recipient                 string
-	EncryptedIdentity         []byte
-	PreviousKeyVersion        sql.NullInt32
-	PreviousRecipient         sql.NullString
-	PreviousEncryptedIdentity []byte
-	CreatedAt                 time.Time
-	RotatedAt                 sql.NullTime
-}
-
 type AuditEvent struct {
 	ID             string
 	ActorUserID    sql.NullString
@@ -155,58 +143,6 @@ type CLIRefreshToken struct {
 	RevokedAt          sql.NullTime
 }
 
-type ConfigClassificationCache struct {
-	UserID             string
-	NormalizedPath     string
-	MetadataHash       string
-	Decision           string
-	Source             string
-	Confidence         float64
-	ReasonCode         string
-	PolicyRevision     string
-	ModelRevision      string
-	ClassifierRevision string
-	ExpiresAt          time.Time
-	CreatedAt          time.Time
-}
-
-type ConfigClassificationOverride struct {
-	UserID         string
-	NormalizedPath string
-	Decision       string
-	CreatedBy      string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-}
-
-type ConfigSyncStatus struct {
-	ProjectID                string
-	MachineID                string
-	State                    string
-	LastAttemptAt            sql.NullTime
-	LastSuccessfulSyncAt     sql.NullTime
-	RemoteCommit             string
-	PendingPathCount         int32
-	Skipped                  json.RawMessage
-	Conflicts                json.RawMessage
-	ErrorCode                string
-	ErrorMessage             string
-	MaxFileBytes             int64
-	MaxBatchBytes            int64
-	PolicyRevision           string
-	HeartbeatAt              time.Time
-	CreatedAt                time.Time
-	UpdatedAt                time.Time
-	StatusUpdatedAt          time.Time
-	ReceivedAt               time.Time
-	StatusObservedAt         time.Time
-	ClassifierPending        json.RawMessage
-	ClassifierPolicyRevision string
-	ClassifierModelRevision  string
-	ClassifierHealth         string
-	EncryptionKeyVersion     int32
-}
-
 type ConnectionEvent struct {
 	ID              string
 	UserID          sql.NullString
@@ -222,6 +158,7 @@ type ControlConfigAssignment struct {
 	ID              string
 	EnvironmentID   string
 	RepositoryID    sql.NullString
+	Mode            string
 	ConsentState    string
 	WarningRevision sql.NullString
 	AcceptedAt      sql.NullTime
@@ -229,6 +166,7 @@ type ControlConfigAssignment struct {
 	Version         int64
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+	MachineID       string
 }
 
 type ControlConfigConflictResolution struct {
@@ -238,6 +176,7 @@ type ControlConfigConflictResolution struct {
 	AssignmentID           string
 	ConflictRevision       string
 	Path                   string
+	Scope                  string
 	Action                 string
 	ExpectedRemoteRevision string
 	RequestedByUserID      string
@@ -254,7 +193,7 @@ type ControlConfigCredential struct {
 	OperationKey         string
 	RequestHash          []byte
 	EnvironmentID        string
-	HelperID             string
+	MachineID            string
 	AssignmentID         string
 	WarningRevision      sql.NullString
 	CredentialCiphertext []byte
@@ -285,40 +224,40 @@ type ControlConfigRepository struct {
 }
 
 type ControlConfigRepositoryAccessOperation struct {
-	OperationID       string
-	RequestHash       []byte
-	RepositoryID      string
-	AssignmentID      string
-	EnvironmentID     string
-	HelperID          string
-	HelperGeneration  int64
-	WarningRevision   string
-	State             string
-	AccessCiphertext  []byte
-	ExpiresAt         sql.NullTime
-	RevokedAt         sql.NullTime
-	ProviderRevokedAt sql.NullTime
-	RevokeAttempts    int32
-	LastErrorCode     sql.NullString
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	OperationID            string
+	RequestHash            []byte
+	RepositoryID           string
+	AssignmentID           string
+	EnvironmentID          string
+	MachineID              string
+	InstallationGeneration int64
+	WarningRevision        string
+	State                  string
+	AccessCiphertext       []byte
+	ExpiresAt              sql.NullTime
+	RevokedAt              sql.NullTime
+	ProviderRevokedAt      sql.NullTime
+	RevokeAttempts         int32
+	LastErrorCode          sql.NullString
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
 }
 
 type ControlConfigRepositoryLeaseAuthority struct {
-	RepositoryID       string
-	LastFencingToken   int64
-	LeaseID            sql.NullString
-	AssignmentID       sql.NullString
-	EnvironmentID      sql.NullString
-	HelperID           sql.NullString
-	HelperGeneration   sql.NullInt64
-	BaseRemoteRevision sql.NullString
-	OperationID        sql.NullString
-	AcquiredAt         sql.NullTime
-	ExpiresAt          sql.NullTime
-	RevokedAt          sql.NullTime
-	Version            int64
-	UpdatedAt          time.Time
+	RepositoryID           string
+	LastFencingToken       int64
+	LeaseID                sql.NullString
+	AssignmentID           sql.NullString
+	EnvironmentID          sql.NullString
+	MachineID              sql.NullString
+	InstallationGeneration sql.NullInt64
+	BaseRemoteRevision     sql.NullString
+	OperationID            sql.NullString
+	AcquiredAt             sql.NullTime
+	ExpiresAt              sql.NullTime
+	RevokedAt              sql.NullTime
+	Version                int64
+	UpdatedAt              time.Time
 }
 
 type ControlConfigRepositoryLeaseOperation struct {
@@ -333,7 +272,7 @@ type ControlConfigRepositoryLeaseOperation struct {
 	CreatedAt          time.Time
 	AssignmentID       sql.NullString
 	EnvironmentID      sql.NullString
-	HelperID           sql.NullString
+	MachineID          sql.NullString
 	BaseRemoteRevision sql.NullString
 }
 
@@ -359,47 +298,51 @@ type ControlConfigSyncMigrationReview struct {
 }
 
 type ControlConfigSyncStatus struct {
-	EnvironmentID     string
-	RepositoryID      string
-	AssignmentID      string
-	HelperID          string
-	HelperGeneration  int64
-	WarningRevision   string
-	PolicyRevision    string
-	KeyVersion        int64
-	SyncRevision      int64
-	State             string
-	RemoteRevision    sql.NullString
-	LeaseID           sql.NullString
-	FencingToken      sql.NullInt64
-	PendingPathCount  int32
-	ClassifierPending json.RawMessage
-	Skipped           json.RawMessage
-	Conflicts         json.RawMessage
-	ErrorCode         sql.NullString
-	RecoveryActions   json.RawMessage
-	LastAttemptAt     sql.NullTime
-	LastSuccessfulAt  sql.NullTime
-	HelperUpdatedAt   time.Time
-	ObservedAt        time.Time
+	EnvironmentID          string
+	RepositoryID           string
+	AssignmentID           string
+	MachineID              string
+	InstallationGeneration int64
+	WarningRevision        string
+	PolicyRevision         string
+	SyncRevision           int64
+	State                  string
+	Mode                   string
+	RemoteRevision         sql.NullString
+	ManifestHealth         string
+	ManifestRevision       sql.NullString
+	ManagedPathCount       int32
+	PendingCleanPathCount  int32
+	LastAppliedRevision    sql.NullString
+	LastPublishedRevision  sql.NullString
+	LeaseID                sql.NullString
+	FencingToken           sql.NullInt64
+	Skipped                json.RawMessage
+	Conflicts              json.RawMessage
+	ErrorCode              sql.NullString
+	RecoveryActions        json.RawMessage
+	LastAttemptAt          sql.NullTime
+	LastSuccessfulAt       sql.NullTime
+	MachineUpdatedAt       time.Time
+	ObservedAt             time.Time
 }
 
 type ControlConfigSyncStatusHistory struct {
-	EnvironmentID    string
-	SyncRevision     int64
-	RepositoryID     string
-	AssignmentID     string
-	HelperID         string
-	HelperGeneration int64
-	State            string
-	ErrorCode        sql.NullString
-	RemoteRevision   sql.NullString
-	ObservedAt       time.Time
+	EnvironmentID          string
+	SyncRevision           int64
+	RepositoryID           string
+	AssignmentID           string
+	MachineID              string
+	InstallationGeneration int64
+	State                  string
+	ErrorCode              sql.NullString
+	RemoteRevision         sql.NullString
+	ObservedAt             time.Time
 }
 
 type ControlConnectorGeneration struct {
 	EnvironmentID                 string
-	HelperID                      string
+	MachineID                     string
 	Generation                    int64
 	EdgePool                      string
 	EdgeNodeID                    sql.NullString
@@ -412,6 +355,7 @@ type ControlConnectorGeneration struct {
 	RevokedAt                     sql.NullTime
 	Version                       int64
 	UpdatedAt                     time.Time
+	ConnectorID                   string
 }
 
 type ControlEnvironment struct {
@@ -542,6 +486,7 @@ type ControlRoute struct {
 	Version           int64
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+	ConnectorID       string
 }
 
 type ControlRouteOperation struct {
@@ -710,6 +655,7 @@ type FlyMachine struct {
 	Version            int64
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+	UserMachineID      string
 }
 
 type FlyVolume struct {
@@ -829,6 +775,16 @@ type HostedReadinessObservation struct {
 	Evidence           json.RawMessage
 	ObservedAt         time.Time
 	CreatedAt          time.Time
+}
+
+type MachineControlRenewal struct {
+	OperationID            string
+	MachineID              string
+	InstallationGeneration int64
+	CredentialJti          string
+	IssuedAt               time.Time
+	ExpiresAt              time.Time
+	CreatedAt              time.Time
 }
 
 type MachineRuntimeInterval struct {
@@ -1035,24 +991,25 @@ type ProjectStorageAllocation struct {
 }
 
 type ProjectTerminalSession struct {
-	ID                  string
-	ProjectID           string
-	TerminalID          string
-	ThreadID            string
-	Name                string
-	IdempotencyKey      sql.NullString
-	IsDefault           bool
-	AutoNameOrdinal     sql.NullInt32
-	LaunchCwd           string
-	DesiredState        string
-	RuntimeState        string
-	LastActivityAt      sql.NullTime
-	LastRuntimeSyncAt   sql.NullTime
-	LastRuntimeSequence sql.NullInt64
-	DeletedAt           sql.NullTime
-	Version             int64
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	ID                           string
+	ProjectID                    string
+	TerminalID                   string
+	ThreadID                     string
+	Name                         string
+	IdempotencyKey               sql.NullString
+	IsDefault                    bool
+	AutoNameOrdinal              sql.NullInt32
+	LaunchCwd                    string
+	DesiredState                 string
+	RuntimeState                 string
+	LastActivityAt               sql.NullTime
+	LastRuntimeSyncAt            sql.NullTime
+	LastRuntimeSequence          sql.NullInt64
+	DeletedAt                    sql.NullTime
+	Version                      int64
+	CreatedAt                    time.Time
+	UpdatedAt                    time.Time
+	TransferDestinationMachineID sql.NullString
 }
 
 type ProviderEvent struct {
@@ -1237,6 +1194,10 @@ type UserMachine struct {
 	ConnectorGeneration           int64
 	HostUpdateRollbacks           int64
 	RuntimeDiagnosticsObservedAt  sql.NullTime
+	SetupRoles                    []string
+	PublicIdentityKey             sql.NullString
+	InstallationGeneration        int64
+	MachineKind                   string
 }
 
 type UserMachineAccessSession struct {
@@ -1350,27 +1311,29 @@ type UserMachinePairing struct {
 	DeniedAt                     sql.NullTime
 	CreatedAt                    time.Time
 	UpdatedAt                    time.Time
+	PublicIdentityKey            string
 }
 
 type UserMachineTerminalSession struct {
-	ID                  string
-	UserMachineID       string
-	TerminalID          string
-	ThreadID            string
-	Name                string
-	IdempotencyKey      sql.NullString
-	IsDefault           bool
-	AutoNameOrdinal     sql.NullInt32
-	LaunchCwd           string
-	DesiredState        string
-	RuntimeState        string
-	LastActivityAt      sql.NullTime
-	LastRuntimeSyncAt   sql.NullTime
-	LastRuntimeSequence sql.NullInt64
-	DeletedAt           sql.NullTime
-	Version             int64
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	ID                           string
+	UserMachineID                string
+	TerminalID                   string
+	ThreadID                     string
+	Name                         string
+	IdempotencyKey               sql.NullString
+	IsDefault                    bool
+	AutoNameOrdinal              sql.NullInt32
+	LaunchCwd                    string
+	DesiredState                 string
+	RuntimeState                 string
+	LastActivityAt               sql.NullTime
+	LastRuntimeSyncAt            sql.NullTime
+	LastRuntimeSequence          sql.NullInt64
+	DeletedAt                    sql.NullTime
+	Version                      int64
+	CreatedAt                    time.Time
+	UpdatedAt                    time.Time
+	TransferDestinationMachineID sql.NullString
 }
 
 type UserMachineTerminalSessionOperation struct {
@@ -1385,6 +1348,14 @@ type UserMachineTerminalSessionOperation struct {
 	CompletedAt       sql.NullTime
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+}
+
+type UserTransferDestinationDefault struct {
+	UserID    string
+	MachineID string
+	Version   int64
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 type VmPreset struct {

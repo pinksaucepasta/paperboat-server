@@ -20,12 +20,12 @@ func helperPreviewOperation(previews *controlplane.PreviewService, identities *c
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "Preview operation is invalid.")
 			return
 		}
-		proof, err := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Helper-Proof"))
+		proof, err := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Machine-Proof"))
 		if err != nil {
 			writeError(w, r, http.StatusUnauthorized, "credential_invalid", "Credential is invalid.")
 			return
 		}
-		claims, err := identities.VerifyPreviewRequest(r.Context(), r.Header.Get("X-Paperboat-Helper-Identity"), mustBearer(r), proof, body, r.Method, r.URL.Path)
+		claims, err := identities.VerifyPreviewRequest(r.Context(), r.Header.Get("X-Paperboat-Machine-Identity"), mustBearer(r), proof, body, r.Method, r.URL.Path)
 		if err != nil {
 			writeError(w, r, http.StatusUnauthorized, "credential_invalid", "Credential is invalid.")
 			return
@@ -47,7 +47,7 @@ func helperPreviewOperation(previews *controlplane.PreviewService, identities *c
 		}
 		switch input.Action {
 		case "list":
-			items, listErr := previews.ListForHelper(r.Context(), claims.HelperID, claims.EnvironmentID)
+			items, listErr := previews.List(r.Context(), claims.UserID, claims.EnvironmentID)
 			if listErr != nil {
 				previewHelperError(w, r, listErr)
 				return
@@ -61,14 +61,14 @@ func helperPreviewOperation(previews *controlplane.PreviewService, identities *c
 			if input.TargetHost == "" {
 				input.TargetHost = "127.0.0.1"
 			}
-			item, operationErr := previews.CreateOrUpdateForHelper(r.Context(), claims.HelperID, claims.OperationID, claims.EnvironmentID, input.LogicalName, input.TargetHost, input.TargetPort, input.AcknowledgePublic, time.Duration(input.DurationSeconds)*time.Second, input.Indefinite)
+			item, operationErr := previews.CreateOrUpdate(r.Context(), claims.UserID, "machine-preview:"+claims.MachineID+":"+claims.OperationID, claims.EnvironmentID, input.LogicalName, input.TargetHost, input.TargetPort, input.AcknowledgePublic, time.Duration(input.DurationSeconds)*time.Second, input.Indefinite)
 			if operationErr != nil {
 				previewHelperError(w, r, operationErr)
 				return
 			}
 			writeJSON(w, http.StatusOK, SuccessResponse{Data: newPreviewResponse(item)})
 		case "remove":
-			item, operationErr := previews.RemoveForHelper(r.Context(), claims.HelperID, claims.OperationID, claims.EnvironmentID, input.LogicalName)
+			item, operationErr := previews.Remove(r.Context(), claims.UserID, "machine-preview:"+claims.MachineID+":"+claims.OperationID, claims.EnvironmentID, input.LogicalName)
 			if operationErr != nil {
 				previewHelperError(w, r, operationErr)
 				return

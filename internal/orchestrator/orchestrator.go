@@ -141,7 +141,7 @@ func (s *Service) provisionProject(ctx context.Context, projectID string) error 
 		return fmt.Errorf("ensure hosted control environment: %w", ensureErr)
 	}
 	if s.ensureHostedRoute != nil {
-		host := providerName(s.cfg.Access.RouteSubdomainPrefix, intent.ID) + "." + strings.Trim(strings.ToLower(s.cfg.HelperBaseDomain), ".")
+		host := providerName(s.cfg.Access.RouteSubdomainPrefix, intent.ID) + "." + strings.Trim(strings.ToLower(s.cfg.RuntimeBaseDomain), ".")
 		if routeErr := s.ensureHostedRoute(ctx, intent.UserID, "hosted-route:"+intent.ID, intent.ID, host); routeErr != nil {
 			return fmt.Errorf("ensure hosted helper route: %w", routeErr)
 		}
@@ -458,13 +458,13 @@ func (s *Service) machineSpec(intent ProjectIntent, volumeID string) fly.Machine
 	graceSeconds := durationSecondsCeil(s.cfg.ConfigSync.ShutdownGracePeriod)
 	reportSeconds := durationSecondsCeil(s.cfg.ConfigSync.ShutdownReportTimeout)
 	env := map[string]string{
-		"PAPERBOAT_HELPER_PROFILE":                   "hosted",
-		"PAPERBOAT_HELPER_STATE_ROOT":                "/workspace/.paperboat/helper",
-		"PAPERBOAT_HELPER_LISTEN_ADDRESS":            "127.0.0.1:8080",
+		"PAPERBOAT_RUNTIME_PROFILE":                  "hosted",
+		"PAPERBOAT_RUNTIME_STATE_ROOT":               "/workspace/.paperboat/runtime",
+		"PAPERBOAT_RUNTIME_LISTEN_ADDRESS":           "127.0.0.1:8080",
 		"PAPERBOAT_CONTROL_URL":                      strings.TrimRight(s.cfg.HTTP.PublicBaseURL, "/"),
 		"PAPERBOAT_CONTROL_ISSUER":                   config.NormalizeIssuer(s.cfg.HTTP.PublicBaseURL),
 		"PAPERBOAT_PROJECT_ID":                       intent.ID,
-		"PAPERBOAT_MACHINE_ID":                       machineName,
+		"PAPERBOAT_MACHINE_ID":                       intent.MachineID,
 		"PAPERBOAT_REPOSITORY_URL":                   intent.RepositoryURL,
 		"PAPERBOAT_DEFAULT_BRANCH":                   intent.DefaultBranch,
 		"PAPERBOAT_PRESET_CODES":                     strings.Join(intent.PresetCodes, ","),
@@ -653,7 +653,6 @@ func (s *Service) deleteProviderSecrets(ctx context.Context, intent ProjectInten
 		providerSecretName("PBSECRET_SETUP", intent.ID),
 		providerSecretName("PBSECRET_ENROLLMENT", intent.ID),
 		providerSecretName("PBSECRET_GITHUB", intent.ID),
-		providerSecretName("PBSECRET_CONFIG_AGE", intent.ID),
 	} {
 		request := struct {
 			Name string `json:"name"`
@@ -731,6 +730,7 @@ type Job struct {
 
 type ProjectIntent struct {
 	ID                  string
+	MachineID           string
 	RepositoryURL       string
 	DefaultBranch       string
 	UserID              string
@@ -869,7 +869,7 @@ func (r *Repository) ProjectIntent(ctx context.Context, projectID string) (Proje
 	if err != nil {
 		return ProjectIntent{}, err
 	}
-	intent := ProjectIntent{ID: row.ID, UserID: row.UserID, RepositoryURL: row.SourceUrl, DefaultBranch: row.DefaultBranch, StorageGB: int(row.AssignedGb), MachineTypeCode: row.MachineTypeCode, VCPU: int(row.Vcpu), MemoryMB: int(row.MemoryMb), RegionCode: row.RegionCode, SetupScriptRef: row.SetupScriptRef, DesiredConfigHash: row.DesiredConfigHash, PendingRestartApply: row.PendingRestartApply}
+	intent := ProjectIntent{ID: row.ID, MachineID: row.MachineID, UserID: row.UserID, RepositoryURL: row.SourceUrl, DefaultBranch: row.DefaultBranch, StorageGB: int(row.AssignedGb), MachineTypeCode: row.MachineTypeCode, VCPU: int(row.Vcpu), MemoryMB: int(row.MemoryMb), RegionCode: row.RegionCode, SetupScriptRef: row.SetupScriptRef, DesiredConfigHash: row.DesiredConfigHash, PendingRestartApply: row.PendingRestartApply}
 	_ = json.Unmarshal(databaseBytes(row.PresetCodes), &intent.PresetCodes)
 	return intent, nil
 }

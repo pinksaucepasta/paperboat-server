@@ -224,13 +224,13 @@ Adding, removing, or renaming public error codes requires contract approval.
 
 ## Private Connector Admission
 
-`POST /v1/connectors/admission` is a helper-to-control-plane endpoint, not a browser or CLI
-API. It requires a helper identity bearer credential plus an unpadded base64url
-`X-Paperboat-Helper-Proof` signed by the enrolled helper key. The proof covers the exact
-method, path, body hash, operation ID, helper/environment binding, and a maximum one-minute
+`POST /v1/connectors/admission` is a machine-runtime-to-control-plane endpoint, not a browser or CLI
+API. It requires a machine-control bearer credential plus an unpadded base64url
+`X-Paperboat-Machine-Proof` signed by the enrolled machine key. The proof covers the exact
+method, path, body hash, operation ID, machine/environment binding, and a maximum one-minute
 lifetime.
 
-The strict JSON request contains `operation_id`, `environment_id`, `helper_id`, `edge_pool`,
+The strict JSON request contains `operation_id`, `environment_id`, `machine_id`, `connector_id`, `edge_pool`,
 and `protocol_version: "1.0"`. A successful response follows the canonical
 `contracts/schemas/edge/admission.schema.json` shape and includes one assigned endpoint,
 at least one revisioned route handoff, and a short-lived connector credential. Alternate

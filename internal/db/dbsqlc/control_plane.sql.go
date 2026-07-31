@@ -19,7 +19,7 @@ SET consent_state = 'accepted', warning_revision = $1, accepted_at = $2,
 WHERE environment_id = $3 AND version = $4
   AND repository_id IS NOT NULL AND consent_state = 'pending'
   AND warning_revision = $1
-RETURNING id, environment_id, repository_id, consent_state, warning_revision, accepted_at, revoked_at, version, created_at, updated_at
+RETURNING id, environment_id, repository_id, mode, consent_state, warning_revision, accepted_at, revoked_at, version, created_at, updated_at, machine_id
 `
 
 type AcceptControlConfigConsentParams struct {
@@ -41,6 +41,7 @@ func (q *Queries) AcceptControlConfigConsent(ctx context.Context, arg AcceptCont
 		&i.ID,
 		&i.EnvironmentID,
 		&i.RepositoryID,
+		&i.Mode,
 		&i.ConsentState,
 		&i.WarningRevision,
 		&i.AcceptedAt,
@@ -48,6 +49,7 @@ func (q *Queries) AcceptControlConfigConsent(ctx context.Context, arg AcceptCont
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.MachineID,
 	)
 	return i, err
 }
@@ -112,19 +114,20 @@ func (q *Queries) ActivateControlHelper(ctx context.Context, arg ActivateControl
 }
 
 const advanceControlConnectorGeneration = `-- name: AdvanceControlConnectorGeneration :one
-INSERT INTO control_connector_generations (environment_id, helper_id, generation, edge_pool, state)
-VALUES ($1, $2, 1, $3, 'pending')
-ON CONFLICT (environment_id) DO UPDATE
-SET helper_id = EXCLUDED.helper_id, generation = control_connector_generations.generation + 1,
+INSERT INTO control_connector_generations (environment_id, connector_id, machine_id, generation, edge_pool, state)
+VALUES ($1, $2, $3, 1, $4, 'pending')
+ON CONFLICT (environment_id, connector_id) DO UPDATE
+SET machine_id = EXCLUDED.machine_id, generation = control_connector_generations.generation + 1,
     edge_pool = EXCLUDED.edge_pool, state = 'pending', edge_node_id = NULL,
     admission_jti_hash = NULL, expires_at = NULL, revoked_at = NULL,
-    version = control_connector_generations.version + 1, updated_at = $4
-RETURNING environment_id, helper_id, generation, edge_pool, edge_node_id, state, admission_jti_hash, admission_operation_key, admission_request_hash, admission_credential_ciphertext, expires_at, revoked_at, version, updated_at
+    version = control_connector_generations.version + 1, updated_at = $5
+RETURNING environment_id, machine_id, generation, edge_pool, edge_node_id, state, admission_jti_hash, admission_operation_key, admission_request_hash, admission_credential_ciphertext, expires_at, revoked_at, version, updated_at, connector_id
 `
 
 type AdvanceControlConnectorGenerationParams struct {
 	EnvironmentID string
-	HelperID      string
+	ConnectorID   string
+	MachineID     string
 	EdgePool      string
 	UpdatedAt     time.Time
 }
@@ -132,14 +135,15 @@ type AdvanceControlConnectorGenerationParams struct {
 func (q *Queries) AdvanceControlConnectorGeneration(ctx context.Context, arg AdvanceControlConnectorGenerationParams) (ControlConnectorGeneration, error) {
 	row := q.db.QueryRowContext(ctx, advanceControlConnectorGeneration,
 		arg.EnvironmentID,
-		arg.HelperID,
+		arg.ConnectorID,
+		arg.MachineID,
 		arg.EdgePool,
 		arg.UpdatedAt,
 	)
 	var i ControlConnectorGeneration
 	err := row.Scan(
 		&i.EnvironmentID,
-		&i.HelperID,
+		&i.MachineID,
 		&i.Generation,
 		&i.EdgePool,
 		&i.EdgeNodeID,
@@ -152,6 +156,7 @@ func (q *Queries) AdvanceControlConnectorGeneration(ctx context.Context, arg Adv
 		&i.RevokedAt,
 		&i.Version,
 		&i.UpdatedAt,
+		&i.ConnectorID,
 	)
 	return i, err
 }
@@ -161,7 +166,7 @@ UPDATE control_routes
 SET desired_revision = desired_revision + 1, desired_state = $1,
     drain_deadline = $2, version = version + 1, updated_at = $3
 WHERE id = $4 AND desired_revision = $5
-RETURNING id, environment_id, kind, public_host, target_host, target_port, desired_revision, desired_state, applied_revision, applied_node_id, applied_generation, drain_deadline, version, created_at, updated_at
+RETURNING id, environment_id, kind, public_host, target_host, target_port, desired_revision, desired_state, applied_revision, applied_node_id, applied_generation, drain_deadline, version, created_at, updated_at, connector_id
 `
 
 type AdvanceControlRouteRevisionParams struct {
@@ -197,6 +202,7 @@ func (q *Queries) AdvanceControlRouteRevision(ctx context.Context, arg AdvanceCo
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ConnectorID,
 	)
 	return i, err
 }
@@ -233,7 +239,7 @@ WHERE id=$3
     state='pending'
     OR (state='applied' AND landed_revision=$1)
   )
-RETURNING id, environment_id, repository_id, assignment_id, conflict_revision, path, action, expected_remote_revision, requested_by_user_id, state, landed_revision, requested_at, applied_at, updated_at
+RETURNING id, environment_id, repository_id, assignment_id, conflict_revision, path, scope, action, expected_remote_revision, requested_by_user_id, state, landed_revision, requested_at, applied_at, updated_at
 `
 
 type ApplyControlConfigConflictResolutionParams struct {
@@ -262,6 +268,7 @@ func (q *Queries) ApplyControlConfigConflictResolution(ctx context.Context, arg 
 		&i.AssignmentID,
 		&i.ConflictRevision,
 		&i.Path,
+		&i.Scope,
 		&i.Action,
 		&i.ExpectedRemoteRevision,
 		&i.RequestedByUserID,
@@ -392,11 +399,12 @@ WHERE id = $5 AND desired_revision = $1
   AND EXISTS (
     SELECT 1 FROM control_connector_generations c
     WHERE c.environment_id = control_routes.environment_id
+	  AND c.connector_id = control_routes.connector_id
       AND c.edge_node_id = $2
       AND c.generation = $3
       AND c.state IN ('pending','admitted')
   )
-RETURNING id, environment_id, kind, public_host, target_host, target_port, desired_revision, desired_state, applied_revision, applied_node_id, applied_generation, drain_deadline, version, created_at, updated_at
+RETURNING id, environment_id, kind, public_host, target_host, target_port, desired_revision, desired_state, applied_revision, applied_node_id, applied_generation, drain_deadline, version, created_at, updated_at, connector_id
 `
 
 type ApplyControlRouteObservationParams struct {
@@ -432,6 +440,7 @@ func (q *Queries) ApplyControlRouteObservation(ctx context.Context, arg ApplyCon
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ConnectorID,
 	)
 	return i, err
 }
@@ -459,32 +468,34 @@ func (q *Queries) BYODHelperOwnsMachine(ctx context.Context, arg BYODHelperOwnsM
 	return exists, err
 }
 
-const bindControlConnectorHelper = `-- name: BindControlConnectorHelper :one
-INSERT INTO control_connector_generations (environment_id, helper_id, generation, edge_pool, state)
-VALUES ($1, $2, 1, $3, 'pending')
-ON CONFLICT (environment_id) DO UPDATE
-SET helper_id = EXCLUDED.helper_id, state = 'pending', updated_at = $4
-RETURNING environment_id, helper_id, generation, edge_pool, edge_node_id, state, admission_jti_hash, admission_operation_key, admission_request_hash, admission_credential_ciphertext, expires_at, revoked_at, version, updated_at
+const bindControlConnectorMachine = `-- name: BindControlConnectorMachine :one
+INSERT INTO control_connector_generations (environment_id, connector_id, machine_id, generation, edge_pool, state)
+VALUES ($1, $2, $3, 1, $4, 'pending')
+ON CONFLICT (environment_id, connector_id) DO UPDATE
+SET machine_id = EXCLUDED.machine_id, state = 'pending', updated_at = $5
+RETURNING environment_id, machine_id, generation, edge_pool, edge_node_id, state, admission_jti_hash, admission_operation_key, admission_request_hash, admission_credential_ciphertext, expires_at, revoked_at, version, updated_at, connector_id
 `
 
-type BindControlConnectorHelperParams struct {
+type BindControlConnectorMachineParams struct {
 	EnvironmentID string
-	HelperID      string
+	ConnectorID   string
+	MachineID     string
 	EdgePool      string
 	UpdatedAt     time.Time
 }
 
-func (q *Queries) BindControlConnectorHelper(ctx context.Context, arg BindControlConnectorHelperParams) (ControlConnectorGeneration, error) {
-	row := q.db.QueryRowContext(ctx, bindControlConnectorHelper,
+func (q *Queries) BindControlConnectorMachine(ctx context.Context, arg BindControlConnectorMachineParams) (ControlConnectorGeneration, error) {
+	row := q.db.QueryRowContext(ctx, bindControlConnectorMachine,
 		arg.EnvironmentID,
-		arg.HelperID,
+		arg.ConnectorID,
+		arg.MachineID,
 		arg.EdgePool,
 		arg.UpdatedAt,
 	)
 	var i ControlConnectorGeneration
 	err := row.Scan(
 		&i.EnvironmentID,
-		&i.HelperID,
+		&i.MachineID,
 		&i.Generation,
 		&i.EdgePool,
 		&i.EdgeNodeID,
@@ -497,6 +508,7 @@ func (q *Queries) BindControlConnectorHelper(ctx context.Context, arg BindContro
 		&i.RevokedAt,
 		&i.Version,
 		&i.UpdatedAt,
+		&i.ConnectorID,
 	)
 	return i, err
 }
@@ -512,7 +524,7 @@ SELECT EXISTS (
     AND e.revoked_at IS NULL
     AND r.desired_state = 'attached'
     AND (
-      r.kind = 'helper_https_wss'
+      r.kind = 'runtime_https_wss'
       OR (
         r.kind = 'preview_public_https_wss'
         AND p.state <> 'removed'
@@ -540,7 +552,7 @@ UPDATE control_config_assignments
 SET repository_id = NULL, consent_state = 'revoked', warning_revision = NULL, accepted_at = NULL,
     revoked_at = $1, version = version + 1, updated_at = $1
 WHERE environment_id = $2 AND version = $3
-RETURNING id, environment_id, repository_id, consent_state, warning_revision, accepted_at, revoked_at, version, created_at, updated_at
+RETURNING id, environment_id, repository_id, mode, consent_state, warning_revision, accepted_at, revoked_at, version, created_at, updated_at, machine_id
 `
 
 type ClearControlConfigAssignmentParams struct {
@@ -556,6 +568,7 @@ func (q *Queries) ClearControlConfigAssignment(ctx context.Context, arg ClearCon
 		&i.ID,
 		&i.EnvironmentID,
 		&i.RepositoryID,
+		&i.Mode,
 		&i.ConsentState,
 		&i.WarningRevision,
 		&i.AcceptedAt,
@@ -563,6 +576,7 @@ func (q *Queries) ClearControlConfigAssignment(ctx context.Context, arg ClearCon
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.MachineID,
 	)
 	return i, err
 }
@@ -572,7 +586,7 @@ UPDATE control_config_repository_access_operations
 SET state = 'issued', access_ciphertext = $1,
     expires_at = $2, updated_at = $3
 WHERE operation_id = $4 AND state = 'pending' AND revoked_at IS NULL
-RETURNING operation_id, request_hash, repository_id, assignment_id, environment_id, helper_id, helper_generation, warning_revision, state, access_ciphertext, expires_at, revoked_at, provider_revoked_at, revoke_attempts, last_error_code, created_at, updated_at
+RETURNING operation_id, request_hash, repository_id, assignment_id, environment_id, machine_id, installation_generation, warning_revision, state, access_ciphertext, expires_at, revoked_at, provider_revoked_at, revoke_attempts, last_error_code, created_at, updated_at
 `
 
 type CompleteControlConfigRepositoryAccessParams struct {
@@ -596,8 +610,8 @@ func (q *Queries) CompleteControlConfigRepositoryAccess(ctx context.Context, arg
 		&i.RepositoryID,
 		&i.AssignmentID,
 		&i.EnvironmentID,
-		&i.HelperID,
-		&i.HelperGeneration,
+		&i.MachineID,
+		&i.InstallationGeneration,
 		&i.WarningRevision,
 		&i.State,
 		&i.AccessCiphertext,
@@ -694,12 +708,12 @@ func (q *Queries) CountActiveControlPreviews(ctx context.Context, arg CountActiv
 
 const createControlConfigConflictResolution = `-- name: CreateControlConfigConflictResolution :one
 INSERT INTO control_config_conflict_resolutions
-  (id, environment_id, repository_id, assignment_id, conflict_revision, path,
+  (id, environment_id, repository_id, assignment_id, conflict_revision, path, scope,
    action, expected_remote_revision, requested_by_user_id)
 VALUES
   ($1,$2,$3,$4,
-   $5,$6,$7,
-   $8,$9)
+   $5,$6,$7,$8,
+   $9,$10)
 ON CONFLICT (environment_id, conflict_revision, path) DO UPDATE
 SET action=EXCLUDED.action,
     expected_remote_revision=EXCLUDED.expected_remote_revision,
@@ -710,7 +724,7 @@ SET action=EXCLUDED.action,
     requested_at=now(),
     updated_at=now()
 WHERE control_config_conflict_resolutions.state <> 'applied'
-RETURNING id, environment_id, repository_id, assignment_id, conflict_revision, path, action, expected_remote_revision, requested_by_user_id, state, landed_revision, requested_at, applied_at, updated_at
+RETURNING id, environment_id, repository_id, assignment_id, conflict_revision, path, scope, action, expected_remote_revision, requested_by_user_id, state, landed_revision, requested_at, applied_at, updated_at
 `
 
 type CreateControlConfigConflictResolutionParams struct {
@@ -720,6 +734,7 @@ type CreateControlConfigConflictResolutionParams struct {
 	AssignmentID           string
 	ConflictRevision       string
 	Path                   string
+	Scope                  string
 	Action                 string
 	ExpectedRemoteRevision string
 	RequestedByUserID      string
@@ -733,6 +748,7 @@ func (q *Queries) CreateControlConfigConflictResolution(ctx context.Context, arg
 		arg.AssignmentID,
 		arg.ConflictRevision,
 		arg.Path,
+		arg.Scope,
 		arg.Action,
 		arg.ExpectedRemoteRevision,
 		arg.RequestedByUserID,
@@ -745,6 +761,7 @@ func (q *Queries) CreateControlConfigConflictResolution(ctx context.Context, arg
 		&i.AssignmentID,
 		&i.ConflictRevision,
 		&i.Path,
+		&i.Scope,
 		&i.Action,
 		&i.ExpectedRemoteRevision,
 		&i.RequestedByUserID,
@@ -759,14 +776,14 @@ func (q *Queries) CreateControlConfigConflictResolution(ctx context.Context, arg
 
 const createControlConfigCredential = `-- name: CreateControlConfigCredential :one
 INSERT INTO control_config_credentials
-  (jti_hash, jti, operation_key, request_hash, environment_id, helper_id, assignment_id,
+  (jti_hash, jti, operation_key, request_hash, environment_id, machine_id, assignment_id,
    warning_revision, credential_ciphertext, expires_at)
 VALUES
   ($1, $2, $3, $4, $5,
    $6, $7, $8,
    $9, $10)
 ON CONFLICT (operation_key) DO NOTHING
-RETURNING jti_hash, jti, operation_key, request_hash, environment_id, helper_id, assignment_id, warning_revision, credential_ciphertext, expires_at, revoked_at, created_at
+RETURNING jti_hash, jti, operation_key, request_hash, environment_id, machine_id, assignment_id, warning_revision, credential_ciphertext, expires_at, revoked_at, created_at
 `
 
 type CreateControlConfigCredentialParams struct {
@@ -775,7 +792,7 @@ type CreateControlConfigCredentialParams struct {
 	OperationKey         string
 	RequestHash          []byte
 	EnvironmentID        string
-	HelperID             string
+	MachineID            string
 	AssignmentID         string
 	WarningRevision      sql.NullString
 	CredentialCiphertext []byte
@@ -789,7 +806,7 @@ func (q *Queries) CreateControlConfigCredential(ctx context.Context, arg CreateC
 		arg.OperationKey,
 		arg.RequestHash,
 		arg.EnvironmentID,
-		arg.HelperID,
+		arg.MachineID,
 		arg.AssignmentID,
 		arg.WarningRevision,
 		arg.CredentialCiphertext,
@@ -802,7 +819,7 @@ func (q *Queries) CreateControlConfigCredential(ctx context.Context, arg CreateC
 		&i.OperationKey,
 		&i.RequestHash,
 		&i.EnvironmentID,
-		&i.HelperID,
+		&i.MachineID,
 		&i.AssignmentID,
 		&i.WarningRevision,
 		&i.CredentialCiphertext,
@@ -816,13 +833,13 @@ func (q *Queries) CreateControlConfigCredential(ctx context.Context, arg CreateC
 const createControlConfigLeaseOperation = `-- name: CreateControlConfigLeaseOperation :one
 INSERT INTO control_config_repository_lease_operations
   (operation_id, operation_type, request_hash, repository_id, assignment_id, environment_id,
-   helper_id, base_remote_revision, lease_id, fencing_token, result_state, expires_at)
+   machine_id, base_remote_revision, lease_id, fencing_token, result_state, expires_at)
 VALUES
   ($1, $2, $3, $4,
    $5, $6, $7, $8,
    $9, $10, $11, $12)
 ON CONFLICT (operation_id) DO NOTHING
-RETURNING operation_id, operation_type, request_hash, repository_id, lease_id, fencing_token, result_state, expires_at, created_at, assignment_id, environment_id, helper_id, base_remote_revision
+RETURNING operation_id, operation_type, request_hash, repository_id, lease_id, fencing_token, result_state, expires_at, created_at, assignment_id, environment_id, machine_id, base_remote_revision
 `
 
 type CreateControlConfigLeaseOperationParams struct {
@@ -832,7 +849,7 @@ type CreateControlConfigLeaseOperationParams struct {
 	RepositoryID       string
 	AssignmentID       sql.NullString
 	EnvironmentID      sql.NullString
-	HelperID           sql.NullString
+	MachineID          sql.NullString
 	BaseRemoteRevision sql.NullString
 	LeaseID            sql.NullString
 	FencingToken       sql.NullInt64
@@ -848,7 +865,7 @@ func (q *Queries) CreateControlConfigLeaseOperation(ctx context.Context, arg Cre
 		arg.RepositoryID,
 		arg.AssignmentID,
 		arg.EnvironmentID,
-		arg.HelperID,
+		arg.MachineID,
 		arg.BaseRemoteRevision,
 		arg.LeaseID,
 		arg.FencingToken,
@@ -868,7 +885,7 @@ func (q *Queries) CreateControlConfigLeaseOperation(ctx context.Context, arg Cre
 		&i.CreatedAt,
 		&i.AssignmentID,
 		&i.EnvironmentID,
-		&i.HelperID,
+		&i.MachineID,
 		&i.BaseRemoteRevision,
 	)
 	return i, err
@@ -1130,14 +1147,15 @@ func (q *Queries) CreateControlPreview(ctx context.Context, arg CreateControlPre
 }
 
 const createControlRoute = `-- name: CreateControlRoute :one
-INSERT INTO control_routes (id, environment_id, kind, public_host, target_host, target_port)
-VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, environment_id, kind, public_host, target_host, target_port, desired_revision, desired_state, applied_revision, applied_node_id, applied_generation, drain_deadline, version, created_at, updated_at
+INSERT INTO control_routes (id, environment_id, connector_id, kind, public_host, target_host, target_port)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING id, environment_id, kind, public_host, target_host, target_port, desired_revision, desired_state, applied_revision, applied_node_id, applied_generation, drain_deadline, version, created_at, updated_at, connector_id
 `
 
 type CreateControlRouteParams struct {
 	ID            string
 	EnvironmentID string
+	ConnectorID   string
 	Kind          string
 	PublicHost    string
 	TargetHost    string
@@ -1148,6 +1166,7 @@ func (q *Queries) CreateControlRoute(ctx context.Context, arg CreateControlRoute
 	row := q.db.QueryRowContext(ctx, createControlRoute,
 		arg.ID,
 		arg.EnvironmentID,
+		arg.ConnectorID,
 		arg.Kind,
 		arg.PublicHost,
 		arg.TargetHost,
@@ -1170,6 +1189,7 @@ func (q *Queries) CreateControlRoute(ctx context.Context, arg CreateControlRoute
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ConnectorID,
 	)
 	return i, err
 }
@@ -1355,7 +1375,7 @@ const ensureControlConfigLeaseAuthority = `-- name: EnsureControlConfigLeaseAuth
 INSERT INTO control_config_repository_lease_authority (repository_id)
 VALUES ($1)
 ON CONFLICT (repository_id) DO UPDATE SET repository_id = EXCLUDED.repository_id
-RETURNING repository_id, last_fencing_token, lease_id, assignment_id, environment_id, helper_id, helper_generation, base_remote_revision, operation_id, acquired_at, expires_at, revoked_at, version, updated_at
+RETURNING repository_id, last_fencing_token, lease_id, assignment_id, environment_id, machine_id, installation_generation, base_remote_revision, operation_id, acquired_at, expires_at, revoked_at, version, updated_at
 `
 
 func (q *Queries) EnsureControlConfigLeaseAuthority(ctx context.Context, repositoryID string) (ControlConfigRepositoryLeaseAuthority, error) {
@@ -1367,8 +1387,8 @@ func (q *Queries) EnsureControlConfigLeaseAuthority(ctx context.Context, reposit
 		&i.LeaseID,
 		&i.AssignmentID,
 		&i.EnvironmentID,
-		&i.HelperID,
-		&i.HelperGeneration,
+		&i.MachineID,
+		&i.InstallationGeneration,
 		&i.BaseRemoteRevision,
 		&i.OperationID,
 		&i.AcquiredAt,
@@ -1376,6 +1396,49 @@ func (q *Queries) EnsureControlConfigLeaseAuthority(ctx context.Context, reposit
 		&i.RevokedAt,
 		&i.Version,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const ensureControlConnectorMachine = `-- name: EnsureControlConnectorMachine :one
+INSERT INTO control_connector_generations (environment_id, connector_id, machine_id, generation, edge_pool, state)
+VALUES ($1, $2, $3, 1, $4, 'pending')
+ON CONFLICT (environment_id, connector_id) DO UPDATE
+SET environment_id = EXCLUDED.environment_id
+RETURNING environment_id, machine_id, generation, edge_pool, edge_node_id, state, admission_jti_hash, admission_operation_key, admission_request_hash, admission_credential_ciphertext, expires_at, revoked_at, version, updated_at, connector_id
+`
+
+type EnsureControlConnectorMachineParams struct {
+	EnvironmentID string
+	ConnectorID   string
+	MachineID     string
+	EdgePool      string
+}
+
+func (q *Queries) EnsureControlConnectorMachine(ctx context.Context, arg EnsureControlConnectorMachineParams) (ControlConnectorGeneration, error) {
+	row := q.db.QueryRowContext(ctx, ensureControlConnectorMachine,
+		arg.EnvironmentID,
+		arg.ConnectorID,
+		arg.MachineID,
+		arg.EdgePool,
+	)
+	var i ControlConnectorGeneration
+	err := row.Scan(
+		&i.EnvironmentID,
+		&i.MachineID,
+		&i.Generation,
+		&i.EdgePool,
+		&i.EdgeNodeID,
+		&i.State,
+		&i.AdmissionJtiHash,
+		&i.AdmissionOperationKey,
+		&i.AdmissionRequestHash,
+		&i.AdmissionCredentialCiphertext,
+		&i.ExpiresAt,
+		&i.RevokedAt,
+		&i.Version,
+		&i.UpdatedAt,
+		&i.ConnectorID,
 	)
 	return i, err
 }
@@ -1409,7 +1472,7 @@ SET desired_state = 'detached', applied_revision = desired_revision,
 WHERE id = $2 AND desired_state = 'detaching'
   AND desired_revision = $3
   AND applied_node_id = $4
-RETURNING id, environment_id, kind, public_host, target_host, target_port, desired_revision, desired_state, applied_revision, applied_node_id, applied_generation, drain_deadline, version, created_at, updated_at
+RETURNING id, environment_id, kind, public_host, target_host, target_port, desired_revision, desired_state, applied_revision, applied_node_id, applied_generation, drain_deadline, version, created_at, updated_at, connector_id
 `
 
 type FinalizeDetachedControlRouteParams struct {
@@ -1443,21 +1506,22 @@ func (q *Queries) FinalizeDetachedControlRoute(ctx context.Context, arg Finalize
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ConnectorID,
 	)
 	return i, err
 }
 
 const getActiveControlConfigCredentialByJTI = `-- name: GetActiveControlConfigCredentialByJTI :one
-SELECT jti_hash, jti, operation_key, request_hash, environment_id, helper_id, assignment_id, warning_revision, credential_ciphertext, expires_at, revoked_at, created_at FROM control_config_credentials
+SELECT jti_hash, jti, operation_key, request_hash, environment_id, machine_id, assignment_id, warning_revision, credential_ciphertext, expires_at, revoked_at, created_at FROM control_config_credentials
 WHERE jti = $1 AND environment_id = $2
-  AND helper_id = $3 AND assignment_id = $4
+  AND machine_id = $3 AND assignment_id = $4
   AND revoked_at IS NULL AND expires_at > $5
 `
 
 type GetActiveControlConfigCredentialByJTIParams struct {
 	Jti           string
 	EnvironmentID string
-	HelperID      string
+	MachineID     string
 	AssignmentID  string
 	Now           time.Time
 }
@@ -1466,7 +1530,7 @@ func (q *Queries) GetActiveControlConfigCredentialByJTI(ctx context.Context, arg
 	row := q.db.QueryRowContext(ctx, getActiveControlConfigCredentialByJTI,
 		arg.Jti,
 		arg.EnvironmentID,
-		arg.HelperID,
+		arg.MachineID,
 		arg.AssignmentID,
 		arg.Now,
 	)
@@ -1477,7 +1541,7 @@ func (q *Queries) GetActiveControlConfigCredentialByJTI(ctx context.Context, arg
 		&i.OperationKey,
 		&i.RequestHash,
 		&i.EnvironmentID,
-		&i.HelperID,
+		&i.MachineID,
 		&i.AssignmentID,
 		&i.WarningRevision,
 		&i.CredentialCiphertext,
@@ -1596,17 +1660,18 @@ func (q *Queries) GetActiveControlUsageVerificationKey(ctx context.Context, arg 
 }
 
 const getActiveHelperRouteForEnvironment = `-- name: GetActiveHelperRouteForEnvironment :one
-SELECT r.id, r.environment_id, r.kind, r.public_host, r.target_host, r.target_port, r.desired_revision, r.desired_state, r.applied_revision, r.applied_node_id, r.applied_generation, r.drain_deadline, r.version, r.created_at, r.updated_at FROM control_routes r
+SELECT r.id, r.environment_id, r.kind, r.public_host, r.target_host, r.target_port, r.desired_revision, r.desired_state, r.applied_revision, r.applied_node_id, r.applied_generation, r.drain_deadline, r.version, r.created_at, r.updated_at, r.connector_id FROM control_routes r
 JOIN control_environments e ON e.id = r.environment_id
-JOIN control_connector_generations c ON c.environment_id = r.environment_id
-JOIN control_helpers h ON h.id = c.helper_id AND h.environment_id = r.environment_id
+JOIN control_connector_generations c ON c.environment_id = r.environment_id AND c.connector_id = r.connector_id
+JOIN user_machines m ON m.id = c.machine_id AND m.environment_id = r.environment_id
 JOIN control_tunnel_nodes n ON n.id = c.edge_node_id AND n.id = r.applied_node_id
 WHERE r.environment_id = $1
-  AND r.kind = 'helper_https_wss'
+  AND r.kind = 'runtime_https_wss'
+	AND c.connector_id = 'runtime'
   AND r.desired_state IN ('attached','replacing')
   AND r.applied_revision >= r.desired_revision
   AND r.applied_generation = c.generation
-  AND e.desired_state = 'active' AND h.state = 'active' AND c.state = 'admitted'
+  AND e.desired_state = 'active' AND m.revoked_at IS NULL AND m.deleted_at IS NULL AND c.state = 'admitted'
   AND n.state = 'ready' AND n.ready = true
 ORDER BY r.id
 LIMIT 1
@@ -1631,6 +1696,7 @@ func (q *Queries) GetActiveHelperRouteForEnvironment(ctx context.Context, enviro
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ConnectorID,
 	)
 	return i, err
 }
@@ -1646,7 +1712,7 @@ SELECT
      AND assignment.consent_state IN ('accepted','not_required'))::bigint AS eligible_environments,
   (SELECT count(*) FROM control_config_sync_statuses WHERE state IN ('restoring','watching','pending','syncing','healthy','warning','conflict','sync_uncertain'))::bigint AS reporting_environments,
   (SELECT count(*) FROM control_config_sync_statuses WHERE state='conflict')::bigint AS conflict_environments,
-  (SELECT coalesce(sum(pending_path_count),0) FROM control_config_sync_statuses)::bigint AS pending_paths,
+  (SELECT coalesce(sum(pending_clean_path_count),0) FROM control_config_sync_statuses)::bigint AS pending_paths,
   (SELECT count(*) FROM control_config_sync_statuses WHERE state='sync_uncertain')::bigint AS uncertain_publications,
   (SELECT count(*) FROM control_config_repository_lease_authority
    WHERE lease_id IS NOT NULL AND revoked_at IS NULL AND expires_at>now())::bigint AS active_writer_leases,
@@ -1690,7 +1756,7 @@ func (q *Queries) GetConfigSyncMetrics(ctx context.Context) (GetConfigSyncMetric
 }
 
 const getControlConfigAssignment = `-- name: GetControlConfigAssignment :one
-SELECT id, environment_id, repository_id, consent_state, warning_revision, accepted_at, revoked_at, version, created_at, updated_at FROM control_config_assignments WHERE environment_id = $1
+SELECT id, environment_id, repository_id, mode, consent_state, warning_revision, accepted_at, revoked_at, version, created_at, updated_at, machine_id FROM control_config_assignments WHERE environment_id = $1
 `
 
 func (q *Queries) GetControlConfigAssignment(ctx context.Context, environmentID string) (ControlConfigAssignment, error) {
@@ -1700,6 +1766,7 @@ func (q *Queries) GetControlConfigAssignment(ctx context.Context, environmentID 
 		&i.ID,
 		&i.EnvironmentID,
 		&i.RepositoryID,
+		&i.Mode,
 		&i.ConsentState,
 		&i.WarningRevision,
 		&i.AcceptedAt,
@@ -1707,12 +1774,13 @@ func (q *Queries) GetControlConfigAssignment(ctx context.Context, environmentID 
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.MachineID,
 	)
 	return i, err
 }
 
 const getControlConfigCredentialByOperation = `-- name: GetControlConfigCredentialByOperation :one
-SELECT jti_hash, jti, operation_key, request_hash, environment_id, helper_id, assignment_id, warning_revision, credential_ciphertext, expires_at, revoked_at, created_at FROM control_config_credentials WHERE operation_key = $1
+SELECT jti_hash, jti, operation_key, request_hash, environment_id, machine_id, assignment_id, warning_revision, credential_ciphertext, expires_at, revoked_at, created_at FROM control_config_credentials WHERE operation_key = $1
 `
 
 func (q *Queries) GetControlConfigCredentialByOperation(ctx context.Context, operationKey string) (ControlConfigCredential, error) {
@@ -1724,7 +1792,7 @@ func (q *Queries) GetControlConfigCredentialByOperation(ctx context.Context, ope
 		&i.OperationKey,
 		&i.RequestHash,
 		&i.EnvironmentID,
-		&i.HelperID,
+		&i.MachineID,
 		&i.AssignmentID,
 		&i.WarningRevision,
 		&i.CredentialCiphertext,
@@ -1736,7 +1804,7 @@ func (q *Queries) GetControlConfigCredentialByOperation(ctx context.Context, ope
 }
 
 const getControlConfigLeaseAuthorityForUpdate = `-- name: GetControlConfigLeaseAuthorityForUpdate :one
-SELECT repository_id, last_fencing_token, lease_id, assignment_id, environment_id, helper_id, helper_generation, base_remote_revision, operation_id, acquired_at, expires_at, revoked_at, version, updated_at FROM control_config_repository_lease_authority
+SELECT repository_id, last_fencing_token, lease_id, assignment_id, environment_id, machine_id, installation_generation, base_remote_revision, operation_id, acquired_at, expires_at, revoked_at, version, updated_at FROM control_config_repository_lease_authority
 WHERE repository_id = $1
 FOR UPDATE
 `
@@ -1750,8 +1818,8 @@ func (q *Queries) GetControlConfigLeaseAuthorityForUpdate(ctx context.Context, r
 		&i.LeaseID,
 		&i.AssignmentID,
 		&i.EnvironmentID,
-		&i.HelperID,
-		&i.HelperGeneration,
+		&i.MachineID,
+		&i.InstallationGeneration,
 		&i.BaseRemoteRevision,
 		&i.OperationID,
 		&i.AcquiredAt,
@@ -1764,7 +1832,7 @@ func (q *Queries) GetControlConfigLeaseAuthorityForUpdate(ctx context.Context, r
 }
 
 const getControlConfigLeaseOperation = `-- name: GetControlConfigLeaseOperation :one
-SELECT operation_id, operation_type, request_hash, repository_id, lease_id, fencing_token, result_state, expires_at, created_at, assignment_id, environment_id, helper_id, base_remote_revision FROM control_config_repository_lease_operations WHERE operation_id = $1
+SELECT operation_id, operation_type, request_hash, repository_id, lease_id, fencing_token, result_state, expires_at, created_at, assignment_id, environment_id, machine_id, base_remote_revision FROM control_config_repository_lease_operations WHERE operation_id = $1
 `
 
 func (q *Queries) GetControlConfigLeaseOperation(ctx context.Context, operationID string) (ControlConfigRepositoryLeaseOperation, error) {
@@ -1782,14 +1850,14 @@ func (q *Queries) GetControlConfigLeaseOperation(ctx context.Context, operationI
 		&i.CreatedAt,
 		&i.AssignmentID,
 		&i.EnvironmentID,
-		&i.HelperID,
+		&i.MachineID,
 		&i.BaseRemoteRevision,
 	)
 	return i, err
 }
 
 const getControlConfigRepositoryAccessOperation = `-- name: GetControlConfigRepositoryAccessOperation :one
-SELECT operation_id, request_hash, repository_id, assignment_id, environment_id, helper_id, helper_generation, warning_revision, state, access_ciphertext, expires_at, revoked_at, provider_revoked_at, revoke_attempts, last_error_code, created_at, updated_at FROM control_config_repository_access_operations
+SELECT operation_id, request_hash, repository_id, assignment_id, environment_id, machine_id, installation_generation, warning_revision, state, access_ciphertext, expires_at, revoked_at, provider_revoked_at, revoke_attempts, last_error_code, created_at, updated_at FROM control_config_repository_access_operations
 WHERE operation_id = $1
 `
 
@@ -1802,8 +1870,8 @@ func (q *Queries) GetControlConfigRepositoryAccessOperation(ctx context.Context,
 		&i.RepositoryID,
 		&i.AssignmentID,
 		&i.EnvironmentID,
-		&i.HelperID,
-		&i.HelperGeneration,
+		&i.MachineID,
+		&i.InstallationGeneration,
 		&i.WarningRevision,
 		&i.State,
 		&i.AccessCiphertext,
@@ -1823,23 +1891,23 @@ SELECT sync_revision
 FROM control_config_sync_statuses
 WHERE environment_id = $1
   AND assignment_id = $2
-  AND helper_id = $3
-  AND helper_generation = $4
+  AND machine_id = $3
+  AND installation_generation = $4
 `
 
 type GetControlConfigSyncRevisionParams struct {
-	EnvironmentID    string
-	AssignmentID     string
-	HelperID         string
-	HelperGeneration int64
+	EnvironmentID          string
+	AssignmentID           string
+	MachineID              string
+	InstallationGeneration int64
 }
 
 func (q *Queries) GetControlConfigSyncRevision(ctx context.Context, arg GetControlConfigSyncRevisionParams) (int64, error) {
 	row := q.db.QueryRowContext(ctx, getControlConfigSyncRevision,
 		arg.EnvironmentID,
 		arg.AssignmentID,
-		arg.HelperID,
-		arg.HelperGeneration,
+		arg.MachineID,
+		arg.InstallationGeneration,
 	)
 	var sync_revision int64
 	err := row.Scan(&sync_revision)
@@ -1848,7 +1916,7 @@ func (q *Queries) GetControlConfigSyncRevision(ctx context.Context, arg GetContr
 
 const getControlConfigWarningContext = `-- name: GetControlConfigWarningContext :one
 SELECT cm.display_name AS machine_name, cm.workspace_root AS canonical_scope,
-       r.display_name AS repository_name
+	   r.display_name AS repository_name, a.mode
 FROM control_config_assignments a
 JOIN control_environments e ON e.id = a.environment_id
 JOIN user_machines cm ON cm.environment_id = e.id AND cm.deleted_at IS NULL
@@ -1866,12 +1934,18 @@ type GetControlConfigWarningContextRow struct {
 	MachineName    string
 	CanonicalScope string
 	RepositoryName string
+	Mode           string
 }
 
 func (q *Queries) GetControlConfigWarningContext(ctx context.Context, arg GetControlConfigWarningContextParams) (GetControlConfigWarningContextRow, error) {
 	row := q.db.QueryRowContext(ctx, getControlConfigWarningContext, arg.EnvironmentID, arg.OwnerUserID)
 	var i GetControlConfigWarningContextRow
-	err := row.Scan(&i.MachineName, &i.CanonicalScope, &i.RepositoryName)
+	err := row.Scan(
+		&i.MachineName,
+		&i.CanonicalScope,
+		&i.RepositoryName,
+		&i.Mode,
+	)
 	return i, err
 }
 
@@ -1879,14 +1953,16 @@ const getControlConnectorAssignment = `-- name: GetControlConnectorAssignment :o
 SELECT c.generation, c.edge_pool, c.edge_node_id, (c.revoked_at IS NOT NULL OR e.desired_state = 'revoked') AS revoked
 FROM control_connector_generations c
 JOIN control_environments e ON e.id = c.environment_id
-JOIN control_helpers h ON h.id = c.helper_id AND h.environment_id = c.environment_id
-WHERE c.environment_id = $1 AND c.helper_id = $2
-  AND h.state = 'active' AND e.desired_state = 'active'
+JOIN user_machines m ON m.id = c.machine_id AND m.environment_id = c.environment_id
+WHERE c.environment_id = $1 AND c.machine_id = $2
+  AND c.connector_id = $3
+  AND m.revoked_at IS NULL AND m.deleted_at IS NULL AND e.desired_state = 'active'
 `
 
 type GetControlConnectorAssignmentParams struct {
 	EnvironmentID string
-	HelperID      string
+	MachineID     string
+	ConnectorID   string
 }
 
 type GetControlConnectorAssignmentRow struct {
@@ -1897,7 +1973,7 @@ type GetControlConnectorAssignmentRow struct {
 }
 
 func (q *Queries) GetControlConnectorAssignment(ctx context.Context, arg GetControlConnectorAssignmentParams) (GetControlConnectorAssignmentRow, error) {
-	row := q.db.QueryRowContext(ctx, getControlConnectorAssignment, arg.EnvironmentID, arg.HelperID)
+	row := q.db.QueryRowContext(ctx, getControlConnectorAssignment, arg.EnvironmentID, arg.MachineID, arg.ConnectorID)
 	var i GetControlConnectorAssignmentRow
 	err := row.Scan(
 		&i.Generation,
@@ -1909,15 +1985,22 @@ func (q *Queries) GetControlConnectorAssignment(ctx context.Context, arg GetCont
 }
 
 const getControlConnectorGenerationForUpdate = `-- name: GetControlConnectorGenerationForUpdate :one
-SELECT environment_id, helper_id, generation, edge_pool, edge_node_id, state, admission_jti_hash, admission_operation_key, admission_request_hash, admission_credential_ciphertext, expires_at, revoked_at, version, updated_at FROM control_connector_generations WHERE environment_id = $1 FOR UPDATE
+SELECT environment_id, machine_id, generation, edge_pool, edge_node_id, state, admission_jti_hash, admission_operation_key, admission_request_hash, admission_credential_ciphertext, expires_at, revoked_at, version, updated_at, connector_id FROM control_connector_generations
+WHERE environment_id = $1 AND connector_id = $2
+FOR UPDATE
 `
 
-func (q *Queries) GetControlConnectorGenerationForUpdate(ctx context.Context, environmentID string) (ControlConnectorGeneration, error) {
-	row := q.db.QueryRowContext(ctx, getControlConnectorGenerationForUpdate, environmentID)
+type GetControlConnectorGenerationForUpdateParams struct {
+	EnvironmentID string
+	ConnectorID   string
+}
+
+func (q *Queries) GetControlConnectorGenerationForUpdate(ctx context.Context, arg GetControlConnectorGenerationForUpdateParams) (ControlConnectorGeneration, error) {
+	row := q.db.QueryRowContext(ctx, getControlConnectorGenerationForUpdate, arg.EnvironmentID, arg.ConnectorID)
 	var i ControlConnectorGeneration
 	err := row.Scan(
 		&i.EnvironmentID,
-		&i.HelperID,
+		&i.MachineID,
 		&i.Generation,
 		&i.EdgePool,
 		&i.EdgeNodeID,
@@ -1930,6 +2013,7 @@ func (q *Queries) GetControlConnectorGenerationForUpdate(ctx context.Context, en
 		&i.RevokedAt,
 		&i.Version,
 		&i.UpdatedAt,
+		&i.ConnectorID,
 	)
 	return i, err
 }
@@ -2207,7 +2291,7 @@ func (q *Queries) GetControlPreviewOperation(ctx context.Context, operationKey s
 }
 
 const getControlRouteForUpdate = `-- name: GetControlRouteForUpdate :one
-SELECT id, environment_id, kind, public_host, target_host, target_port, desired_revision, desired_state, applied_revision, applied_node_id, applied_generation, drain_deadline, version, created_at, updated_at FROM control_routes WHERE id = $1 FOR UPDATE
+SELECT id, environment_id, kind, public_host, target_host, target_port, desired_revision, desired_state, applied_revision, applied_node_id, applied_generation, drain_deadline, version, created_at, updated_at, connector_id FROM control_routes WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) GetControlRouteForUpdate(ctx context.Context, id string) (ControlRoute, error) {
@@ -2229,6 +2313,7 @@ func (q *Queries) GetControlRouteForUpdate(ctx context.Context, id string) (Cont
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ConnectorID,
 	)
 	return i, err
 }
@@ -2351,32 +2436,35 @@ func (q *Queries) GetControlUsageVerificationKey(ctx context.Context, keyID stri
 }
 
 const getEligibleControlConfigAssignment = `-- name: GetEligibleControlConfigAssignment :one
-SELECT a.id, a.environment_id, a.repository_id, a.consent_state, a.warning_revision, a.accepted_at, a.revoked_at, a.version, a.created_at, a.updated_at FROM control_config_assignments a
-JOIN control_helpers h ON h.environment_id = a.environment_id
+SELECT a.id, a.environment_id, a.repository_id, a.mode, a.consent_state, a.warning_revision, a.accepted_at, a.revoked_at, a.version, a.created_at, a.updated_at, a.machine_id FROM control_config_assignments a
+JOIN user_machines m ON m.id = a.machine_id
 JOIN control_environments e ON e.id = a.environment_id
 JOIN users u ON u.id = e.owner_user_id
 JOIN control_config_repositories r ON r.id = a.repository_id
-WHERE a.environment_id = $1 AND h.id = $2
-  AND h.state = 'active' AND h.revoked_at IS NULL AND a.repository_id IS NOT NULL
+WHERE a.environment_id = $1 AND m.id = $2
+  AND m.revoked_at IS NULL AND m.deleted_at IS NULL AND m.installation_generation = $3
+  AND a.repository_id IS NOT NULL
   AND a.revoked_at IS NULL AND a.consent_state IN ('not_required','accepted')
   AND e.desired_state = 'active' AND e.revoked_at IS NULL
   AND u.status = 'active'
   AND r.state = 'active' AND r.disconnected_at IS NULL
-FOR UPDATE OF a, h, e, u, r
+FOR UPDATE OF a, m, e, u, r
 `
 
 type GetEligibleControlConfigAssignmentParams struct {
-	EnvironmentID string
-	HelperID      string
+	EnvironmentID          string
+	MachineID              string
+	InstallationGeneration int64
 }
 
 func (q *Queries) GetEligibleControlConfigAssignment(ctx context.Context, arg GetEligibleControlConfigAssignmentParams) (ControlConfigAssignment, error) {
-	row := q.db.QueryRowContext(ctx, getEligibleControlConfigAssignment, arg.EnvironmentID, arg.HelperID)
+	row := q.db.QueryRowContext(ctx, getEligibleControlConfigAssignment, arg.EnvironmentID, arg.MachineID, arg.InstallationGeneration)
 	var i ControlConfigAssignment
 	err := row.Scan(
 		&i.ID,
 		&i.EnvironmentID,
 		&i.RepositoryID,
+		&i.Mode,
 		&i.ConsentState,
 		&i.WarningRevision,
 		&i.AcceptedAt,
@@ -2384,14 +2472,57 @@ func (q *Queries) GetEligibleControlConfigAssignment(ctx context.Context, arg Ge
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.MachineID,
+	)
+	return i, err
+}
+
+const getEligibleMachineConfigAssignment = `-- name: GetEligibleMachineConfigAssignment :one
+SELECT a.id, a.environment_id, a.repository_id, a.mode, a.consent_state, a.warning_revision, a.accepted_at, a.revoked_at, a.version, a.created_at, a.updated_at, a.machine_id FROM control_config_assignments a
+JOIN user_machines m ON m.id = a.machine_id
+JOIN control_environments e ON e.id = a.environment_id
+JOIN users u ON u.id = e.owner_user_id
+JOIN control_config_repositories r ON r.id = a.repository_id
+WHERE a.machine_id = $1 AND a.environment_id = $2
+  AND m.revoked_at IS NULL AND m.deleted_at IS NULL AND m.installation_generation = $3
+  AND a.repository_id IS NOT NULL
+  AND a.revoked_at IS NULL AND a.consent_state IN ('not_required','accepted')
+  AND e.desired_state = 'active' AND e.revoked_at IS NULL
+  AND u.status = 'active'
+  AND r.state = 'active' AND r.disconnected_at IS NULL
+FOR UPDATE OF a, m, e, u, r
+`
+
+type GetEligibleMachineConfigAssignmentParams struct {
+	MachineID              string
+	EnvironmentID          string
+	InstallationGeneration int64
+}
+
+func (q *Queries) GetEligibleMachineConfigAssignment(ctx context.Context, arg GetEligibleMachineConfigAssignmentParams) (ControlConfigAssignment, error) {
+	row := q.db.QueryRowContext(ctx, getEligibleMachineConfigAssignment, arg.MachineID, arg.EnvironmentID, arg.InstallationGeneration)
+	var i ControlConfigAssignment
+	err := row.Scan(
+		&i.ID,
+		&i.EnvironmentID,
+		&i.RepositoryID,
+		&i.Mode,
+		&i.ConsentState,
+		&i.WarningRevision,
+		&i.AcceptedAt,
+		&i.RevokedAt,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.MachineID,
 	)
 	return i, err
 }
 
 const getHelperRouteForEnvironment = `-- name: GetHelperRouteForEnvironment :one
-SELECT id, environment_id, kind, public_host, target_host, target_port, desired_revision, desired_state, applied_revision, applied_node_id, applied_generation, drain_deadline, version, created_at, updated_at FROM control_routes
+SELECT id, environment_id, kind, public_host, target_host, target_port, desired_revision, desired_state, applied_revision, applied_node_id, applied_generation, drain_deadline, version, created_at, updated_at, connector_id FROM control_routes
 WHERE environment_id = $1
-  AND kind = 'helper_https_wss'
+  AND kind = 'runtime_https_wss'
   AND desired_state IN ('attached','replacing')
 ORDER BY id
 LIMIT 1
@@ -2416,6 +2547,7 @@ func (q *Queries) GetHelperRouteForEnvironment(ctx context.Context, environmentI
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ConnectorID,
 	)
 	return i, err
 }
@@ -2458,6 +2590,22 @@ func (q *Queries) GetHostedHelperIdentityRenewal(ctx context.Context, operationK
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const getHostedMachineIDForEnvironment = `-- name: GetHostedMachineIDForEnvironment :one
+SELECT id
+FROM user_machines
+WHERE environment_id = $1
+  AND machine_kind = 'hosted'
+  AND revoked_at IS NULL
+  AND deleted_at IS NULL
+`
+
+func (q *Queries) GetHostedMachineIDForEnvironment(ctx context.Context, environmentID string) (string, error) {
+	row := q.db.QueryRowContext(ctx, getHostedMachineIDForEnvironment, environmentID)
+	var id string
+	err := row.Scan(&id)
+	return id, err
 }
 
 const getHostedProjectSetupIntent = `-- name: GetHostedProjectSetupIntent :one
@@ -2512,9 +2660,35 @@ func (q *Queries) GetHostedProviderOperationRecovery(ctx context.Context, operat
 	return i, err
 }
 
+const getMachineIDForActiveHelper = `-- name: GetMachineIDForActiveHelper :one
+SELECT coalesce(
+  (SELECT m.id FROM user_machines m
+   WHERE m.environment_id = h.environment_id AND m.deleted_at IS NULL
+   ORDER BY m.created_at DESC LIMIT 1),
+  (SELECT fm.fly_machine_id FROM fly_machines fm
+   WHERE fm.project_id = h.environment_id)
+)::text AS machine_id
+FROM control_helpers h
+WHERE h.id = $1 AND h.environment_id = $2
+  AND h.state = 'active' AND h.revoked_at IS NULL
+`
+
+type GetMachineIDForActiveHelperParams struct {
+	HelperID      string
+	EnvironmentID string
+}
+
+func (q *Queries) GetMachineIDForActiveHelper(ctx context.Context, arg GetMachineIDForActiveHelperParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, getMachineIDForActiveHelper, arg.HelperID, arg.EnvironmentID)
+	var machine_id string
+	err := row.Scan(&machine_id)
+	return machine_id, err
+}
+
 const getOwnedControlConfigConflictContext = `-- name: GetOwnedControlConfigConflictContext :one
 SELECT assignment.id AS assignment_id,
        assignment.version AS assignment_version,
+       assignment.mode AS assignment_mode,
        assignment.repository_id,
        status.remote_revision,
        status.conflicts
@@ -2529,7 +2703,6 @@ WHERE environment.id=$1
   AND environment.owner_user_id=$2
   AND environment.desired_state='active'
   AND repository.state='active'
-  AND status.state='conflict'
 `
 
 type GetOwnedControlConfigConflictContextParams struct {
@@ -2540,6 +2713,7 @@ type GetOwnedControlConfigConflictContextParams struct {
 type GetOwnedControlConfigConflictContextRow struct {
 	AssignmentID      string
 	AssignmentVersion int64
+	AssignmentMode    string
 	RepositoryID      sql.NullString
 	RemoteRevision    sql.NullString
 	Conflicts         json.RawMessage
@@ -2551,6 +2725,7 @@ func (q *Queries) GetOwnedControlConfigConflictContext(ctx context.Context, arg 
 	err := row.Scan(
 		&i.AssignmentID,
 		&i.AssignmentVersion,
+		&i.AssignmentMode,
 		&i.RepositoryID,
 		&i.RemoteRevision,
 		&i.Conflicts,
@@ -2694,8 +2869,8 @@ SET last_fencing_token = last_fencing_token + 1,
     lease_id = $1,
     assignment_id = $2,
     environment_id = $3,
-    helper_id = $4,
-    helper_generation = $5,
+    machine_id = $4,
+    installation_generation = $5,
     base_remote_revision = $6,
     operation_id = $7,
     acquired_at = $8,
@@ -2705,20 +2880,20 @@ SET last_fencing_token = last_fencing_token + 1,
     updated_at = $8
 WHERE repository_id = $10
   AND (lease_id IS NULL OR revoked_at IS NOT NULL OR expires_at <= $8)
-RETURNING repository_id, last_fencing_token, lease_id, assignment_id, environment_id, helper_id, helper_generation, base_remote_revision, operation_id, acquired_at, expires_at, revoked_at, version, updated_at
+RETURNING repository_id, last_fencing_token, lease_id, assignment_id, environment_id, machine_id, installation_generation, base_remote_revision, operation_id, acquired_at, expires_at, revoked_at, version, updated_at
 `
 
 type GrantControlConfigRepositoryLeaseParams struct {
-	LeaseID            sql.NullString
-	AssignmentID       sql.NullString
-	EnvironmentID      sql.NullString
-	HelperID           sql.NullString
-	HelperGeneration   sql.NullInt64
-	BaseRemoteRevision sql.NullString
-	OperationID        sql.NullString
-	Now                sql.NullTime
-	ExpiresAt          sql.NullTime
-	RepositoryID       string
+	LeaseID                sql.NullString
+	AssignmentID           sql.NullString
+	EnvironmentID          sql.NullString
+	MachineID              sql.NullString
+	InstallationGeneration sql.NullInt64
+	BaseRemoteRevision     sql.NullString
+	OperationID            sql.NullString
+	Now                    sql.NullTime
+	ExpiresAt              sql.NullTime
+	RepositoryID           string
 }
 
 func (q *Queries) GrantControlConfigRepositoryLease(ctx context.Context, arg GrantControlConfigRepositoryLeaseParams) (ControlConfigRepositoryLeaseAuthority, error) {
@@ -2726,8 +2901,8 @@ func (q *Queries) GrantControlConfigRepositoryLease(ctx context.Context, arg Gra
 		arg.LeaseID,
 		arg.AssignmentID,
 		arg.EnvironmentID,
-		arg.HelperID,
-		arg.HelperGeneration,
+		arg.MachineID,
+		arg.InstallationGeneration,
 		arg.BaseRemoteRevision,
 		arg.OperationID,
 		arg.Now,
@@ -2741,8 +2916,8 @@ func (q *Queries) GrantControlConfigRepositoryLease(ctx context.Context, arg Gra
 		&i.LeaseID,
 		&i.AssignmentID,
 		&i.EnvironmentID,
-		&i.HelperID,
-		&i.HelperGeneration,
+		&i.MachineID,
+		&i.InstallationGeneration,
 		&i.BaseRemoteRevision,
 		&i.OperationID,
 		&i.AcquiredAt,
@@ -2809,7 +2984,7 @@ SELECT EXISTS (
   SELECT 1 FROM control_helpers h
   JOIN fly_machines fm ON fm.project_id=h.environment_id
   WHERE h.id=$1 AND h.environment_id=$2
-    AND h.state='active' AND h.revoked_at IS NULL AND fm.fly_machine_id=$3
+    AND h.state='active' AND h.revoked_at IS NULL AND fm.user_machine_id=$3
 )
 `
 
@@ -2828,8 +3003,8 @@ func (q *Queries) HostedHelperOwnsMachine(ctx context.Context, arg HostedHelperO
 
 const insertControlConfigSyncStatusHistory = `-- name: InsertControlConfigSyncStatusHistory :exec
 INSERT INTO control_config_sync_status_history
-  (environment_id, sync_revision, repository_id, assignment_id, helper_id,
-   helper_generation, state, error_code, remote_revision, observed_at)
+  (environment_id, sync_revision, repository_id, assignment_id, machine_id,
+   installation_generation, state, error_code, remote_revision, observed_at)
 VALUES
   ($1, $2, $3,
    $4, $5, $6,
@@ -2840,16 +3015,16 @@ SET state = EXCLUDED.state, error_code = EXCLUDED.error_code,
 `
 
 type InsertControlConfigSyncStatusHistoryParams struct {
-	EnvironmentID    string
-	SyncRevision     int64
-	RepositoryID     string
-	AssignmentID     string
-	HelperID         string
-	HelperGeneration int64
-	State            string
-	ErrorCode        sql.NullString
-	RemoteRevision   sql.NullString
-	ObservedAt       time.Time
+	EnvironmentID          string
+	SyncRevision           int64
+	RepositoryID           string
+	AssignmentID           string
+	MachineID              string
+	InstallationGeneration int64
+	State                  string
+	ErrorCode              sql.NullString
+	RemoteRevision         sql.NullString
+	ObservedAt             time.Time
 }
 
 func (q *Queries) InsertControlConfigSyncStatusHistory(ctx context.Context, arg InsertControlConfigSyncStatusHistoryParams) error {
@@ -2858,8 +3033,8 @@ func (q *Queries) InsertControlConfigSyncStatusHistory(ctx context.Context, arg 
 		arg.SyncRevision,
 		arg.RepositoryID,
 		arg.AssignmentID,
-		arg.HelperID,
-		arg.HelperGeneration,
+		arg.MachineID,
+		arg.InstallationGeneration,
 		arg.State,
 		arg.ErrorCode,
 		arg.RemoteRevision,
@@ -2928,7 +3103,12 @@ func (q *Queries) InsertControlUsageReceipt(ctx context.Context, arg InsertContr
 }
 
 const isControlEnvironmentBYOD = `-- name: IsControlEnvironmentBYOD :one
-SELECT EXISTS (SELECT 1 FROM user_machines WHERE environment_id = $1 AND deleted_at IS NULL)
+SELECT EXISTS (
+  SELECT 1 FROM user_machines
+  WHERE environment_id = $1
+    AND machine_kind <> 'hosted'
+    AND deleted_at IS NULL
+)
 `
 
 func (q *Queries) IsControlEnvironmentBYOD(ctx context.Context, environmentID string) (bool, error) {
@@ -3052,7 +3232,7 @@ func (q *Queries) ListControlConfigRepositories(ctx context.Context, arg ListCon
 }
 
 const listControlConfigRepositoryAccessPendingProviderRevoke = `-- name: ListControlConfigRepositoryAccessPendingProviderRevoke :many
-SELECT operation_id, request_hash, repository_id, assignment_id, environment_id, helper_id, helper_generation, warning_revision, state, access_ciphertext, expires_at, revoked_at, provider_revoked_at, revoke_attempts, last_error_code, created_at, updated_at FROM control_config_repository_access_operations
+SELECT operation_id, request_hash, repository_id, assignment_id, environment_id, machine_id, installation_generation, warning_revision, state, access_ciphertext, expires_at, revoked_at, provider_revoked_at, revoke_attempts, last_error_code, created_at, updated_at FROM control_config_repository_access_operations
 WHERE revoked_at IS NOT NULL AND provider_revoked_at IS NULL
   AND access_ciphertext IS NOT NULL AND expires_at > $1
 ORDER BY revoked_at, operation_id
@@ -3079,8 +3259,8 @@ func (q *Queries) ListControlConfigRepositoryAccessPendingProviderRevoke(ctx con
 			&i.RepositoryID,
 			&i.AssignmentID,
 			&i.EnvironmentID,
-			&i.HelperID,
-			&i.HelperGeneration,
+			&i.MachineID,
+			&i.InstallationGeneration,
 			&i.WarningRevision,
 			&i.State,
 			&i.AccessCiphertext,
@@ -3162,12 +3342,17 @@ const listControlRoutesForEnvironmentAdmission = `-- name: ListControlRoutesForE
 SELECT r.id AS route_id, r.desired_revision AS route_revision, r.kind, r.public_host, r.target_host, r.target_port
 FROM control_routes r
 LEFT JOIN control_previews p ON p.route_id = r.id
-WHERE r.environment_id = $1
+WHERE r.environment_id = $1 AND r.connector_id = $2
   AND r.desired_state IN ('attached','replacing')
   AND (p.id IS NULL OR (p.state NOT IN ('expired','removed') AND (p.expires_at IS NULL OR p.expires_at > now())))
 ORDER BY r.id
 LIMIT 128
 `
+
+type ListControlRoutesForEnvironmentAdmissionParams struct {
+	EnvironmentID string
+	ConnectorID   string
+}
 
 type ListControlRoutesForEnvironmentAdmissionRow struct {
 	RouteID       string
@@ -3178,8 +3363,8 @@ type ListControlRoutesForEnvironmentAdmissionRow struct {
 	TargetPort    int32
 }
 
-func (q *Queries) ListControlRoutesForEnvironmentAdmission(ctx context.Context, environmentID string) ([]ListControlRoutesForEnvironmentAdmissionRow, error) {
-	rows, err := q.db.QueryContext(ctx, listControlRoutesForEnvironmentAdmission, environmentID)
+func (q *Queries) ListControlRoutesForEnvironmentAdmission(ctx context.Context, arg ListControlRoutesForEnvironmentAdmissionParams) ([]ListControlRoutesForEnvironmentAdmissionRow, error) {
+	rows, err := q.db.QueryContext(ctx, listControlRoutesForEnvironmentAdmission, arg.EnvironmentID, arg.ConnectorID)
 	if err != nil {
 		return nil, err
 	}
@@ -3209,18 +3394,19 @@ func (q *Queries) ListControlRoutesForEnvironmentAdmission(ctx context.Context, 
 }
 
 const listControlRoutesForNode = `-- name: ListControlRoutesForNode :many
-SELECT r.id AS route_id, r.desired_revision AS route_revision, r.environment_id,
+SELECT r.id AS route_id, r.desired_revision AS route_revision, r.environment_id, c.connector_id,
        c.generation AS connector_generation, c.edge_node_id, r.kind, r.public_host,
        r.target_host, r.target_port, COALESCE(p.state, 'ready') AS preview_state,
        CASE WHEN p.state = 'degraded' AND NOT p.target_ready THEN 'target_unhealthy' ELSE '' END AS preview_reason
 FROM control_routes r
-JOIN control_connector_generations c ON c.environment_id = r.environment_id
-JOIN control_helpers h ON h.id = c.helper_id AND h.environment_id = c.environment_id
+JOIN control_connector_generations c ON c.environment_id = r.environment_id AND c.connector_id = r.connector_id
+JOIN user_machines m ON m.id = c.machine_id AND m.environment_id = c.environment_id
 LEFT JOIN control_previews p ON p.route_id = r.id
 WHERE c.edge_node_id = $1
   AND r.desired_state IN ('attached','replacing')
   AND c.state IN ('pending','admitted')
-  AND h.state = 'active'
+  AND (c.expires_at IS NULL OR c.expires_at > $2)
+  AND m.revoked_at IS NULL AND m.deleted_at IS NULL
   AND (p.id IS NULL OR (p.state NOT IN ('expired','removed') AND (p.expires_at IS NULL OR p.expires_at > $2)))
 ORDER BY r.id
 `
@@ -3234,6 +3420,7 @@ type ListControlRoutesForNodeRow struct {
 	RouteID             string
 	RouteRevision       int64
 	EnvironmentID       string
+	ConnectorID         string
 	ConnectorGeneration int64
 	EdgeNodeID          sql.NullString
 	Kind                string
@@ -3257,6 +3444,7 @@ func (q *Queries) ListControlRoutesForNode(ctx context.Context, arg ListControlR
 			&i.RouteID,
 			&i.RouteRevision,
 			&i.EnvironmentID,
+			&i.ConnectorID,
 			&i.ConnectorGeneration,
 			&i.EdgeNodeID,
 			&i.Kind,
@@ -3316,50 +3504,47 @@ func (q *Queries) ListDetachingControlRoutesForNode(ctx context.Context, edgeNod
 const listOwnedControlConfigSyncStatus = `-- name: ListOwnedControlConfigSyncStatus :many
 SELECT
   environment.id AS environment_id,
+  machine.id AS machine_id,
   environment.workspace_id,
-  CASE WHEN machine.id IS NOT NULL THEN 'byod'::text ELSE 'hosted'::text END AS profile,
+  CASE WHEN machine.machine_kind = 'hosted' THEN 'hosted'::text ELSE 'byod'::text END AS profile,
   COALESCE(machine.display_name, project.name, environment.id)::text AS display_name,
   environment.desired_state AS environment_state,
   assignment.id AS assignment_id,
   assignment.repository_id,
+	assignment.mode,
   assignment.consent_state,
   assignment.warning_revision,
   assignment.version AS assignment_version,
   repository.display_name AS repository_name,
   repository.state AS repository_state,
-  COALESCE(helper.id, '')::text AS helper_id,
-  COALESCE(helper.generation, 0)::bigint AS helper_generation,
+  COALESCE(machine.installation_generation, 0)::bigint AS installation_generation,
   status.state AS sync_state,
   status.assignment_id AS status_assignment_id,
   status.repository_id AS status_repository_id,
-  status.helper_id AS status_helper_id,
-  status.helper_generation AS status_helper_generation,
+  status.machine_id AS status_machine_id,
+  status.installation_generation AS status_installation_generation,
   status.policy_revision,
-  status.key_version,
   status.sync_revision,
   status.remote_revision,
-  status.pending_path_count,
-  COALESCE(status.classifier_pending, '[]'::jsonb)::jsonb AS classifier_pending,
+  status.manifest_health,
+  status.manifest_revision,
+  status.managed_path_count,
+  status.pending_clean_path_count,
+  status.last_applied_revision,
+  status.last_published_revision,
   COALESCE(status.skipped, '[]'::jsonb)::jsonb AS skipped,
   COALESCE(status.conflicts, '[]'::jsonb)::jsonb AS conflicts,
   status.error_code,
   COALESCE(status.recovery_actions, '[]'::jsonb)::jsonb AS recovery_actions,
   status.last_attempt_at,
   status.last_successful_at,
-  status.helper_updated_at,
+  status.machine_updated_at,
   status.observed_at
 FROM control_environments environment
 LEFT JOIN control_config_assignments assignment
   ON assignment.environment_id = environment.id
 LEFT JOIN control_config_repositories repository
   ON repository.id = assignment.repository_id
-LEFT JOIN LATERAL (
-  SELECT id, generation
-  FROM control_helpers
-  WHERE environment_id = environment.id AND state = 'active' AND revoked_at IS NULL
-  ORDER BY generation DESC
-  LIMIT 1
-) helper ON true
 LEFT JOIN control_config_sync_statuses status
   ON status.environment_id = environment.id
 LEFT JOIN user_machines machine
@@ -3372,39 +3557,43 @@ ORDER BY lower(COALESCE(machine.display_name, project.name, environment.id)), en
 `
 
 type ListOwnedControlConfigSyncStatusRow struct {
-	EnvironmentID          string
-	WorkspaceID            string
-	Profile                string
-	DisplayName            string
-	EnvironmentState       string
-	AssignmentID           sql.NullString
-	RepositoryID           sql.NullString
-	ConsentState           sql.NullString
-	WarningRevision        sql.NullString
-	AssignmentVersion      sql.NullInt64
-	RepositoryName         sql.NullString
-	RepositoryState        sql.NullString
-	HelperID               string
-	HelperGeneration       int64
-	SyncState              sql.NullString
-	StatusAssignmentID     sql.NullString
-	StatusRepositoryID     sql.NullString
-	StatusHelperID         sql.NullString
-	StatusHelperGeneration sql.NullInt64
-	PolicyRevision         sql.NullString
-	KeyVersion             sql.NullInt64
-	SyncRevision           sql.NullInt64
-	RemoteRevision         sql.NullString
-	PendingPathCount       sql.NullInt32
-	ClassifierPending      json.RawMessage
-	Skipped                json.RawMessage
-	Conflicts              json.RawMessage
-	ErrorCode              sql.NullString
-	RecoveryActions        json.RawMessage
-	LastAttemptAt          sql.NullTime
-	LastSuccessfulAt       sql.NullTime
-	HelperUpdatedAt        sql.NullTime
-	ObservedAt             sql.NullTime
+	EnvironmentID                string
+	MachineID                    sql.NullString
+	WorkspaceID                  string
+	Profile                      string
+	DisplayName                  string
+	EnvironmentState             string
+	AssignmentID                 sql.NullString
+	RepositoryID                 sql.NullString
+	Mode                         sql.NullString
+	ConsentState                 sql.NullString
+	WarningRevision              sql.NullString
+	AssignmentVersion            sql.NullInt64
+	RepositoryName               sql.NullString
+	RepositoryState              sql.NullString
+	InstallationGeneration       int64
+	SyncState                    sql.NullString
+	StatusAssignmentID           sql.NullString
+	StatusRepositoryID           sql.NullString
+	StatusMachineID              sql.NullString
+	StatusInstallationGeneration sql.NullInt64
+	PolicyRevision               sql.NullString
+	SyncRevision                 sql.NullInt64
+	RemoteRevision               sql.NullString
+	ManifestHealth               sql.NullString
+	ManifestRevision             sql.NullString
+	ManagedPathCount             sql.NullInt32
+	PendingCleanPathCount        sql.NullInt32
+	LastAppliedRevision          sql.NullString
+	LastPublishedRevision        sql.NullString
+	Skipped                      json.RawMessage
+	Conflicts                    json.RawMessage
+	ErrorCode                    sql.NullString
+	RecoveryActions              json.RawMessage
+	LastAttemptAt                sql.NullTime
+	LastSuccessfulAt             sql.NullTime
+	MachineUpdatedAt             sql.NullTime
+	ObservedAt                   sql.NullTime
 }
 
 func (q *Queries) ListOwnedControlConfigSyncStatus(ctx context.Context, ownerUserID sql.NullString) ([]ListOwnedControlConfigSyncStatusRow, error) {
@@ -3418,37 +3607,41 @@ func (q *Queries) ListOwnedControlConfigSyncStatus(ctx context.Context, ownerUse
 		var i ListOwnedControlConfigSyncStatusRow
 		if err := rows.Scan(
 			&i.EnvironmentID,
+			&i.MachineID,
 			&i.WorkspaceID,
 			&i.Profile,
 			&i.DisplayName,
 			&i.EnvironmentState,
 			&i.AssignmentID,
 			&i.RepositoryID,
+			&i.Mode,
 			&i.ConsentState,
 			&i.WarningRevision,
 			&i.AssignmentVersion,
 			&i.RepositoryName,
 			&i.RepositoryState,
-			&i.HelperID,
-			&i.HelperGeneration,
+			&i.InstallationGeneration,
 			&i.SyncState,
 			&i.StatusAssignmentID,
 			&i.StatusRepositoryID,
-			&i.StatusHelperID,
-			&i.StatusHelperGeneration,
+			&i.StatusMachineID,
+			&i.StatusInstallationGeneration,
 			&i.PolicyRevision,
-			&i.KeyVersion,
 			&i.SyncRevision,
 			&i.RemoteRevision,
-			&i.PendingPathCount,
-			&i.ClassifierPending,
+			&i.ManifestHealth,
+			&i.ManifestRevision,
+			&i.ManagedPathCount,
+			&i.PendingCleanPathCount,
+			&i.LastAppliedRevision,
+			&i.LastPublishedRevision,
 			&i.Skipped,
 			&i.Conflicts,
 			&i.ErrorCode,
 			&i.RecoveryActions,
 			&i.LastAttemptAt,
 			&i.LastSuccessfulAt,
-			&i.HelperUpdatedAt,
+			&i.MachineUpdatedAt,
 			&i.ObservedAt,
 		); err != nil {
 			return nil, err
@@ -3566,7 +3759,7 @@ func (q *Queries) ListOwnedControlPreviews(ctx context.Context, ownerUserID sql.
 }
 
 const listPendingControlConfigConflictResolutions = `-- name: ListPendingControlConfigConflictResolutions :many
-SELECT id, environment_id, repository_id, assignment_id, conflict_revision, path, action, expected_remote_revision, requested_by_user_id, state, landed_revision, requested_at, applied_at, updated_at
+SELECT id, environment_id, repository_id, assignment_id, conflict_revision, path, scope, action, expected_remote_revision, requested_by_user_id, state, landed_revision, requested_at, applied_at, updated_at
 FROM control_config_conflict_resolutions
 WHERE environment_id=$1
   AND repository_id=$2
@@ -3598,6 +3791,7 @@ func (q *Queries) ListPendingControlConfigConflictResolutions(ctx context.Contex
 			&i.AssignmentID,
 			&i.ConflictRevision,
 			&i.Path,
+			&i.Scope,
 			&i.Action,
 			&i.ExpectedRemoteRevision,
 			&i.RequestedByUserID,
@@ -3621,15 +3815,16 @@ func (q *Queries) ListPendingControlConfigConflictResolutions(ctx context.Contex
 }
 
 const listRevokedConnectorGenerations = `-- name: ListRevokedConnectorGenerations :many
-SELECT id AS helper_id, generation FROM control_helpers
+SELECT machine_id, connector_id, generation FROM control_connector_generations
 WHERE state IN ('revoked','replaced')
-ORDER BY updated_at, id
+ORDER BY updated_at, machine_id, connector_id
 LIMIT $1
 `
 
 type ListRevokedConnectorGenerationsRow struct {
-	HelperID   string
-	Generation int64
+	MachineID   string
+	ConnectorID string
+	Generation  int64
 }
 
 func (q *Queries) ListRevokedConnectorGenerations(ctx context.Context, rowLimit int32) ([]ListRevokedConnectorGenerationsRow, error) {
@@ -3641,7 +3836,7 @@ func (q *Queries) ListRevokedConnectorGenerations(ctx context.Context, rowLimit 
 	var items []ListRevokedConnectorGenerationsRow
 	for rows.Next() {
 		var i ListRevokedConnectorGenerationsRow
-		if err := rows.Scan(&i.HelperID, &i.Generation); err != nil {
+		if err := rows.Scan(&i.MachineID, &i.ConnectorID, &i.Generation); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -4026,68 +4221,80 @@ func (q *Queries) RecordControlConfigRepositoryAccessRevokeFailure(ctx context.C
 
 const recordControlConfigSyncStatus = `-- name: RecordControlConfigSyncStatus :one
 INSERT INTO control_config_sync_statuses
-  (environment_id, repository_id, assignment_id, helper_id, helper_generation,
-   warning_revision, policy_revision, key_version, sync_revision, state,
-   remote_revision, lease_id, fencing_token, pending_path_count, classifier_pending,
+  (environment_id, repository_id, assignment_id, machine_id, installation_generation,
+   warning_revision, policy_revision, sync_revision, state, mode,
+   remote_revision, manifest_health, manifest_revision, managed_path_count,
+   pending_clean_path_count, last_applied_revision, last_published_revision,
+   lease_id, fencing_token,
    skipped, conflicts, error_code, recovery_actions, last_attempt_at,
-   last_successful_at, helper_updated_at, observed_at)
+   last_successful_at, machine_updated_at, observed_at)
 VALUES
   ($1, $2, $3, $4,
    $5, $6, $7,
    $8, $9, $10,
    $11, $12, $13,
-   $14, $15, $16,
-   $17, $18, $19,
-   $20, $21, $22, $23)
+   $14, $15,
+   $16, $17,
+   $18, $19, $20,
+   $21, $22, $23,
+   $24, $25, $26, $27)
 ON CONFLICT (environment_id) DO UPDATE
 SET repository_id = EXCLUDED.repository_id, assignment_id = EXCLUDED.assignment_id,
-    helper_id = EXCLUDED.helper_id, helper_generation = EXCLUDED.helper_generation,
+    machine_id = EXCLUDED.machine_id, installation_generation = EXCLUDED.installation_generation,
     warning_revision = EXCLUDED.warning_revision, policy_revision = EXCLUDED.policy_revision,
-    key_version = EXCLUDED.key_version, sync_revision = EXCLUDED.sync_revision,
-    state = EXCLUDED.state, remote_revision = EXCLUDED.remote_revision,
+    sync_revision = EXCLUDED.sync_revision,
+    state = EXCLUDED.state, mode = EXCLUDED.mode, remote_revision = EXCLUDED.remote_revision,
+    manifest_health = EXCLUDED.manifest_health, manifest_revision = EXCLUDED.manifest_revision,
+    managed_path_count = EXCLUDED.managed_path_count,
+    pending_clean_path_count = EXCLUDED.pending_clean_path_count,
+    last_applied_revision = EXCLUDED.last_applied_revision,
+    last_published_revision = EXCLUDED.last_published_revision,
     lease_id = EXCLUDED.lease_id, fencing_token = EXCLUDED.fencing_token,
-    pending_path_count = EXCLUDED.pending_path_count, classifier_pending = EXCLUDED.classifier_pending,
     skipped = EXCLUDED.skipped, conflicts = EXCLUDED.conflicts, error_code = EXCLUDED.error_code,
     recovery_actions = EXCLUDED.recovery_actions, last_attempt_at = EXCLUDED.last_attempt_at,
-    last_successful_at = EXCLUDED.last_successful_at, helper_updated_at = EXCLUDED.helper_updated_at,
+    last_successful_at = EXCLUDED.last_successful_at, machine_updated_at = EXCLUDED.machine_updated_at,
     observed_at = EXCLUDED.observed_at
 WHERE (
     control_config_sync_statuses.sync_revision < EXCLUDED.sync_revision
     OR (
       control_config_sync_statuses.sync_revision = EXCLUDED.sync_revision
-      AND control_config_sync_statuses.helper_updated_at < EXCLUDED.helper_updated_at
+      AND control_config_sync_statuses.machine_updated_at < EXCLUDED.machine_updated_at
     )
   )
   AND control_config_sync_statuses.assignment_id = EXCLUDED.assignment_id
-  AND control_config_sync_statuses.helper_id = EXCLUDED.helper_id
-  AND control_config_sync_statuses.helper_generation = EXCLUDED.helper_generation
-RETURNING environment_id, repository_id, assignment_id, helper_id, helper_generation, warning_revision, policy_revision, key_version, sync_revision, state, remote_revision, lease_id, fencing_token, pending_path_count, classifier_pending, skipped, conflicts, error_code, recovery_actions, last_attempt_at, last_successful_at, helper_updated_at, observed_at
+  AND control_config_sync_statuses.machine_id = EXCLUDED.machine_id
+  AND control_config_sync_statuses.installation_generation = EXCLUDED.installation_generation
+RETURNING environment_id, repository_id, assignment_id, machine_id, installation_generation, warning_revision, policy_revision, sync_revision, state, mode, remote_revision, manifest_health, manifest_revision, managed_path_count, pending_clean_path_count, last_applied_revision, last_published_revision, lease_id, fencing_token, skipped, conflicts, error_code, recovery_actions, last_attempt_at, last_successful_at, machine_updated_at, observed_at
 `
 
 type RecordControlConfigSyncStatusParams struct {
-	EnvironmentID     string
-	RepositoryID      string
-	AssignmentID      string
-	HelperID          string
-	HelperGeneration  int64
-	WarningRevision   string
-	PolicyRevision    string
-	KeyVersion        int64
-	SyncRevision      int64
-	State             string
-	RemoteRevision    sql.NullString
-	LeaseID           sql.NullString
-	FencingToken      sql.NullInt64
-	PendingPathCount  int32
-	ClassifierPending json.RawMessage
-	Skipped           json.RawMessage
-	Conflicts         json.RawMessage
-	ErrorCode         sql.NullString
-	RecoveryActions   json.RawMessage
-	LastAttemptAt     sql.NullTime
-	LastSuccessfulAt  sql.NullTime
-	HelperUpdatedAt   time.Time
-	ObservedAt        time.Time
+	EnvironmentID          string
+	RepositoryID           string
+	AssignmentID           string
+	MachineID              string
+	InstallationGeneration int64
+	WarningRevision        string
+	PolicyRevision         string
+	SyncRevision           int64
+	State                  string
+	Mode                   string
+	RemoteRevision         sql.NullString
+	ManifestHealth         string
+	ManifestRevision       sql.NullString
+	ManagedPathCount       int32
+	PendingCleanPathCount  int32
+	LastAppliedRevision    sql.NullString
+	LastPublishedRevision  sql.NullString
+	LeaseID                sql.NullString
+	FencingToken           sql.NullInt64
+	Skipped                json.RawMessage
+	Conflicts              json.RawMessage
+	ErrorCode              sql.NullString
+	RecoveryActions        json.RawMessage
+	LastAttemptAt          sql.NullTime
+	LastSuccessfulAt       sql.NullTime
+	MachineUpdatedAt       time.Time
+	ObservedAt             time.Time
 }
 
 func (q *Queries) RecordControlConfigSyncStatus(ctx context.Context, arg RecordControlConfigSyncStatusParams) (ControlConfigSyncStatus, error) {
@@ -4095,25 +4302,29 @@ func (q *Queries) RecordControlConfigSyncStatus(ctx context.Context, arg RecordC
 		arg.EnvironmentID,
 		arg.RepositoryID,
 		arg.AssignmentID,
-		arg.HelperID,
-		arg.HelperGeneration,
+		arg.MachineID,
+		arg.InstallationGeneration,
 		arg.WarningRevision,
 		arg.PolicyRevision,
-		arg.KeyVersion,
 		arg.SyncRevision,
 		arg.State,
+		arg.Mode,
 		arg.RemoteRevision,
+		arg.ManifestHealth,
+		arg.ManifestRevision,
+		arg.ManagedPathCount,
+		arg.PendingCleanPathCount,
+		arg.LastAppliedRevision,
+		arg.LastPublishedRevision,
 		arg.LeaseID,
 		arg.FencingToken,
-		arg.PendingPathCount,
-		arg.ClassifierPending,
 		arg.Skipped,
 		arg.Conflicts,
 		arg.ErrorCode,
 		arg.RecoveryActions,
 		arg.LastAttemptAt,
 		arg.LastSuccessfulAt,
-		arg.HelperUpdatedAt,
+		arg.MachineUpdatedAt,
 		arg.ObservedAt,
 	)
 	var i ControlConfigSyncStatus
@@ -4121,25 +4332,29 @@ func (q *Queries) RecordControlConfigSyncStatus(ctx context.Context, arg RecordC
 		&i.EnvironmentID,
 		&i.RepositoryID,
 		&i.AssignmentID,
-		&i.HelperID,
-		&i.HelperGeneration,
+		&i.MachineID,
+		&i.InstallationGeneration,
 		&i.WarningRevision,
 		&i.PolicyRevision,
-		&i.KeyVersion,
 		&i.SyncRevision,
 		&i.State,
+		&i.Mode,
 		&i.RemoteRevision,
+		&i.ManifestHealth,
+		&i.ManifestRevision,
+		&i.ManagedPathCount,
+		&i.PendingCleanPathCount,
+		&i.LastAppliedRevision,
+		&i.LastPublishedRevision,
 		&i.LeaseID,
 		&i.FencingToken,
-		&i.PendingPathCount,
-		&i.ClassifierPending,
 		&i.Skipped,
 		&i.Conflicts,
 		&i.ErrorCode,
 		&i.RecoveryActions,
 		&i.LastAttemptAt,
 		&i.LastSuccessfulAt,
-		&i.HelperUpdatedAt,
+		&i.MachineUpdatedAt,
 		&i.ObservedAt,
 	)
 	return i, err
@@ -4268,13 +4483,13 @@ func (q *Queries) RegisterControlTunnelNode(ctx context.Context, arg RegisterCon
 
 const releaseControlConfigRepositoryLease = `-- name: ReleaseControlConfigRepositoryLease :one
 UPDATE control_config_repository_lease_authority
-SET lease_id = NULL, assignment_id = NULL, environment_id = NULL, helper_id = NULL,
-    helper_generation = NULL, base_remote_revision = NULL, operation_id = NULL,
+SET lease_id = NULL, assignment_id = NULL, environment_id = NULL, machine_id = NULL,
+    installation_generation = NULL, base_remote_revision = NULL, operation_id = NULL,
     acquired_at = NULL, expires_at = NULL, revoked_at = NULL,
     version = version + 1, updated_at = $1
 WHERE repository_id = $2 AND lease_id = $3
   AND last_fencing_token = $4 AND revoked_at IS NULL
-RETURNING repository_id, last_fencing_token, lease_id, assignment_id, environment_id, helper_id, helper_generation, base_remote_revision, operation_id, acquired_at, expires_at, revoked_at, version, updated_at
+RETURNING repository_id, last_fencing_token, lease_id, assignment_id, environment_id, machine_id, installation_generation, base_remote_revision, operation_id, acquired_at, expires_at, revoked_at, version, updated_at
 `
 
 type ReleaseControlConfigRepositoryLeaseParams struct {
@@ -4298,8 +4513,8 @@ func (q *Queries) ReleaseControlConfigRepositoryLease(ctx context.Context, arg R
 		&i.LeaseID,
 		&i.AssignmentID,
 		&i.EnvironmentID,
-		&i.HelperID,
-		&i.HelperGeneration,
+		&i.MachineID,
+		&i.InstallationGeneration,
 		&i.BaseRemoteRevision,
 		&i.OperationID,
 		&i.AcquiredAt,
@@ -4317,7 +4532,7 @@ SET consent_state = 'pending', warning_revision = $1, accepted_at = NULL,
     revoked_at = NULL, version = version + 1, updated_at = $2
 WHERE environment_id = $3 AND version = $4
   AND repository_id IS NOT NULL AND consent_state = 'accepted'
-RETURNING id, environment_id, repository_id, consent_state, warning_revision, accepted_at, revoked_at, version, created_at, updated_at
+RETURNING id, environment_id, repository_id, mode, consent_state, warning_revision, accepted_at, revoked_at, version, created_at, updated_at, machine_id
 `
 
 type RemoveControlConfigConsentParams struct {
@@ -4339,6 +4554,7 @@ func (q *Queries) RemoveControlConfigConsent(ctx context.Context, arg RemoveCont
 		&i.ID,
 		&i.EnvironmentID,
 		&i.RepositoryID,
+		&i.Mode,
 		&i.ConsentState,
 		&i.WarningRevision,
 		&i.AcceptedAt,
@@ -4346,6 +4562,7 @@ func (q *Queries) RemoveControlConfigConsent(ctx context.Context, arg RemoveCont
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.MachineID,
 	)
 	return i, err
 }
@@ -4429,7 +4646,7 @@ SET expires_at = $1, version = version + 1, updated_at = $2
 WHERE repository_id = $3 AND lease_id = $4
   AND last_fencing_token = $5 AND revoked_at IS NULL
   AND expires_at > $2
-RETURNING repository_id, last_fencing_token, lease_id, assignment_id, environment_id, helper_id, helper_generation, base_remote_revision, operation_id, acquired_at, expires_at, revoked_at, version, updated_at
+RETURNING repository_id, last_fencing_token, lease_id, assignment_id, environment_id, machine_id, installation_generation, base_remote_revision, operation_id, acquired_at, expires_at, revoked_at, version, updated_at
 `
 
 type RenewControlConfigRepositoryLeaseParams struct {
@@ -4455,8 +4672,8 @@ func (q *Queries) RenewControlConfigRepositoryLease(ctx context.Context, arg Ren
 		&i.LeaseID,
 		&i.AssignmentID,
 		&i.EnvironmentID,
-		&i.HelperID,
-		&i.HelperGeneration,
+		&i.MachineID,
+		&i.InstallationGeneration,
 		&i.BaseRemoteRevision,
 		&i.OperationID,
 		&i.AcquiredAt,
@@ -4511,24 +4728,24 @@ func (q *Queries) ReplaceControlHelper(ctx context.Context, arg ReplaceControlHe
 const reserveControlConfigRepositoryAccess = `-- name: ReserveControlConfigRepositoryAccess :one
 INSERT INTO control_config_repository_access_operations
   (operation_id, request_hash, repository_id, assignment_id, environment_id,
-   helper_id, helper_generation, warning_revision)
+   machine_id, installation_generation, warning_revision)
 VALUES
   ($1, $2, $3,
    $4, $5, $6,
    $7, $8)
 ON CONFLICT (operation_id) DO NOTHING
-RETURNING operation_id, request_hash, repository_id, assignment_id, environment_id, helper_id, helper_generation, warning_revision, state, access_ciphertext, expires_at, revoked_at, provider_revoked_at, revoke_attempts, last_error_code, created_at, updated_at
+RETURNING operation_id, request_hash, repository_id, assignment_id, environment_id, machine_id, installation_generation, warning_revision, state, access_ciphertext, expires_at, revoked_at, provider_revoked_at, revoke_attempts, last_error_code, created_at, updated_at
 `
 
 type ReserveControlConfigRepositoryAccessParams struct {
-	OperationID      string
-	RequestHash      []byte
-	RepositoryID     string
-	AssignmentID     string
-	EnvironmentID    string
-	HelperID         string
-	HelperGeneration int64
-	WarningRevision  string
+	OperationID            string
+	RequestHash            []byte
+	RepositoryID           string
+	AssignmentID           string
+	EnvironmentID          string
+	MachineID              string
+	InstallationGeneration int64
+	WarningRevision        string
 }
 
 func (q *Queries) ReserveControlConfigRepositoryAccess(ctx context.Context, arg ReserveControlConfigRepositoryAccessParams) (ControlConfigRepositoryAccessOperation, error) {
@@ -4538,8 +4755,8 @@ func (q *Queries) ReserveControlConfigRepositoryAccess(ctx context.Context, arg 
 		arg.RepositoryID,
 		arg.AssignmentID,
 		arg.EnvironmentID,
-		arg.HelperID,
-		arg.HelperGeneration,
+		arg.MachineID,
+		arg.InstallationGeneration,
 		arg.WarningRevision,
 	)
 	var i ControlConfigRepositoryAccessOperation
@@ -4549,8 +4766,8 @@ func (q *Queries) ReserveControlConfigRepositoryAccess(ctx context.Context, arg 
 		&i.RepositoryID,
 		&i.AssignmentID,
 		&i.EnvironmentID,
-		&i.HelperID,
-		&i.HelperGeneration,
+		&i.MachineID,
+		&i.InstallationGeneration,
 		&i.WarningRevision,
 		&i.State,
 		&i.AccessCiphertext,
@@ -4840,7 +5057,7 @@ const revokeControlConfigRepositoryLease = `-- name: RevokeControlConfigReposito
 UPDATE control_config_repository_lease_authority
 SET revoked_at = $1, version = version + 1, updated_at = $1
 WHERE repository_id = $2 AND lease_id IS NOT NULL AND revoked_at IS NULL
-RETURNING repository_id, last_fencing_token, lease_id, assignment_id, environment_id, helper_id, helper_generation, base_remote_revision, operation_id, acquired_at, expires_at, revoked_at, version, updated_at
+RETURNING repository_id, last_fencing_token, lease_id, assignment_id, environment_id, machine_id, installation_generation, base_remote_revision, operation_id, acquired_at, expires_at, revoked_at, version, updated_at
 `
 
 type RevokeControlConfigRepositoryLeaseParams struct {
@@ -4857,8 +5074,8 @@ func (q *Queries) RevokeControlConfigRepositoryLease(ctx context.Context, arg Re
 		&i.LeaseID,
 		&i.AssignmentID,
 		&i.EnvironmentID,
-		&i.HelperID,
-		&i.HelperGeneration,
+		&i.MachineID,
+		&i.InstallationGeneration,
 		&i.BaseRemoteRevision,
 		&i.OperationID,
 		&i.AcquiredAt,
@@ -5141,20 +5358,24 @@ func (q *Queries) SelectReadyControlTunnelNodeForUpdate(ctx context.Context, arg
 }
 
 const setControlConfigAssignment = `-- name: SetControlConfigAssignment :one
-INSERT INTO control_config_assignments (id, environment_id, repository_id, consent_state, warning_revision)
-VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (environment_id) DO UPDATE
-SET id = EXCLUDED.id, repository_id = EXCLUDED.repository_id, consent_state = EXCLUDED.consent_state,
+INSERT INTO control_config_assignments (id, machine_id, environment_id, repository_id, mode, consent_state, warning_revision)
+SELECT $1, machine.id, $2, $3,
+       $4, $5, $6
+FROM user_machines machine
+WHERE machine.environment_id = $2 AND machine.deleted_at IS NULL
+ON CONFLICT (machine_id) DO UPDATE
+SET id = EXCLUDED.id, repository_id = EXCLUDED.repository_id, mode = EXCLUDED.mode, consent_state = EXCLUDED.consent_state,
     warning_revision = EXCLUDED.warning_revision, accepted_at = NULL, revoked_at = NULL,
-    version = control_config_assignments.version + 1, updated_at = $6
-WHERE control_config_assignments.version = $7
-RETURNING id, environment_id, repository_id, consent_state, warning_revision, accepted_at, revoked_at, version, created_at, updated_at
+    version = control_config_assignments.version + 1, updated_at = $7
+WHERE control_config_assignments.version = $8
+RETURNING id, environment_id, repository_id, mode, consent_state, warning_revision, accepted_at, revoked_at, version, created_at, updated_at, machine_id
 `
 
 type SetControlConfigAssignmentParams struct {
 	AssignmentID    string
 	EnvironmentID   string
 	RepositoryID    sql.NullString
+	Mode            string
 	ConsentState    string
 	WarningRevision sql.NullString
 	Now             time.Time
@@ -5166,6 +5387,7 @@ func (q *Queries) SetControlConfigAssignment(ctx context.Context, arg SetControl
 		arg.AssignmentID,
 		arg.EnvironmentID,
 		arg.RepositoryID,
+		arg.Mode,
 		arg.ConsentState,
 		arg.WarningRevision,
 		arg.Now,
@@ -5176,6 +5398,7 @@ func (q *Queries) SetControlConfigAssignment(ctx context.Context, arg SetControl
 		&i.ID,
 		&i.EnvironmentID,
 		&i.RepositoryID,
+		&i.Mode,
 		&i.ConsentState,
 		&i.WarningRevision,
 		&i.AcceptedAt,
@@ -5183,6 +5406,7 @@ func (q *Queries) SetControlConfigAssignment(ctx context.Context, arg SetControl
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.MachineID,
 	)
 	return i, err
 }
@@ -5193,8 +5417,9 @@ SET edge_node_id = $1, state = 'admitted', admission_jti_hash = $2,
     admission_operation_key = $3, admission_request_hash = $4,
     admission_credential_ciphertext = $5, expires_at = $6,
     version = version + 1, updated_at = $7
-WHERE environment_id = $8 AND generation = $9
-RETURNING environment_id, helper_id, generation, edge_pool, edge_node_id, state, admission_jti_hash, admission_operation_key, admission_request_hash, admission_credential_ciphertext, expires_at, revoked_at, version, updated_at
+WHERE environment_id = $8 AND connector_id = $9
+  AND generation = $10
+RETURNING environment_id, machine_id, generation, edge_pool, edge_node_id, state, admission_jti_hash, admission_operation_key, admission_request_hash, admission_credential_ciphertext, expires_at, revoked_at, version, updated_at, connector_id
 `
 
 type SetControlConnectorAdmissionParams struct {
@@ -5206,6 +5431,7 @@ type SetControlConnectorAdmissionParams struct {
 	ExpiresAt                     sql.NullTime
 	UpdatedAt                     time.Time
 	EnvironmentID                 string
+	ConnectorID                   string
 	Generation                    int64
 }
 
@@ -5219,12 +5445,13 @@ func (q *Queries) SetControlConnectorAdmission(ctx context.Context, arg SetContr
 		arg.ExpiresAt,
 		arg.UpdatedAt,
 		arg.EnvironmentID,
+		arg.ConnectorID,
 		arg.Generation,
 	)
 	var i ControlConnectorGeneration
 	err := row.Scan(
 		&i.EnvironmentID,
-		&i.HelperID,
+		&i.MachineID,
 		&i.Generation,
 		&i.EdgePool,
 		&i.EdgeNodeID,
@@ -5237,6 +5464,7 @@ func (q *Queries) SetControlConnectorAdmission(ctx context.Context, arg SetContr
 		&i.RevokedAt,
 		&i.Version,
 		&i.UpdatedAt,
+		&i.ConnectorID,
 	)
 	return i, err
 }
@@ -5479,7 +5707,7 @@ SET target_host = $1, target_port = $2,
     desired_state = 'attached', desired_revision = desired_revision + 1,
     version = version + 1, updated_at = $3
 WHERE id = $4 AND environment_id = $5
-RETURNING id, environment_id, kind, public_host, target_host, target_port, desired_revision, desired_state, applied_revision, applied_node_id, applied_generation, drain_deadline, version, created_at, updated_at
+RETURNING id, environment_id, kind, public_host, target_host, target_port, desired_revision, desired_state, applied_revision, applied_node_id, applied_generation, drain_deadline, version, created_at, updated_at, connector_id
 `
 
 type UpdateControlPreviewRouteTargetParams struct {
@@ -5515,6 +5743,7 @@ func (q *Queries) UpdateControlPreviewRouteTarget(ctx context.Context, arg Updat
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ConnectorID,
 	)
 	return i, err
 }

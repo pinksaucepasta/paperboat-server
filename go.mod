@@ -3,28 +3,24 @@ module github.com/pinksaucepasta/paperboat-server
 go 1.25.7
 
 require (
-	filippo.io/age v1.3.1
-	github.com/bmatcuk/doublestar/v4 v4.6.1
 	github.com/bradleyfalzon/ghinstallation/v2 v2.19.0
 	github.com/coder/websocket v1.8.14
 	github.com/coreos/go-oidc/v3 v3.14.1
-	github.com/fsnotify/fsnotify v1.9.0
 	github.com/golang-jwt/jwt/v4 v4.5.2
 	github.com/google/go-github/v88 v88.0.0
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/lib/pq v1.12.3
-	github.com/openai/openai-go/v3 v3.42.0
 	github.com/pressly/goose/v3 v3.27.1
 	github.com/superfly/fly-go v0.3.1
 )
 
 require (
-	filippo.io/hpke v0.4.0 // indirect
 	github.com/Khan/genqlient v0.8.1 // indirect
 	github.com/PuerkitoBio/rehttp v1.4.0 // indirect
 	github.com/agnivade/levenshtein v1.1.1 // indirect
 	github.com/alexflint/go-arg v1.5.1 // indirect
 	github.com/alexflint/go-scalar v1.2.0 // indirect
+	github.com/bmatcuk/doublestar/v4 v4.6.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
@@ -44,10 +40,6 @@ require (
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/superfly/graphql v0.2.6 // indirect
 	github.com/superfly/macaroon v0.3.0 // indirect
-	github.com/tidwall/gjson v1.18.0 // indirect
-	github.com/tidwall/match v1.1.1 // indirect
-	github.com/tidwall/pretty v1.2.1 // indirect
-	github.com/tidwall/sjson v1.2.5 // indirect
 	github.com/vektah/gqlparser/v2 v2.5.19 // indirect
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect

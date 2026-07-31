@@ -9,7 +9,7 @@ query parameters; only the short `user_code` may appear in the browser approval 
 
 ## Client And Scopes
 
-The registered client id is `paperboat-cli`. Its exact allowed Paperboat scopes are:
+The registered client id is `paperboat`. Its exact allowed Paperboat scopes are:
 
 - `account:read`
 - `clients:revoke`

@@ -31,13 +31,13 @@ func TestVerifyPreviewRequestRejectsExpiredAndMismatchedCredentials(t *testing.T
 	body := []byte(`{}`)
 	proof := previewTestProof(t, helperKey, identity.HelperID, identity.EnvironmentID, body, now)
 
-	credential := func(helperID, environmentID string, issuedAt, expiresAt time.Time) string {
+	credential := func(machineID, environmentID string, issuedAt, expiresAt time.Time) string {
 		t.Helper()
 		token, err := signer.SignCredential(mint.CredentialInput{
-			Issuer: "https://api.example.test", Audience: "paperboat-control", Subject: helperID,
-			JTI: "jti_" + helperID + "_" + environmentID, IssuedAt: issuedAt, ExpiresAt: expiresAt,
+			Issuer: "https://api.example.test", Audience: "paperboat-control", Subject: machineID,
+			JTI: "jti_" + machineID + "_" + environmentID, IssuedAt: issuedAt, ExpiresAt: expiresAt,
 			CredentialClass: "preview_registration", Scopes: []string{"preview:register"},
-			EnvironmentID: environmentID, HelperID: helperID,
+			EnvironmentID: environmentID, MachineID: machineID, InstallationGeneration: 1,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -46,9 +46,9 @@ func TestVerifyPreviewRequestRejectsExpiredAndMismatchedCredentials(t *testing.T
 	}
 
 	tests := map[string]string{
-		"expired":                credential(identity.HelperID, identity.EnvironmentID, now.Add(-6*time.Minute), now.Add(-time.Minute)),
-		"mismatched helper":      credential(otherIdentity.HelperID, identity.EnvironmentID, now, now.Add(5*time.Minute)),
-		"mismatched environment": credential(identity.HelperID, otherIdentity.EnvironmentID, now, now.Add(5*time.Minute)),
+		"expired":                credential(identity.MachineID, identity.EnvironmentID, now.Add(-6*time.Minute), now.Add(-time.Minute)),
+		"mismatched machine":     credential(otherIdentity.MachineID, identity.EnvironmentID, now, now.Add(5*time.Minute)),
+		"mismatched environment": credential(identity.MachineID, otherIdentity.EnvironmentID, now, now.Add(5*time.Minute)),
 	}
 	for name, token := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -69,6 +69,7 @@ func enrollPreviewTestHelper(t *testing.T, ctx context.Context, service *Enrollm
 	if _, err := service.store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id) VALUES ($1,$2,$3) ON CONFLICT (id) DO UPDATE SET owner_user_id=EXCLUDED.owner_user_id`, environmentID, "workspace_"+suffix, userID); err != nil {
 		t.Fatal(err)
 	}
+	seedEnrollmentMachine(t, service.store, userID, environmentID)
 	grant, err := service.Issue(ctx, userID, "issue:"+environmentID, environmentID, 5*time.Minute)
 	if err != nil {
 		t.Fatal(err)

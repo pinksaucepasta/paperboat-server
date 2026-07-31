@@ -121,7 +121,7 @@ func TestDiagnosticsMetricsReportDurableBacklogs(t *testing.T) {
 		"user_machine_availability_drift_depth",
 		"user_machine_privileged_service_error_depth",
 		"user_machine_unsupported_host_scope_depth",
-		"paperboat_helper_update_rollbacks_total",
+		"paperboat_runtime_update_rollbacks_total",
 	} {
 		if _, ok := metrics[key]; !ok {
 			t.Fatalf("missing user-machine metric %s", key)

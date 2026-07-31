@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"filippo.io/age"
 	gh "github.com/google/go-github/v88/github"
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
@@ -419,20 +418,11 @@ func (s *Service) requiredOAuthScopes() []string {
 	return s.cfg.GitHub.OAuthScopes
 }
 
-func (s *Service) initializeRepo(ctx context.Context, userID, token string, repo Repo) error {
-	key, err := s.ensureAccountConfigKey(ctx, userID)
-	if err != nil {
-		return err
-	}
-	format, err := json.MarshalIndent(map[string]any{"format": "paperboat-chezmoi-age", "version": 1, "key_version": key.Version, "recipient": key.Recipient}, "", "  ")
-	if err != nil {
-		return err
-	}
-	format = append(format, '\n')
+func (s *Service) initializeRepo(ctx context.Context, _ string, token string, repo Repo) error {
 	files := map[string][]byte{
+		".pbinclude":                      {},
 		".paperboat/preview-url-skill.md": []byte("# Preview URLs\n\nWhen an app starts on localhost inside a Paperboat VM, surface the Paperboat preview URL instead of a raw localhost URL.\n"),
 		".paperboat/config-sync.json":     []byte("{\n  \"schema_version\": 2,\n  \"revision\": \"2\"\n}\n"),
-		".paperboat/format.json":          format,
 	}
 	for path, content := range files {
 		if _, err := s.client.GetFile(ctx, token, repo.Owner, repo.Name, path, repo.DefaultBranch); err == nil {
@@ -447,33 +437,6 @@ func (s *Service) initializeRepo(ctx context.Context, userID, token string, repo
 		}
 	}
 	return nil
-}
-
-type githubAccountConfigKey struct {
-	Version   int32
-	Recipient string
-}
-
-func (s *Service) ensureAccountConfigKey(ctx context.Context, userID string) (githubAccountConfigKey, error) {
-	row, err := s.db.Queries().GetAccountConfigKey(ctx, userID)
-	if errors.Is(err, sql.ErrNoRows) {
-		identity, generateErr := age.GenerateX25519Identity()
-		if generateErr != nil {
-			return githubAccountConfigKey{}, generateErr
-		}
-		ciphertext, encryptErr := secrets.Encrypt(s.cfg.Secrets.EncryptionKey, identity.String())
-		if encryptErr != nil {
-			return githubAccountConfigKey{}, encryptErr
-		}
-		if _, err = s.db.Queries().InsertAccountConfigKey(ctx, dbsqlc.InsertAccountConfigKeyParams{UserID: userID, Recipient: identity.Recipient().String(), EncryptedIdentity: ciphertext}); err != nil {
-			return githubAccountConfigKey{}, err
-		}
-		row, err = s.db.Queries().GetAccountConfigKey(ctx, userID)
-	}
-	if err != nil {
-		return githubAccountConfigKey{}, err
-	}
-	return githubAccountConfigKey{Version: row.KeyVersion, Recipient: row.Recipient}, nil
 }
 
 func (s *Service) recordAttempt(ctx context.Context, userID, idempotencyKey, state, owner, name, lastErr string) error {

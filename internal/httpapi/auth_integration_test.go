@@ -312,10 +312,10 @@ func newAuthIntegrationRouter(t *testing.T) (*db.DB, http.Handler) {
 		ReadinessChecker: readinessFunc(func(context.Context) error {
 			return nil
 		}),
-		Auth:         service,
-		DeviceAuth:   deviceService,
-		Billing:      billingService,
-		UserMachines: userMachineService,
+		Auth:       service,
+		DeviceAuth: deviceService,
+		Billing:    billingService,
+		Machines:   userMachineService,
 	})
 }
 

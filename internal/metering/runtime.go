@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
-	"github.com/pinksaucepasta/paperboat-server/internal/configsync"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
@@ -31,7 +30,10 @@ type ProjectSessionRevoker interface {
 	RetryPendingHelperRevocations(context.Context) error
 }
 
-var ErrInvalidHeartbeatCredential = errors.New("invalid heartbeat credential")
+var (
+	ErrInvalidHeartbeatCredential = errors.New("invalid heartbeat credential")
+	ErrDuplicateMachineIdentity   = errors.New("machine identity is active on another installation")
+)
 
 func NewRuntimeService(store *db.DB, flyClient fly.Client, billingRepo *billing.Repository) *RuntimeService {
 	return &RuntimeService{
@@ -199,12 +201,17 @@ func (s *RuntimeService) processCheckpoint(ctx context.Context, checkpoint Check
 }
 
 type RuntimeRepository struct {
-	db            *db.DB
-	encryptionKey string
+	db                     *db.DB
+	encryptionKey          string
+	identityConflictWindow time.Duration
 }
 
-func NewRuntimeRepository(store *db.DB, encryptionKey string) *RuntimeRepository {
-	return &RuntimeRepository{db: store, encryptionKey: encryptionKey}
+func NewRuntimeRepository(store *db.DB, encryptionKey string, identityConflictWindow ...time.Duration) *RuntimeRepository {
+	window := 2 * time.Minute
+	if len(identityConflictWindow) > 0 && identityConflictWindow[0] > 0 {
+		window = identityConflictWindow[0]
+	}
+	return &RuntimeRepository{db: store, encryptionKey: encryptionKey, identityConflictWindow: window}
 }
 
 type MeterableMachine struct {
@@ -245,8 +252,6 @@ type RuntimeObservation struct {
 	MachineID             string
 	ObservedAt            time.Time
 	ReporterVersion       string
-	ConfigSync            *configsync.Status
-	ConfigSyncObservedAt  time.Time
 	WorkerGeneration      uint64
 	OSBootID              string
 	WorkerServiceScope    string
@@ -514,6 +519,15 @@ func (r *RuntimeRepository) RecordRuntimeObservation(ctx context.Context, observ
 		observation.ObservedAt = time.Now().UTC()
 	}
 	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if observation.WorkerGeneration > 0 && observation.OSBootID != "" {
+			instance, err := tx.Queries().GetUserMachineRuntimeInstanceForUpdate(ctx, dbsqlc.GetUserMachineRuntimeInstanceForUpdateParams{ID: observation.MachineID, EnvironmentID: observation.ProjectID})
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			if err == nil && instance.Online && instance.LastSeenAt.Valid && instance.LastSeenAt.Time.After(time.Now().UTC().Add(-r.identityConflictWindow)) && instance.OsBootID.Valid && instance.OsBootID.String != observation.OSBootID {
+				return ErrDuplicateMachineIdentity
+			}
+		}
 		updated, err := tx.Queries().MarkUserMachineOnlineFromHelper(ctx, dbsqlc.MarkUserMachineOnlineFromHelperParams{ID: observation.MachineID, EnvironmentID: observation.ProjectID})
 		if err != nil {
 			return err
@@ -532,42 +546,7 @@ func (r *RuntimeRepository) RecordRuntimeObservation(ctx context.Context, observ
 			}
 			return nil
 		}
-		if observation.ConfigSync == nil {
-			return nil
-		}
-		if observation.ConfigSyncObservedAt.IsZero() {
-			observation.ConfigSyncObservedAt = observation.ConfigSync.UpdatedAt.UTC()
-		}
-		skipped, err := json.Marshal(observation.ConfigSync.Skipped)
-		if err != nil {
-			return err
-		}
-		conflicts, err := json.Marshal(observation.ConfigSync.Conflicts)
-		if err != nil {
-			return err
-		}
-		classifierPending, err := json.Marshal(observation.ConfigSync.ClassifierPending)
-		if err != nil {
-			return err
-		}
-		if err := tx.Queries().UpsertConfigSyncStatus(ctx, dbsqlc.UpsertConfigSyncStatusParams{
-			ProjectID: observation.ProjectID, MachineID: observation.MachineID, State: observation.ConfigSync.State,
-			LastAttemptAt: nullableTime(observation.ConfigSync.LastAttemptAt), LastSuccessfulSyncAt: nullableTime(observation.ConfigSync.LastSuccessfulAt),
-			RemoteCommit: observation.ConfigSync.RemoteCommit, PendingPathCount: int32(observation.ConfigSync.PendingPathCount),
-			Skipped: skipped, Conflicts: conflicts, ClassifierPending: classifierPending, ErrorCode: observation.ConfigSync.ErrorCode, ErrorMessage: observation.ConfigSync.ErrorMessage,
-			MaxFileBytes: observation.ConfigSync.MaxFileBytes, MaxBatchBytes: observation.ConfigSync.MaxBatchBytes,
-			PolicyRevision: observation.ConfigSync.PolicyRevision, ClassifierPolicyRevision: observation.ConfigSync.ClassifierPolicyRevision,
-			ClassifierModelRevision: observation.ConfigSync.ClassifierModelRevision, ClassifierHealth: observation.ConfigSync.ClassifierHealth, StatusUpdatedAt: observation.ConfigSync.UpdatedAt.UTC(),
-			EncryptionKeyVersion: int32(observation.ConfigSync.EncryptionKeyVersion),
-			StatusObservedAt:     observation.ConfigSyncObservedAt.UTC(), HeartbeatAt: observation.ObservedAt,
-		}); err != nil {
-			return err
-		}
-		return tx.Queries().TouchConfigSyncStatusReceipt(ctx, dbsqlc.TouchConfigSyncStatusReceiptParams{
-			HeartbeatAt: observation.ObservedAt,
-			ProjectID:   observation.ProjectID,
-			MachineID:   observation.MachineID,
-		})
+		return nil
 	})
 }
 

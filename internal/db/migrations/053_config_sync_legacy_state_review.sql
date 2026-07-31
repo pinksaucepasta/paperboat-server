@@ -68,32 +68,6 @@ CREATE TABLE control_config_sync_migration_reviews (
   ))
 );
 
--- Historical status rows are not promoted to authority: they lack canonical
--- assignment, helper-generation, warning, lease, and monotonic sync bindings.
--- Record only non-secret coordinates and revisions for operator review.
-INSERT INTO control_config_sync_migration_reviews (
-  source,
-  project_id,
-  machine_id,
-  environment_id,
-  reason,
-  details
-)
-SELECT
-  'config_sync_statuses',
-  status.project_id,
-  status.machine_id,
-  status.project_id,
-  'helper_binding_required',
-  jsonb_build_object(
-    'state', status.state,
-    'remote_revision', nullif(status.remote_commit,''),
-    'policy_revision', status.policy_revision,
-    'last_successful_sync_at', status.last_successful_sync_at
-  )
-FROM config_sync_statuses AS status
-ON CONFLICT (source, project_id, machine_id) DO NOTHING;
-
 -- A review row per historical assignment makes the off-database baseline and
 -- journal verification requirement explicit before canonical writes enable.
 INSERT INTO control_config_sync_migration_reviews (

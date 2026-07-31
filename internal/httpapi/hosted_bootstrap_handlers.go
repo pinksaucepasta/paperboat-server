@@ -27,7 +27,7 @@ func hostedBootstrapGet(service *controlplane.HostedBootstrapService) http.Handl
 			writeError(w, r, http.StatusBadRequest, "hosted_bootstrap_invalid", "Hosted bootstrap request is invalid.")
 			return
 		}
-		proof, proofErr := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Helper-Proof"))
+		proof, proofErr := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Machine-Proof"))
 		identity, ok := bearerToken(r)
 		if proofErr != nil || !ok {
 			writeError(w, r, http.StatusUnauthorized, "hosted_bootstrap_invalid", "Hosted bootstrap authorization is invalid.")

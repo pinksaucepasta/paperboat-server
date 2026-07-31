@@ -27,7 +27,7 @@ func (e *HostedReadinessError) Error() string {
 func (e *HostedReadinessError) Unwrap() error { return ErrHostedHelperNotReady }
 
 func HostedHelperHealthURL(cfg config.Config, projectID string) string {
-	host := providerName(cfg.Access.RouteSubdomainPrefix, projectID) + "." + strings.Trim(strings.ToLower(cfg.HelperBaseDomain), ".")
+	host := providerName(cfg.Access.RouteSubdomainPrefix, projectID) + "." + strings.Trim(strings.ToLower(cfg.RuntimeBaseDomain), ".")
 	if base := strings.TrimRight(strings.TrimSpace(cfg.Fly.HostedReadinessBaseURL), "/"); base != "" {
 		return base + "/healthz"
 	}
@@ -35,7 +35,7 @@ func HostedHelperHealthURL(cfg config.Config, projectID string) string {
 }
 
 func HostedHelperHealthHost(cfg config.Config, projectID string) string {
-	return providerName(cfg.Access.RouteSubdomainPrefix, projectID) + "." + strings.Trim(strings.ToLower(cfg.HelperBaseDomain), ".")
+	return providerName(cfg.Access.RouteSubdomainPrefix, projectID) + "." + strings.Trim(strings.ToLower(cfg.RuntimeBaseDomain), ".")
 }
 
 type helperHealth struct {

@@ -12,7 +12,7 @@ specific provider values in dynamic configuration and catalog seed data.
 - [http-api.md](http-api.md) - Paperboat server HTTP API and JSON response contract.
 - [provider-contracts.md](provider-contracts.md) - WorkOS, Polar, Fly.io, GitHub, and
   catalog seed boundaries.
-- [access-handoff.md](access-handoff.md) - provider_route, helper, and paperboat-cli
+- [access-handoff.md](access-handoff.md) - provider route, machine runtime, and `pb`
   pre-connect descriptor contracts.
 - [cli-authorization.md](cli-authorization.md) - device grants, scoped CLI sessions,
   refresh rotation, and client revocation.

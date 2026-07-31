@@ -31,14 +31,56 @@ func configConflictRequest(service *controlplane.ConfigConflictService) http.Han
 		}
 		result, err := service.Request(r.Context(), principal.User.ID, r.PathValue("environment_id"), input.ExpectedAssignmentVersion, controlplane.ConfigConflictResolution{
 			Path: input.Path, ConflictRevision: input.ConflictRevision,
-			ExpectedRemoteRevision: input.ExpectedRemoteRevision, Action: input.Action,
+			ExpectedRemoteRevision: input.ExpectedRemoteRevision, Scope: "path", Action: input.Action,
 		})
 		if err != nil {
 			status, code := http.StatusBadRequest, "conflict_resolution_invalid"
+			if errors.Is(err, controlplane.ErrConfigConflictResolutionMode) {
+				status, code = http.StatusConflict, "mode_forbids_publication"
+			}
 			if errors.Is(err, controlplane.ErrConfigConflictResolutionStale) {
 				status, code = http.StatusConflict, "conflict_resolution_stale"
 			}
 			writeError(w, r, status, code, "Conflict resolution could not be requested.")
+			return
+		}
+		writeJSON(w, http.StatusAccepted, SuccessResponse{Data: result})
+	}
+}
+
+func configForceRequest(service *controlplane.ConfigConflictService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		var input struct {
+			Scope                     string `json:"scope"`
+			Path                      string `json:"path"`
+			ConflictRevision          string `json:"conflict_revision"`
+			ExpectedRemoteRevision    string `json:"expected_remote_revision"`
+			ExpectedAssignmentVersion int64  `json:"expected_assignment_version"`
+			Action                    string `json:"action"`
+			Confirmation              string `json:"confirmation"`
+		}
+		if !decodeStrictJSON(w, r, &input) {
+			return
+		}
+		result, err := service.Request(r.Context(), principal.User.ID, r.PathValue("environment_id"), input.ExpectedAssignmentVersion, controlplane.ConfigConflictResolution{
+			Path: input.Path, ConflictRevision: input.ConflictRevision,
+			ExpectedRemoteRevision: input.ExpectedRemoteRevision, Scope: input.Scope,
+			Action: input.Action, Confirmation: input.Confirmation,
+		})
+		if err != nil {
+			status, code := http.StatusBadRequest, "force_confirmation_required"
+			if errors.Is(err, controlplane.ErrConfigConflictResolutionMode) {
+				status, code = http.StatusConflict, "mode_forbids_publication"
+			}
+			if errors.Is(err, controlplane.ErrConfigConflictResolutionStale) {
+				status, code = http.StatusConflict, "force_request_stale"
+			}
+			writeError(w, r, status, code, "Force operation could not be requested.")
 			return
 		}
 		writeJSON(w, http.StatusAccepted, SuccessResponse{Data: result})
@@ -93,8 +135,8 @@ func configConflictAcknowledge(service *controlplane.ConfigConflictService) http
 func configConflictHelperRequest(w http.ResponseWriter, r *http.Request) ([]byte, string, string, []byte, bool) {
 	defer r.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<10))
-	proof, proofErr := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Helper-Proof"))
-	identity := strings.TrimSpace(r.Header.Get("X-Paperboat-Helper-Identity"))
+	proof, proofErr := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Paperboat-Machine-Proof"))
+	identity := strings.TrimSpace(r.Header.Get("X-Paperboat-Machine-Identity"))
 	credential, credentialOK := bearerToken(r)
 	if err != nil || len(body) >= 64<<10 || !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") ||
 		proofErr != nil || identity == "" || !credentialOK {

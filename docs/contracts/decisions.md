@@ -15,7 +15,7 @@ Status: implemented contract baseline, pending final cross-project sign-off.
 - `helper/docs/cloud/environment-auth.md`
 - `helper/docs/user/remote-access.md`
 - `paperboat-dashboard/AGENTS.md`
-- `paperboat-cli/AGENTS.md`
+- `paperboat/AGENTS.md`
 
 ## Approved Or Draft Decisions
 
@@ -139,7 +139,7 @@ Decision:
 - Server stores encrypted GitHub token material.
 - Server manages multiple private configuration-repository connections per user,
   separately from the zero-or-one assignment on each environment.
-- `paperboat-helper` handles ongoing pull/apply/commit/push. The server owns repository
+- The `pb` config worker handles ongoing pull/apply/commit/push. The server owns repository
   authorization, assignment eligibility, scoped repository access, and writer leases.
 - OAuth scopes are dynamic config; production default is the minimum GitHub scopes that
   allow cloning authorized project repositories and provisioning/pushing the private
@@ -181,7 +181,7 @@ Decision:
 
 See [access-handoff.md](access-handoff.md).
 
-### paperboat-cli Descriptor
+### `pb` Descriptor
 
 Status: Contract frozen; authorization is versioned in `cli-authorization.md` and the
 descriptor/mint contract in `access-handoff.md`.

@@ -166,7 +166,7 @@ func TestGitHubOAuthStartDefaultsToPublicServerCallback(t *testing.T) {
 		t.Fatalf("oauth start status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	authorizationURL := jsonField(t, rec.Body.Bytes(), "authorization_url")
-	if !strings.Contains(authorizationURL, "redirect_uri=https%3A%2F%2Funified-camel-humorous.ngrok-free.app%2Fapi%2Fgithub%2Foauth%2Fcallback") {
+	if !strings.Contains(authorizationURL, "redirect_uri=https%3A%2F%2Funified-camel-humorous.ngrok-free.app%2Fv1%2Fgithub%2Foauth%2Fcallback") {
 		t.Fatalf("authorization url did not use ngrok server callback: %s", authorizationURL)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pinksaucepasta/paperboat-server/internal/canonicaljson"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
 	"github.com/pinksaucepasta/paperboat-server/internal/mint"
 )
@@ -27,6 +28,7 @@ type helperProofEnvelope struct {
 
 type HelperProofClaims struct {
 	HelperID      string    `json:"helper_id"`
+	MachineID     string    `json:"-"`
 	EnvironmentID string    `json:"environment_id"`
 	OperationID   string    `json:"operation_id"`
 	Method        string    `json:"method"`
@@ -68,14 +70,23 @@ func (s *EnrollmentService) verifyHelperRequest(ctx context.Context, identityTok
 	} else {
 		identity, err = s.signer.VerifyCredential(identityToken, s.issuer, "helper_identity", now)
 	}
-	if err != nil || identity.HelperID == "" || identity.KeyThumbprint == "" {
+	if err != nil || identity.HelperID == "" || identity.MachineID == "" || identity.KeyThumbprint == "" {
 		return HelperProofClaims{}, ErrHelperProof
 	}
 	helper, err := s.store.Queries().GetActiveControlHelper(ctx, dbsqlc.GetActiveControlHelperParams{ID: identity.HelperID, EnvironmentID: identity.EnvironmentID})
 	if err != nil || !helper.KeyThumbprint.Valid || helper.KeyThumbprint.String != identity.KeyThumbprint || len(helper.PublicKey) != ed25519.PublicKeySize {
 		return HelperProofClaims{}, ErrHelperProof
 	}
-	return verifyHelperProof(ed25519.PublicKey(helper.PublicKey), proof, identity.HelperID, identity.EnvironmentID, method, path, body, now)
+	machine, err := s.store.Queries().GetCanonicalMachineForEnvironment(ctx, identity.EnvironmentID)
+	if err != nil || machine.ID != identity.MachineID {
+		return HelperProofClaims{}, ErrHelperProof
+	}
+	verified, err := verifyHelperProof(ed25519.PublicKey(helper.PublicKey), proof, identity.HelperID, identity.EnvironmentID, method, path, body, now)
+	if err != nil {
+		return HelperProofClaims{}, err
+	}
+	verified.MachineID = identity.MachineID
+	return verified, nil
 }
 
 func (s *EnrollmentService) VerifyEnrollmentCredential(token string) (mint.CredentialClaims, error) {
@@ -144,55 +155,8 @@ func strictProofJSON(data []byte, target any) error {
 }
 
 func rejectDuplicateProofJSON(data []byte) error {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	var walk func() error
-	walk = func() error {
-		token, err := decoder.Token()
-		if err != nil {
-			return err
-		}
-		delimiter, compound := token.(json.Delim)
-		if !compound {
-			return nil
-		}
-		switch delimiter {
-		case '{':
-			seen := make(map[string]struct{})
-			for decoder.More() {
-				keyToken, err := decoder.Token()
-				if err != nil {
-					return err
-				}
-				key, ok := keyToken.(string)
-				if !ok {
-					return ErrHelperProof
-				}
-				if _, exists := seen[key]; exists {
-					return ErrHelperProof
-				}
-				seen[key] = struct{}{}
-				if err := walk(); err != nil {
-					return err
-				}
-			}
-		case '[':
-			for decoder.More() {
-				if err := walk(); err != nil {
-					return err
-				}
-			}
-		default:
-			return ErrHelperProof
-		}
-		_, err = decoder.Token()
-		return err
-	}
-	if err := walk(); err != nil {
-		return err
-	}
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
-		return ErrHelperProof
+	if err := canonicaljson.RejectDuplicateFields(data); err != nil {
+		return errors.Join(ErrHelperProof, err)
 	}
 	return nil
 }
