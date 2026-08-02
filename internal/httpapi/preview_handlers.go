@@ -27,6 +27,8 @@ type previewResponse struct {
 	EnvironmentName string     `json:"environment_name,omitempty"`
 	EnvironmentKind string     `json:"environment_kind,omitempty"`
 	OwnerEmail      string     `json:"owner_email,omitempty"`
+	SourceKind      string     `json:"source_kind"`
+	OwnerMode       string     `json:"owner_mode"`
 }
 
 func ownedPreviewList(service *controlplane.PreviewService) http.HandlerFunc {
@@ -86,7 +88,7 @@ func ownedPreviewRevoke(service *controlplane.PreviewService) http.HandlerFunc {
 }
 
 func newPreviewResponse(item dbsqlc.ControlPreview) previewResponse {
-	response := previewResponse{ID: item.ID, EnvironmentID: item.EnvironmentID, LogicalName: item.LogicalName, PreviewKey: item.PreviewKey, URL: "https://" + item.PublicHost, TargetPort: item.TargetPort, State: item.State, Version: item.Version}
+	response := previewResponse{ID: item.ID, EnvironmentID: item.EnvironmentID, LogicalName: item.LogicalName, PreviewKey: item.PreviewKey, URL: "https://" + item.PublicHost, TargetPort: item.TargetPort, State: item.State, Version: item.Version, SourceKind: item.SourceKind, OwnerMode: item.OwnerMode}
 	if item.ExpiresAt.Valid {
 		response.ExpiresAt = &item.ExpiresAt.Time
 	}

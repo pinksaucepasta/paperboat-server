@@ -18,6 +18,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
 	"github.com/pinksaucepasta/paperboat-server/internal/helperruntime"
 	"github.com/pinksaucepasta/paperboat-server/internal/mint"
+	"github.com/pinksaucepasta/paperboat-server/internal/naming"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 )
 
@@ -27,7 +28,7 @@ func (f helperRuntimeFunc) Terminal(ctx context.Context, route, credential, acti
 	return f(ctx, route, credential, action, sessionID, operationID)
 }
 
-func TestCatalogCreatesDefaultAndAllocatesMonotonicNames(t *testing.T) {
+func TestCatalogStartsEmptyAndAllocatesMemorableMonotonicNames(t *testing.T) {
 	store := newTerminalSessionTestDB(t)
 	projectService, project := createTerminalSessionTestProject(t, store, "usr_terminal_sessions")
 	service := New(store, projectService, 8, 1, 3)
@@ -37,15 +38,15 @@ func TestCatalogCreatesDefaultAndAllocatesMonotonicNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sessions) != 1 || !sessions[0].IsDefault || sessions[0].Name != "default" {
-		t.Fatalf("default catalog row = %#v", sessions)
+	if len(sessions) != 0 {
+		t.Fatalf("initial catalog = %#v", sessions)
 	}
 
 	first, err := service.Create(ctx, "usr_terminal_sessions", project.ID, "", "create-shell-2")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Name != "shell-2" || first.ID == "" {
+	if first.Name != naming.Session(1) || first.ID == "" {
 		t.Fatalf("first automatic session = %#v", first)
 	}
 	replay, err := service.Create(ctx, "usr_terminal_sessions", project.ID, "", "create-shell-2")
@@ -53,25 +54,26 @@ func TestCatalogCreatesDefaultAndAllocatesMonotonicNames(t *testing.T) {
 		t.Fatalf("idempotency replay = %#v, %v", replay, err)
 	}
 	second, err := service.Create(ctx, "usr_terminal_sessions", project.ID, "", "create-shell-3")
-	if err != nil || second.Name != "shell-3" {
+	if err != nil || second.Name != naming.Session(2) {
 		t.Fatalf("second automatic session = %#v, %v", second, err)
 	}
 	if _, err := service.Delete(ctx, "usr_terminal_sessions", project.ID, first.ID); err != nil {
 		t.Fatal(err)
 	}
-	third, err := service.Create(ctx, "usr_terminal_sessions", project.ID, "", "create-shell-4")
-	if err != nil || third.Name != "shell-4" {
-		t.Fatalf("automatic name was reused after deletion: %#v, %v", third, err)
+	claimed, err := service.Create(ctx, "usr_terminal_sessions", project.ID, naming.Session(3), "create-claimed")
+	if err != nil || claimed.Name != naming.Session(3) {
+		t.Fatalf("custom generated-looking name = %#v, %v", claimed, err)
 	}
-	if _, err := service.Delete(ctx, "usr_terminal_sessions", project.ID, sessions[0].ID); !errors.Is(err, ErrReserved) {
-		t.Fatalf("delete default error = %v, want ErrReserved", err)
+	third, err := service.Create(ctx, "usr_terminal_sessions", project.ID, "", "create-shell-4")
+	if err != nil || third.Name != naming.Session(4) {
+		t.Fatalf("automatic collision retry = %#v, %v", third, err)
 	}
 }
 
 func TestCatalogSerializesConcurrentAutomaticCreationAndEvictsAtLimit(t *testing.T) {
 	store := newTerminalSessionTestDB(t)
 	projectService, project := createTerminalSessionTestProject(t, store, "usr_terminal_concurrency")
-	service := New(store, projectService, 5, 1, 3) // default plus four named sessions
+	service := New(store, projectService, 4, 1, 3)
 	ctx := context.Background()
 
 	var wg sync.WaitGroup
@@ -100,7 +102,9 @@ func TestCatalogSerializesConcurrentAutomaticCreationAndEvictsAtLimit(t *testing
 		got = append(got, name)
 	}
 	sort.Strings(got)
-	if strings.Join(got, ",") != "shell-2,shell-3,shell-4,shell-5" {
+	want := []string{naming.Session(1), naming.Session(2), naming.Session(3), naming.Session(4)}
+	sort.Strings(want)
+	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("concurrent names = %v", got)
 	}
 	overflow, err := service.Create(ctx, "usr_terminal_concurrency", project.ID, "overflow", "overflow-key")
@@ -114,8 +118,8 @@ func TestCatalogSerializesConcurrentAutomaticCreationAndEvictsAtLimit(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sessions) != 5 {
-		t.Fatalf("retained sessions = %d, want 5", len(sessions))
+	if len(sessions) != 4 {
+		t.Fatalf("retained sessions = %d, want 4", len(sessions))
 	}
 	var queued int
 	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.terminal_session_operations WHERE project_id=$1 AND operation='delete_history'`, project.ID).Scan(&queued); err != nil {

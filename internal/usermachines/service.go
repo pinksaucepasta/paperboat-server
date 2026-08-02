@@ -30,41 +30,41 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
 	"github.com/pinksaucepasta/paperboat-server/internal/helperruntime"
 	"github.com/pinksaucepasta/paperboat-server/internal/mint"
+	"github.com/pinksaucepasta/paperboat-server/internal/naming"
 	"github.com/pinksaucepasta/paperboat-server/internal/secrets"
 )
 
 var (
-	ErrInvalidPairing             = errors.New("invalid user-machine pairing")
-	ErrInvalidSetup               = errors.New("invalid machine setup")
-	ErrMachineIdentityConflict    = errors.New("machine identity belongs to another account")
-	ErrMachineNameConflict        = errors.New("machine name is already in use")
-	ErrPairingExpired             = errors.New("user-machine pairing expired")
-	ErrPairingUsed                = errors.New("user-machine pairing is no longer pending")
-	ErrSeatUnavailable            = errors.New("user-machine seat unavailable")
-	ErrNotFound                   = errors.New("user machine not found")
-	ErrBandwidthDenied            = errors.New("user-machine bandwidth is unavailable")
-	ErrInvalidBandwidth           = errors.New("user-machine bandwidth request is invalid")
-	ErrInstallationPending        = errors.New("user-machine installation approval is pending")
-	ErrInstallationDenied         = errors.New("user-machine installation was denied")
-	ErrInstallationExpired        = errors.New("user-machine installation pairing expired")
-	ErrInstallationUnavailable    = errors.New("user-machine installation material is unavailable")
-	ErrProvisioningUnavailable    = errors.New("user-machine canonical helper provisioning is unavailable")
-	ErrEnrollmentNotFound         = errors.New("user-machine enrollment not found")
-	ErrEnrollmentState            = errors.New("user-machine enrollment state does not allow this operation")
-	ErrIdempotencyKeyRequired     = errors.New("user-machine enrollment idempotency key is required")
-	ErrTerminalSessionNotFound    = errors.New("user-machine terminal session not found")
-	ErrTerminalSessionReserved    = errors.New("user-machine default terminal session is reserved")
-	ErrTerminalSessionLimit       = errors.New("user-machine terminal session limit reached")
-	ErrTerminalSessionConflict    = errors.New("user-machine terminal session name conflict")
-	ErrTerminalSessionInvalidName = errors.New("invalid user-machine terminal session name")
-	ErrTerminalSessionIdempotency = errors.New("terminal session idempotency key is required")
-	ErrTransferDestinationInvalid = errors.New("transfer destination is unavailable")
+	ErrInvalidPairing               = errors.New("invalid user-machine pairing")
+	ErrInvalidSetup                 = errors.New("invalid machine setup")
+	ErrMachineIdentityConflict      = errors.New("machine identity belongs to another account")
+	ErrMachineNameConflict          = errors.New("machine name is already in use")
+	ErrPairingExpired               = errors.New("user-machine pairing expired")
+	ErrPairingUsed                  = errors.New("user-machine pairing is no longer pending")
+	ErrSeatUnavailable              = errors.New("user-machine seat unavailable")
+	ErrNotFound                     = errors.New("user machine not found")
+	ErrBandwidthDenied              = errors.New("user-machine bandwidth is unavailable")
+	ErrInvalidBandwidth             = errors.New("user-machine bandwidth request is invalid")
+	ErrInstallationPending          = errors.New("user-machine installation approval is pending")
+	ErrInstallationDenied           = errors.New("user-machine installation was denied")
+	ErrInstallationExpired          = errors.New("user-machine installation pairing expired")
+	ErrInstallationUnavailable      = errors.New("user-machine installation material is unavailable")
+	ErrProvisioningUnavailable      = errors.New("user-machine canonical helper provisioning is unavailable")
+	ErrEnrollmentNotFound           = errors.New("user-machine enrollment not found")
+	ErrEnrollmentState              = errors.New("user-machine enrollment state does not allow this operation")
+	ErrIdempotencyKeyRequired       = errors.New("user-machine enrollment idempotency key is required")
+	ErrTerminalSessionNotFound      = errors.New("user-machine terminal session not found")
+	ErrTerminalSessionReserved      = errors.New("user-machine default terminal session is reserved")
+	ErrTerminalSessionLimit         = errors.New("user-machine terminal session limit reached")
+	ErrTerminalSessionConflict      = errors.New("user-machine terminal session name conflict")
+	ErrTerminalSessionInvalidName   = errors.New("invalid user-machine terminal session name")
+	ErrTerminalSessionIdempotency   = errors.New("terminal session idempotency key is required")
+	ErrTransferDestinationInvalid   = errors.New("transfer destination is unavailable")
+	ErrMachineCapabilityUnavailable = errors.New("machine capability is unavailable")
+	ErrMachineOffline               = errors.New("machine is offline")
 )
 
-var (
-	terminalSessionNamePattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
-	automaticTerminalNamePattern = regexp.MustCompile(`^shell-[0-9]+$`)
-)
+var terminalSessionNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
 type SeatAuthorizer interface {
 	ReserveUserMachineSeat(context.Context, *db.Tx, string) error
@@ -442,13 +442,14 @@ type Pairing struct {
 
 type SetupInput struct {
 	DisplayName, Platform, Architecture, WorkspaceRoot, PublicIdentityKey string
+	SetupMode                                                             string
 	RuntimeVersions                                                       json.RawMessage
 }
 
 func (s *Service) Setup(ctx context.Context, userID string, in SetupInput) (UserMachine, error) {
 	userID = strings.TrimSpace(userID)
 	publicKey, keyErr := base64.RawURLEncoding.DecodeString(strings.TrimSpace(in.PublicIdentityKey))
-	if userID == "" || strings.TrimSpace(in.DisplayName) == "" || strings.TrimSpace(in.Architecture) == "" ||
+	if userID == "" || !slices.Contains([]string{"receive", "session"}, in.SetupMode) || strings.TrimSpace(in.DisplayName) == "" || strings.TrimSpace(in.Architecture) == "" ||
 		!filepath.IsAbs(in.WorkspaceRoot) || filepath.Clean(in.WorkspaceRoot) != in.WorkspaceRoot ||
 		!slices.Contains(s.policy.AllowedPlatforms, strings.ToLower(strings.TrimSpace(in.Platform))) ||
 		keyErr != nil || len(publicKey) != ed25519.PublicKeySize {
@@ -458,6 +459,7 @@ func (s *Service) Setup(ctx context.Context, userID string, in SetupInput) (User
 		in.RuntimeVersions = json.RawMessage(`{}`)
 	}
 	var result UserMachine
+	var downgradedFromHost bool
 	err := s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		key := sql.NullString{String: strings.TrimSpace(in.PublicIdentityKey), Valid: true}
 		row, err := tx.Queries().GetUserMachineByPublicIdentityForUpdate(ctx, key)
@@ -468,9 +470,29 @@ func (s *Service) Setup(ctx context.Context, userID string, in SetupInput) (User
 			if row.Platform != strings.ToLower(strings.TrimSpace(in.Platform)) || row.Architecture != strings.ToLower(strings.TrimSpace(in.Architecture)) || row.WorkspaceRoot != in.WorkspaceRoot {
 				return ErrInvalidSetup
 			}
-			row, err = tx.Queries().AddUserMachineInteractiveRole(ctx, dbsqlc.AddUserMachineInteractiveRoleParams{ID: row.ID, UserID: userID, DisplayName: strings.TrimSpace(in.DisplayName), RuntimeVersions: in.RuntimeVersions})
+			wasHost := row.SetupMode == "host" || slices.Contains(row.SetupRoles, "host")
+			row, err = tx.Queries().AddUserMachineInteractiveRole(ctx, dbsqlc.AddUserMachineInteractiveRoleParams{ID: row.ID, UserID: userID, DisplayName: strings.TrimSpace(in.DisplayName), RuntimeVersions: in.RuntimeVersions, SetupMode: in.SetupMode, ConfiguredCapabilities: configuredCapabilities(in.SetupMode)})
 			if err != nil {
 				return err
+			}
+			if wasHost && in.SetupMode != "host" {
+				downgradedFromHost = true
+				if err := s.revokeHostAuthorityTx(ctx, tx, row.ID, row.EnvironmentID, s.now().UTC()); err != nil {
+					return err
+				}
+			}
+			if in.SetupMode == "session" {
+				if _, err := tx.Queries().RevokeControlRoutesForEnvironment(ctx, dbsqlc.RevokeControlRoutesForEnvironmentParams{EnvironmentID: row.EnvironmentID, Now: s.now().UTC()}); err != nil {
+					return err
+				}
+			}
+			if in.SetupMode == "receive" {
+				if err := s.ensureHelperRoute(ctx, tx, row.ID, row.EnvironmentID); err != nil {
+					return err
+				}
+				if _, err := s.ensureCurrentBandwidthPeriod(ctx, tx, row); err != nil {
+					return err
+				}
 			}
 			result = mapMachine(row)
 			return s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "machine.setup_resumed", ResourceType: "machine", ResourceID: row.ID, IdempotencyKey: "machine.setup_resumed:" + row.ID + ":" + strconv.FormatInt(row.Version, 10)})
@@ -482,7 +504,7 @@ func (s *Service) Setup(ctx context.Context, userID string, in SetupInput) (User
 		row, err = tx.Queries().CreateInteractiveMachine(ctx, dbsqlc.CreateInteractiveMachineParams{
 			ID: newID("mch"), UserID: userID, EnvironmentID: environmentID, DisplayName: strings.TrimSpace(in.DisplayName),
 			Platform: strings.ToLower(strings.TrimSpace(in.Platform)), Architecture: strings.ToLower(strings.TrimSpace(in.Architecture)),
-			WorkspaceRoot: in.WorkspaceRoot, RuntimeVersions: in.RuntimeVersions, PublicIdentityKey: key,
+			WorkspaceRoot: in.WorkspaceRoot, RuntimeVersions: in.RuntimeVersions, SetupMode: in.SetupMode, ConfiguredCapabilities: configuredCapabilities(in.SetupMode), PublicIdentityKey: key,
 		})
 		if userMachineTerminalSessionUniqueViolation(err) {
 			return ErrMachineNameConflict
@@ -493,9 +515,27 @@ func (s *Service) Setup(ctx context.Context, userID string, in SetupInput) (User
 		if _, err := tx.Queries().CreateControlEnvironment(ctx, dbsqlc.CreateControlEnvironmentParams{ID: environmentID, WorkspaceID: row.ID, OwnerUserID: sql.NullString{String: userID, Valid: true}, DesiredState: "active"}); err != nil {
 			return err
 		}
+		if in.SetupMode == "receive" {
+			if err := s.ensureHelperRoute(ctx, tx, row.ID, row.EnvironmentID); err != nil {
+				return err
+			}
+			if _, err := s.ensureCurrentBandwidthPeriod(ctx, tx, row); err != nil {
+				return err
+			}
+		}
 		result = mapMachine(row)
 		return s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "machine.setup", ResourceType: "machine", ResourceID: row.ID, IdempotencyKey: "machine.setup:" + row.ID})
 	})
+	if err == nil && downgradedFromHost {
+		err = s.RevokeUserMachineSessions(ctx, result.ID, "machine_mode_downgraded")
+	}
+	if err == nil && in.SetupMode == "receive" {
+		artifact, ok := s.machineArtifacts[result.Platform+"-"+result.Architecture+"-pb"]
+		if !ok || s.artifactPublicKey == "" || s.issuer == "" || s.helperListenPort == 0 {
+			return UserMachine{}, ErrProvisioningUnavailable
+		}
+		result.Installation = &ReceiveInstallation{ControlURL: s.issuer, HelperListenAddress: fmt.Sprintf("127.0.0.1:%d", s.helperListenPort), Artifact: artifact, ArtifactPublicKey: s.artifactPublicKey}
+	}
 	return result, err
 }
 
@@ -553,24 +593,59 @@ func (s *Service) CreatePairing(ctx context.Context, in PairingInput) (Pairing, 
 }
 
 type UserMachine struct {
-	ID                     string             `json:"id"`
-	EnvironmentID          string             `json:"environment_id"`
-	DisplayName            string             `json:"display_name"`
-	Platform               string             `json:"platform"`
-	Architecture           string             `json:"architecture"`
-	WorkspaceRoot          string             `json:"workspace_root"`
-	State                  string             `json:"state"`
-	SeatState              string             `json:"seat_state"`
-	Online                 bool               `json:"online"`
-	RuntimeVersions        json.RawMessage    `json:"runtime_versions"`
-	SetupRoles             []string           `json:"setup_roles"`
-	MachineKind            string             `json:"machine_kind"`
-	PublicIdentityKey      string             `json:"public_identity_key"`
-	InstallationGeneration int64              `json:"installation_generation"`
-	EnrolledAt             *time.Time         `json:"enrolled_at,omitempty"`
-	LastSeenAt             *time.Time         `json:"last_seen_at,omitempty"`
-	Availability           AvailabilityPolicy `json:"availability"`
-	RuntimeDiagnostics     RuntimeDiagnostics `json:"runtime_diagnostics"`
+	ID                     string               `json:"id"`
+	EnvironmentID          string               `json:"environment_id"`
+	DisplayName            string               `json:"display_name"`
+	Platform               string               `json:"platform"`
+	Architecture           string               `json:"architecture"`
+	WorkspaceRoot          string               `json:"workspace_root"`
+	State                  string               `json:"state"`
+	SeatState              string               `json:"seat_state"`
+	Online                 bool                 `json:"online"`
+	RuntimeVersions        json.RawMessage      `json:"runtime_versions"`
+	SetupRoles             []string             `json:"setup_roles"`
+	SetupMode              string               `json:"setup_mode"`
+	Capabilities           MachineCapabilities  `json:"capabilities"`
+	MachineKind            string               `json:"machine_kind"`
+	PublicIdentityKey      string               `json:"public_identity_key"`
+	InstallationGeneration int64                `json:"installation_generation"`
+	EnrolledAt             *time.Time           `json:"enrolled_at,omitempty"`
+	LastSeenAt             *time.Time           `json:"last_seen_at,omitempty"`
+	Availability           AvailabilityPolicy   `json:"availability"`
+	RuntimeDiagnostics     RuntimeDiagnostics   `json:"runtime_diagnostics"`
+	Installation           *ReceiveInstallation `json:"installation,omitempty"`
+}
+
+type ReceiveInstallation struct {
+	ControlURL          string          `json:"control_url"`
+	HelperListenAddress string          `json:"helper_listen_address"`
+	Artifact            MachineArtifact `json:"artifact"`
+	ArtifactPublicKey   string          `json:"artifact_public_key"`
+}
+
+type CapabilityAvailability struct {
+	Configured bool `json:"configured"`
+	Observed   bool `json:"observed"`
+}
+
+type MachineCapabilities struct {
+	FileReceive   CapabilityAvailability `json:"file_receive"`
+	PreviewLaunch CapabilityAvailability `json:"preview_launch"`
+	TerminalHost  CapabilityAvailability `json:"terminal_host"`
+	CodexHost     CapabilityAvailability `json:"codex_host"`
+	SessionHost   CapabilityAvailability `json:"session_host"`
+	KeepAwake     CapabilityAvailability `json:"keep_awake"`
+}
+
+func configuredCapabilities(mode string) []string {
+	switch mode {
+	case "receive":
+		return []string{"file_receive", "preview_launch"}
+	case "host":
+		return []string{"file_receive", "preview_launch", "terminal_host", "codex_host", "session_host", "keep_awake"}
+	default:
+		return []string{}
+	}
 }
 
 type RuntimeDiagnostics struct {
@@ -837,7 +912,13 @@ func (s *Service) PreviewLaunchDescriptor(ctx context.Context, userID, machineID
 	if err != nil {
 		return PreviewLaunchDescriptor{}, err
 	}
-	if row.State == "revoked" || row.State == "disconnected" || row.State == "deleted" || row.SeatState != "occupied" {
+	if !slices.Contains(row.ConfiguredCapabilities, "preview_launch") {
+		return PreviewLaunchDescriptor{}, ErrMachineCapabilityUnavailable
+	}
+	if !row.Online || !slices.Contains(row.ObservedCapabilities, "preview_launch") {
+		return PreviewLaunchDescriptor{}, ErrMachineOffline
+	}
+	if row.State == "revoked" || row.State == "disconnected" || row.State == "deleted" {
 		return PreviewLaunchDescriptor{}, ErrProvisioningUnavailable
 	}
 	route, err := s.db.Queries().GetActiveHelperRouteForEnvironment(ctx, row.EnvironmentID)
@@ -889,7 +970,13 @@ func (s *Service) FileTransferDescriptor(ctx context.Context, userID, sourceMach
 	if err != nil {
 		return FileTransferDescriptor{}, err
 	}
-	if destination.State == "revoked" || destination.State == "disconnected" || destination.State == "deleted" || destination.SeatState != "occupied" {
+	if sessionID == "" && !slices.Contains(destination.ConfiguredCapabilities, "file_receive") {
+		return FileTransferDescriptor{}, ErrMachineCapabilityUnavailable
+	}
+	if sessionID == "" && (!destination.Online || !slices.Contains(destination.ObservedCapabilities, "file_receive")) {
+		return FileTransferDescriptor{}, ErrMachineOffline
+	}
+	if destination.State == "revoked" || destination.State == "disconnected" || destination.State == "deleted" {
 		return FileTransferDescriptor{}, ErrNotFound
 	}
 	routeMachine := destination
@@ -901,7 +988,7 @@ func (s *Service) FileTransferDescriptor(ctx context.Context, userID, sourceMach
 			return FileTransferDescriptor{}, hostErr
 		}
 	}
-	if routeMachine.State == "revoked" || routeMachine.State == "disconnected" || routeMachine.State == "deleted" || routeMachine.SeatState != "occupied" {
+	if routeMachine.State == "revoked" || routeMachine.State == "disconnected" || routeMachine.State == "deleted" || sessionID != "" && !slices.Contains(routeMachine.ObservedCapabilities, "terminal_host") {
 		return FileTransferDescriptor{}, ErrProvisioningUnavailable
 	}
 	route, err := s.db.Queries().GetActiveHelperRouteForEnvironment(ctx, routeMachine.EnvironmentID)
@@ -1028,6 +1115,9 @@ func (s *Service) ConnectTerminalSession(ctx context.Context, userID, sourceMach
 	if err != nil {
 		return ConnectionDescriptor{}, err
 	}
+	if !slices.Contains(row.ConfiguredCapabilities, "terminal_host") {
+		return ConnectionDescriptor{}, ErrMachineCapabilityUnavailable
+	}
 	terminalSession, err := s.terminalSession(ctx, userID, userMachineID, terminalSessionID)
 	if err != nil {
 		return ConnectionDescriptor{}, err
@@ -1042,9 +1132,13 @@ func (s *Service) ConnectTerminalSession(ctx context.Context, userID, sourceMach
 	expires := s.now().UTC().Add(ttl)
 	response := ConnectionDescriptor{Issuer: s.issuer, UserMachineID: row.ID, UserMachineState: row.State, ExpiresAt: expires, Status: "connector_connecting", Reason: "connector_offline", RetryAfterSeconds: 2}
 	setCanonicalMachineIdentity(&response, row)
-	if row.State == "revoked" || row.State == "disconnected" || row.State == "deleted" || row.SeatState != "occupied" {
+	if row.State == "revoked" || row.State == "disconnected" || row.State == "deleted" {
 		response.Status = "user_machine_revoked"
 		response.Reason = "access_revoked"
+		return response, nil
+	}
+	if !row.Online || !slices.Contains(row.ObservedCapabilities, "terminal_host") {
+		response.Status, response.Reason = "machine_offline", "terminal_host_unavailable"
 		return response, nil
 	}
 	route, routeErr := s.db.Queries().GetActiveHelperRouteForEnvironment(ctx, row.EnvironmentID)
@@ -1181,15 +1275,10 @@ func (s *Service) ConnectionReadinessForTerminalSession(ctx context.Context, use
 }
 
 func (s *Service) terminalSession(ctx context.Context, userID, userMachineID, sessionID string) (dbsqlc.UserMachineTerminalSession, error) {
-	var (
-		row dbsqlc.UserMachineTerminalSession
-		err error
-	)
 	if strings.TrimSpace(sessionID) == "" {
-		row, err = s.db.Queries().GetDefaultUserMachineTerminalSession(ctx, dbsqlc.GetDefaultUserMachineTerminalSessionParams{UserMachineID: userMachineID, UserID: userID})
-	} else {
-		row, err = s.db.Queries().GetUserMachineTerminalSession(ctx, dbsqlc.GetUserMachineTerminalSessionParams{ID: sessionID, UserMachineID: userMachineID, UserID: userID})
+		return dbsqlc.UserMachineTerminalSession{}, ErrTerminalSessionNotFound
 	}
+	row, err := s.db.Queries().GetUserMachineTerminalSession(ctx, dbsqlc.GetUserMachineTerminalSessionParams{ID: sessionID, UserMachineID: userMachineID, UserID: userID})
 	if errors.Is(err, sql.ErrNoRows) {
 		return dbsqlc.UserMachineTerminalSession{}, ErrTerminalSessionNotFound
 	}
@@ -1313,9 +1402,6 @@ func (s *Service) Approve(ctx context.Context, userID, userCode string) (UserMac
 			if err := s.ensureHelperRoute(ctx, tx, row.ID, row.EnvironmentID); err != nil {
 				return err
 			}
-			if err := tx.Queries().CreateDefaultUserMachineTerminalSession(ctx, dbsqlc.CreateDefaultUserMachineTerminalSessionParams{ID: "umts_default_" + row.ID, UserMachineID: row.ID, LaunchCwd: row.WorkspaceRoot}); err != nil {
-				return err
-			}
 			if _, err := s.ensureCurrentBandwidthPeriod(ctx, tx, row); err != nil {
 				return err
 			}
@@ -1361,6 +1447,11 @@ func (s *Service) ensureHelperRoute(ctx context.Context, tx *db.Tx, userMachineI
 		return ErrProvisioningUnavailable
 	}
 	if _, err := tx.Queries().GetHelperRouteForEnvironment(ctx, environmentID); err == nil {
+		return nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if _, err := tx.Queries().ReactivateHelperRouteForEnvironment(ctx, dbsqlc.ReactivateHelperRouteForEnvironmentParams{EnvironmentID: environmentID, Now: s.now().UTC()}); err == nil {
 		return nil
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return err
@@ -1543,7 +1634,7 @@ func (s *Service) DebitEnvironmentBandwidthTx(ctx context.Context, tx *db.Tx, en
 }
 
 func (s *Service) reserveBandwidthForMachineTx(ctx context.Context, tx *db.Tx, machine dbsqlc.UserMachine, requestedBytes int64, now time.Time, requireActiveMachine bool) (BandwidthReservation, error) {
-	if requireActiveMachine && (machine.State != "online" || machine.SeatState != "occupied") {
+	if requireActiveMachine && (machine.State != "online" || !slices.Contains(machine.ObservedCapabilities, "file_receive")) {
 		return BandwidthReservation{}, ErrBandwidthDenied
 	}
 	period, err := s.ensureCurrentBandwidthPeriodAt(ctx, tx, machine, now)
@@ -1696,13 +1787,24 @@ func (s *Service) CreateTerminalSession(ctx context.Context, userID, userMachine
 	if err != nil {
 		return TerminalSession{}, err
 	}
+	if err := terminalHostAvailability(machine); err != nil {
+		return TerminalSession{}, err
+	}
 	id, terminalID := newID("umts"), newID("term")
 	var evictedSession *TerminalSession
 	err = s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		if _, err := tx.Queries().LockUserMachineTerminalSessions(ctx, dbsqlc.LockUserMachineTerminalSessionsParams{UserMachineID: userMachineID, UserID: userID}); err != nil {
+		_, err := tx.Queries().LockUserMachineTerminalSessions(ctx, dbsqlc.LockUserMachineTerminalSessionsParams{UserMachineID: userMachineID, UserID: userID})
+		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrNotFound
 			}
+			return err
+		}
+		lockedMachine, err := tx.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: userMachineID, UserID: userID})
+		if err != nil {
+			return err
+		}
+		if err := terminalHostAvailability(lockedMachine); err != nil {
 			return err
 		}
 		if existing, err := tx.Queries().GetUserMachineTerminalSessionByIdempotencyKey(ctx, dbsqlc.GetUserMachineTerminalSessionByIdempotencyKeyParams{UserMachineID: userMachineID, UserID: userID, IdempotencyKey: sql.NullString{String: idempotencyKey, Valid: true}}); err == nil {
@@ -1739,9 +1841,24 @@ func (s *Service) CreateTerminalSession(ctx context.Context, userID, userMachine
 			if err != nil {
 				return err
 			}
-			sessionName = fmt.Sprintf("shell-%d", ordinal)
 		}
-		return tx.Queries().CreateUserMachineTerminalSession(ctx, dbsqlc.CreateUserMachineTerminalSessionParams{ID: id, UserMachineID: userMachineID, TerminalID: terminalID, Name: sessionName, AutoNameOrdinal: ordinal, IdempotencyKey: sql.NullString{String: idempotencyKey, Valid: true}, LaunchCwd: machine.WorkspaceRoot})
+		for attempts := 0; attempts < 32; attempts++ {
+			if requestedName == "" {
+				sessionName = naming.Session(ordinal)
+			}
+			created, createErr := tx.Queries().CreateUserMachineTerminalSession(ctx, dbsqlc.CreateUserMachineTerminalSessionParams{ID: id, UserMachineID: userMachineID, TerminalID: terminalID, Name: sessionName, AutoNameOrdinal: ordinal, IdempotencyKey: sql.NullString{String: idempotencyKey, Valid: true}, LaunchCwd: machine.WorkspaceRoot})
+			if createErr != nil {
+				return createErr
+			}
+			if created > 0 {
+				return nil
+			}
+			if requestedName != "" {
+				return ErrTerminalSessionConflict
+			}
+			ordinal++
+		}
+		return ErrTerminalSessionConflict
 	})
 	if err != nil {
 		if userMachineTerminalSessionUniqueViolation(err) {
@@ -1763,6 +1880,16 @@ func (s *Service) CreateTerminalSession(ctx context.Context, userID, userMachine
 	created := mapTerminalSession(row)
 	created.EvictedSession = evictedSession
 	return created, nil
+}
+
+func terminalHostAvailability(machine dbsqlc.UserMachine) error {
+	if !slices.Contains(machine.ConfiguredCapabilities, "terminal_host") {
+		return ErrMachineCapabilityUnavailable
+	}
+	if !machine.Online || !slices.Contains(machine.ObservedCapabilities, "terminal_host") {
+		return ErrMachineOffline
+	}
+	return nil
 }
 
 func userMachineTerminalSessionUniqueViolation(err error) bool {
@@ -1804,7 +1931,7 @@ func (s *Service) RenameTerminalSession(ctx context.Context, userID, userMachine
 }
 
 func validUserMachineTerminalSessionName(name string) bool {
-	return name != "default" && !automaticTerminalNamePattern.MatchString(name) && terminalSessionNamePattern.MatchString(name)
+	return name != "default" && terminalSessionNamePattern.MatchString(name)
 }
 
 // CloseTerminalSession queues a signed Helper control operation. It returns
@@ -2001,7 +2128,7 @@ func (s *Service) Unpair(ctx context.Context, userID, machineID string) (UserMac
 		if err != nil {
 			return err
 		}
-		if err := s.revokeEnvironmentControlTx(ctx, tx, machine.EnvironmentID, s.now().UTC()); err != nil {
+		if err := s.revokeHostAuthorityTx(ctx, tx, machine.ID, machine.EnvironmentID, s.now().UTC()); err != nil {
 			return err
 		}
 		result = mapMachine(machine)
@@ -2011,6 +2138,20 @@ func (s *Service) Unpair(ctx context.Context, userID, machineID string) (UserMac
 		return UserMachine{}, err
 	}
 	return result, s.RevokeUserMachineSessions(ctx, machineID, "machine_unpaired")
+}
+
+func (s *Service) revokeHostAuthorityTx(ctx context.Context, tx *db.Tx, machineID, environmentID string, now time.Time) error {
+	if _, err := tx.Queries().StopCodexSessionsForMachine(ctx, dbsqlc.StopCodexSessionsForMachineParams{MachineID: machineID, Now: sql.NullTime{Time: now, Valid: true}}); err != nil {
+		return err
+	}
+	if _, err := tx.Queries().RevokeControlConfigCredentialsForEnvironment(ctx, dbsqlc.RevokeControlConfigCredentialsForEnvironmentParams{EnvironmentID: environmentID, RevokedAt: sql.NullTime{Time: now, Valid: true}}); err != nil {
+		return err
+	}
+	if _, err := tx.Queries().RevokeControlConfigRepositoryAccessForEnvironment(ctx, dbsqlc.RevokeControlConfigRepositoryAccessForEnvironmentParams{EnvironmentID: environmentID, Now: now}); err != nil {
+		return err
+	}
+	_, err := tx.Queries().RevokeControlConfigRepositoryLeasesForEnvironment(ctx, dbsqlc.RevokeControlConfigRepositoryLeasesForEnvironmentParams{EnvironmentID: sql.NullString{String: environmentID, Valid: true}, Now: sql.NullTime{Time: now, Valid: true}})
+	return err
 }
 
 func (s *Service) Delete(ctx context.Context, userID, userMachineID string) error {
@@ -2264,7 +2405,7 @@ func mapMachine(row dbsqlc.UserMachine) UserMachine {
 		observed := row.RuntimeDiagnosticsObservedAt.Time
 		diagnostics.ObservedAt = &observed
 	}
-	m := UserMachine{ID: row.ID, EnvironmentID: row.EnvironmentID, DisplayName: row.DisplayName, Platform: row.Platform, Architecture: row.Architecture, WorkspaceRoot: row.WorkspaceRoot, State: row.State, SeatState: row.SeatState, Online: row.Online, RuntimeVersions: row.RuntimeVersions, SetupRoles: append([]string(nil), row.SetupRoles...), MachineKind: row.MachineKind, PublicIdentityKey: row.PublicIdentityKey.String, InstallationGeneration: row.InstallationGeneration, Availability: mapAvailability(row), RuntimeDiagnostics: diagnostics}
+	m := UserMachine{ID: row.ID, EnvironmentID: row.EnvironmentID, DisplayName: row.DisplayName, Platform: row.Platform, Architecture: row.Architecture, WorkspaceRoot: row.WorkspaceRoot, State: row.State, SeatState: row.SeatState, Online: row.Online, RuntimeVersions: row.RuntimeVersions, SetupRoles: append([]string(nil), row.SetupRoles...), SetupMode: row.SetupMode, Capabilities: mapCapabilities(row.ConfiguredCapabilities, row.ObservedCapabilities), MachineKind: row.MachineKind, PublicIdentityKey: row.PublicIdentityKey.String, InstallationGeneration: row.InstallationGeneration, Availability: mapAvailability(row), RuntimeDiagnostics: diagnostics}
 	if row.EnrolledAt.Valid {
 		v := row.EnrolledAt.Time
 		m.EnrolledAt = &v
@@ -2274,6 +2415,13 @@ func mapMachine(row dbsqlc.UserMachine) UserMachine {
 		m.LastSeenAt = &v
 	}
 	return m
+}
+
+func mapCapabilities(configured, observed []string) MachineCapabilities {
+	capability := func(name string) CapabilityAvailability {
+		return CapabilityAvailability{Configured: slices.Contains(configured, name), Observed: slices.Contains(observed, name)}
+	}
+	return MachineCapabilities{FileReceive: capability("file_receive"), PreviewLaunch: capability("preview_launch"), TerminalHost: capability("terminal_host"), CodexHost: capability("codex_host"), SessionHost: capability("session_host"), KeepAwake: capability("keep_awake")}
 }
 func newID(prefix string) string {
 	var b [16]byte

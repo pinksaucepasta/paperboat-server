@@ -17,9 +17,11 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/auth"
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
 	"github.com/pinksaucepasta/paperboat-server/internal/catalog"
+	"github.com/pinksaucepasta/paperboat-server/internal/codexsessions"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
+	"github.com/pinksaucepasta/paperboat-server/internal/favorites"
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
 	"github.com/pinksaucepasta/paperboat-server/internal/httpapi"
@@ -88,6 +90,7 @@ func New(opts Options) (*App, error) {
 		return nil, err
 	}
 	credentialIssuer := access.CredentialIssuer(access.DisabledCredentialIssuer{})
+	codexSessionService := codexsessions.New(store, mintKeys, normalizeHelperIssuer(opts.Config.HTTP.PublicBaseURL), 4)
 	if opts.Config.Providers.FakeMode {
 		accessProvider = access.FakeClient{}
 		credentialIssuer = access.FakeCredentialIssuer{}
@@ -292,6 +295,7 @@ func New(opts Options) (*App, error) {
 		GitHub:                 githubService,
 		Projects:               projectService,
 		TerminalSessions:       terminalSessionService,
+		CodexSessions:          codexSessionService,
 		EnvironmentAccess:      accessService,
 		MeteringRepo:           metering.NewRuntimeRepository(store, opts.Config.Secrets.EncryptionKey, opts.Config.ConfigSync.StaleHeartbeatAfter),
 		RuntimeIdentity:        enrollmentService,
@@ -310,6 +314,7 @@ func New(opts Options) (*App, error) {
 		ConfigConflicts:        configConflictService,
 		Routes:                 routeService,
 		Previews:               previewService,
+		Favorites:              favorites.NewService(store),
 		ControlDiagnostics:     controlDiagnostics,
 		OperationRecovery:      operationRecovery,
 		HostedProviderRecovery: hostedProviderRecovery,
@@ -322,6 +327,7 @@ func New(opts Options) (*App, error) {
 		userMachineService.Worker(opts.Config.TerminalSessions.WorkerInterval),
 		configAssignmentService.WarningReconciliationWorker(opts.Config.TerminalSessions.WorkerInterval),
 		configRepositoryAccessService.RevocationWorker(opts.Config.TerminalSessions.WorkerInterval, 25),
+		codexSessionService.Worker(time.Minute),
 	}
 	if edgeControlService != nil {
 		serverWorkers = append(serverWorkers, edgeControlService.StaleNodeWorker(opts.Config.TerminalSessions.WorkerInterval, controlplane.ControlTunnelNodeStaleAfter()))

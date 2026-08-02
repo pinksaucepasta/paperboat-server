@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"net"
 	"strings"
+
+	"github.com/pinksaucepasta/paperboat-server/internal/naming"
 )
 
 var (
@@ -64,7 +66,7 @@ func PreviewHostname(baseDomain, previewKey string) (string, error) {
 			return "", ErrPreviewIdentityInvalid
 		}
 	}
-	host := previewKey + "." + baseDomain
+	host := naming.PublicSlug(previewKey) + "." + baseDomain
 	if len(host) > 253 {
 		return "", fmt.Errorf("%w: hostname too long", ErrPreviewDomainInvalid)
 	}

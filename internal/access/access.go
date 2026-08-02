@@ -562,10 +562,9 @@ func (s *Service) Connect(ctx context.Context, input DescriptorRequest) (Connect
 				return err
 			}
 			if input.TerminalSessionID == "" {
-				terminalSession, err = q.GetDefaultTerminalSession(ctx, input.ProjectID)
-			} else {
-				terminalSession, err = q.GetActiveTerminalSession(ctx, dbsqlc.GetActiveTerminalSessionParams{ProjectID: input.ProjectID, ID: input.TerminalSessionID})
+				return ErrTerminalSessionNotFound
 			}
+			terminalSession, err = q.GetActiveTerminalSession(ctx, dbsqlc.GetActiveTerminalSessionParams{ProjectID: input.ProjectID, ID: input.TerminalSessionID})
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrTerminalSessionNotFound
 			}
@@ -1019,10 +1018,9 @@ func (s *Service) Status(ctx context.Context, userID, projectID, terminalSession
 	}
 	var terminalSession dbsqlc.ProjectTerminalSession
 	if terminalSessionID == "" {
-		terminalSession, err = s.repo.db.Queries().GetDefaultTerminalSession(ctx, projectID)
-	} else {
-		terminalSession, err = s.repo.db.Queries().GetActiveTerminalSession(ctx, dbsqlc.GetActiveTerminalSessionParams{ProjectID: projectID, ID: terminalSessionID})
+		return ConnectionDescriptor{}, ErrTerminalSessionNotFound
 	}
+	terminalSession, err = s.repo.db.Queries().GetActiveTerminalSession(ctx, dbsqlc.GetActiveTerminalSessionParams{ProjectID: projectID, ID: terminalSessionID})
 	if errors.Is(err, sql.ErrNoRows) {
 		return ConnectionDescriptor{}, ErrTerminalSessionNotFound
 	}

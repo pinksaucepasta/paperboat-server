@@ -39,25 +39,10 @@ func (q *Queries) CountActiveTerminalSessions(ctx context.Context, projectID str
 	return column_1, err
 }
 
-const createDefaultTerminalSession = `-- name: CreateDefaultTerminalSession :exec
-INSERT INTO project_terminal_sessions (id,project_id,terminal_id,name,is_default)
-VALUES ($1,$2,'term-1','default',true)
-ON CONFLICT (project_id) WHERE is_default AND deleted_at IS NULL DO NOTHING
-`
-
-type CreateDefaultTerminalSessionParams struct {
-	ID        string
-	ProjectID string
-}
-
-func (q *Queries) CreateDefaultTerminalSession(ctx context.Context, arg CreateDefaultTerminalSessionParams) error {
-	_, err := q.db.ExecContext(ctx, createDefaultTerminalSession, arg.ID, arg.ProjectID)
-	return err
-}
-
-const createTerminalSession = `-- name: CreateTerminalSession :exec
+const createTerminalSession = `-- name: CreateTerminalSession :execrows
 INSERT INTO project_terminal_sessions (id,project_id,terminal_id,name,auto_name_ordinal,idempotency_key)
 VALUES ($1,$2,$3,$4,nullif($5,0),$6)
+ON CONFLICT DO NOTHING
 `
 
 type CreateTerminalSessionParams struct {
@@ -69,8 +54,8 @@ type CreateTerminalSessionParams struct {
 	IdempotencyKey  sql.NullString
 }
 
-func (q *Queries) CreateTerminalSession(ctx context.Context, arg CreateTerminalSessionParams) error {
-	_, err := q.db.ExecContext(ctx, createTerminalSession,
+func (q *Queries) CreateTerminalSession(ctx context.Context, arg CreateTerminalSessionParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, createTerminalSession,
 		arg.ID,
 		arg.ProjectID,
 		arg.TerminalID,
@@ -78,7 +63,10 @@ func (q *Queries) CreateTerminalSession(ctx context.Context, arg CreateTerminalS
 		arg.AutoNameOrdinal,
 		arg.IdempotencyKey,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const deleteTerminalSession = `-- name: DeleteTerminalSession :execrows
@@ -111,38 +99,6 @@ type GetActiveTerminalSessionParams struct {
 
 func (q *Queries) GetActiveTerminalSession(ctx context.Context, arg GetActiveTerminalSessionParams) (ProjectTerminalSession, error) {
 	row := q.db.QueryRowContext(ctx, getActiveTerminalSession, arg.ProjectID, arg.ID)
-	var i ProjectTerminalSession
-	err := row.Scan(
-		&i.ID,
-		&i.ProjectID,
-		&i.TerminalID,
-		&i.ThreadID,
-		&i.Name,
-		&i.IdempotencyKey,
-		&i.IsDefault,
-		&i.AutoNameOrdinal,
-		&i.LaunchCwd,
-		&i.DesiredState,
-		&i.RuntimeState,
-		&i.LastActivityAt,
-		&i.LastRuntimeSyncAt,
-		&i.LastRuntimeSequence,
-		&i.DeletedAt,
-		&i.Version,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.TransferDestinationMachineID,
-	)
-	return i, err
-}
-
-const getDefaultTerminalSession = `-- name: GetDefaultTerminalSession :one
-SELECT project_terminal_sessions.id, project_terminal_sessions.project_id, project_terminal_sessions.terminal_id, project_terminal_sessions.thread_id, project_terminal_sessions.name, project_terminal_sessions.idempotency_key, project_terminal_sessions.is_default, project_terminal_sessions.auto_name_ordinal, project_terminal_sessions.launch_cwd, project_terminal_sessions.desired_state, project_terminal_sessions.runtime_state, project_terminal_sessions.last_activity_at, project_terminal_sessions.last_runtime_sync_at, project_terminal_sessions.last_runtime_sequence, project_terminal_sessions.deleted_at, project_terminal_sessions.version, project_terminal_sessions.created_at, project_terminal_sessions.updated_at, project_terminal_sessions.transfer_destination_machine_id
-FROM project_terminal_sessions WHERE project_id=$1 AND is_default AND deleted_at IS NULL
-`
-
-func (q *Queries) GetDefaultTerminalSession(ctx context.Context, projectID string) (ProjectTerminalSession, error) {
-	row := q.db.QueryRowContext(ctx, getDefaultTerminalSession, projectID)
 	var i ProjectTerminalSession
 	err := row.Scan(
 		&i.ID,
@@ -446,7 +402,7 @@ func (q *Queries) MarkTerminalSessionRuntimeClosed(ctx context.Context, id strin
 }
 
 const nextTerminalSessionOrdinal = `-- name: NextTerminalSessionOrdinal :one
-SELECT coalesce(max(auto_name_ordinal),1)::integer+1 FROM project_terminal_sessions WHERE project_id=$1
+SELECT coalesce(max(auto_name_ordinal),0)::integer+1 FROM project_terminal_sessions WHERE project_id=$1
 `
 
 func (q *Queries) NextTerminalSessionOrdinal(ctx context.Context, projectID string) (int32, error) {

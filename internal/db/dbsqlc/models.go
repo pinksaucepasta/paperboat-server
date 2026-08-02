@@ -143,6 +143,34 @@ type CLIRefreshToken struct {
 	RevokedAt          sql.NullTime
 }
 
+type CodexSession struct {
+	ID                     string
+	EnvironmentID          string
+	MachineID              string
+	UserID                 string
+	CLIClientSessionID     string
+	IdempotencyKey         string
+	RequestHash            []byte
+	State                  string
+	InstallationGeneration int64
+	ConnectorID            string
+	ConnectorGeneration    int64
+	EdgePool               string
+	EdgeNodeID             string
+	EdgeAssignmentHost     string
+	RemoteCodexVersion     sql.NullString
+	FailureCode            sql.NullString
+	CleanupStatus          string
+	LeaseExpiresAt         time.Time
+	PreparedAt             sql.NullTime
+	ReconnectingAt         sql.NullTime
+	StoppingAt             sql.NullTime
+	StoppedAt              sql.NullTime
+	LastRenewedAt          time.Time
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+}
+
 type ConnectionEvent struct {
 	ID              string
 	UserID          sql.NullString
@@ -448,6 +476,8 @@ type ControlPreview struct {
 	UpdatedAt                 time.Time
 	HelperObservationRevision int64
 	HelperObservedAt          sql.NullTime
+	SourceKind                string
+	OwnerMode                 string
 }
 
 type ControlPreviewOperation struct {
@@ -1144,6 +1174,13 @@ type User struct {
 	Role          string
 }
 
+type UserFavorite struct {
+	UserID     string
+	Kind       string
+	ResourceID string
+	CreatedAt  time.Time
+}
+
 type UserIdentity struct {
 	ID              string
 	UserID          string
@@ -1198,6 +1235,9 @@ type UserMachine struct {
 	PublicIdentityKey             sql.NullString
 	InstallationGeneration        int64
 	MachineKind                   string
+	SetupMode                     string
+	ConfiguredCapabilities        []string
+	ObservedCapabilities          []string
 }
 
 type UserMachineAccessSession struct {

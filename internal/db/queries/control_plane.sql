@@ -758,17 +758,18 @@ FOR UPDATE;
 -- name: CreateControlPreview :one
 INSERT INTO control_previews
   (id, environment_id, logical_name, preview_key, collision_counter, public_host,
-   target_host, target_port, public_acknowledged_at, expires_at)
+   target_host, target_port, source_kind, owner_mode, public_acknowledged_at, expires_at)
 VALUES
   (sqlc.arg(id), sqlc.arg(environment_id), sqlc.arg(logical_name), sqlc.arg(preview_key),
    sqlc.arg(collision_counter), sqlc.arg(public_host), sqlc.arg(target_host), sqlc.arg(target_port),
-   sqlc.narg(public_acknowledged_at), sqlc.narg(expires_at))
-ON CONFLICT (preview_key) DO NOTHING
+   sqlc.arg(source_kind), sqlc.arg(owner_mode), sqlc.narg(public_acknowledged_at), sqlc.narg(expires_at))
+ON CONFLICT DO NOTHING
 RETURNING *;
 
 -- name: UpdateControlPreview :one
 UPDATE control_previews
 SET target_host = sqlc.arg(target_host), target_port = sqlc.arg(target_port),
+    source_kind = sqlc.arg(source_kind), owner_mode = sqlc.arg(owner_mode),
     state = CASE WHEN state = 'removed' THEN state ELSE 'registering' END,
     public_acknowledged_at = coalesce(public_acknowledged_at, sqlc.narg(public_acknowledged_at)),
     expires_at = sqlc.narg(expires_at),
@@ -1055,7 +1056,6 @@ LEFT JOIN control_previews p ON p.route_id = r.id
 WHERE c.edge_node_id = sqlc.arg(edge_node_id)
   AND r.desired_state IN ('attached','replacing')
   AND c.state IN ('pending','admitted')
-  AND (c.expires_at IS NULL OR c.expires_at > sqlc.arg(now))
   AND m.revoked_at IS NULL AND m.deleted_at IS NULL
   AND (p.id IS NULL OR (p.state NOT IN ('expired','removed') AND (p.expires_at IS NULL OR p.expires_at > sqlc.arg(now))))
 ORDER BY r.id;
@@ -1154,6 +1154,17 @@ WHERE environment_id = sqlc.arg(environment_id)
   AND desired_state IN ('attached','replacing')
 ORDER BY id
 LIMIT 1;
+
+-- name: ReactivateHelperRouteForEnvironment :one
+UPDATE control_routes
+SET desired_state = 'attached', desired_revision = desired_revision + 1,
+    version = version + 1, updated_at = sqlc.arg(now)
+WHERE id = (
+  SELECT existing.id FROM control_routes AS existing
+  WHERE existing.environment_id = sqlc.arg(environment_id) AND existing.kind = 'runtime_https_wss'
+  ORDER BY existing.created_at DESC LIMIT 1
+)
+RETURNING *;
 
 -- name: CreateControlRoute :one
 INSERT INTO control_routes (id, environment_id, connector_id, kind, public_host, target_host, target_port)

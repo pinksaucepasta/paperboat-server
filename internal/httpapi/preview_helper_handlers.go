@@ -38,6 +38,8 @@ func helperPreviewOperation(previews *controlplane.PreviewService, identities *c
 			AcknowledgePublic bool   `json:"public_acknowledgement,omitempty"`
 			DurationSeconds   int64  `json:"duration_seconds,omitempty"`
 			Indefinite        bool   `json:"indefinite,omitempty"`
+			SourceKind        string `json:"source_kind,omitempty"`
+			OwnerMode         string `json:"owner_mode,omitempty"`
 		}
 		decoder := json.NewDecoder(bytes.NewReader(body))
 		decoder.DisallowUnknownFields()
@@ -61,7 +63,11 @@ func helperPreviewOperation(previews *controlplane.PreviewService, identities *c
 			if input.TargetHost == "" {
 				input.TargetHost = "127.0.0.1"
 			}
-			item, operationErr := previews.CreateOrUpdate(r.Context(), claims.UserID, "machine-preview:"+claims.MachineID+":"+claims.OperationID, claims.EnvironmentID, input.LogicalName, input.TargetHost, input.TargetPort, input.AcknowledgePublic, time.Duration(input.DurationSeconds)*time.Second, input.Indefinite)
+			metadata := controlplane.PreviewMetadata{SourceKind: input.SourceKind, OwnerMode: input.OwnerMode}
+			if metadata.SourceKind == "" && metadata.OwnerMode == "" {
+				metadata = controlplane.PreviewMetadata{SourceKind: "application", OwnerMode: "runtime"}
+			}
+			item, operationErr := previews.CreateOrUpdateWithMetadata(r.Context(), claims.UserID, "machine-preview:"+claims.MachineID+":"+claims.OperationID, claims.EnvironmentID, input.LogicalName, input.TargetHost, input.TargetPort, input.AcknowledgePublic, time.Duration(input.DurationSeconds)*time.Second, input.Indefinite, metadata)
 			if operationErr != nil {
 				previewHelperError(w, r, operationErr)
 				return

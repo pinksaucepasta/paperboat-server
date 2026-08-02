@@ -1,8 +1,3 @@
--- name: CreateDefaultTerminalSession :exec
-INSERT INTO project_terminal_sessions (id,project_id,terminal_id,name,is_default)
-VALUES (sqlc.arg(id),sqlc.arg(project_id),'term-1','default',true)
-ON CONFLICT (project_id) WHERE is_default AND deleted_at IS NULL DO NOTHING;
-
 -- name: GetActiveTerminalSession :one
 SELECT project_terminal_sessions.*
 FROM project_terminal_sessions WHERE project_id=sqlc.arg(project_id) AND id=sqlc.arg(id) AND deleted_at IS NULL;
@@ -11,10 +6,6 @@ FROM project_terminal_sessions WHERE project_id=sqlc.arg(project_id) AND id=sqlc
 SELECT s.* FROM project_terminal_sessions s
 JOIN projects p ON p.id = s.project_id
 WHERE s.id = sqlc.arg(id) AND p.user_id = sqlc.arg(user_id) AND s.deleted_at IS NULL;
-
--- name: GetDefaultTerminalSession :one
-SELECT project_terminal_sessions.*
-FROM project_terminal_sessions WHERE project_id=sqlc.arg(project_id) AND is_default AND deleted_at IS NULL;
 
 -- name: GetTerminalSessionProjectOwner :one
 SELECT user_id FROM projects WHERE id=sqlc.arg(project_id) AND state<>'deleted';
@@ -37,11 +28,12 @@ ORDER BY (desired_state='closed') DESC,
 LIMIT 1 FOR UPDATE;
 
 -- name: NextTerminalSessionOrdinal :one
-SELECT coalesce(max(auto_name_ordinal),1)::integer+1 FROM project_terminal_sessions WHERE project_id=sqlc.arg(project_id);
+SELECT coalesce(max(auto_name_ordinal),0)::integer+1 FROM project_terminal_sessions WHERE project_id=sqlc.arg(project_id);
 
--- name: CreateTerminalSession :exec
+-- name: CreateTerminalSession :execrows
 INSERT INTO project_terminal_sessions (id,project_id,terminal_id,name,auto_name_ordinal,idempotency_key)
-VALUES (sqlc.arg(id),sqlc.arg(project_id),sqlc.arg(terminal_id),sqlc.arg(name),nullif(sqlc.arg(auto_name_ordinal),0),sqlc.arg(idempotency_key));
+VALUES (sqlc.arg(id),sqlc.arg(project_id),sqlc.arg(terminal_id),sqlc.arg(name),nullif(sqlc.arg(auto_name_ordinal),0),sqlc.arg(idempotency_key))
+ON CONFLICT DO NOTHING;
 
 -- name: GetTerminalSessionByIdempotencyKey :one
 SELECT project_terminal_sessions.*

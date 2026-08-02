@@ -62,6 +62,21 @@ type PreviewObservation struct {
 	ObservedAt    time.Time
 }
 
+type PreviewMetadata struct {
+	SourceKind string
+	OwnerMode  string
+}
+
+func defaultPreviewMetadata() PreviewMetadata {
+	return PreviewMetadata{SourceKind: "application", OwnerMode: "runtime"}
+}
+
+func validPreviewMetadata(value PreviewMetadata) bool {
+	return (value.SourceKind == "application" || value.SourceKind == "file" || value.SourceKind == "directory") &&
+		(value.OwnerMode == "runtime" || value.OwnerMode == "foreground" || value.OwnerMode == "detached") &&
+		(value.SourceKind == "application") == (value.OwnerMode == "runtime")
+}
+
 func (s *PreviewService) ObserveForHelper(ctx context.Context, observation PreviewObservation) (dbsqlc.ControlPreview, error) {
 	if strings.TrimSpace(observation.EnvironmentID) == "" || strings.TrimSpace(observation.PreviewKey) == "" || strings.TrimSpace(observation.LogicalName) == "" || observation.TargetHost != "127.0.0.1" && observation.TargetHost != "::1" || observation.TargetPort < 1 || observation.TargetPort > 65535 || observation.Revision == 0 || observation.ObservedAt.IsZero() {
 		return dbsqlc.ControlPreview{}, ErrPreviewInvalid
@@ -120,7 +135,7 @@ func (s *PreviewService) ListOwned(ctx context.Context, userID string) ([]OwnedP
 	items := make([]OwnedPreview, 0, len(rows))
 	for _, row := range rows {
 		items = append(items, OwnedPreview{
-			Preview:         dbsqlc.ControlPreview{ID: row.ID, EnvironmentID: row.EnvironmentID, LogicalName: row.LogicalName, PreviewKey: row.PreviewKey, CollisionCounter: row.CollisionCounter, PublicHost: row.PublicHost, TargetHost: row.TargetHost, TargetPort: row.TargetPort, State: row.State, RouteID: row.RouteID, HelperReady: row.HelperReady, EdgeReady: row.EdgeReady, TargetReady: row.TargetReady, PublicAcknowledgedAt: row.PublicAcknowledgedAt, ExpiresAt: row.ExpiresAt, RemovedAt: row.RemovedAt, RetainedUntil: row.RetainedUntil, Version: row.Version, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt},
+			Preview:         dbsqlc.ControlPreview{ID: row.ID, EnvironmentID: row.EnvironmentID, LogicalName: row.LogicalName, PreviewKey: row.PreviewKey, CollisionCounter: row.CollisionCounter, PublicHost: row.PublicHost, TargetHost: row.TargetHost, TargetPort: row.TargetPort, State: row.State, RouteID: row.RouteID, HelperReady: row.HelperReady, EdgeReady: row.EdgeReady, TargetReady: row.TargetReady, PublicAcknowledgedAt: row.PublicAcknowledgedAt, ExpiresAt: row.ExpiresAt, RemovedAt: row.RemovedAt, RetainedUntil: row.RetainedUntil, Version: row.Version, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, SourceKind: row.SourceKind, OwnerMode: row.OwnerMode},
 			ProjectID:       row.WorkspaceID,
 			ResourceID:      row.MachineID,
 			UserID:          row.OwnerUserID,
@@ -144,19 +159,23 @@ func (s *PreviewService) RevokeOwned(ctx context.Context, userID, operationKey, 
 }
 
 func (s *PreviewService) CreateOrUpdate(ctx context.Context, userID, operationKey, environmentID, logicalName, targetHost string, targetPort int32, acknowledgePublic bool, lifetime time.Duration, indefinite bool) (dbsqlc.ControlPreview, error) {
-	return s.createOrUpdate(ctx, userID, operationKey, environmentID, logicalName, targetHost, targetPort, acknowledgePublic, lifetime, indefinite, true)
+	return s.createOrUpdate(ctx, userID, operationKey, environmentID, logicalName, targetHost, targetPort, acknowledgePublic, lifetime, indefinite, defaultPreviewMetadata(), true)
+}
+
+func (s *PreviewService) CreateOrUpdateWithMetadata(ctx context.Context, userID, operationKey, environmentID, logicalName, targetHost string, targetPort int32, acknowledgePublic bool, lifetime time.Duration, indefinite bool, metadata PreviewMetadata) (dbsqlc.ControlPreview, error) {
+	return s.createOrUpdate(ctx, userID, operationKey, environmentID, logicalName, targetHost, targetPort, acknowledgePublic, lifetime, indefinite, metadata, true)
 }
 
 func (s *PreviewService) CreateOrUpdateForHelper(ctx context.Context, helperID, operationID, environmentID, logicalName, targetHost string, targetPort int32, acknowledgePublic bool, lifetime time.Duration, indefinite bool) (dbsqlc.ControlPreview, error) {
 	if strings.TrimSpace(operationID) == "" || !s.helperOwnsEnvironment(ctx, helperID, environmentID) {
 		return dbsqlc.ControlPreview{}, ErrPreviewDenied
 	}
-	return s.createOrUpdate(ctx, helperID, "helper-preview:"+helperID+":"+operationID, environmentID, logicalName, targetHost, targetPort, acknowledgePublic, lifetime, indefinite, false)
+	return s.createOrUpdate(ctx, helperID, "helper-preview:"+helperID+":"+operationID, environmentID, logicalName, targetHost, targetPort, acknowledgePublic, lifetime, indefinite, defaultPreviewMetadata(), false)
 }
 
-func (s *PreviewService) createOrUpdate(ctx context.Context, actorID, operationKey, environmentID, logicalName, targetHost string, targetPort int32, acknowledgePublic bool, lifetime time.Duration, indefinite, enforceUserOwnership bool) (dbsqlc.ControlPreview, error) {
+func (s *PreviewService) createOrUpdate(ctx context.Context, actorID, operationKey, environmentID, logicalName, targetHost string, targetPort int32, acknowledgePublic bool, lifetime time.Duration, indefinite bool, metadata PreviewMetadata, enforceUserOwnership bool) (dbsqlc.ControlPreview, error) {
 	logicalName = strings.TrimSpace(logicalName)
-	if actorID == "" || operationKey == "" || environmentID == "" || logicalName == "" || targetHost != "127.0.0.1" && targetHost != "::1" || targetPort < 1 || targetPort > 65535 {
+	if actorID == "" || operationKey == "" || environmentID == "" || logicalName == "" || targetHost != "127.0.0.1" && targetHost != "::1" || targetPort < 1 || targetPort > 65535 || !validPreviewMetadata(metadata) {
 		return dbsqlc.ControlPreview{}, ErrPreviewInvalid
 	}
 	if enforceUserOwnership && !s.ownsEnvironment(ctx, actorID, environmentID) {
@@ -173,7 +192,7 @@ func (s *PreviewService) createOrUpdate(ctx context.Context, actorID, operationK
 	if !indefinite {
 		expiresAt = sql.NullTime{Time: now.Add(lifetime), Valid: true}
 	}
-	hash := routeRequestHash("preview-upsert", environmentID, logicalName, targetHost, targetPort, acknowledgePublic, lifetime, indefinite)
+	hash := routeRequestHash("preview-upsert", environmentID, logicalName, targetHost, targetPort, acknowledgePublic, lifetime, indefinite, metadata.SourceKind, metadata.OwnerMode)
 	var result dbsqlc.ControlPreview
 	err := s.store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		if replay, ok, err := previewReplay(ctx, tx, operationKey, "upsert", hash); err != nil || ok {
@@ -197,7 +216,7 @@ func (s *PreviewService) createOrUpdate(ctx context.Context, actorID, operationK
 			if current.State == "removed" {
 				return ErrPreviewRemoved
 			}
-			result, err = tx.Queries().UpdateControlPreview(ctx, dbsqlc.UpdateControlPreviewParams{TargetHost: targetHost, TargetPort: targetPort, PublicAcknowledgedAt: acknowledgedAt(acknowledgePublic, now), ExpiresAt: expiresAt, Now: now, ID: current.ID, ExpectedVersion: current.Version})
+			result, err = tx.Queries().UpdateControlPreview(ctx, dbsqlc.UpdateControlPreviewParams{TargetHost: targetHost, TargetPort: targetPort, SourceKind: metadata.SourceKind, OwnerMode: metadata.OwnerMode, PublicAcknowledgedAt: acknowledgedAt(acknowledgePublic, now), ExpiresAt: expiresAt, Now: now, ID: current.ID, ExpectedVersion: current.Version})
 			if err != nil {
 				return err
 			}
@@ -233,7 +252,7 @@ func (s *PreviewService) createOrUpdate(ctx context.Context, actorID, operationK
 					}
 				}
 			}
-			result, err = s.createIdentity(ctx, tx, environmentID, logicalName, targetHost, targetPort, expiresAt)
+			result, err = s.createIdentity(ctx, tx, environmentID, logicalName, targetHost, targetPort, expiresAt, metadata)
 			if err != nil {
 				return err
 			}
@@ -312,7 +331,7 @@ func (s *PreviewService) remove(ctx context.Context, actorID, operationKey, envi
 	return result, err
 }
 
-func (s *PreviewService) createIdentity(ctx context.Context, tx *db.Tx, environmentID, logicalName, targetHost string, targetPort int32, expiresAt sql.NullTime) (dbsqlc.ControlPreview, error) {
+func (s *PreviewService) createIdentity(ctx context.Context, tx *db.Tx, environmentID, logicalName, targetHost string, targetPort int32, expiresAt sql.NullTime, metadata PreviewMetadata) (dbsqlc.ControlPreview, error) {
 	previewID, err := randomHex("prv_", 12)
 	if err != nil {
 		return dbsqlc.ControlPreview{}, err
@@ -330,7 +349,7 @@ func (s *PreviewService) createIdentity(ctx context.Context, tx *db.Tx, environm
 		if err != nil {
 			return dbsqlc.ControlPreview{}, err
 		}
-		preview, err := tx.Queries().CreateControlPreview(ctx, dbsqlc.CreateControlPreviewParams{ID: previewID, EnvironmentID: environmentID, LogicalName: logicalName, PreviewKey: key, CollisionCounter: int64(counter), PublicHost: host, TargetHost: targetHost, TargetPort: targetPort, PublicAcknowledgedAt: acknowledgedAt(true, s.clock()), ExpiresAt: expiresAt})
+		preview, err := tx.Queries().CreateControlPreview(ctx, dbsqlc.CreateControlPreviewParams{ID: previewID, EnvironmentID: environmentID, LogicalName: logicalName, PreviewKey: key, CollisionCounter: int64(counter), PublicHost: host, TargetHost: targetHost, TargetPort: targetPort, SourceKind: metadata.SourceKind, OwnerMode: metadata.OwnerMode, PublicAcknowledgedAt: acknowledgedAt(true, s.clock()), ExpiresAt: expiresAt})
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}

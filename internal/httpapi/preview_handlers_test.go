@@ -54,7 +54,7 @@ func TestPreviewCredentialRejectsUnknownRequestFields(t *testing.T) {
 
 func TestOwnedPreviewResponseIncludesAccountContext(t *testing.T) {
 	response := newOwnedPreviewResponse(controlplane.OwnedPreview{
-		Preview:         dbsqlc.ControlPreview{ID: "prv_1", EnvironmentID: "env_1", PublicHost: "preview.example.test"},
+		Preview:         dbsqlc.ControlPreview{ID: "prv_1", EnvironmentID: "env_1", PublicHost: "preview.example.test", SourceKind: "directory", OwnerMode: "detached"},
 		ProjectID:       "prj_1",
 		ResourceID:      sql.NullString{String: "um_1", Valid: true},
 		UserID:          sql.NullString{String: "usr_1", Valid: true},
@@ -63,7 +63,14 @@ func TestOwnedPreviewResponseIncludesAccountContext(t *testing.T) {
 		OwnerEmail:      "owner@example.test",
 	})
 
-	if response.ProjectID != "prj_1" || response.ResourceID != "um_1" || response.UserID != "usr_1" || response.EnvironmentName != "workstation" || response.EnvironmentKind != "byod" || response.OwnerEmail != "owner@example.test" {
+	if response.ProjectID != "prj_1" || response.ResourceID != "um_1" || response.UserID != "usr_1" || response.EnvironmentName != "workstation" || response.EnvironmentKind != "byod" || response.OwnerEmail != "owner@example.test" || response.SourceKind != "directory" || response.OwnerMode != "detached" {
 		t.Fatalf("account context missing from preview response: %#v", response)
+	}
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte("source_path")) {
+		t.Fatalf("control-plane response leaked source path: %s", encoded)
 	}
 }

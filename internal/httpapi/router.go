@@ -18,8 +18,10 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/auth"
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
 	"github.com/pinksaucepasta/paperboat-server/internal/catalog"
+	"github.com/pinksaucepasta/paperboat-server/internal/codexsessions"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
+	"github.com/pinksaucepasta/paperboat-server/internal/favorites"
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
@@ -48,6 +50,7 @@ type Options struct {
 	GitHub                 *pbgithub.Service
 	Projects               *projects.Service
 	TerminalSessions       *terminalsessions.Service
+	CodexSessions          *codexsessions.Service
 	EnvironmentAccess      *access.Service
 	MeteringRepo           *metering.RuntimeRepository
 	RuntimeIdentity        *controlplane.EnrollmentService
@@ -66,6 +69,7 @@ type Options struct {
 	ConfigConflicts        *controlplane.ConfigConflictService
 	Routes                 *controlplane.RouteService
 	Previews               *controlplane.PreviewService
+	Favorites              *favorites.Service
 	ControlDiagnostics     *controlplane.DiagnosticsService
 	OperationRecovery      *controlplane.OperationRecoveryService
 	HostedProviderRecovery *controlplane.HostedProviderRecoveryService
@@ -142,6 +146,15 @@ func NewRouter(opts Options) http.Handler {
 		}
 		if opts.Auth != nil {
 			registerAuthRoutes(mux, opts)
+			if opts.CodexSessions != nil && opts.DeviceAuth != nil {
+				codexAuth := func(next http.Handler) http.Handler {
+					return requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", next))
+				}
+				mux.Handle("POST /v1/codex-sessions", codexAuth(codexSessionCreate(opts.CodexSessions)))
+				mux.Handle("GET /v1/codex-sessions/{session_id}/descriptor", codexAuth(codexSessionDescriptor(opts.CodexSessions)))
+				mux.Handle("POST /v1/codex-sessions/{session_id}/renew", codexAuth(codexSessionRenew(opts.CodexSessions)))
+				mux.Handle("DELETE /v1/codex-sessions/{session_id}", codexAuth(codexSessionDelete(opts.CodexSessions)))
+			}
 			if opts.Previews != nil {
 				previewAuth := func(scope string, next http.Handler) http.Handler {
 					if opts.DeviceAuth != nil {
@@ -314,6 +327,10 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 		meHandler = requireAnyAuth(opts.Auth, opts.DeviceAuth, me(opts.Auth))
 	}
 	mux.Handle("GET /v1/me", meHandler)
+	if opts.Favorites != nil {
+		mux.Handle("GET /v1/favorites", accountRead(favoritesList(opts.Favorites)))
+		mux.Handle("PUT /v1/favorites", accountRead(requireCSRF(opts.Auth, favoriteSet(opts.Favorites))))
+	}
 	if opts.ConfigStatuses != nil {
 		mux.Handle("GET /v1/config-sync/status", accountRead(requireEntitlement(opts.Auth, configSyncStatus(opts.ConfigStatuses))))
 	}

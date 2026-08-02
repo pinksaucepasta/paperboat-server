@@ -226,11 +226,11 @@ WHERE id = sqlc.arg(id) AND state = 'pending' AND expires_at <= now();
 -- name: CreateInteractiveMachine :one
 INSERT INTO user_machines (
   id, user_id, environment_id, display_name, platform, architecture, workspace_root,
-  state, seat_state, runtime_versions, setup_roles, public_identity_key, enrolled_at
+  state, seat_state, runtime_versions, setup_roles, setup_mode, configured_capabilities, public_identity_key, enrolled_at
 ) VALUES (
   sqlc.arg(id), sqlc.arg(user_id), sqlc.arg(environment_id), sqlc.arg(display_name),
   sqlc.arg(platform), sqlc.arg(architecture), sqlc.arg(workspace_root),
-  'offline', 'released', sqlc.arg(runtime_versions), ARRAY['interactive']::text[], sqlc.arg(public_identity_key), now()
+  'offline', 'released', sqlc.arg(runtime_versions), ARRAY['interactive']::text[], sqlc.arg(setup_mode), sqlc.arg(configured_capabilities), sqlc.arg(public_identity_key), now()
 ) RETURNING *;
 
 -- name: CreateHostedMachine :one
@@ -288,6 +288,7 @@ RETURNING *;
 -- name: AddUserMachineHostRole :one
 UPDATE user_machines
 SET setup_roles = ARRAY(SELECT DISTINCT role FROM unnest(setup_roles || ARRAY['host']::text[]) role ORDER BY role),
+    setup_mode = 'host', configured_capabilities = ARRAY['file_receive','preview_launch','terminal_host','codex_host','session_host','keep_awake']::text[],
     display_name = sqlc.arg(display_name), workspace_root = sqlc.arg(workspace_root),
     runtime_versions = sqlc.arg(runtime_versions),
     updated_at = CASE WHEN NOT ('host' = ANY(setup_roles)) OR display_name IS DISTINCT FROM sqlc.arg(display_name) OR workspace_root IS DISTINCT FROM sqlc.arg(workspace_root) OR runtime_versions IS DISTINCT FROM sqlc.arg(runtime_versions) THEN now() ELSE updated_at END,
@@ -297,16 +298,23 @@ RETURNING *;
 
 -- name: AddUserMachineInteractiveRole :one
 UPDATE user_machines
-SET setup_roles = ARRAY(SELECT DISTINCT role FROM unnest(setup_roles || ARRAY['interactive']::text[]) role ORDER BY role),
+SET setup_roles = CASE WHEN sqlc.arg(setup_mode) IN ('receive','session') THEN ARRAY['interactive']::text[] ELSE ARRAY(SELECT DISTINCT role FROM unnest(setup_roles || ARRAY['interactive']::text[]) role ORDER BY role) END,
+    setup_mode = sqlc.arg(setup_mode), configured_capabilities = sqlc.arg(configured_capabilities),
+    observed_capabilities = CASE WHEN setup_mode IS DISTINCT FROM sqlc.arg(setup_mode) THEN '{}'::text[] ELSE observed_capabilities END,
+    seat_state = CASE WHEN sqlc.arg(setup_mode) IN ('receive','session') THEN 'released' ELSE seat_state END,
+    state = CASE WHEN setup_mode IS DISTINCT FROM sqlc.arg(setup_mode) THEN 'offline' ELSE state END,
+    online = CASE WHEN setup_mode IS DISTINCT FROM sqlc.arg(setup_mode) THEN false ELSE online END,
+    installation_generation = installation_generation + CASE WHEN setup_mode IS DISTINCT FROM sqlc.arg(setup_mode) THEN 1 ELSE 0 END,
     display_name = sqlc.arg(display_name), runtime_versions = sqlc.arg(runtime_versions),
-    updated_at = CASE WHEN NOT ('interactive' = ANY(setup_roles)) OR display_name IS DISTINCT FROM sqlc.arg(display_name) OR runtime_versions IS DISTINCT FROM sqlc.arg(runtime_versions) THEN now() ELSE updated_at END,
-    version = version + CASE WHEN NOT ('interactive' = ANY(setup_roles)) OR display_name IS DISTINCT FROM sqlc.arg(display_name) OR runtime_versions IS DISTINCT FROM sqlc.arg(runtime_versions) THEN 1 ELSE 0 END
+    updated_at = CASE WHEN setup_mode IS DISTINCT FROM sqlc.arg(setup_mode) OR NOT ('interactive' = ANY(setup_roles)) OR display_name IS DISTINCT FROM sqlc.arg(display_name) OR runtime_versions IS DISTINCT FROM sqlc.arg(runtime_versions) THEN now() ELSE updated_at END,
+    version = version + CASE WHEN setup_mode IS DISTINCT FROM sqlc.arg(setup_mode) OR NOT ('interactive' = ANY(setup_roles)) OR display_name IS DISTINCT FROM sqlc.arg(display_name) OR runtime_versions IS DISTINCT FROM sqlc.arg(runtime_versions) THEN 1 ELSE 0 END
 WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND deleted_at IS NULL
 RETURNING *;
 
 -- name: RemoveUserMachineHostRole :one
 UPDATE user_machines
 SET setup_roles = array_remove(setup_roles, 'host'), state = 'offline', seat_state = 'released',
+    setup_mode = 'receive', configured_capabilities = ARRAY['file_receive','preview_launch']::text[], observed_capabilities = '{}'::text[],
     online = false, installation_generation = installation_generation + 1,
     updated_at = now(), version = version + 1
 WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND deleted_at IS NULL
@@ -318,7 +326,7 @@ UPDATE user_machines
 SET seat_state = 'occupied', updated_at = now(), version = version + 1
 WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id)
   AND seat_state = 'released' AND deleted_at IS NULL
-  AND state IN ('pending','offline');
+  AND state IN ('pending','offline','online');
 
 -- name: ApproveUserMachinePairing :execrows
 UPDATE user_machine_pairings
@@ -416,9 +424,9 @@ WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND deleted_at IS NULL
 
 -- name: MarkUserMachineOnlineFromHelper :execrows
 UPDATE user_machines
-SET state = 'online', online = true, last_seen_at = now(), updated_at = now(), version = version + 1
+SET state = 'online', online = true, observed_capabilities = COALESCE(sqlc.narg(observed_capabilities), '{}'::text[]), last_seen_at = now(), updated_at = now(), version = version + 1
 WHERE id = sqlc.arg(id) AND environment_id = sqlc.arg(environment_id)
-  AND seat_state = 'occupied' AND deleted_at IS NULL AND state IN ('pending','offline','online');
+  AND (seat_state = 'occupied' OR setup_mode = 'receive') AND deleted_at IS NULL AND state IN ('pending','offline','online');
 
 -- name: GetUserMachineRuntimeInstanceForUpdate :one
 SELECT online, last_seen_at, os_boot_id
@@ -429,7 +437,7 @@ FOR UPDATE;
 
 -- name: MarkStaleUserMachinesOffline :execrows
 UPDATE user_machines
-SET state = 'offline', online = false, updated_at = now(), version = version + 1
+SET state = 'offline', online = false, observed_capabilities = '{}'::text[], updated_at = now(), version = version + 1
 WHERE state = 'online' AND online = true AND last_seen_at < sqlc.arg(cutoff);
 
 -- name: MarkUserMachineEnrollmentReady :execrows
@@ -692,22 +700,11 @@ UPDATE user_machine_access_sessions
 SET helper_revoked_at = now(), updated_at = now()
 WHERE id = sqlc.arg(id) AND state = 'revoked' AND helper_revoked_at IS NULL;
 
--- name: CreateDefaultUserMachineTerminalSession :exec
-INSERT INTO user_machine_terminal_sessions (id,user_machine_id,terminal_id,name,is_default,launch_cwd)
-VALUES (sqlc.arg(id),sqlc.arg(user_machine_id),'term-1','default',true,sqlc.arg(launch_cwd))
-ON CONFLICT (user_machine_id) WHERE is_default AND deleted_at IS NULL DO NOTHING;
-
 -- name: GetUserMachineTerminalSession :one
 SELECT s.* FROM user_machine_terminal_sessions s
 JOIN user_machines m ON m.id=s.user_machine_id
 WHERE s.id=sqlc.arg(id) AND s.user_machine_id=sqlc.arg(user_machine_id)
   AND m.user_id=sqlc.arg(user_id) AND m.deleted_at IS NULL AND s.deleted_at IS NULL;
-
--- name: GetDefaultUserMachineTerminalSession :one
-SELECT s.* FROM user_machine_terminal_sessions s
-JOIN user_machines m ON m.id=s.user_machine_id
-WHERE s.user_machine_id=sqlc.arg(user_machine_id) AND m.user_id=sqlc.arg(user_id)
-  AND m.deleted_at IS NULL AND s.is_default AND s.deleted_at IS NULL;
 
 -- name: ListUserMachineTerminalSessions :many
 SELECT s.* FROM user_machine_terminal_sessions s
@@ -740,12 +737,13 @@ ORDER BY (desired_state='closed') DESC,
 LIMIT 1 FOR UPDATE;
 
 -- name: NextUserMachineTerminalSessionOrdinal :one
-SELECT coalesce(max(auto_name_ordinal),1)::integer+1 FROM user_machine_terminal_sessions
+SELECT coalesce(max(auto_name_ordinal),0)::integer+1 FROM user_machine_terminal_sessions
 WHERE user_machine_id=sqlc.arg(user_machine_id);
 
--- name: CreateUserMachineTerminalSession :exec
+-- name: CreateUserMachineTerminalSession :execrows
 INSERT INTO user_machine_terminal_sessions (id,user_machine_id,terminal_id,name,auto_name_ordinal,idempotency_key,launch_cwd)
-VALUES (sqlc.arg(id),sqlc.arg(user_machine_id),sqlc.arg(terminal_id),sqlc.arg(name),nullif(sqlc.arg(auto_name_ordinal),0),sqlc.arg(idempotency_key),sqlc.arg(launch_cwd));
+VALUES (sqlc.arg(id),sqlc.arg(user_machine_id),sqlc.arg(terminal_id),sqlc.arg(name),nullif(sqlc.arg(auto_name_ordinal),0),sqlc.arg(idempotency_key),sqlc.arg(launch_cwd))
+ON CONFLICT DO NOTHING;
 
 -- name: RenameUserMachineTerminalSession :execrows
 UPDATE user_machine_terminal_sessions SET name=sqlc.arg(name),version=version+1,updated_at=now()

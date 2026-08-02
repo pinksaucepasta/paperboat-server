@@ -2015,6 +2015,43 @@
         "operationId": "get_well_known_jwks_json"
       }
     },
+    "/v1/codex-sessions": {
+      "post": {
+        "summary": "Create an authenticated remote Codex session",
+        "operationId": "post_v1_codex_sessions",
+        "security": [{"bearerAccess": []}],
+        "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["environment_id"], "properties": {"environment_id": {"type": "string"}}}}}},
+        "responses": {"201": {"description": "Codex session created.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SuccessResponse"}}}}, "401": {"$ref": "#/components/responses/Error"}, "429": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/codex-sessions/{session_id}": {
+      "delete": {
+        "summary": "Stop and revoke a Codex session",
+        "operationId": "delete_v1_codex_sessions_session_id",
+        "security": [{"bearerAccess": []}],
+        "parameters": [{"name": "session_id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"204": {"description": "Stop requested."}, "404": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/codex-sessions/{session_id}/descriptor": {
+      "get": {
+        "summary": "Refresh Codex management and connection credentials",
+        "operationId": "get_v1_codex_sessions_session_id_descriptor",
+        "security": [{"bearerAccess": []}],
+        "parameters": [{"name": "session_id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "Fresh five-minute credentials.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SuccessResponse"}}}}, "404": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/v1/codex-sessions/{session_id}/renew": {
+      "post": {
+        "summary": "Extend the durable Codex session lease",
+        "operationId": "post_v1_codex_sessions_session_id_renew",
+        "security": [{"bearerAccess": []}],
+        "parameters": [{"name": "session_id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "Lease extended.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SuccessResponse"}}}}, "404": {"$ref": "#/components/responses/Error"}}
+      }
+    },
     "/v1/client-configuration": {
       "get": {
         "summary": "Publish server-owned URLs used by Paperboat clients",
@@ -3220,6 +3257,23 @@
                   },
                   "public_acknowledgement": {
                     "type": "boolean"
+                  },
+                  "duration_seconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 31536000
+                  },
+                  "indefinite": {
+                    "type": "boolean"
+                  },
+                  "source_kind": {
+                    "type": "string",
+                    "enum": ["application", "file", "directory"],
+                    "description": "Safe source classification. Local source paths are never accepted."
+                  },
+                  "owner_mode": {
+                    "type": "string",
+                    "enum": ["runtime", "foreground", "detached"]
                   }
                 },
                 "additionalProperties": false
@@ -3335,7 +3389,7 @@
     "/v1/previews": {
       "get": {
         "summary": "List the user's active public previews",
-        "description": "Returns active previews with project or machine and owner context. Preview creation is available locally or through an authenticated selected machine's pb host runtime.",
+        "description": "Returns active previews with project or machine and owner context plus safe source_kind and owner_mode metadata. Local source paths are never returned. Preview creation is available locally or through an authenticated selected machine's pb host runtime.",
         "security": [
           {
             "cookieSession": []
@@ -3765,6 +3819,33 @@
           }
         },
         "operationId": "get_v1_me"
+      }
+    },
+    "/v1/favorites": {
+      "get": {
+        "summary": "List account favorites",
+        "description": "Returns up to five machine, session, and preview favorites synchronized for the authenticated user.",
+        "security": [{"cookieSession": []}, {"bearerAccess": []}],
+        "x-required-bearer-scopes": ["account:read"],
+        "responses": {
+          "200": {"description": "Account favorites.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SuccessResponse"}}}},
+          "401": {"$ref": "#/components/responses/Error"}
+        },
+        "operationId": "get_v1_favorites"
+      },
+      "put": {
+        "summary": "Star or unstar an account resource",
+        "description": "Updates one favorite. At most five favorites may exist across all supported resource kinds.",
+        "security": [{"cookieSession": []}, {"bearerAccess": []}],
+        "x-required-bearer-scopes": ["account:read"],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["kind", "resource_id", "favorite"], "properties": {"kind": {"type": "string", "enum": ["machine", "session", "preview"]}, "resource_id": {"type": "string", "minLength": 1}, "favorite": {"type": "boolean"}}}}}},
+        "responses": {
+          "200": {"description": "Updated account favorites.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SuccessResponse"}}}},
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"},
+          "409": {"$ref": "#/components/responses/Error"}
+        },
+        "operationId": "put_v1_favorites"
       }
     },
     "/v1/config-sync/status": {
@@ -5695,7 +5776,7 @@
     "/v1/machines/setup": {
       "post": {
         "summary": "Set up this client machine",
-        "description": "Registers or resumes the authenticated CLI machine's interactive role using its stable Ed25519 identity.",
+        "description": "Registers or transitions the authenticated CLI machine to receive, session, or host mode using its stable Ed25519 identity. Receive mode provisions restricted file and preview authority without reserving a host seat.",
         "security": [
           {
             "bearerAccess": []
@@ -5711,8 +5792,9 @@
               "schema": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["display_name", "platform", "architecture", "workspace_root", "public_identity_key", "runtime_versions"],
+                "required": ["setup_mode", "display_name", "platform", "architecture", "workspace_root", "public_identity_key", "runtime_versions"],
                 "properties": {
+                  "setup_mode": {"type": "string", "enum": ["receive", "session", "host"]},
                   "display_name": {"type": "string", "minLength": 1, "maxLength": 128},
                   "platform": {"type": "string", "enum": ["darwin", "linux", "windows"]},
                   "architecture": {"type": "string", "minLength": 1},
@@ -5762,12 +5844,12 @@
         {"name": "machine_id", "in": "path", "required": true, "schema": {"type": "string"}}
       ],
       "post": {
-        "summary": "Remove this machine's host role",
-        "description": "Revokes host authority and releases its seat while preserving machine identity and interactive setup.",
+        "summary": "Downgrade this machine from host to receive mode",
+        "description": "Revokes terminal, Codex, session-host, and keep-awake authority and releases its host seat while preserving machine identity, Inbox, file receive, and preview launch authority.",
         "security": [{"bearerAccess": []}],
         "x-required-bearer-scopes": ["projects:connect"],
         "responses": {
-          "200": {"description": "Host role removed, or the machine was already unpaired."},
+          "200": {"description": "Machine is in receive mode, or was already downgraded."},
           "401": {"$ref": "#/components/responses/Error"},
           "404": {"$ref": "#/components/responses/Error"}
         },

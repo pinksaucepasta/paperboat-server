@@ -258,6 +258,7 @@ type RuntimeObservation struct {
 	ConnectorState        string
 	ConnectorGeneration   uint64
 	DiagnosticsObservedAt time.Time
+	Capabilities          []string
 }
 
 func runtimeIntervalFromOpenRow(row dbsqlc.GetOpenRuntimeIntervalRow) RuntimeInterval {
@@ -528,7 +529,7 @@ func (r *RuntimeRepository) RecordRuntimeObservation(ctx context.Context, observ
 				return ErrDuplicateMachineIdentity
 			}
 		}
-		updated, err := tx.Queries().MarkUserMachineOnlineFromHelper(ctx, dbsqlc.MarkUserMachineOnlineFromHelperParams{ID: observation.MachineID, EnvironmentID: observation.ProjectID})
+		updated, err := tx.Queries().MarkUserMachineOnlineFromHelper(ctx, dbsqlc.MarkUserMachineOnlineFromHelperParams{ID: observation.MachineID, EnvironmentID: observation.ProjectID, ObservedCapabilities: observation.Capabilities})
 		if err != nil {
 			return err
 		}

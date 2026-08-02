@@ -157,6 +157,8 @@ var credentialPolicies = map[string]struct {
 	"terminal_operation":   {audience: "paperboat-machine", scopes: []string{"terminal:operate"}, maxTTL: 5 * time.Minute},
 	"preview_launch":       {audience: "paperboat-machine", scopes: []string{"preview:launch"}, maxTTL: 5 * time.Minute},
 	"file_transfer":        {audience: "paperboat-machine", scopes: []string{"file:transfer"}, maxTTL: 5 * time.Minute},
+	"codex_manage":         {audience: "paperboat-machine", scopes: []string{"codex:prepare", "codex:browse", "codex:renew", "codex:stop"}, maxTTL: 5 * time.Minute},
+	"codex_connect":        {audience: "paperboat-machine", scopes: []string{"codex:connect"}, maxTTL: 5 * time.Minute},
 }
 
 func New(keys []Key, activeID string, maxAge time.Duration) (*Provider, error) {
@@ -332,6 +334,13 @@ func (p *Provider) SignCredential(input CredentialInput) (string, error) {
 		if input.SourceMachineID != "" {
 			claims["source_machine_id"] = input.SourceMachineID
 		}
+	case "codex_manage", "codex_connect":
+		if input.MachineID == "" || input.UserID == "" || input.CLIClientSessionID == "" || input.SessionID == "" || input.InstallationGeneration < 1 || input.ConnectorID == "" || input.ConnectorGeneration < 1 || input.EdgePool == "" || input.EdgeNodeID == "" {
+			return "", errors.New("codex session bindings are required")
+		}
+		claims["machine_id"], claims["user_id"], claims["cli_client_session_id"], claims["session_id"] = input.MachineID, input.UserID, input.CLIClientSessionID, input.SessionID
+		claims["installation_generation"], claims["connector_id"], claims["connector_generation"] = input.InstallationGeneration, input.ConnectorID, input.ConnectorGeneration
+		claims["edge_pool"], claims["edge_node_id"] = input.EdgePool, input.EdgeNodeID
 	case "preview_launch":
 		if input.MachineID == "" || input.UserID == "" || input.CLIClientSessionID == "" {
 			return "", errors.New("preview launch bindings are required")
@@ -446,6 +455,10 @@ func (p *Provider) verifyCredential(token, expectedIssuer, expectedClass string,
 		}
 	case "terminal_operation":
 		if claims.MachineID == "" || claims.UserID == "" || claims.CLIClientSessionID == "" || claims.SessionID == "" {
+			return CredentialClaims{}, errors.New("credential claims are invalid")
+		}
+	case "codex_manage", "codex_connect":
+		if claims.MachineID == "" || claims.UserID == "" || claims.CLIClientSessionID == "" || claims.SessionID == "" || claims.InstallationGeneration < 1 || claims.ConnectorID == "" || claims.ConnectorGeneration < 1 || claims.EdgePool == "" || claims.EdgeNodeID == "" {
 			return CredentialClaims{}, errors.New("credential claims are invalid")
 		}
 	case "preview_launch":

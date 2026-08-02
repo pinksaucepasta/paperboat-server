@@ -22,6 +22,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
 	"github.com/pinksaucepasta/paperboat-server/internal/mint"
+	"github.com/pinksaucepasta/paperboat-server/internal/naming"
 	"github.com/pinksaucepasta/paperboat-server/internal/secrets"
 )
 
@@ -41,15 +42,26 @@ func TestSetupIsIdempotentAndUnpairPreservesInteractiveIdentity(t *testing.T) {
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_"+suffix, "machine-setup-"+suffix+"@example.test"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machine_entitlements (id,user_id,provider_subscription_id,product_code,state,seat_quantity,allowance_bytes,current_period_start,current_period_end) VALUES ($1,$2,$3,'connected-test','active',1,1048576,now()-interval '1 hour',now()+interval '1 hour')`, "ume_setup_"+suffix, userID, "sub_setup_"+suffix); err != nil {
+		t.Fatal(err)
+	}
 	public, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	input := SetupInput{DisplayName: "Studio", Platform: "linux", Architecture: "amd64", WorkspaceRoot: "/home/paperboat", PublicIdentityKey: base64.RawURLEncoding.EncodeToString(public), RuntimeVersions: json.RawMessage(`{"pb":"test"}`)}
+	input := SetupInput{SetupMode: "receive", DisplayName: "Studio", Platform: "linux", Architecture: "amd64", WorkspaceRoot: "/home/paperboat", PublicIdentityKey: base64.RawURLEncoding.EncodeToString(public), RuntimeVersions: json.RawMessage(`{"pb":"test"}`)}
 	service := New(store, audit.NewWriter(store), Policy{AllowedPlatforms: []string{"linux"}}, testSeatAuthorizer{})
+	service.ConfigureAccess(nil, "https://api.paperboat.test", 5*time.Minute)
+	if err := service.ConfigureRuntimeRoute("runtime.example.test", 38080); err != nil {
+		t.Fatal(err)
+	}
+	configureSignedTestArtifact(t, service)
 	first, err := service.Setup(ctx, userID, input)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := service.CreateConfiguredTerminalSession(ctx, userID, first.ID, "forbidden", "receive-terminal"); !errors.Is(err, ErrMachineCapabilityUnavailable) {
+		t.Fatalf("receive terminal session error = %v, want ErrMachineCapabilityUnavailable", err)
 	}
 	var firstVersion int64
 	if err := store.SQL().QueryRowContext(ctx, `SELECT version FROM paperboat.user_machines WHERE id=$1`, first.ID).Scan(&firstVersion); err != nil {
@@ -78,7 +90,7 @@ func TestSetupIsIdempotentAndUnpairPreservesInteractiveIdentity(t *testing.T) {
 	if _, err := service.Setup(ctx, userID, replacement); !errors.Is(err, ErrMachineNameConflict) {
 		t.Fatalf("replacement setup error = %v, want ErrMachineNameConflict", err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machines SET setup_roles=ARRAY['host','interactive'],seat_state='occupied' WHERE id=$1`, first.ID); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machines SET setup_mode='host',setup_roles=ARRAY['host','interactive'],configured_capabilities=ARRAY['file_receive','preview_launch','terminal_host','codex_host','session_host','keep_awake'],observed_capabilities=ARRAY['file_receive','preview_launch','terminal_host','codex_host','session_host','keep_awake'],seat_state='occupied' WHERE id=$1`, first.ID); err != nil {
 		t.Fatal(err)
 	}
 	unpaired, err := service.Unpair(ctx, userID, first.ID)
@@ -87,6 +99,76 @@ func TestSetupIsIdempotentAndUnpairPreservesInteractiveIdentity(t *testing.T) {
 	}
 	if !reflect.DeepEqual(unpaired.SetupRoles, []string{"interactive"}) || unpaired.PublicIdentityKey != input.PublicIdentityKey || unpaired.InstallationGeneration != 2 || unpaired.SeatState != "released" {
 		t.Fatalf("unpaired=%+v", unpaired)
+	}
+	if unpaired.SetupMode != "receive" || !unpaired.Capabilities.FileReceive.Configured || !unpaired.Capabilities.PreviewLaunch.Configured || unpaired.Capabilities.TerminalHost.Configured {
+		t.Fatalf("unpaired capabilities=%+v mode=%q", unpaired.Capabilities, unpaired.SetupMode)
+	}
+	var environmentState, routeState string
+	if err := store.SQL().QueryRowContext(ctx, `SELECT e.desired_state,r.desired_state FROM paperboat.control_environments e JOIN paperboat.control_routes r ON r.environment_id=e.id AND r.kind='runtime_https_wss' WHERE e.id=$1`, unpaired.EnvironmentID).Scan(&environmentState, &routeState); err != nil {
+		t.Fatal(err)
+	}
+	if environmentState != "active" || routeState != "attached" {
+		t.Fatalf("downgrade environment=%q route=%q", environmentState, routeState)
+	}
+	sessionInput := input
+	sessionInput.SetupMode = "session"
+	if _, err := service.Setup(ctx, userID, sessionInput); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SQL().QueryRowContext(ctx, `SELECT desired_state FROM paperboat.control_routes WHERE environment_id=$1 AND kind='runtime_https_wss'`, unpaired.EnvironmentID).Scan(&routeState); err != nil {
+		t.Fatal(err)
+	}
+	if routeState != "detaching" && routeState != "detached" {
+		t.Fatalf("session route=%q", routeState)
+	}
+	if _, err := service.Setup(ctx, userID, input); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SQL().QueryRowContext(ctx, `SELECT desired_state FROM paperboat.control_routes WHERE environment_id=$1 AND kind='runtime_https_wss'`, unpaired.EnvironmentID).Scan(&routeState); err != nil {
+		t.Fatal(err)
+	}
+	if routeState != "attached" {
+		t.Fatalf("receive route=%q", routeState)
+	}
+}
+
+func TestOnlineReceiveMachineCanUpgradeToHost(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID := "usr_receive_upgrade_" + suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_"+suffix, "receive-upgrade-"+suffix+"@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	public, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey := base64.RawURLEncoding.EncodeToString(public)
+	service := New(store, audit.NewWriter(store), Policy{PairingLifetime: 10 * time.Minute, AllowedPlatforms: []string{"linux"}}, testSeatAuthorizer{})
+	service.ConfigureProvisioning(nil, "receive-upgrade-key")
+	service.ConfigureAccess(nil, "https://api.paperboat.test", 5*time.Minute)
+	if err := service.ConfigureRuntimeRoute("runtime.example.test", 38080); err != nil {
+		t.Fatal(err)
+	}
+	configureSignedTestArtifact(t, service)
+	machine, err := service.Setup(ctx, userID, SetupInput{SetupMode: "receive", DisplayName: "Studio", Platform: "linux", Architecture: "amd64", WorkspaceRoot: "/home/paperboat", PublicIdentityKey: publicKey, RuntimeVersions: json.RawMessage(`{"pb":"test"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machines SET state='online', online=true, observed_capabilities=configured_capabilities WHERE id=$1`, machine.ID); err != nil {
+		t.Fatal(err)
+	}
+	pairing, err := service.CreatePairing(ctx, PairingInput{Verifier: "receive-upgrade-verifier-" + suffix, DisplayName: "Studio", Platform: "linux", Architecture: "amd64", WorkspaceRoot: "/home/paperboat", PublicIdentityKey: publicKey, RuntimeVersions: json.RawMessage(`{"pb":"test"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	upgraded, err := service.Approve(ctx, userID, pairing.UserCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if upgraded.ID != machine.ID || upgraded.SetupMode != "host" || upgraded.SeatState != "occupied" || !upgraded.Capabilities.TerminalHost.Configured {
+		t.Fatalf("upgraded=%+v", upgraded)
 	}
 }
 
@@ -169,21 +251,18 @@ func TestCreateTerminalSessionEvictsClosedSessionAtRetentionLimit(t *testing.T) 
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,'Limit','linux','amd64','/home/test','online','occupied',true)`, machineID, userID, "env_limit_"+suffix); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Queries().CreateDefaultUserMachineTerminalSession(ctx, dbsqlc.CreateDefaultUserMachineTerminalSessionParams{ID: "umts_default_" + suffix, UserMachineID: machineID, LaunchCwd: "/home/test"}); err != nil {
-		t.Fatal(err)
-	}
 	service := New(store, audit.NewWriter(store), Policy{}, nil)
-	first, err := service.CreateTerminalSession(ctx, userID, machineID, "first", "limit-first", 3)
+	first, err := service.CreateTerminalSession(ctx, userID, machineID, "first", "limit-first", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.CreateTerminalSession(ctx, userID, machineID, "second", "limit-second", 3); err != nil {
+	if _, err := service.CreateTerminalSession(ctx, userID, machineID, "second", "limit-second", 2); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machine_terminal_sessions SET desired_state='closed',updated_at=now()-interval '1 day' WHERE id=$1`, first.ID); err != nil {
 		t.Fatal(err)
 	}
-	created, err := service.CreateTerminalSession(ctx, userID, machineID, "third", "limit-third", 3)
+	created, err := service.CreateTerminalSession(ctx, userID, machineID, "third", "limit-third", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +270,7 @@ func TestCreateTerminalSessionEvictsClosedSessionAtRetentionLimit(t *testing.T) 
 		t.Fatalf("evicted session = %#v, want %s", created.EvictedSession, first.ID)
 	}
 	items, err := service.ListTerminalSessions(ctx, userID, machineID)
-	if err != nil || len(items) != 3 {
+	if err != nil || len(items) != 2 {
 		t.Fatalf("retained sessions = %d, %v", len(items), err)
 	}
 }
@@ -212,7 +291,7 @@ func TestCreateTerminalSessionAllocatesNameWhenOmitted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Name != "shell-2" {
+	if first.Name != naming.Session(1) {
 		t.Fatalf("first session = %+v", first)
 	}
 	replay, err := service.CreateTerminalSession(ctx, userID, machineID, "", "create-auto-one", 4)
@@ -220,11 +299,16 @@ func TestCreateTerminalSessionAllocatesNameWhenOmitted(t *testing.T) {
 		t.Fatalf("idempotent replay = %+v, %v", replay, err)
 	}
 	second, err := service.CreateTerminalSession(ctx, userID, machineID, "", "create-auto-two", 4)
-	if err != nil || second.Name != "shell-3" {
+	if err != nil || second.Name != naming.Session(2) {
 		t.Fatalf("second session = %+v, %v", second, err)
 	}
-	if _, err := service.CreateTerminalSession(ctx, userID, machineID, "shell-4", "create-reserved", 4); !errors.Is(err, ErrTerminalSessionInvalidName) {
-		t.Fatalf("reserved automatic name error = %v", err)
+	claimed, err := service.CreateTerminalSession(ctx, userID, machineID, naming.Session(3), "create-claimed", 4)
+	if err != nil || claimed.Name != naming.Session(3) {
+		t.Fatalf("custom generated-looking name = %+v, %v", claimed, err)
+	}
+	automatic, err := service.CreateTerminalSession(ctx, userID, machineID, "", "create-auto-three", 4)
+	if err != nil || automatic.Name != naming.Session(4) {
+		t.Fatalf("automatic collision retry = %+v, %v", automatic, err)
 	}
 }
 
@@ -284,7 +368,9 @@ func TestAvailabilityPolicyLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(replayed, first) {
+	replayedObservedAt, firstObservedAt := replayed.ObservedAt, first.ObservedAt
+	replayed.ObservedAt, first.ObservedAt = nil, nil
+	if replayedObservedAt == nil || firstObservedAt == nil || !replayedObservedAt.Equal(*firstObservedAt) || !reflect.DeepEqual(replayed, first) {
 		t.Fatalf("durable replay = %+v, want original %+v", replayed, first)
 	}
 	if _, err := service.SetAvailabilityPolicy(ctx, userID, machineID, "availability-first", "allow_sleep", 0); !errors.Is(err, ErrAvailabilityIdempotencyConflict) {
@@ -366,6 +452,9 @@ VALUES ($1, $2, $3, 'connected-test', 'active', 1, 100, $4, $5)`, "ume_"+suffix,
 INSERT INTO paperboat.user_machines
   (id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state, online)
 VALUES ($1, $2, $3, $4, 'linux', 'amd64', '/home/example', 'online', 'occupied', true)`, userMachineID, userID, "env_"+suffix, "UserMachine "+suffix); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machines SET observed_capabilities=ARRAY['file_receive'] WHERE id=$1`, userMachineID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `
@@ -792,6 +881,9 @@ func TestConnectIssuesEnvironmentBoundDescriptor(t *testing.T) {
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,'Studio Mac','darwin','arm64','/Users/paperboat','online','occupied',true)`, userMachineID, userID, environmentID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machines SET observed_capabilities=configured_capabilities WHERE id=$1`, userMachineID); err != nil {
+		t.Fatal(err)
+	}
 	sourceMachineID := "um_source_" + suffix
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,'Source Mac','darwin','arm64','/Users/source','online','occupied',true)`, sourceMachineID, userID, "env_source_"+suffix); err != nil {
 		t.Fatal(err)
@@ -816,11 +908,12 @@ func TestConnectIssuesEnvironmentBoundDescriptor(t *testing.T) {
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_routes (id,environment_id,kind,public_host,target_host,target_port,desired_revision,applied_revision,applied_node_id,applied_generation) VALUES ($1,$2,'runtime_https_wss',$3,'127.0.0.1',8080,1,1,$4,1)`, "route_"+suffix, environmentID, "machine-"+suffix+".example.test", edgeNodeID); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Queries().CreateDefaultUserMachineTerminalSession(ctx, dbsqlc.CreateDefaultUserMachineTerminalSessionParams{ID: "umts_default_" + userMachineID, UserMachineID: userMachineID, LaunchCwd: "/Users/paperboat"}); err != nil {
+	terminalSessionID := "umts_connect_" + suffix
+	if _, err := store.Queries().CreateUserMachineTerminalSession(ctx, dbsqlc.CreateUserMachineTerminalSessionParams{ID: terminalSessionID, UserMachineID: userMachineID, TerminalID: "term_connect_" + suffix, Name: "bright-beacon", LaunchCwd: "/Users/paperboat"}); err != nil {
 		t.Fatal(err)
 	}
 	staleSessionID := "umts_stale_" + suffix
-	if err := store.Queries().CreateUserMachineTerminalSession(ctx, dbsqlc.CreateUserMachineTerminalSessionParams{ID: staleSessionID, UserMachineID: userMachineID, TerminalID: "term_stale_" + suffix, Name: "stale", LaunchCwd: "/Users/paperboat"}); err != nil {
+	if _, err := store.Queries().CreateUserMachineTerminalSession(ctx, dbsqlc.CreateUserMachineTerminalSessionParams{ID: staleSessionID, UserMachineID: userMachineID, TerminalID: "term_stale_" + suffix, Name: "stale", LaunchCwd: "/Users/paperboat"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Queries().QueueUserMachineTerminalSessionOperation(ctx, dbsqlc.QueueUserMachineTerminalSessionOperationParams{ID: "umtso_stale_" + suffix, UserMachineID: userMachineID, TerminalSessionID: staleSessionID, Operation: "delete_history"}); err != nil {
@@ -834,7 +927,7 @@ func TestConnectIssuesEnvironmentBoundDescriptor(t *testing.T) {
 		t.Fatal(err)
 	}
 	service.ConfigureTerminalSessions(4, signer, nil)
-	response, err := service.Connect(ctx, userID, sourceMachineID, userMachineID, "cls_1")
+	response, err := service.ConnectTerminalSession(ctx, userID, sourceMachineID, userMachineID, "cls_1", terminalSessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -852,7 +945,7 @@ func TestConnectIssuesEnvironmentBoundDescriptor(t *testing.T) {
 		if verifyErr != nil {
 			t.Fatalf("verify %s credential: %v", class, verifyErr)
 		}
-		if claims.EnvironmentID != environmentID || claims.UserID != userID || claims.CLIClientSessionID != "cls_1" || claims.SessionID != "umts_default_"+userMachineID || class == "file_transfer" && claims.SourceMachineID != sourceMachineID {
+		if claims.EnvironmentID != environmentID || claims.UserID != userID || claims.CLIClientSessionID != "cls_1" || claims.SessionID != terminalSessionID || class == "file_transfer" && claims.SourceMachineID != sourceMachineID {
 			t.Fatalf("%s credential bindings = %#v", class, claims)
 		}
 	}
@@ -878,6 +971,9 @@ func TestTransferDefaultsAndBrokerPreserveMachineOwnershipAndRouteHost(t *testin
 		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,$4,'linux','amd64','/home/test','online','occupied',true)`, machine.id, machine.ownerID, machine.environmentID, machine.name); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machines SET observed_capabilities=configured_capabilities WHERE id=$1`, machine.id); err != nil {
+			t.Fatal(err)
+		}
 	}
 	addRoute := func(machine machineFixture, publicHost string) {
 		helperID := "helper_" + machine.id
@@ -901,7 +997,7 @@ func TestTransferDefaultsAndBrokerPreserveMachineOwnershipAndRouteHost(t *testin
 	addRoute(destination, "destination-"+suffix+".example.test")
 	addRoute(host, "host-"+suffix+".example.test")
 	sessionID := "umts_transfer_" + suffix
-	if err := store.Queries().CreateUserMachineTerminalSession(ctx, dbsqlc.CreateUserMachineTerminalSessionParams{ID: sessionID, UserMachineID: host.id, TerminalID: "term_" + suffix, Name: "transfer", LaunchCwd: "/home/test"}); err != nil {
+	if _, err := store.Queries().CreateUserMachineTerminalSession(ctx, dbsqlc.CreateUserMachineTerminalSessionParams{ID: sessionID, UserMachineID: host.id, TerminalID: "term_" + suffix, Name: "transfer", LaunchCwd: "/home/test"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -982,6 +1078,9 @@ func TestDisconnectRevokesMintedHelperSessionsAndRetriesOfflineConnector(t *test
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online,provider_route_route_id,provider_route_client_id,provider_route_http_base_url,provider_route_websocket_base_url) VALUES ($1,$2,$3,'Studio Mac','darwin','arm64','/Users/paperboat','online','occupied',true,'tun_1','cli_1','https://machine.example','wss://machine.example')`, userMachineID, userID, environmentID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machines SET observed_capabilities=configured_capabilities WHERE id=$1`, userMachineID); err != nil {
+		t.Fatal(err)
+	}
 	sourceMachineID := "um_source_revoke_" + suffix
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,'Source Mac','darwin','arm64','/Users/source','online','occupied',true)`, sourceMachineID, userID, "env_source_revoke_"+suffix); err != nil {
 		t.Fatal(err)
@@ -1006,14 +1105,15 @@ func TestDisconnectRevokesMintedHelperSessionsAndRetriesOfflineConnector(t *test
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_routes (id,environment_id,kind,public_host,target_host,target_port,desired_revision,applied_revision,applied_node_id,applied_generation) VALUES ($1,$2,'runtime_https_wss',$3,'127.0.0.1',8080,1,1,$4,1)`, "route_revoke_"+suffix, environmentID, "machine-revoke-"+suffix+".example.test", edgeNodeID); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Queries().CreateDefaultUserMachineTerminalSession(ctx, dbsqlc.CreateDefaultUserMachineTerminalSessionParams{ID: "umts_default_" + userMachineID, UserMachineID: userMachineID, LaunchCwd: "/Users/paperboat"}); err != nil {
+	terminalSessionID := "umts_revoke_" + suffix
+	if _, err := store.Queries().CreateUserMachineTerminalSession(ctx, dbsqlc.CreateUserMachineTerminalSessionParams{ID: terminalSessionID, UserMachineID: userMachineID, TerminalID: "term_revoke_" + suffix, Name: "bright-beacon", LaunchCwd: "/Users/paperboat"}); err != nil {
 		t.Fatal(err)
 	}
 	issuer := &recordingIssuer{}
 	service := New(store, audit.NewWriter(store), Policy{}, nil)
 	service.ConfigureProvisioning(access.FakeClient{}, "test-key")
 	service.ConfigureAccess(issuer, "https://api.paperboat.test", 5*time.Minute)
-	if _, err := service.Connect(ctx, userID, sourceMachineID, userMachineID, "cls_1"); err != nil {
+	if _, err := service.ConnectTerminalSession(ctx, userID, sourceMachineID, userMachineID, "cls_1", terminalSessionID); err != nil {
 		t.Fatal(err)
 	}
 	var active int

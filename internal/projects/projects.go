@@ -551,9 +551,6 @@ func (r *Repository) createIntentOnce(ctx context.Context, input CreateInput, re
 		if err := q.InsertProjectRuntimeConfig(ctx, dbsqlc.InsertProjectRuntimeConfigParams{ProjectID: projectID, MachineTypeVersionID: sql.NullString{String: refs.machineTypeVersionID, Valid: true}, PresetVersionIds: refs.presetVersionIDs, SetupScriptRef: setupRef, RegionID: sql.NullString{String: refs.regionID, Valid: true}, DesiredConfigHash: hash}); err != nil {
 			return err
 		}
-		if err := q.CreateDefaultTerminalSession(ctx, dbsqlc.CreateDefaultTerminalSessionParams{ID: newID("pts"), ProjectID: projectID}); err != nil {
-			return err
-		}
 		if setupRef != "" {
 			ciphertext, err := secrets.Encrypt(r.encryptionKey, input.SetupScript)
 			if err != nil {

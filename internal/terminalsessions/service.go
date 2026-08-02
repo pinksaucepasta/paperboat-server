@@ -18,6 +18,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
 	"github.com/pinksaucepasta/paperboat-server/internal/helperruntime"
 	"github.com/pinksaucepasta/paperboat-server/internal/mint"
+	"github.com/pinksaucepasta/paperboat-server/internal/naming"
 	"github.com/pinksaucepasta/paperboat-server/internal/observability"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 )
@@ -386,10 +387,26 @@ func (s *Service) Create(ctx context.Context, userID, projectID, name, idempoten
 			if err != nil {
 				return err
 			}
-			sessionName = fmt.Sprintf("shell-%d", ordinal)
 		}
 		id = newID("pts")
-		return q.CreateTerminalSession(ctx, dbsqlc.CreateTerminalSessionParams{ID: id, ProjectID: projectID, TerminalID: newID("term"), Name: sessionName, AutoNameOrdinal: ordinal, IdempotencyKey: sql.NullString{String: idempotencyKey, Valid: true}})
+		terminalID := newID("term")
+		for attempts := 0; attempts < 32; attempts++ {
+			if requestedName == "" {
+				sessionName = naming.Session(ordinal)
+			}
+			created, createErr := q.CreateTerminalSession(ctx, dbsqlc.CreateTerminalSessionParams{ID: id, ProjectID: projectID, TerminalID: terminalID, Name: sessionName, AutoNameOrdinal: ordinal, IdempotencyKey: sql.NullString{String: idempotencyKey, Valid: true}})
+			if createErr != nil {
+				return createErr
+			}
+			if created > 0 {
+				return nil
+			}
+			if requestedName != "" {
+				return ErrConflict
+			}
+			ordinal++
+		}
+		return ErrConflict
 	})
 	if err != nil {
 		if unique(err) {
@@ -521,7 +538,7 @@ func mapSession(row dbsqlc.ProjectTerminalSession) Session {
 }
 
 func validName(name string) bool {
-	return name != "default" && !regexp.MustCompile(`^shell-[0-9]+$`).MatchString(name) && namePattern.MatchString(name)
+	return name != "default" && namePattern.MatchString(name)
 }
 func unique(err error) bool { var pg *pgconn.PgError; return errors.As(err, &pg) && pg.Code == "23505" }
 func newID(prefix string) string {

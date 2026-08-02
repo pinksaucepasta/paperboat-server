@@ -41,6 +41,7 @@ func userMachinePairings(service *usermachines.Service) http.HandlerFunc {
 
 func machineSetup(service *usermachines.Service) http.HandlerFunc {
 	type request struct {
+		SetupMode         string          `json:"setup_mode"`
 		DisplayName       string          `json:"display_name"`
 		Platform          string          `json:"platform"`
 		Architecture      string          `json:"architecture"`
@@ -64,7 +65,7 @@ func machineSetup(service *usermachines.Service) http.HandlerFunc {
 		machine, err := service.Setup(r.Context(), principal.User.ID, usermachines.SetupInput{
 			DisplayName: body.DisplayName, Platform: body.Platform, Architecture: body.Architecture,
 			WorkspaceRoot: body.WorkspaceRoot, PublicIdentityKey: body.PublicIdentityKey,
-			RuntimeVersions: body.RuntimeVersions,
+			RuntimeVersions: body.RuntimeVersions, SetupMode: body.SetupMode,
 		})
 		switch {
 		case errors.Is(err, usermachines.ErrInvalidSetup):
@@ -459,6 +460,14 @@ func userMachineFileTransferDescriptor(service *usermachines.Service, hosted *ac
 			writeError(w, r, http.StatusNotFound, "terminal_session_not_found", "Terminal session was not found.")
 			return
 		}
+		if errors.Is(err, usermachines.ErrMachineCapabilityUnavailable) {
+			writeError(w, r, http.StatusConflict, "machine_capability_unavailable", "Destination machine cannot receive files.")
+			return
+		}
+		if errors.Is(err, usermachines.ErrMachineOffline) {
+			writeError(w, r, http.StatusConflict, "machine_offline", "Destination machine is offline.")
+			return
+		}
 		if errors.Is(err, access.ErrTerminalSessionNotFound) {
 			writeError(w, r, http.StatusNotFound, "terminal_session_not_found", "Terminal session was not found.")
 			return
@@ -490,6 +499,10 @@ func userMachinePreviewLaunchDescriptor(service *usermachines.Service) http.Hand
 		switch {
 		case errors.Is(err, usermachines.ErrNotFound):
 			writeError(w, r, http.StatusNotFound, "user_machine_not_found", "Machine was not found.")
+		case errors.Is(err, usermachines.ErrMachineCapabilityUnavailable):
+			writeError(w, r, http.StatusConflict, "machine_capability_unavailable", "Machine cannot launch previews.")
+		case errors.Is(err, usermachines.ErrMachineOffline):
+			writeError(w, r, http.StatusConflict, "machine_offline", "Machine is offline.")
 		case errors.Is(err, usermachines.ErrProvisioningUnavailable):
 			writeError(w, r, http.StatusConflict, "machine_offline", "Machine is offline.")
 		case err != nil:
@@ -640,6 +653,10 @@ func userMachineTerminalSessionError(w http.ResponseWriter, r *http.Request, err
 		writeError(w, r, http.StatusBadRequest, "invalid_terminal_session_name", "Terminal session name is invalid.")
 	case errors.Is(err, usermachines.ErrTerminalSessionIdempotency):
 		writeError(w, r, http.StatusBadRequest, "idempotency_key_required", "Idempotency-Key is required.")
+	case errors.Is(err, usermachines.ErrMachineCapabilityUnavailable):
+		writeError(w, r, http.StatusConflict, "machine_capability_unavailable", "This machine is not configured to host terminals.")
+	case errors.Is(err, usermachines.ErrMachineOffline):
+		writeError(w, r, http.StatusConflict, "machine_offline", "This terminal host is offline.")
 	default:
 		writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
 	}

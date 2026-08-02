@@ -42,6 +42,7 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 			SampledAt          time.Time                             `json:"sampled_at"`
 			Availability       *usermachines.AvailabilityObservation `json:"availability"`
 			RuntimeDiagnostics *struct {
+				Capabilities        []string  `json:"capabilities"`
 				WorkerGeneration    uint64    `json:"worker_generation"`
 				OSBootID            string    `json:"os_boot_id"`
 				WorkerServiceScope  string    `json:"worker_service_scope"`
@@ -61,7 +62,7 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "Runtime observation is missing required fields.")
 			return
 		}
-		if req.RuntimeDiagnostics != nil && (req.RuntimeDiagnostics.WorkerGeneration < 1 || req.RuntimeDiagnostics.OSBootID == "" || len(req.RuntimeDiagnostics.OSBootID) > 256 || strings.ContainsAny(req.RuntimeDiagnostics.OSBootID, "\x00\r\n") || !slices.Contains([]string{"unknown", "user", "system"}, req.RuntimeDiagnostics.WorkerServiceScope) || !slices.Contains([]string{"ready", "degraded", "unavailable"}, req.RuntimeDiagnostics.ConnectorState) || req.RuntimeDiagnostics.ObservedAt.IsZero()) {
+		if req.RuntimeDiagnostics != nil && (req.RuntimeDiagnostics.WorkerGeneration < 1 || req.RuntimeDiagnostics.OSBootID == "" || len(req.RuntimeDiagnostics.OSBootID) > 256 || strings.ContainsAny(req.RuntimeDiagnostics.OSBootID, "\x00\r\n") || !validObservedCapabilities(req.RuntimeDiagnostics.Capabilities) || !slices.Contains([]string{"unknown", "user", "system"}, req.RuntimeDiagnostics.WorkerServiceScope) || !slices.Contains([]string{"ready", "degraded", "unavailable"}, req.RuntimeDiagnostics.ConnectorState) || req.RuntimeDiagnostics.ObservedAt.IsZero()) {
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "Runtime diagnostics are invalid.")
 			return
 		}
@@ -117,6 +118,7 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 			observation.WorkerServiceScope = req.RuntimeDiagnostics.WorkerServiceScope
 			observation.ConnectorState = req.RuntimeDiagnostics.ConnectorState
 			observation.ConnectorGeneration = req.RuntimeDiagnostics.ConnectorGeneration
+			observation.Capabilities = append([]string(nil), req.RuntimeDiagnostics.Capabilities...)
 			observation.DiagnosticsObservedAt = req.RuntimeDiagnostics.ObservedAt.UTC()
 		}
 		if err := repo.RecordRuntimeObservation(r.Context(), observation); err != nil {
@@ -129,6 +131,19 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 		}
 		writeJSON(w, http.StatusAccepted, SuccessResponse{Data: map[string]any{"accepted": true}})
 	}
+}
+
+func validObservedCapabilities(capabilities []string) bool {
+	if len(capabilities) > 6 {
+		return false
+	}
+	allowed := []string{"file_receive", "preview_launch", "terminal_host", "codex_host", "session_host", "keep_awake"}
+	for index, capability := range capabilities {
+		if !slices.Contains(allowed, capability) || slices.Contains(capabilities[:index], capability) {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeStatusTimestamps(statusUpdated, sampledAt, serverNow time.Time) (time.Time, time.Time, bool) {

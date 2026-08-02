@@ -28,7 +28,8 @@ func TestPreviewIdentityStableAndCounterBound(t *testing.T) {
 
 func TestPreviewHostnameValidation(t *testing.T) {
 	host, err := PreviewHostname("Preview.Example.Test.", "p-abcdefghijklmnopqrstuvwxyz")
-	if err != nil || host != "p-abcdefghijklmnopqrstuvwxyz.preview.example.test" {
+	label := strings.TrimSuffix(host, ".preview.example.test")
+	if err != nil || !strings.HasSuffix(host, ".preview.example.test") || len(strings.Split(label, "-")) != 4 || strings.Count(host, ".") != 3 {
 		t.Fatalf("hostname = %q, err = %v", host, err)
 	}
 	for _, domain := range []string{"", "127.0.0.1", "bad host"} {

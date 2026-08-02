@@ -335,7 +335,7 @@ WHERE environment_id = $5 AND preview_key = $6
   AND logical_name = $7 AND target_host = $8
   AND target_port = $9
   AND state <> 'removed' AND $3 > helper_observation_revision
-RETURNING id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at
+RETURNING id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at, source_kind, owner_mode
 `
 
 type ApplyControlPreviewHelperObservationParams struct {
@@ -386,6 +386,8 @@ func (q *Queries) ApplyControlPreviewHelperObservation(ctx context.Context, arg 
 		&i.UpdatedAt,
 		&i.HelperObservationRevision,
 		&i.HelperObservedAt,
+		&i.SourceKind,
+		&i.OwnerMode,
 	)
 	return i, err
 }
@@ -1083,13 +1085,13 @@ func (q *Queries) CreateControlHelperEnrollment(ctx context.Context, arg CreateC
 const createControlPreview = `-- name: CreateControlPreview :one
 INSERT INTO control_previews
   (id, environment_id, logical_name, preview_key, collision_counter, public_host,
-   target_host, target_port, public_acknowledged_at, expires_at)
+   target_host, target_port, source_kind, owner_mode, public_acknowledged_at, expires_at)
 VALUES
   ($1, $2, $3, $4,
    $5, $6, $7, $8,
-   $9, $10)
-ON CONFLICT (preview_key) DO NOTHING
-RETURNING id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at
+   $9, $10, $11, $12)
+ON CONFLICT DO NOTHING
+RETURNING id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at, source_kind, owner_mode
 `
 
 type CreateControlPreviewParams struct {
@@ -1101,6 +1103,8 @@ type CreateControlPreviewParams struct {
 	PublicHost           string
 	TargetHost           string
 	TargetPort           int32
+	SourceKind           string
+	OwnerMode            string
 	PublicAcknowledgedAt sql.NullTime
 	ExpiresAt            sql.NullTime
 }
@@ -1115,6 +1119,8 @@ func (q *Queries) CreateControlPreview(ctx context.Context, arg CreateControlPre
 		arg.PublicHost,
 		arg.TargetHost,
 		arg.TargetPort,
+		arg.SourceKind,
+		arg.OwnerMode,
 		arg.PublicAcknowledgedAt,
 		arg.ExpiresAt,
 	)
@@ -1142,6 +1148,8 @@ func (q *Queries) CreateControlPreview(ctx context.Context, arg CreateControlPre
 		&i.UpdatedAt,
 		&i.HelperObservationRevision,
 		&i.HelperObservedAt,
+		&i.SourceKind,
+		&i.OwnerMode,
 	)
 	return i, err
 }
@@ -2197,7 +2205,7 @@ func (q *Queries) GetControlPlaneQueueMetrics(ctx context.Context) (GetControlPl
 }
 
 const getControlPreviewByKey = `-- name: GetControlPreviewByKey :one
-SELECT id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at FROM control_previews WHERE preview_key = $1
+SELECT id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at, source_kind, owner_mode FROM control_previews WHERE preview_key = $1
 `
 
 func (q *Queries) GetControlPreviewByKey(ctx context.Context, previewKey string) (ControlPreview, error) {
@@ -2226,12 +2234,14 @@ func (q *Queries) GetControlPreviewByKey(ctx context.Context, previewKey string)
 		&i.UpdatedAt,
 		&i.HelperObservationRevision,
 		&i.HelperObservedAt,
+		&i.SourceKind,
+		&i.OwnerMode,
 	)
 	return i, err
 }
 
 const getControlPreviewForUpdate = `-- name: GetControlPreviewForUpdate :one
-SELECT id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at FROM control_previews
+SELECT id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at, source_kind, owner_mode FROM control_previews
 WHERE environment_id = $1 AND logical_name = $2
   AND state <> 'removed'
 FOR UPDATE
@@ -2268,6 +2278,8 @@ func (q *Queries) GetControlPreviewForUpdate(ctx context.Context, arg GetControl
 		&i.UpdatedAt,
 		&i.HelperObservationRevision,
 		&i.HelperObservedAt,
+		&i.SourceKind,
+		&i.OwnerMode,
 	)
 	return i, err
 }
@@ -2770,7 +2782,7 @@ func (q *Queries) GetOwnedControlConfigRepository(ctx context.Context, arg GetOw
 }
 
 const getOwnedControlPreview = `-- name: GetOwnedControlPreview :one
-SELECT p.id, p.environment_id, p.logical_name, p.preview_key, p.collision_counter, p.public_host, p.target_host, p.target_port, p.state, p.route_id, p.helper_ready, p.edge_ready, p.target_ready, p.public_acknowledged_at, p.expires_at, p.removed_at, p.retained_until, p.version, p.created_at, p.updated_at, p.helper_observation_revision, p.helper_observed_at FROM control_previews p
+SELECT p.id, p.environment_id, p.logical_name, p.preview_key, p.collision_counter, p.public_host, p.target_host, p.target_port, p.state, p.route_id, p.helper_ready, p.edge_ready, p.target_ready, p.public_acknowledged_at, p.expires_at, p.removed_at, p.retained_until, p.version, p.created_at, p.updated_at, p.helper_observation_revision, p.helper_observed_at, p.source_kind, p.owner_mode FROM control_previews p
 JOIN control_environments e ON e.id = p.environment_id
 WHERE p.id = $1 AND e.owner_user_id = $2
 FOR UPDATE
@@ -2807,6 +2819,8 @@ func (q *Queries) GetOwnedControlPreview(ctx context.Context, arg GetOwnedContro
 		&i.UpdatedAt,
 		&i.HelperObservationRevision,
 		&i.HelperObservedAt,
+		&i.SourceKind,
+		&i.OwnerMode,
 	)
 	return i, err
 }
@@ -3286,7 +3300,7 @@ func (q *Queries) ListControlConfigRepositoryAccessPendingProviderRevoke(ctx con
 }
 
 const listControlPreviews = `-- name: ListControlPreviews :many
-SELECT id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at FROM control_previews
+SELECT id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at, source_kind, owner_mode FROM control_previews
 WHERE environment_id = $1 AND state NOT IN ('removed','expired')
   AND (expires_at IS NULL OR expires_at > now())
 ORDER BY logical_name, id
@@ -3324,6 +3338,8 @@ func (q *Queries) ListControlPreviews(ctx context.Context, environmentID string)
 			&i.UpdatedAt,
 			&i.HelperObservationRevision,
 			&i.HelperObservedAt,
+			&i.SourceKind,
+			&i.OwnerMode,
 		); err != nil {
 			return nil, err
 		}
@@ -3405,7 +3421,6 @@ LEFT JOIN control_previews p ON p.route_id = r.id
 WHERE c.edge_node_id = $1
   AND r.desired_state IN ('attached','replacing')
   AND c.state IN ('pending','admitted')
-  AND (c.expires_at IS NULL OR c.expires_at > $2)
   AND m.revoked_at IS NULL AND m.deleted_at IS NULL
   AND (p.id IS NULL OR (p.state NOT IN ('expired','removed') AND (p.expires_at IS NULL OR p.expires_at > $2)))
 ORDER BY r.id
@@ -3658,7 +3673,7 @@ func (q *Queries) ListOwnedControlConfigSyncStatus(ctx context.Context, ownerUse
 }
 
 const listOwnedControlPreviews = `-- name: ListOwnedControlPreviews :many
-SELECT p.id, p.environment_id, p.logical_name, p.preview_key, p.collision_counter, p.public_host, p.target_host, p.target_port, p.state, p.route_id, p.helper_ready, p.edge_ready, p.target_ready, p.public_acknowledged_at, p.expires_at, p.removed_at, p.retained_until, p.version, p.created_at, p.updated_at, p.helper_observation_revision, p.helper_observed_at, e.owner_user_id, e.workspace_id,
+SELECT p.id, p.environment_id, p.logical_name, p.preview_key, p.collision_counter, p.public_host, p.target_host, p.target_port, p.state, p.route_id, p.helper_ready, p.edge_ready, p.target_ready, p.public_acknowledged_at, p.expires_at, p.removed_at, p.retained_until, p.version, p.created_at, p.updated_at, p.helper_observation_revision, p.helper_observed_at, p.source_kind, p.owner_mode, e.owner_user_id, e.workspace_id,
        cm.id AS machine_id,
        COALESCE(cm.display_name, pr.name, e.id) AS environment_name,
        CASE WHEN cm.id IS NULL THEN 'hosted' ELSE 'byod' END AS environment_kind,
@@ -3698,6 +3713,8 @@ type ListOwnedControlPreviewsRow struct {
 	UpdatedAt                 time.Time
 	HelperObservationRevision int64
 	HelperObservedAt          sql.NullTime
+	SourceKind                string
+	OwnerMode                 string
 	OwnerUserID               sql.NullString
 	WorkspaceID               string
 	MachineID                 sql.NullString
@@ -3738,6 +3755,8 @@ func (q *Queries) ListOwnedControlPreviews(ctx context.Context, ownerUserID sql.
 			&i.UpdatedAt,
 			&i.HelperObservationRevision,
 			&i.HelperObservedAt,
+			&i.SourceKind,
+			&i.OwnerMode,
 			&i.OwnerUserID,
 			&i.WorkspaceID,
 			&i.MachineID,
@@ -4127,6 +4146,47 @@ func (q *Queries) MarkControlTunnelNodeOffline(ctx context.Context, arg MarkCont
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const reactivateHelperRouteForEnvironment = `-- name: ReactivateHelperRouteForEnvironment :one
+UPDATE control_routes
+SET desired_state = 'attached', desired_revision = desired_revision + 1,
+    version = version + 1, updated_at = $1
+WHERE id = (
+  SELECT existing.id FROM control_routes AS existing
+  WHERE existing.environment_id = $2 AND existing.kind = 'runtime_https_wss'
+  ORDER BY existing.created_at DESC LIMIT 1
+)
+RETURNING id, environment_id, kind, public_host, target_host, target_port, desired_revision, desired_state, applied_revision, applied_node_id, applied_generation, drain_deadline, version, created_at, updated_at, connector_id
+`
+
+type ReactivateHelperRouteForEnvironmentParams struct {
+	Now           time.Time
+	EnvironmentID string
+}
+
+func (q *Queries) ReactivateHelperRouteForEnvironment(ctx context.Context, arg ReactivateHelperRouteForEnvironmentParams) (ControlRoute, error) {
+	row := q.db.QueryRowContext(ctx, reactivateHelperRouteForEnvironment, arg.Now, arg.EnvironmentID)
+	var i ControlRoute
+	err := row.Scan(
+		&i.ID,
+		&i.EnvironmentID,
+		&i.Kind,
+		&i.PublicHost,
+		&i.TargetHost,
+		&i.TargetPort,
+		&i.DesiredRevision,
+		&i.DesiredState,
+		&i.AppliedRevision,
+		&i.AppliedNodeID,
+		&i.AppliedGeneration,
+		&i.DrainDeadline,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ConnectorID,
+	)
+	return i, err
 }
 
 const reconcileStaleControlConfigWarning = `-- name: ReconcileStaleControlConfigWarning :many
@@ -4573,7 +4633,7 @@ SET state = 'removed', removed_at = coalesce(removed_at, $1),
     retained_until = greatest(coalesce(retained_until, $1), $2),
     version = version + 1, updated_at = $1
 WHERE id = $3 AND version = $4
-RETURNING id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at
+RETURNING id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at, source_kind, owner_mode
 `
 
 type RemoveControlPreviewParams struct {
@@ -4614,6 +4674,8 @@ func (q *Queries) RemoveControlPreview(ctx context.Context, arg RemoveControlPre
 		&i.UpdatedAt,
 		&i.HelperObservationRevision,
 		&i.HelperObservedAt,
+		&i.SourceKind,
+		&i.OwnerMode,
 	)
 	return i, err
 }
@@ -5278,7 +5340,7 @@ func (q *Queries) RevokePendingHelperEnrollments(ctx context.Context, arg Revoke
 }
 
 const selectControlPreviewForEviction = `-- name: SelectControlPreviewForEviction :one
-SELECT id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at FROM control_previews
+SELECT id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at, source_kind, owner_mode FROM control_previews
 WHERE environment_id = $1 AND state NOT IN ('removed','expired')
   AND (expires_at IS NULL OR expires_at > $2)
 ORDER BY (expires_at IS NULL) ASC, created_at ASC, id ASC
@@ -5316,6 +5378,8 @@ func (q *Queries) SelectControlPreviewForEviction(ctx context.Context, arg Selec
 		&i.UpdatedAt,
 		&i.HelperObservationRevision,
 		&i.HelperObservedAt,
+		&i.SourceKind,
+		&i.OwnerMode,
 	)
 	return i, err
 }
@@ -5526,7 +5590,7 @@ func (q *Queries) SetControlPreviewOperationResult(ctx context.Context, arg SetC
 const setControlPreviewRoute = `-- name: SetControlPreviewRoute :one
 UPDATE control_previews SET route_id = $1, updated_at = $2
 WHERE id = $3 AND route_id IS NULL
-RETURNING id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at
+RETURNING id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at, source_kind, owner_mode
 `
 
 type SetControlPreviewRouteParams struct {
@@ -5561,6 +5625,8 @@ func (q *Queries) SetControlPreviewRoute(ctx context.Context, arg SetControlPrev
 		&i.UpdatedAt,
 		&i.HelperObservationRevision,
 		&i.HelperObservedAt,
+		&i.SourceKind,
+		&i.OwnerMode,
 	)
 	return i, err
 }
@@ -5645,17 +5711,20 @@ func (q *Queries) UpdateControlEnvironmentDesiredState(ctx context.Context, arg 
 const updateControlPreview = `-- name: UpdateControlPreview :one
 UPDATE control_previews
 SET target_host = $1, target_port = $2,
+    source_kind = $3, owner_mode = $4,
     state = CASE WHEN state = 'removed' THEN state ELSE 'registering' END,
-    public_acknowledged_at = coalesce(public_acknowledged_at, $3),
-    expires_at = $4,
-    version = version + 1, updated_at = $5
-WHERE id = $6 AND version = $7
-RETURNING id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at
+    public_acknowledged_at = coalesce(public_acknowledged_at, $5),
+    expires_at = $6,
+    version = version + 1, updated_at = $7
+WHERE id = $8 AND version = $9
+RETURNING id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at, source_kind, owner_mode
 `
 
 type UpdateControlPreviewParams struct {
 	TargetHost           string
 	TargetPort           int32
+	SourceKind           string
+	OwnerMode            string
 	PublicAcknowledgedAt sql.NullTime
 	ExpiresAt            sql.NullTime
 	Now                  time.Time
@@ -5667,6 +5736,8 @@ func (q *Queries) UpdateControlPreview(ctx context.Context, arg UpdateControlPre
 	row := q.db.QueryRowContext(ctx, updateControlPreview,
 		arg.TargetHost,
 		arg.TargetPort,
+		arg.SourceKind,
+		arg.OwnerMode,
 		arg.PublicAcknowledgedAt,
 		arg.ExpiresAt,
 		arg.Now,
@@ -5697,6 +5768,8 @@ func (q *Queries) UpdateControlPreview(ctx context.Context, arg UpdateControlPre
 		&i.UpdatedAt,
 		&i.HelperObservationRevision,
 		&i.HelperObservedAt,
+		&i.SourceKind,
+		&i.OwnerMode,
 	)
 	return i, err
 }

@@ -17,7 +17,7 @@ func TestControlTunnelNodeStaleAfterAllowsNormalHeartbeatCadence(t *testing.T) {
 	}
 }
 
-func TestRoutesExcludeExpiredConnectorAssignments(t *testing.T) {
+func TestEstablishedConnectorRoutesSurviveAdmissionExpiry(t *testing.T) {
 	store := openControlPlaneTestDB(t)
 	ctx := context.Background()
 	suffix := "expired_routes_" + time.Now().Format("150405.000000000")
@@ -35,16 +35,16 @@ func TestRoutesExcludeExpiredConnectorAssignments(t *testing.T) {
 	service.SetClock(func() time.Time { return now })
 	if routes, err := service.Routes(ctx, nodeID); err != nil {
 		t.Fatal(err)
-	} else if len(routes) != 0 {
-		t.Fatalf("expired connector routes = %d, want 0", len(routes))
+	} else if len(routes) != 1 || routes[0].EnvironmentID != environmentID {
+		t.Fatalf("established connector routes = %+v, want environment %s", routes, environmentID)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.control_connector_generations SET expires_at=$2 WHERE environment_id=$1`, environmentID, now.Add(time.Minute)); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machines SET revoked_at=$2 WHERE id=$1`, machineID, now); err != nil {
 		t.Fatal(err)
 	}
 	if routes, err := service.Routes(ctx, nodeID); err != nil {
 		t.Fatal(err)
-	} else if len(routes) != 1 || routes[0].EnvironmentID != environmentID {
-		t.Fatalf("active connector routes = %+v, want environment %s", routes, environmentID)
+	} else if len(routes) != 0 {
+		t.Fatalf("revoked machine routes = %+v, want none", routes)
 	}
 }
 

@@ -104,15 +104,8 @@ func (s *EnrollmentService) EnsureBootGrant(ctx context.Context, actorID, operat
 }
 
 func (s *EnrollmentService) VerifyRuntimeObservation(ctx context.Context, identityToken string, proof, body []byte, environmentID, machineID string) error {
-	claims, err := s.VerifyHelperRequest(ctx, identityToken, proof, http.MethodPost, "/v1/runtime-observations", body)
-	if err != nil || claims.EnvironmentID != environmentID {
-		return ErrHelperProof
-	}
-	owned, err := s.store.Queries().HostedHelperOwnsMachine(ctx, dbsqlc.HostedHelperOwnsMachineParams{HelperID: claims.HelperID, EnvironmentID: environmentID, MachineID: machineID})
-	if err == nil && !owned {
-		owned, err = s.store.Queries().BYODHelperOwnsMachine(ctx, dbsqlc.BYODHelperOwnsMachineParams{HelperID: claims.HelperID, EnvironmentID: environmentID, MachineID: machineID})
-	}
-	if err != nil || !owned {
+	claims, err := s.VerifyMachineRequest(ctx, identityToken, proof, http.MethodPost, "/v1/runtime-observations", body)
+	if err != nil || claims.EnvironmentID != environmentID || claims.MachineID != machineID {
 		return ErrHelperProof
 	}
 	return nil

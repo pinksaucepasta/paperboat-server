@@ -95,6 +95,36 @@ func TestMigrateRequiresPostgresIntegrationDSN(t *testing.T) {
 			t.Fatalf("unified runtime migration %d was not recorded", version)
 		}
 	}
+	var servedPreviewMigrationApplied bool
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (SELECT 1 FROM paperboat.goose_db_version WHERE version_id=80 AND is_applied)`).Scan(&servedPreviewMigrationApplied); err != nil {
+		t.Fatal(err)
+	}
+	if !servedPreviewMigrationApplied {
+		t.Fatal("served preview metadata migration was not recorded")
+	}
+	for column, defaultValue := range map[string]string{"source_kind": "'application'::text", "owner_mode": "'runtime'::text"} {
+		var nullable, actualDefault string
+		if err := store.SQL().QueryRowContext(context.Background(), `SELECT is_nullable, column_default FROM information_schema.columns WHERE table_schema='paperboat' AND table_name='control_previews' AND column_name=$1`, column).Scan(&nullable, &actualDefault); err != nil {
+			t.Fatal(err)
+		}
+		if nullable != "NO" || actualDefault != defaultValue {
+			t.Fatalf("served preview column %s nullable=%s default=%s", column, nullable, actualDefault)
+		}
+	}
+	var sourcePathExists bool
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='paperboat' AND table_name='control_previews' AND column_name='source_path')`).Scan(&sourcePathExists); err != nil {
+		t.Fatal(err)
+	}
+	if sourcePathExists {
+		t.Fatal("control-plane preview table contains forbidden source_path")
+	}
+	var invalidMetadataRows int
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT count(*) FROM paperboat.control_previews WHERE source_kind NOT IN ('application','file','directory') OR owner_mode NOT IN ('runtime','foreground','detached')`).Scan(&invalidMetadataRows); err != nil {
+		t.Fatal(err)
+	}
+	if invalidMetadataRows != 0 {
+		t.Fatalf("served preview migration left %d invalid rows", invalidMetadataRows)
+	}
 	if _, err := store.SQL().ExecContext(context.Background(), `SELECT paperboat.revoke_config_sync_for_environment('migration_machine_authority_probe')`); err != nil {
 		t.Fatalf("machine-authority config revocation function failed: %v", err)
 	}
