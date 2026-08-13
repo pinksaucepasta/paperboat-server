@@ -8,10 +8,7 @@ package dbsqlc
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"time"
-
-	"github.com/lib/pq"
 )
 
 const createAccessSession = `-- name: CreateAccessSession :exec
@@ -27,14 +24,14 @@ type CreateAccessSessionParams struct {
 	HelperTerminalSessionID interface{}
 	HelperFileSessionID     interface{}
 	SessionType             string
-	Descriptor              json.RawMessage
+	Descriptor              []byte
 	HttpBaseUrl             string
 	ExpiresAt               time.Time
 	IdempotencyKey          string
 }
 
 func (q *Queries) CreateAccessSession(ctx context.Context, arg CreateAccessSessionParams) error {
-	_, err := q.db.ExecContext(ctx, createAccessSession,
+	_, err := q.db.Exec(ctx, createAccessSession,
 		arg.ID,
 		arg.UserID,
 		arg.ProjectID,
@@ -67,13 +64,13 @@ type CreateHelperRevocationOutboxParams struct {
 }
 
 func (q *Queries) CreateHelperRevocationOutbox(ctx context.Context, arg CreateHelperRevocationOutboxParams) error {
-	_, err := q.db.ExecContext(ctx, createHelperRevocationOutbox,
+	_, err := q.db.Exec(ctx, createHelperRevocationOutbox,
 		arg.ID,
 		arg.UserID,
 		arg.ProjectID,
 		arg.CLIClientSessionID,
 		arg.HttpBaseUrl,
-		pq.Array(arg.SessionIds),
+		arg.SessionIds,
 		arg.Reason,
 	)
 	return err
@@ -84,7 +81,7 @@ SELECT event_type FROM project_events WHERE project_id=$1 AND event_type LIKE 'p
 `
 
 func (q *Queries) GetLatestProjectStopEventType(ctx context.Context, projectID string) (string, error) {
-	row := q.db.QueryRowContext(ctx, getLatestProjectStopEventType, projectID)
+	row := q.db.QueryRow(ctx, getLatestProjectStopEventType, projectID)
 	var event_type string
 	err := row.Scan(&event_type)
 	return event_type, err
@@ -98,11 +95,11 @@ type GetProviderRouteResourceRow struct {
 	TunnelID   string
 	ClientID   string
 	ResourceID string
-	Metadata   json.RawMessage
+	Metadata   []byte
 }
 
 func (q *Queries) GetProviderRouteResource(ctx context.Context, projectID string) (GetProviderRouteResourceRow, error) {
-	row := q.db.QueryRowContext(ctx, getProviderRouteResource, projectID)
+	row := q.db.QueryRow(ctx, getProviderRouteResource, projectID)
 	var i GetProviderRouteResourceRow
 	err := row.Scan(
 		&i.TunnelID,
@@ -119,7 +116,7 @@ WHERE t.user_id = $1 AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.exp
 `
 
 func (q *Queries) GitHubConfigReady(ctx context.Context, userID string) (bool, error) {
-	row := q.db.QueryRowContext(ctx, gitHubConfigReady, userID)
+	row := q.db.QueryRow(ctx, gitHubConfigReady, userID)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
@@ -140,7 +137,7 @@ type HasConnectCreditsParams struct {
 }
 
 func (q *Queries) HasConnectCredits(ctx context.Context, arg HasConnectCreditsParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, hasConnectCredits, arg.WindowSeconds, arg.ProjectID, arg.UserID)
+	row := q.db.QueryRow(ctx, hasConnectCredits, arg.WindowSeconds, arg.ProjectID, arg.UserID)
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -165,7 +162,7 @@ type ListClientHelperSessionsRow struct {
 }
 
 func (q *Queries) ListClientHelperSessions(ctx context.Context, cliClientSessionID sql.NullString) ([]ListClientHelperSessionsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listClientHelperSessions, cliClientSessionID)
+	rows, err := q.db.Query(ctx, listClientHelperSessions, cliClientSessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -184,9 +181,6 @@ func (q *Queries) ListClientHelperSessions(ctx context.Context, cliClientSession
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -212,7 +206,7 @@ type ListPendingHelperRevocationOutboxRow struct {
 }
 
 func (q *Queries) ListPendingHelperRevocationOutbox(ctx context.Context) ([]ListPendingHelperRevocationOutboxRow, error) {
-	rows, err := q.db.QueryContext(ctx, listPendingHelperRevocationOutbox)
+	rows, err := q.db.Query(ctx, listPendingHelperRevocationOutbox)
 	if err != nil {
 		return nil, err
 	}
@@ -226,15 +220,12 @@ func (q *Queries) ListPendingHelperRevocationOutbox(ctx context.Context) ([]List
 			&i.ProjectID,
 			&i.CLIClientSessionID,
 			&i.HttpBaseUrl,
-			pq.Array(&i.SessionIds),
+			&i.SessionIds,
 			&i.Reason,
 		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -264,7 +255,7 @@ type ListPendingHelperRevocationsRow struct {
 }
 
 func (q *Queries) ListPendingHelperRevocations(ctx context.Context) ([]ListPendingHelperRevocationsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listPendingHelperRevocations)
+	rows, err := q.db.Query(ctx, listPendingHelperRevocations)
 	if err != nil {
 		return nil, err
 	}
@@ -286,9 +277,6 @@ func (q *Queries) ListPendingHelperRevocations(ctx context.Context) ([]ListPendi
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -308,7 +296,7 @@ type ListPendingProviderRouteCleanupOutboxRow struct {
 }
 
 func (q *Queries) ListPendingProviderRouteCleanupOutbox(ctx context.Context) ([]ListPendingProviderRouteCleanupOutboxRow, error) {
-	rows, err := q.db.QueryContext(ctx, listPendingProviderRouteCleanupOutbox)
+	rows, err := q.db.Query(ctx, listPendingProviderRouteCleanupOutbox)
 	if err != nil {
 		return nil, err
 	}
@@ -325,9 +313,6 @@ func (q *Queries) ListPendingProviderRouteCleanupOutbox(ctx context.Context) ([]
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -354,7 +339,7 @@ type ListProjectHelperSessionsRow struct {
 }
 
 func (q *Queries) ListProjectHelperSessions(ctx context.Context, projectID string) ([]ListProjectHelperSessionsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listProjectHelperSessions, projectID)
+	rows, err := q.db.Query(ctx, listProjectHelperSessions, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -373,9 +358,6 @@ func (q *Queries) ListProjectHelperSessions(ctx context.Context, projectID strin
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -402,7 +384,7 @@ type ListUserHelperSessionsRow struct {
 }
 
 func (q *Queries) ListUserHelperSessions(ctx context.Context, userID string) ([]ListUserHelperSessionsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listUserHelperSessions, userID)
+	rows, err := q.db.Query(ctx, listUserHelperSessions, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -422,9 +404,6 @@ func (q *Queries) ListUserHelperSessions(ctx context.Context, userID string) ([]
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -437,7 +416,7 @@ WHERE id=$1 AND state='revoked' AND helper_revoked_at IS NULL
 `
 
 func (q *Queries) MarkAccessSessionHelperRevocationPropagated(ctx context.Context, id string) error {
-	_, err := q.db.ExecContext(ctx, markAccessSessionHelperRevocationPropagated, id)
+	_, err := q.db.Exec(ctx, markAccessSessionHelperRevocationPropagated, id)
 	return err
 }
 
@@ -448,7 +427,7 @@ AND (helper_terminal_session_id IS NOT NULL OR helper_file_session_id IS NOT NUL
 `
 
 func (q *Queries) MarkClientHelperRevocationPropagated(ctx context.Context, cliClientSessionID sql.NullString) error {
-	_, err := q.db.ExecContext(ctx, markClientHelperRevocationPropagated, cliClientSessionID)
+	_, err := q.db.Exec(ctx, markClientHelperRevocationPropagated, cliClientSessionID)
 	return err
 }
 
@@ -458,7 +437,7 @@ WHERE id=$1 AND propagated_at IS NULL
 `
 
 func (q *Queries) MarkHelperRevocationOutboxPropagated(ctx context.Context, id string) error {
-	_, err := q.db.ExecContext(ctx, markHelperRevocationOutboxPropagated, id)
+	_, err := q.db.Exec(ctx, markHelperRevocationOutboxPropagated, id)
 	return err
 }
 
@@ -469,7 +448,7 @@ AND (helper_terminal_session_id IS NOT NULL OR helper_file_session_id IS NOT NUL
 `
 
 func (q *Queries) MarkProjectHelperRevocationPropagated(ctx context.Context, projectID string) error {
-	_, err := q.db.ExecContext(ctx, markProjectHelperRevocationPropagated, projectID)
+	_, err := q.db.Exec(ctx, markProjectHelperRevocationPropagated, projectID)
 	return err
 }
 
@@ -479,7 +458,7 @@ WHERE project_id=$1 AND propagated_at IS NULL
 `
 
 func (q *Queries) MarkProviderRouteCleanupOutboxPropagated(ctx context.Context, projectID string) error {
-	_, err := q.db.ExecContext(ctx, markProviderRouteCleanupOutboxPropagated, projectID)
+	_, err := q.db.Exec(ctx, markProviderRouteCleanupOutboxPropagated, projectID)
 	return err
 }
 
@@ -490,7 +469,7 @@ AND (helper_terminal_session_id IS NOT NULL OR helper_file_session_id IS NOT NUL
 `
 
 func (q *Queries) MarkUserHelperRevocationPropagated(ctx context.Context, userID string) error {
-	_, err := q.db.ExecContext(ctx, markUserHelperRevocationPropagated, userID)
+	_, err := q.db.Exec(ctx, markUserHelperRevocationPropagated, userID)
 	return err
 }
 
@@ -506,11 +485,11 @@ type RecordConnectionEventParams struct {
 	AccessSessionID interface{}
 	Result          string
 	FailureReason   string
-	Metadata        json.RawMessage
+	Metadata        []byte
 }
 
 func (q *Queries) RecordConnectionEvent(ctx context.Context, arg RecordConnectionEventParams) error {
-	_, err := q.db.ExecContext(ctx, recordConnectionEvent,
+	_, err := q.db.Exec(ctx, recordConnectionEvent,
 		arg.ID,
 		arg.UserID,
 		arg.ProjectID,
@@ -534,7 +513,7 @@ type RevokeClientAccessSessionsParams struct {
 }
 
 func (q *Queries) RevokeClientAccessSessions(ctx context.Context, arg RevokeClientAccessSessionsParams) error {
-	_, err := q.db.ExecContext(ctx, revokeClientAccessSessions, arg.Reason, arg.CLIClientSessionID)
+	_, err := q.db.Exec(ctx, revokeClientAccessSessions, arg.Reason, arg.CLIClientSessionID)
 	return err
 }
 
@@ -550,7 +529,7 @@ type RevokeProjectAccessSessionsParams struct {
 }
 
 func (q *Queries) RevokeProjectAccessSessions(ctx context.Context, arg RevokeProjectAccessSessionsParams) error {
-	_, err := q.db.ExecContext(ctx, revokeProjectAccessSessions, arg.Reason, arg.ProjectID)
+	_, err := q.db.Exec(ctx, revokeProjectAccessSessions, arg.Reason, arg.ProjectID)
 	return err
 }
 
@@ -566,7 +545,7 @@ type RevokeUserAccessSessionsParams struct {
 }
 
 func (q *Queries) RevokeUserAccessSessions(ctx context.Context, arg RevokeUserAccessSessionsParams) error {
-	_, err := q.db.ExecContext(ctx, revokeUserAccessSessions, arg.Reason, arg.UserID)
+	_, err := q.db.Exec(ctx, revokeUserAccessSessions, arg.Reason, arg.UserID)
 	return err
 }
 
@@ -584,7 +563,7 @@ type UpsertPreviewURLRecordParams struct {
 }
 
 func (q *Queries) UpsertPreviewURLRecord(ctx context.Context, arg UpsertPreviewURLRecordParams) error {
-	_, err := q.db.ExecContext(ctx, upsertPreviewURLRecord,
+	_, err := q.db.Exec(ctx, upsertPreviewURLRecord,
 		arg.ID,
 		arg.ProjectID,
 		arg.TargetUrl,
@@ -608,7 +587,7 @@ type UpsertProviderRouteCleanupOutboxParams struct {
 }
 
 func (q *Queries) UpsertProviderRouteCleanupOutbox(ctx context.Context, arg UpsertProviderRouteCleanupOutboxParams) error {
-	_, err := q.db.ExecContext(ctx, upsertProviderRouteCleanupOutbox,
+	_, err := q.db.Exec(ctx, upsertProviderRouteCleanupOutbox,
 		arg.ID,
 		arg.ProjectID,
 		arg.Action,
@@ -630,11 +609,11 @@ type UpsertProviderRouteResourceParams struct {
 	TunnelID   string
 	ClientID   string
 	ResourceID string
-	Metadata   json.RawMessage
+	Metadata   []byte
 }
 
 func (q *Queries) UpsertProviderRouteResource(ctx context.Context, arg UpsertProviderRouteResourceParams) error {
-	_, err := q.db.ExecContext(ctx, upsertProviderRouteResource,
+	_, err := q.db.Exec(ctx, upsertProviderRouteResource,
 		arg.ID,
 		arg.ProjectID,
 		arg.TunnelID,

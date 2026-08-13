@@ -161,6 +161,10 @@ func TestSnapshotProjectPersistsRuntimeStateAndWorkingDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := New(store, projectService, 8, time.Second, 3)
+	session, err := service.Create(context.Background(), "usr_terminal_snapshot", project.ID, "snapshot", "create-snapshot")
+	if err != nil {
+		t.Fatal(err)
+	}
 	service.ConfigureControl(func(context.Context, string) (string, error) {
 		return "https://terminal-control.example.test", nil
 	}, signer, "https://paperboat.example.test", &http.Client{})
@@ -180,7 +184,7 @@ func TestSnapshotProjectPersistsRuntimeStateAndWorkingDirectory(t *testing.T) {
 	if err := store.SQL().QueryRowContext(context.Background(), `
 SELECT runtime_state, launch_cwd, last_runtime_sequence, last_runtime_sync_at
 FROM paperboat.project_terminal_sessions
-WHERE project_id=$1 AND terminal_id='term-1'`, project.ID).Scan(&state, &cwd, &sequence, &syncedAt); err != nil {
+WHERE project_id=$1 AND id=$2`, project.ID, session.ID).Scan(&state, &cwd, &sequence, &syncedAt); err != nil {
 		t.Fatal(err)
 	}
 	if state != "running" || cwd != "/workspace/api" || sequence != 42 || syncedAt.IsZero() {
@@ -197,6 +201,9 @@ func TestCloseSnapshotsWorkingDirectoryBeforeTerminalShutdown(t *testing.T) {
 	}
 	var calls int
 	service := New(store, projectService, 8, time.Second, 3)
+	if _, err := service.Create(context.Background(), "usr_terminal_close_snapshot", project.ID, "close-snapshot", "create-close-snapshot"); err != nil {
+		t.Fatal(err)
+	}
 	service.ConfigureControl(func(context.Context, string) (string, error) {
 		return "https://terminal-control.example.test", nil
 	}, signer, "https://paperboat.example.test", &http.Client{})

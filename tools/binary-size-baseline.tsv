@@ -1,0 +1,4 @@
+# Reviewed 2026-08-06 after the primary peer transport control-plane cutover.
+# Updating a size requires package/dependency attribution in the reviewing change.
+linux	amd64	23330978
+linux	arm64	21364898

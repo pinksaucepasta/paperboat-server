@@ -21,12 +21,16 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/codexsessions"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
+	"github.com/pinksaucepasta/paperboat-server/internal/diagnosticuploads"
 	"github.com/pinksaucepasta/paperboat-server/internal/favorites"
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
+	"github.com/pinksaucepasta/paperboat-server/internal/managedssh"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
 	"github.com/pinksaucepasta/paperboat-server/internal/mint"
 	"github.com/pinksaucepasta/paperboat-server/internal/observability"
+	"github.com/pinksaucepasta/paperboat-server/internal/peeridentity"
+	"github.com/pinksaucepasta/paperboat-server/internal/peersessions"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 	"github.com/pinksaucepasta/paperboat-server/internal/terminalsessions"
 	"github.com/pinksaucepasta/paperboat-server/internal/usermachines"
@@ -34,6 +38,10 @@ import (
 
 type ReadinessChecker interface {
 	Ready(context.Context) error
+}
+
+type ProbeRegionReader interface {
+	ListProbeRegions(context.Context) ([]controlplane.ProbeRegion, error)
 }
 
 type Options struct {
@@ -58,6 +66,7 @@ type Options struct {
 	MintKeys               *mint.Provider
 	EdgeControl            http.Handler
 	EdgeControlAdmin       *controlplane.EdgeService
+	ProbeRegions           ProbeRegionReader
 	Enrollment             *controlplane.EnrollmentService
 	HostedBootstrap        *controlplane.HostedBootstrapService
 	ConfigAssignments      *controlplane.ConfigAssignmentService
@@ -72,6 +81,10 @@ type Options struct {
 	Favorites              *favorites.Service
 	ControlDiagnostics     *controlplane.DiagnosticsService
 	OperationRecovery      *controlplane.OperationRecoveryService
+	PeerIdentity           *peeridentity.Service
+	PeerSessions           *peersessions.Service
+	ManagedSSH             *managedssh.Service
+	DiagnosticUploads      *diagnosticuploads.Service
 	HostedProviderRecovery *controlplane.HostedProviderRecoveryService
 	OverrideHandler        http.Handler
 }
@@ -86,11 +99,22 @@ func NewRouter(opts Options) http.Handler {
 	} else {
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /healthz", health)
+		mux.HandleFunc("GET /network-check/v1", networkCheck)
+		if opts.ProbeRegions != nil {
+			mux.HandleFunc("GET /network-check/regions/v1", networkCheckRegions(opts.ProbeRegions))
+		}
 		mux.HandleFunc("GET /readyz", ready(opts.ReadinessChecker))
 		mux.HandleFunc("GET /v1/client-configuration", clientConfiguration(opts.Config))
 		mux.Handle("GET /metrics", metrics(opts.ControlDiagnostics))
 		if opts.MintKeys != nil {
 			mux.Handle("GET /.well-known/jwks.json", opts.MintKeys)
+		}
+		if opts.DiagnosticUploads == nil || opts.DeviceAuth == nil {
+			unavailable := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writeError(w, r, http.StatusServiceUnavailable, "diagnostic_upload_unavailable", "Diagnostic upload service is temporarily unavailable.")
+			})
+			mux.Handle("POST /v1/diagnostic-upload-intents", unavailable)
+			mux.Handle("POST /v1/diagnostic-upload-intents/{intent_id}/complete", unavailable)
 		}
 		if opts.EdgeControl != nil {
 			mux.Handle("/v1/", opts.EdgeControl)
@@ -155,6 +179,51 @@ func NewRouter(opts Options) http.Handler {
 				mux.Handle("POST /v1/codex-sessions/{session_id}/renew", codexAuth(codexSessionRenew(opts.CodexSessions)))
 				mux.Handle("DELETE /v1/codex-sessions/{session_id}", codexAuth(codexSessionDelete(opts.CodexSessions)))
 			}
+			if opts.PeerIdentity != nil && opts.DeviceAuth != nil {
+				peerRead := func(next http.Handler) http.Handler {
+					return requireBearerAuth(opts.DeviceAuth, requireScope("projects:read", next))
+				}
+				peerWrite := func(next http.Handler) http.Handler {
+					return requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", next))
+				}
+				mux.Handle("GET /v1/e2ee/root", peerRead(e2eeRootGet(opts.PeerIdentity)))
+				mux.Handle("GET /v1/e2ee/pending-endpoints", peerRead(pendingEndpoints(opts.PeerIdentity)))
+				mux.Handle("POST /v1/e2ee/bootstrap", peerWrite(e2eeBootstrap(opts.PeerIdentity)))
+				mux.Handle("GET /v1/endpoints/{endpoint_id}/certificates/{generation}", peerRead(endpointCertificateGet(opts.PeerIdentity)))
+				mux.Handle("PUT /v1/endpoints/{endpoint_id}/certificates/{generation}", peerWrite(endpointCertificateRegister(opts.PeerIdentity)))
+				mux.Handle("DELETE /v1/endpoints/{endpoint_id}/certificates/{generation}", peerWrite(endpointCertificateRevoke(opts.PeerIdentity)))
+			}
+			if opts.PeerSessions != nil && opts.DeviceAuth != nil {
+				peerAttempts := func(next http.Handler) http.Handler {
+					return requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", next))
+				}
+				mux.Handle("POST /v1/peer-attempts", peerAttempts(peerAttemptCreate(opts.PeerSessions)))
+				mux.Handle("DELETE /v1/peer-attempts/{intent_id}/{attempt_generation}", peerAttempts(peerAttemptDelete(opts.PeerSessions)))
+			}
+			if opts.ManagedSSH != nil && opts.DeviceAuth != nil {
+				sshRead := func(next http.Handler) http.Handler {
+					return requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope("projects:read", next))
+				}
+				sshWrite := func(next http.Handler) http.Handler {
+					return requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope("projects:connect", requireCSRF(opts.Auth, next)))
+				}
+				cliWrite := func(next http.Handler) http.Handler {
+					return requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", next))
+				}
+				mux.Handle("PUT /v1/ssh/client-keys/{fingerprint}", cliWrite(managedSSHClientKeyPut(opts.ManagedSSH)))
+				mux.Handle("DELETE /v1/ssh/client-keys/{fingerprint}", cliWrite(managedSSHClientKeyDelete(opts.ManagedSSH)))
+				mux.Handle("PUT /v1/machines/{machine_id}/ssh-target", sshWrite(managedSSHTargetPut(opts.ManagedSSH)))
+				mux.Handle("GET /v1/machines/{machine_id}/ssh-target", sshRead(managedSSHTargetGet(opts.ManagedSSH)))
+				mux.Handle("GET /v1/machines/{machine_id}/ssh-host-keys", sshRead(managedSSHHostKeysGet(opts.ManagedSSH)))
+				mux.Handle("POST /v1/machines/{machine_id}/ssh-host-keys/{set_id}/promote", sshWrite(managedSSHHostKeysPromote(opts.ManagedSSH)))
+			}
+			if opts.DiagnosticUploads != nil && opts.DeviceAuth != nil {
+				diagnosticAuth := func(next http.Handler) http.Handler {
+					return requireBearerAuth(opts.DeviceAuth, requireScope("diagnostics:upload", next))
+				}
+				mux.Handle("POST /v1/diagnostic-upload-intents", diagnosticAuth(diagnosticUploadIntentCreate(opts.DiagnosticUploads)))
+				mux.Handle("POST /v1/diagnostic-upload-intents/{intent_id}/complete", diagnosticAuth(diagnosticUploadIntentComplete(opts.DiagnosticUploads)))
+			}
 			if opts.Previews != nil {
 				previewAuth := func(scope string, next http.Handler) http.Handler {
 					if opts.DeviceAuth != nil {
@@ -217,6 +286,8 @@ func NewRouter(opts Options) http.Handler {
 			mux.Handle("PUT /v1/machines/{machine_id}/availability-policy", userMachineAuth("projects:connect", requireCSRF(opts.Auth, userMachineAvailabilityPolicy(opts.Machines))))
 			if opts.DeviceAuth != nil {
 				mux.Handle("POST /v1/machines/{machine_id}/connection-descriptor", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", userMachineConnectionDescriptor(opts.Machines))))
+				mux.Handle("POST /v1/machines/{machine_id}/exec-descriptor", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", userMachineExecDescriptor(opts.Machines))))
+				mux.Handle("POST /v1/machines/{machine_id}/ssh-descriptor", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", userMachineSSHDescriptor(opts.Machines))))
 				mux.Handle("POST /v1/machines/{machine_id}/preview-launch-descriptor", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", userMachinePreviewLaunchDescriptor(opts.Machines))))
 				mux.Handle("POST /v1/machines/{machine_id}/file-transfer-descriptor", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", userMachineFileTransferDescriptor(opts.Machines, opts.EnvironmentAccess))))
 				mux.Handle("GET /v1/machines/{machine_id}/connection-readiness", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", userMachineConnectionReadiness(opts.Machines))))
@@ -238,6 +309,17 @@ func NewRouter(opts Options) http.Handler {
 				mux.Handle("GET /v1/machines", requireAuth(opts.Auth, machinesList(opts.Machines)))
 			}
 		}
+		if opts.ManagedSSH != nil && opts.RuntimeIdentity != nil {
+			mux.HandleFunc("PUT /v1/machines/{machine_id}/ssh-host-keys", managedSSHHostKeysObserve(opts.ManagedSSH, opts.RuntimeIdentity))
+			mux.HandleFunc("POST /v1/machines/{machine_id}/ssh-authorized-keys", managedSSHAuthorizedKeys(opts.ManagedSSH, opts.RuntimeIdentity))
+		}
+		if opts.PeerIdentity != nil && opts.RuntimeIdentity != nil {
+			mux.HandleFunc("POST /v1/machine-peer-identity", machineEndpointRequest(opts.PeerIdentity, opts.RuntimeIdentity))
+			mux.HandleFunc("POST /v1/machine-peer-identity/status", machineEndpointStatus(opts.PeerIdentity, opts.RuntimeIdentity))
+		}
+		if opts.PeerSessions != nil && opts.RuntimeIdentity != nil {
+			mux.HandleFunc("POST /v1/machine-peer-attempts/next", controlledPeerAttemptNext(opts.PeerSessions, opts.RuntimeIdentity))
+		}
 		if opts.Billing != nil {
 			mux.HandleFunc("POST /v1/webhooks/polar", polarWebhook(opts.Billing, opts.Config.Secrets.PolarWebhookSecret, opts.Config.Billing.PolarWebhookTolerance))
 		}
@@ -253,6 +335,7 @@ func NewRouter(opts Options) http.Handler {
 	handler = timeout(opts.Config.HTTP.RequestTimeout, opts.Logger, handler)
 	handler = recoverer(opts.Logger, handler)
 	handler = accessLog(opts.Logger, handler)
+	handler = trustedClientNetwork(opts.Config.HTTP.TrustedProxyCIDRs, handler)
 	handler = requestID(handler)
 	return handler
 }
@@ -261,6 +344,23 @@ func health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]any{
 		"status": "healthy",
 	}})
+}
+
+func networkCheck(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func networkCheckRegions(reader ProbeRegionReader) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		regions, err := reader.ListProbeRegions(r.Context())
+		if err != nil {
+			writeError(w, r, http.StatusServiceUnavailable, "network_check_unavailable", "Network check regions are temporarily unavailable.")
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]any{"regions": regions}})
+	}
 }
 
 func metrics(diagnostics *controlplane.DiagnosticsService) http.HandlerFunc {
@@ -339,9 +439,8 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 		mux.Handle("POST /v1/config-sync/environments/{environment_id}/force", requireAuth(opts.Auth, requireCSRF(opts.Auth, configForceRequest(opts.ConfigConflicts))))
 	}
 	if opts.DeviceAuth != nil {
-		requestNetwork := newRequestNetwork(opts.Config.HTTP.TrustedProxyCIDRs)
-		mux.HandleFunc("POST /v1/auth/device/authorize", deviceAuthorize(opts.DeviceAuth, requestNetwork))
-		mux.HandleFunc("POST /v1/auth/device/token", deviceToken(opts.DeviceAuth, requestNetwork))
+		mux.HandleFunc("POST /v1/auth/device/authorize", deviceAuthorize(opts.DeviceAuth, resolvedRequestNetwork))
+		mux.HandleFunc("POST /v1/auth/device/token", deviceToken(opts.DeviceAuth, resolvedRequestNetwork))
 		mux.Handle("GET /v1/auth/device/requests/{user_code}", requireAuth(opts.Auth, deviceRequest(opts.DeviceAuth, opts.Config.HTTP.PublicBaseURL)))
 		mux.Handle("POST /v1/auth/device/requests/{user_code}/approve", requireAuth(opts.Auth, requireCSRF(opts.Auth, deviceDecision(opts.DeviceAuth, opts.Config.HTTP.PublicBaseURL, true))))
 		mux.Handle("POST /v1/auth/device/requests/{user_code}/deny", requireAuth(opts.Auth, requireCSRF(opts.Auth, deviceDecision(opts.DeviceAuth, opts.Config.HTTP.PublicBaseURL, false))))

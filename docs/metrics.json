@@ -1,0 +1,337 @@
+{
+  "schema_version": 1,
+  "metrics": [
+    {
+      "name": "billing_auto_topup_uncertain_depth",
+      "kind": "gauge"
+    },
+    {
+      "name": "billing_checkout_uncertain_depth",
+      "kind": "gauge"
+    },
+    {
+      "name": "billing_portal_uncertain_depth",
+      "kind": "gauge"
+    },
+    {
+      "name": "billing_subscription_update_uncertain_depth",
+      "kind": "gauge"
+    },
+    {
+      "name": "config_sync_active_writer_leases",
+      "kind": "gauge"
+    },
+    {
+      "name": "config_sync_conflict_environments",
+      "kind": "gauge"
+    },
+    {
+      "name": "config_sync_eligible_environments",
+      "kind": "gauge"
+    },
+    {
+      "name": "config_sync_lease_contention_total",
+      "kind": "counter"
+    },
+    {
+      "name": "config_sync_oldest_pending_resolution_age_seconds",
+      "kind": "gauge"
+    },
+    {
+      "name": "config_sync_pending_paths",
+      "kind": "gauge"
+    },
+    {
+      "name": "config_sync_pending_provider_revocations",
+      "kind": "gauge"
+    },
+    {
+      "name": "config_sync_pending_resolutions",
+      "kind": "gauge"
+    },
+    {
+      "name": "config_sync_reporting_environments",
+      "kind": "gauge"
+    },
+    {
+      "name": "config_sync_uncertain_publications",
+      "kind": "gauge"
+    },
+    {
+      "name": "connect_approved_total",
+      "kind": "counter"
+    },
+    {
+      "name": "connect_attempts_total",
+      "kind": "counter"
+    },
+    {
+      "name": "connect_denied_total",
+      "kind": "counter"
+    },
+    {
+      "name": "control_credentials_issued_total",
+      "kind": "counter"
+    },
+    {
+      "name": "control_node_stale_total",
+      "kind": "counter"
+    },
+    {
+      "name": "control_operation_dead_letter_depth",
+      "kind": "gauge"
+    },
+    {
+      "name": "control_operation_oldest_age_seconds",
+      "kind": "gauge"
+    },
+    {
+      "name": "control_operation_queue_depth",
+      "kind": "gauge"
+    },
+    {
+      "name": "control_reconciliation_oldest_age_seconds",
+      "kind": "gauge"
+    },
+    {
+      "name": "control_reconciliation_queue_depth",
+      "kind": "gauge"
+    },
+    {
+      "name": "control_revocation_fetches_total",
+      "kind": "counter"
+    },
+    {
+      "name": "control_route_detaches_total",
+      "kind": "counter"
+    },
+    {
+      "name": "control_route_observations_total",
+      "kind": "counter"
+    },
+    {
+      "name": "control_stale_node_depth",
+      "kind": "gauge"
+    },
+    {
+      "name": "control_usage_receipts_total",
+      "kind": "counter"
+    },
+    {
+      "name": "credentials_minted_total",
+      "kind": "counter"
+    },
+    {
+      "name": "device_completed_total",
+      "kind": "counter"
+    },
+    {
+      "name": "device_login_latency_ms_max",
+      "kind": "gauge"
+    },
+    {
+      "name": "device_login_latency_ms_total",
+      "kind": "counter"
+    },
+    {
+      "name": "device_requested_total",
+      "kind": "counter"
+    },
+    {
+      "name": "hosted_orchestration_expired_lease_depth",
+      "kind": "gauge"
+    },
+    {
+      "name": "hosted_orchestration_oldest_age_seconds",
+      "kind": "gauge"
+    },
+    {
+      "name": "hosted_orchestration_queue_depth",
+      "kind": "gauge"
+    },
+    {
+      "name": "hosted_orphan_review_depth",
+      "kind": "gauge"
+    },
+    {
+      "name": "hosted_provider_oldest_age_seconds",
+      "kind": "gauge"
+    },
+    {
+      "name": "hosted_provider_retryable_depth",
+      "kind": "gauge"
+    },
+    {
+      "name": "hosted_provider_uncertain_depth",
+      "kind": "gauge"
+    },
+    {
+      "name": "hosted_readiness_failure_depth",
+      "kind": "gauge"
+    },
+    {
+      "name": "hosted_readiness_recent_failure_age_seconds",
+      "kind": "gauge"
+    },
+    {
+      "name": "paperboat_runtime_update_rollbacks_total",
+      "kind": "counter"
+    },
+    {
+      "name": "provider_github_errors_total",
+      "kind": "counter"
+    },
+    {
+      "name": "provider_github_latency_ms_max",
+      "kind": "gauge"
+    },
+    {
+      "name": "provider_github_latency_ms_total",
+      "kind": "counter"
+    },
+    {
+      "name": "provider_github_requests_total",
+      "kind": "counter"
+    },
+    {
+      "name": "provider_helper_errors_total",
+      "kind": "counter"
+    },
+    {
+      "name": "provider_helper_latency_ms_max",
+      "kind": "gauge"
+    },
+    {
+      "name": "provider_helper_latency_ms_total",
+      "kind": "counter"
+    },
+    {
+      "name": "provider_helper_requests_total",
+      "kind": "counter"
+    },
+    {
+      "name": "provider_polar_errors_total",
+      "kind": "counter"
+    },
+    {
+      "name": "provider_polar_latency_ms_max",
+      "kind": "gauge"
+    },
+    {
+      "name": "provider_polar_latency_ms_total",
+      "kind": "counter"
+    },
+    {
+      "name": "provider_polar_requests_total",
+      "kind": "counter"
+    },
+    {
+      "name": "provider_provider_route_errors_total",
+      "kind": "counter"
+    },
+    {
+      "name": "provider_provider_route_latency_ms_max",
+      "kind": "gauge"
+    },
+    {
+      "name": "provider_provider_route_latency_ms_total",
+      "kind": "counter"
+    },
+    {
+      "name": "provider_provider_route_requests_total",
+      "kind": "counter"
+    },
+    {
+      "name": "provider_unknown_errors_total",
+      "kind": "counter"
+    },
+    {
+      "name": "provider_unknown_latency_ms_max",
+      "kind": "gauge"
+    },
+    {
+      "name": "provider_unknown_latency_ms_total",
+      "kind": "counter"
+    },
+    {
+      "name": "provider_unknown_requests_total",
+      "kind": "counter"
+    },
+    {
+      "name": "provider_workos_errors_total",
+      "kind": "counter"
+    },
+    {
+      "name": "provider_workos_latency_ms_max",
+      "kind": "gauge"
+    },
+    {
+      "name": "provider_workos_latency_ms_total",
+      "kind": "counter"
+    },
+    {
+      "name": "provider_workos_requests_total",
+      "kind": "counter"
+    },
+    {
+      "name": "revocations_propagated_total",
+      "kind": "counter"
+    },
+    {
+      "name": "route_ready_total",
+      "kind": "counter"
+    },
+    {
+      "name": "terminal_operation_alerts_total",
+      "kind": "counter"
+    },
+    {
+      "name": "terminal_operation_retries_total",
+      "kind": "counter"
+    },
+    {
+      "name": "terminal_operations_applied_total",
+      "kind": "counter"
+    },
+    {
+      "name": "terminal_sessions_closed_total",
+      "kind": "counter"
+    },
+    {
+      "name": "terminal_sessions_created_total",
+      "kind": "counter"
+    },
+    {
+      "name": "terminal_sessions_deleted_total",
+      "kind": "counter"
+    },
+    {
+      "name": "terminal_snapshot_failures_total",
+      "kind": "counter"
+    },
+    {
+      "name": "terminal_snapshots_total",
+      "kind": "counter"
+    },
+    {
+      "name": "user_machine_availability_drift_depth",
+      "kind": "gauge"
+    },
+    {
+      "name": "user_machine_bootstrap_failure_depth",
+      "kind": "gauge"
+    },
+    {
+      "name": "user_machine_heartbeat_oldest_age_seconds",
+      "kind": "gauge"
+    },
+    {
+      "name": "user_machine_privileged_service_error_depth",
+      "kind": "gauge"
+    },
+    {
+      "name": "user_machine_unsupported_host_scope_depth",
+      "kind": "gauge"
+    }
+  ]
+}

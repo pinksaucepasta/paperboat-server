@@ -17,6 +17,33 @@ ON CONFLICT (id) DO UPDATE SET updated_at=now()
 WHERE control_environments.workspace_id=EXCLUDED.workspace_id AND control_environments.owner_user_id=EXCLUDED.owner_user_id
 RETURNING *;
 
+-- name: EnsureHostedMachineSSHTarget :one
+INSERT INTO machine_ssh_targets
+  (user_machine_id, machine_generation, os_user, target_port,
+   reconciliation_version, created_at, updated_at)
+SELECT m.id, m.installation_generation, sqlc.arg(os_user), sqlc.arg(target_port),
+       1, sqlc.arg(now), sqlc.arg(now)
+FROM user_machines m
+WHERE m.environment_id = sqlc.arg(environment_id)
+  AND m.user_id = sqlc.arg(owner_user_id)
+  AND m.machine_kind = 'hosted'
+  AND m.state NOT IN ('revoked', 'deleted')
+  AND m.deleted_at IS NULL
+ON CONFLICT (user_machine_id) DO UPDATE
+SET machine_generation = EXCLUDED.machine_generation,
+    os_user = EXCLUDED.os_user,
+    target_port = EXCLUDED.target_port,
+    reconciliation_version = machine_ssh_targets.reconciliation_version +
+      CASE WHEN machine_ssh_targets.machine_generation IS DISTINCT FROM EXCLUDED.machine_generation
+             OR machine_ssh_targets.os_user IS DISTINCT FROM EXCLUDED.os_user
+             OR machine_ssh_targets.target_port IS DISTINCT FROM EXCLUDED.target_port
+           THEN 1 ELSE 0 END,
+    updated_at = CASE WHEN machine_ssh_targets.machine_generation IS DISTINCT FROM EXCLUDED.machine_generation
+                        OR machine_ssh_targets.os_user IS DISTINCT FROM EXCLUDED.os_user
+                        OR machine_ssh_targets.target_port IS DISTINCT FROM EXCLUDED.target_port
+                      THEN EXCLUDED.updated_at ELSE machine_ssh_targets.updated_at END
+RETURNING *;
+
 -- name: DeleteHostedControlEnvironment :exec
 DELETE FROM control_environments WHERE id = $1;
 
@@ -81,7 +108,7 @@ WHERE id=sqlc.arg(id) AND state='running' AND lease_token=sqlc.arg(lease_token);
 UPDATE projects SET state=$2,version=version+1,updated_at=now() WHERE id=$1 AND state='restarting';
 
 -- name: GetOrchestrationProjectIntent :one
-SELECT p.id,p.user_id,m.id AS machine_id,pr.source_url,pr.default_branch,psa.assigned_gb,mt.code AS machine_type_code,mtv.vcpu,mtv.memory_mb,rg.code AS region_code,
+SELECT p.id,p.user_id,m.id AS machine_id,m.installation_generation AS machine_generation,pr.source_url,pr.default_branch,psa.assigned_gb,mt.code AS machine_type_code,mtv.vcpu,mtv.memory_mb,rg.code AS region_code,
 coalesce(json_agg(vp.code ORDER BY vp.code) FILTER (WHERE vp.code IS NOT NULL),'[]'::json) AS preset_codes,
 prc.setup_script_ref,prc.desired_config_hash,prc.pending_restart_apply
 FROM projects p JOIN user_machines m ON m.environment_id=p.id AND m.machine_kind='hosted'

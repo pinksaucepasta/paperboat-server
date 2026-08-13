@@ -430,6 +430,82 @@ func userMachineConnectionDescriptor(service *usermachines.Service) http.Handler
 	}
 }
 
+func userMachineExecDescriptor(service *usermachines.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok || p.Client == nil {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "CLI authentication is required.")
+			return
+		}
+		var body struct {
+			SourceMachineID string `json:"source_machine_id"`
+			OperationID     string `json:"operation_id"`
+		}
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&body) != nil || decoder.Decode(&struct{}{}) != io.EOF {
+			writeError(w, r, http.StatusBadRequest, "invalid_request", "Request body must contain a valid source machine and operation ID.")
+			return
+		}
+		response, err := service.ExecDescriptor(r.Context(), p.User.ID, body.SourceMachineID, r.PathValue("machine_id"), p.Client.SessionID, body.OperationID)
+		if errors.Is(err, usermachines.ErrExecOperationInvalid) {
+			writeError(w, r, http.StatusBadRequest, "invalid_operation_id", "Operation ID is invalid.")
+			return
+		}
+		if errors.Is(err, usermachines.ErrNotFound) {
+			writeError(w, r, http.StatusNotFound, "user_machine_not_found", "Machine was not found.")
+			return
+		}
+		if errors.Is(err, usermachines.ErrMachineCapabilityUnavailable) {
+			writeError(w, r, http.StatusConflict, "machine_not_ready", "Machine is not ready for execution.")
+			return
+		}
+		if err != nil {
+			writeError(w, r, http.StatusServiceUnavailable, "credential_unavailable", "Execution credentials are unavailable.")
+			return
+		}
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: response})
+	}
+}
+
+func userMachineSSHDescriptor(service *usermachines.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok || p.Client == nil {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "CLI authentication is required.")
+			return
+		}
+		var body struct {
+			SourceMachineID string `json:"source_machine_id"`
+			OperationID     string `json:"operation_id"`
+		}
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&body) != nil || decoder.Decode(&struct{}{}) != io.EOF {
+			writeError(w, r, http.StatusBadRequest, "invalid_request", "Request body must contain a valid source machine and operation ID.")
+			return
+		}
+		response, err := service.SSHDescriptor(r.Context(), p.User.ID, body.SourceMachineID, r.PathValue("machine_id"), p.Client.SessionID, body.OperationID)
+		if errors.Is(err, usermachines.ErrSSHOperationInvalid) {
+			writeError(w, r, http.StatusBadRequest, "invalid_operation_id", "Operation ID is invalid.")
+			return
+		}
+		if errors.Is(err, usermachines.ErrNotFound) {
+			writeError(w, r, http.StatusNotFound, "user_machine_not_found", "Machine was not found.")
+			return
+		}
+		if errors.Is(err, usermachines.ErrMachineCapabilityUnavailable) {
+			writeError(w, r, http.StatusConflict, "machine_not_ready", "Machine is not ready for SSH.")
+			return
+		}
+		if err != nil {
+			writeError(w, r, http.StatusServiceUnavailable, "credential_unavailable", "SSH credentials are unavailable.")
+			return
+		}
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: response})
+	}
+}
+
 func userMachineFileTransferDescriptor(service *usermachines.Service, hosted *access.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := principalFromContext(r.Context())

@@ -216,6 +216,27 @@ SELECT revoked.jti FROM (
   UNION ALL
   SELECT m.helper_file_session_id AS jti, m.revoked_at FROM user_machine_access_sessions m
   WHERE m.revoked_at IS NOT NULL AND m.expires_at > sqlc.arg(now) AND m.helper_file_session_id IS NOT NULL
+  UNION ALL
+  SELECT g.jti, coalesce(g.revoked_at, i.revoked_at, client.revoked_at, endpoint.revoked_at, root.revoked_at) AS revoked_at
+  FROM peer_signaling_grants g
+  JOIN peer_session_intents i ON i.id = g.intent_id
+  JOIN cli_client_sessions client ON client.id = i.cli_client_session_id
+  JOIN peer_endpoint_certificates endpoint ON endpoint.fingerprint = CASE g.role
+    WHEN 'controlling' THEN i.controlling_certificate_fingerprint
+    ELSE i.controlled_certificate_fingerprint END
+  JOIN account_e2ee_roots root ON root.user_id = i.user_id
+  WHERE g.expires_at > sqlc.arg(now) AND
+    (g.revoked_at IS NOT NULL OR i.revoked_at IS NOT NULL OR client.state = 'revoked' OR endpoint.revoked_at IS NOT NULL OR root.revoked_at IS NOT NULL)
+  UNION ALL
+  SELECT relay.jti, coalesce(relay.revoked_at, i.revoked_at, client.revoked_at, controlling.revoked_at, controlled.revoked_at, root.revoked_at) AS revoked_at
+  FROM peer_relay_allocations relay
+  JOIN peer_session_intents i ON i.id = relay.intent_id
+  JOIN cli_client_sessions client ON client.id = i.cli_client_session_id
+  JOIN peer_endpoint_certificates controlling ON controlling.fingerprint = i.controlling_certificate_fingerprint
+  JOIN peer_endpoint_certificates controlled ON controlled.fingerprint = i.controlled_certificate_fingerprint
+  JOIN account_e2ee_roots root ON root.user_id = i.user_id
+  WHERE relay.expires_at > sqlc.arg(now) AND
+    (relay.revoked_at IS NOT NULL OR i.revoked_at IS NOT NULL OR client.state = 'revoked' OR controlling.revoked_at IS NOT NULL OR controlled.revoked_at IS NOT NULL OR root.revoked_at IS NOT NULL)
 ) revoked
 ORDER BY revoked.revoked_at, revoked.jti
 LIMIT sqlc.arg(row_limit);
@@ -1002,12 +1023,13 @@ SET state = 'pending', attempts = 0, last_error = NULL, next_attempt_at = NULL,
 WHERE id = sqlc.arg(id) AND state = 'dead_letter';
 
 -- name: RegisterControlTunnelNode :one
-INSERT INTO control_tunnel_nodes (id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, last_heartbeat_at)
-VALUES (sqlc.arg(id), sqlc.arg(edge_pool), sqlc.arg(protocol_version), sqlc.arg(process_epoch), sqlc.arg(endpoint_host), sqlc.arg(endpoint_tcp_port), sqlc.arg(endpoint_quic_port), 'registered', false,
+INSERT INTO control_tunnel_nodes (id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, signaling_host, stun_host, stun_port, state, ready, capacity, last_heartbeat_at)
+VALUES (sqlc.arg(id), sqlc.arg(edge_pool), sqlc.arg(protocol_version), sqlc.arg(process_epoch), sqlc.arg(endpoint_host), sqlc.arg(endpoint_tcp_port), sqlc.arg(endpoint_quic_port), sqlc.arg(signaling_host), sqlc.arg(stun_host), sqlc.arg(stun_port), 'registered', false,
         coalesce(sqlc.arg(capacity)::jsonb, '{}'::jsonb), sqlc.arg(now))
 ON CONFLICT (id) DO UPDATE
 SET protocol_version = EXCLUDED.protocol_version, process_epoch = EXCLUDED.process_epoch,
     endpoint_host = EXCLUDED.endpoint_host, endpoint_tcp_port = EXCLUDED.endpoint_tcp_port, endpoint_quic_port = EXCLUDED.endpoint_quic_port,
+    signaling_host = EXCLUDED.signaling_host, stun_host = EXCLUDED.stun_host, stun_port = EXCLUDED.stun_port,
     state = 'registered', ready = false, capacity = EXCLUDED.capacity,
     observation = '{}'::jsonb, last_heartbeat_at = EXCLUDED.last_heartbeat_at,
     drain_deadline = NULL, version = control_tunnel_nodes.version + 1, updated_at = EXCLUDED.last_heartbeat_at
@@ -1027,12 +1049,23 @@ SELECT * FROM control_connector_generations
 WHERE environment_id = sqlc.arg(environment_id) AND connector_id = sqlc.arg(connector_id)
 FOR UPDATE;
 
--- name: SelectReadyControlTunnelNodeForUpdate :one
+-- name: SelectReadyControlTunnelNode :one
 SELECT * FROM control_tunnel_nodes
 WHERE edge_pool = sqlc.arg(edge_pool) AND state = 'ready' AND ready = true
   AND last_heartbeat_at > sqlc.arg(stale_after)
 ORDER BY last_heartbeat_at DESC, id
-FOR UPDATE SKIP LOCKED LIMIT 1;
+LIMIT 1;
+
+-- name: ListReadyControlTunnelProbeRegions :many
+SELECT DISTINCT ON (edge_pool) edge_pool, signaling_host, stun_host, stun_port
+FROM control_tunnel_nodes
+WHERE state = 'ready' AND ready = true
+  AND last_heartbeat_at > sqlc.arg(stale_after)
+  AND signaling_host IS NOT NULL AND trim(signaling_host) <> ''
+  AND stun_host IS NOT NULL AND trim(stun_host) <> ''
+  AND stun_port BETWEEN 1 AND 65535
+ORDER BY edge_pool, last_heartbeat_at DESC, id
+LIMIT 32;
 
 -- name: SetControlConnectorAdmission :one
 UPDATE control_connector_generations

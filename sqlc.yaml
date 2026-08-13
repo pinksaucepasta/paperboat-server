@@ -7,8 +7,80 @@ sql:
       go:
         package: "dbsqlc"
         out: "internal/db/dbsqlc"
-        sql_package: "database/sql"
+        sql_package: "pgx/v5"
         emit_json_tags: false
         initialisms:
           - id
           - cli
+        overrides:
+          - db_type: "text"
+            nullable: true
+            go_type: "database/sql.NullString"
+          - db_type: "pg_catalog.text"
+            nullable: true
+            go_type: "database/sql.NullString"
+          - db_type: "varchar"
+            nullable: true
+            go_type: "database/sql.NullString"
+          - db_type: "pg_catalog.varchar"
+            nullable: true
+            go_type: "database/sql.NullString"
+          - db_type: "int4"
+            nullable: true
+            go_type: "database/sql.NullInt32"
+          - db_type: "pg_catalog.int4"
+            nullable: true
+            go_type: "database/sql.NullInt32"
+          - db_type: "int8"
+            nullable: true
+            go_type: "database/sql.NullInt64"
+          - db_type: "pg_catalog.int8"
+            nullable: true
+            go_type: "database/sql.NullInt64"
+          - db_type: "bool"
+            nullable: true
+            go_type: "database/sql.NullBool"
+          - db_type: "pg_catalog.bool"
+            nullable: true
+            go_type: "database/sql.NullBool"
+          - db_type: "float8"
+            nullable: true
+            go_type: "database/sql.NullFloat64"
+          - db_type: "pg_catalog.float8"
+            nullable: true
+            go_type: "database/sql.NullFloat64"
+          - db_type: "numeric"
+            go_type: "string"
+          - db_type: "pg_catalog.numeric"
+            go_type: "string"
+          - db_type: "numeric"
+            nullable: true
+            go_type: "database/sql.NullString"
+          - db_type: "pg_catalog.numeric"
+            nullable: true
+            go_type: "database/sql.NullString"
+          - db_type: "timestamp"
+            go_type: "time.Time"
+          - db_type: "pg_catalog.timestamp"
+            go_type: "time.Time"
+          - db_type: "timestamp"
+            nullable: true
+            go_type: "database/sql.NullTime"
+          - db_type: "pg_catalog.timestamp"
+            nullable: true
+            go_type: "database/sql.NullTime"
+          - db_type: "timestamptz"
+            go_type: "time.Time"
+          - db_type: "pg_catalog.timestamptz"
+            go_type: "time.Time"
+          - db_type: "timestamptz"
+            nullable: true
+            go_type: "database/sql.NullTime"
+          - db_type: "pg_catalog.timestamptz"
+            nullable: true
+            go_type: "database/sql.NullTime"
+          - db_type: "date"
+            go_type: "time.Time"
+          - db_type: "date"
+            nullable: true
+            go_type: "database/sql.NullTime"

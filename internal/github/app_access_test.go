@@ -7,11 +7,15 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 )
 
 func TestGitHubAppBrokerResolvesAndIssuesRepositoryScopedToken(t *testing.T) {
@@ -35,6 +39,21 @@ func TestGitHubAppBrokerResolvesAndIssuesRepositoryScopedToken(t *testing.T) {
 			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 			if len(strings.Split(token, ".")) != 3 {
 				t.Fatalf("app JWT = %q", token)
+			}
+			parsed, parseErr := jwt.ParseSigned(token, []jose.SignatureAlgorithm{jose.RS256})
+			if parseErr != nil {
+				t.Fatal(parseErr)
+			}
+			var claims jwt.Claims
+			if err := parsed.Claims(&privateKey.PublicKey, &claims); err != nil {
+				t.Fatal(err)
+			}
+			issuedAt := now.Add(-30 * time.Second)
+			if claims.Issuer != "1" || claims.IssuedAt == nil || claims.Expiry == nil || !claims.IssuedAt.Time().Equal(issuedAt) || !claims.Expiry.Time().Equal(issuedAt.Add(2*time.Minute)) {
+				t.Fatalf("app JWT claims = %#v", claims)
+			}
+			if r.Header.Get("Accept") != "application/vnd.github.v3+json" {
+				t.Fatalf("app Accept header = %q", r.Header.Get("Accept"))
 			}
 			var request struct {
 				RepositoryIDs []int64           `json:"repository_ids"`
@@ -89,6 +108,31 @@ func TestGitHubAppBrokerResolvesAndIssuesRepositoryScopedToken(t *testing.T) {
 	}
 	if err := broker.Revoke(context.Background(), access.Token); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestGitHubAppBrokerRejectsInvalidPrivateKeys(t *testing.T) {
+	t.Parallel()
+	weak, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: http.DefaultTransport, Timeout: time.Second}
+	for name, key := range map[string]string{
+		"missing":   "",
+		"malformed": "not a PEM key",
+		"weak":      string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(weak)})),
+		"trailing":  string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(valid)})) + "unexpected",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := NewGitHubAppBroker(GitHubAppBrokerConfig{BaseURL: "https://api.github.test", AppID: "1", PrivateKeyPEM: key, Client: client}); !errors.Is(err, ErrRepositoryAccessUnavailable) {
+				t.Fatalf("error=%v", err)
+			}
+		})
 	}
 }
 

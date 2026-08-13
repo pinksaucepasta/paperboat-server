@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -129,6 +130,162 @@ func TestSignCredentialUsesExactClassBindings(t *testing.T) {
 	}
 	if _, err := provider.SignCredential(CredentialInput{Issuer: "https://api.example.test", Audience: "paperboat-enrollment", Subject: "env_1", JTI: "jti_enroll_2", IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute), CredentialClass: "helper_enrollment", Scopes: []string{"helper:connect"}, EnvironmentID: "env_1", EnrollmentID: "enr_1"}); err == nil {
 		t.Fatal("broader or wrong scope accepted")
+	}
+}
+
+func TestSignCredentialExecOperationBindsExactOperation(t *testing.T) {
+	provider, err := New([]Key{{ID: "key-1", PrivateKey: testKey(1)}}, "key-1", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	input := CredentialInput{Issuer: "https://api.example.test", Audience: "paperboat-machine", Subject: "usr_1", JTI: "jti_exec_1", IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute), CredentialClass: "exec_operation", Scopes: []string{"exec:operate"}, EnvironmentID: "env_1", MachineID: "machine_1", UserID: "usr_1", CLIClientSessionID: "cli_1", OperationID: "operation_exec_1"}
+	token, err := provider.SignCredential(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := provider.VerifyCredential(token, input.Issuer, "exec_operation", now.Add(time.Minute))
+	if err != nil || claims.OperationID != input.OperationID {
+		t.Fatalf("claims=%#v err=%v", claims, err)
+	}
+	input.OperationID = ""
+	if _, err := provider.SignCredential(input); err == nil {
+		t.Fatal("missing operation binding accepted")
+	}
+	input.OperationID = "operation_exec_1"
+	input.Scopes = []string{"terminal:operate"}
+	if _, err := provider.SignCredential(input); err == nil {
+		t.Fatal("terminal scope accepted for exec credential")
+	}
+}
+
+func TestSignCredentialSSHOperationIsNotInterchangeable(t *testing.T) {
+	provider, err := New([]Key{{ID: "key-1", PrivateKey: testKey(1)}}, "key-1", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	input := CredentialInput{Issuer: "https://api.example.test", Audience: "paperboat-machine", Subject: "usr_1", JTI: "jti_ssh_1", IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute), CredentialClass: "ssh_operation", Scopes: []string{"ssh:operate"}, EnvironmentID: "env_1", MachineID: "machine_1", UserID: "usr_1", CLIClientSessionID: "cli_1", OperationID: "operation_ssh_1"}
+	token, err := provider.SignCredential(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := provider.VerifyCredential(token, input.Issuer, "ssh_operation", now.Add(time.Minute))
+	if err != nil || claims.OperationID != input.OperationID {
+		t.Fatalf("claims=%#v err=%v", claims, err)
+	}
+	if _, err := provider.VerifyCredential(token, input.Issuer, "exec_operation", now.Add(time.Minute)); err == nil {
+		t.Fatal("ssh credential accepted as exec credential")
+	}
+	input.CredentialClass, input.Scopes = "exec_operation", []string{"exec:operate"}
+	execToken, err := provider.SignCredential(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.VerifyCredential(execToken, input.Issuer, "ssh_operation", now.Add(time.Minute)); err == nil {
+		t.Fatal("exec credential accepted as ssh credential")
+	}
+}
+
+func TestPeerSignalingCredentialBindsExactAttemptAndEndpoints(t *testing.T) {
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	provider, err := New([]Key{{ID: "peer-key", PrivateKey: testKey(13)}}, "peer-key", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := CredentialInput{
+		Issuer: "https://api.example.test", Audience: "paperboat-edge", Subject: "endpoint_left",
+		JTI: "jti_peer_left", IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute),
+		CredentialClass: "peer_signaling", Scopes: []string{"peer:signal"}, EnvironmentID: "env_1",
+		IntentID: "intent_1", EndpointID: "endpoint_left", PeerEndpointID: "endpoint_right",
+		AttemptGeneration: 2, NetworkGeneration: 4, PeerRole: "controlling", EdgeNodeID: "edge_1",
+	}
+	token, err := provider.SignCredential(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := provider.VerifyCredential(token, input.Issuer, "peer_signaling", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims.Subject != input.EndpointID || claims.IntentID != input.IntentID || claims.EndpointID != input.EndpointID || claims.PeerEndpointID != input.PeerEndpointID || claims.AttemptGeneration != 2 || claims.NetworkGeneration != 4 || claims.PeerRole != "controlling" || claims.EdgeNodeID != "edge_1" {
+		t.Fatalf("claims=%+v", claims)
+	}
+	mutations := []func(*CredentialInput){
+		func(value *CredentialInput) { value.Scopes = []string{"peer:signal", "connector:admit"} },
+		func(value *CredentialInput) { value.PeerEndpointID = value.EndpointID },
+		func(value *CredentialInput) { value.AttemptGeneration = 0 },
+		func(value *CredentialInput) { value.NetworkGeneration = 0 },
+		func(value *CredentialInput) { value.PeerRole = "initiator" },
+		func(value *CredentialInput) { value.EdgeNodeID = "" },
+		func(value *CredentialInput) { value.ExpiresAt = value.IssuedAt.Add(5*time.Minute + time.Second) },
+	}
+	for index, mutate := range mutations {
+		invalid := input
+		mutate(&invalid)
+		if _, err := provider.SignCredential(invalid); err == nil {
+			t.Fatalf("mutation %d accepted", index)
+		}
+	}
+	if _, err := provider.VerifyCredential(token, input.Issuer, "connector_admission", now); err == nil {
+		t.Fatal("peer credential accepted as connector admission")
+	}
+}
+
+func TestPeerRelayCredentialBindsExactAllocationAndLimits(t *testing.T) {
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	provider, err := New([]Key{{ID: "peer-key", PrivateKey: testKey(14)}}, "peer-key", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := CredentialInput{Issuer: "https://api.example.test", Audience: "paperboat-edge", Subject: "intent_1", JTI: "jti_peer_relay_1", IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute), CredentialClass: "peer_relay", Scopes: []string{"peer:relay"}, EnvironmentID: "env_1", IntentID: "intent_1", EdgeNodeID: "edge_1", RouteAllocation: "AAAAAAAAAAAAAAAAAAAAAA", InitiatorEndpointID: "endpoint_left", ResponderEndpointID: "endpoint_right", AttemptGeneration: 2, NetworkGeneration: 4, RouteGeneration: 1, RelayByteLimit: 1 << 30, RelayCarriers: []string{"relay_quic", "relay_wss"}}
+	token, err := provider.SignCredential(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := provider.VerifyCredential(token, input.Issuer, "peer_relay", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims.Subject != input.IntentID || claims.RouteAllocation != input.RouteAllocation || claims.InitiatorEndpointID != input.InitiatorEndpointID || claims.ResponderEndpointID != input.ResponderEndpointID || claims.RouteGeneration != 1 || claims.RelayByteLimit != 1<<30 || claims.EdgeNodeID != input.EdgeNodeID || !slices.Equal(claims.RelayCarriers, input.RelayCarriers) {
+		t.Fatalf("claims=%+v", claims)
+	}
+	for index, mutate := range []func(*CredentialInput){
+		func(value *CredentialInput) { value.Subject = "other_intent" },
+		func(value *CredentialInput) { value.RouteAllocation = "not-canonical" },
+		func(value *CredentialInput) { value.InitiatorEndpointID = value.ResponderEndpointID },
+		func(value *CredentialInput) { value.RouteGeneration = 0 },
+		func(value *CredentialInput) { value.RelayByteLimit = 1<<40 + 1 },
+		func(value *CredentialInput) { value.EdgeNodeID = "" },
+		func(value *CredentialInput) { value.RelayCarriers = nil },
+		func(value *CredentialInput) { value.RelayCarriers = []string{"relay_wss", "relay_quic"} },
+		func(value *CredentialInput) { value.RelayCarriers = []string{"relay_quic", "relay_http2"} },
+		func(value *CredentialInput) { value.RelayCarriers = []string{"relay_quic", "relay_quic"} },
+	} {
+		invalid := input
+		mutate(&invalid)
+		if _, err := provider.SignCredential(invalid); err == nil {
+			t.Fatalf("mutation %d accepted", index)
+		}
+	}
+}
+
+func TestPeerPMTUCredentialCannotAuthorizeRelay(t *testing.T) {
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	provider, err := New([]Key{{ID: "peer-key", PrivateKey: testKey(14)}}, "peer-key", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := CredentialInput{Issuer: "https://api.example.test", Audience: "paperboat-edge", Subject: "intent_1", JTI: "jti_peer_relay_1", IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute), CredentialClass: "peer_pmtu", Scopes: []string{"peer:pmtu"}, EnvironmentID: "env_1", IntentID: "intent_1", EdgeNodeID: "edge_1", RouteAllocation: "AAAAAAAAAAAAAAAAAAAAAA", InitiatorEndpointID: "endpoint_left", ResponderEndpointID: "endpoint_right", AttemptGeneration: 2, NetworkGeneration: 4, RouteGeneration: 1, RelayByteLimit: 1 << 30}
+	token, err := provider.SignCredential(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.VerifyCredential(token, input.Issuer, "peer_pmtu", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.VerifyCredential(token, input.Issuer, "peer_relay", now); err == nil {
+		t.Fatal("PMTU credential authorized relay access")
 	}
 }
 

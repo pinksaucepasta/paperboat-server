@@ -11,7 +11,7 @@ upload, or preview bytes.
 
 ## Stack
 
-Go `1.25.7`; PostgreSQL/pgx; embedded Goose `v3.27.1`; sqlc `v1.30.0`; standard HTTP with
+Go `1.26.5`; PostgreSQL/pgx; embedded Goose `v3.27.1`; sqlc `v1.30.0`; standard HTTP with
 narrow provider adapters. Application SQL belongs in sqlc queries; schema changes are
 forward migrations.
 

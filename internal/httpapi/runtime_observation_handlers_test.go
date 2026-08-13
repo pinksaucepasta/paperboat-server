@@ -75,6 +75,36 @@ func TestRuntimeObservationUsesProofBoundHelperIdentity(t *testing.T) {
 	}
 }
 
+func TestRuntimeObservationAcceptsFreshRelayLatencyVector(t *testing.T) {
+	repository := &fakeRuntimeObservationRepository{}
+	body := `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-08-06T12:00:01Z","runtime_diagnostics":{"capabilities":[],"worker_generation":4,"os_boot_id":"boot-1","worker_service_scope":"system","connector_state":"ready","connector_generation":2,"observed_at":"2026-08-06T12:00:01Z"},"relay_latency":{"generation":7,"observed_at":"2026-08-06T12:00:00Z","samples":[{"region":"fsn1","rtt_ms":18}]}}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer machine-token")
+	recorder := httptest.NewRecorder()
+	runtimeObservation(repository, nil, 10).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted || repository.recorded == nil || repository.recorded.RelayLatency == nil || repository.recorded.RelayLatency.Generation != 7 {
+		t.Fatalf("status=%d observation=%#v body=%s", recorder.Code, repository.recorded, recorder.Body.String())
+	}
+}
+
+func TestRuntimeObservationRejectsStaleOrUnfencedRelayLatencyVector(t *testing.T) {
+	for name, body := range map[string]string{
+		"missing runtime generation": `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-08-06T12:00:01Z","relay_latency":{"generation":1,"observed_at":"2026-08-06T12:00:00Z","samples":[{"region":"fsn1","rtt_ms":18}]}}`,
+		"stale":                      `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-08-06T12:06:01Z","runtime_diagnostics":{"capabilities":[],"worker_generation":4,"os_boot_id":"boot-1","worker_service_scope":"system","connector_state":"ready","connector_generation":2,"observed_at":"2026-08-06T12:06:01Z"},"relay_latency":{"generation":1,"observed_at":"2026-08-06T12:00:00Z","samples":[{"region":"fsn1","rtt_ms":18}]}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			repository := &fakeRuntimeObservationRepository{}
+			request := httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(body))
+			request.Header.Set("Authorization", "Bearer machine-token")
+			recorder := httptest.NewRecorder()
+			runtimeObservation(repository, nil, 10).ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusBadRequest || repository.recorded != nil {
+				t.Fatalf("status=%d observation=%#v", recorder.Code, repository.recorded)
+			}
+		})
+	}
+}
+
 func TestRuntimeObservationRejectsUnsafeSummaryAndWrongCredential(t *testing.T) {
 	validPrefix := `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-07-14T01:00:01Z","config_sync":`
 	missingTimestamp := validPrefix + `{"state":"healthy","pending_path_count":0,"max_file_bytes":10,"max_batch_bytes":20,"policy_revision":"1"}}`

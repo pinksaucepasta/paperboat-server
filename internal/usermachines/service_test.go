@@ -2,11 +2,6 @@ package usermachines
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -41,43 +36,17 @@ func TestNewDefaultsUserMachineOfflineTimeout(t *testing.T) {
 	}
 }
 
-func TestConfigureMachineArtifactsVerifiesSignature(t *testing.T) {
-	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sign := func(kind, name, body string) MachineArtifact {
-		digest := sha256.Sum256([]byte(body))
-		artifact := MachineArtifact{Schema: "paperboat.machine-artifact/v1", Kind: kind, Version: "0.0.0-development", Platform: "linux", Architecture: "amd64", URL: "https://updates.example.test/" + name, ByteLength: int64(len(body)), SHA256: hex.EncodeToString(digest[:])}
-		payload, err := json.Marshal(struct {
-			Architecture string `json:"architecture"`
-			ByteLength   int64  `json:"byte_length"`
-			Kind         string `json:"kind"`
-			Platform     string `json:"platform"`
-			Schema       string `json:"schema"`
-			SHA256       string `json:"sha256"`
-			URL          string `json:"url"`
-			Version      string `json:"version"`
-		}{artifact.Architecture, artifact.ByteLength, artifact.Kind, artifact.Platform, artifact.Schema, artifact.SHA256, artifact.URL, artifact.Version})
-		if err != nil {
-			t.Fatal(err)
-		}
-		artifact.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, payload))
-		return artifact
-	}
-	artifact := sign("pb", "pb", "runtime")
-	encoded, err := json.Marshal([]MachineArtifact{artifact})
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestConfigureMachineArtifactsBuildsTUFDescriptor(t *testing.T) {
 	service := &Service{}
-	if err := service.ConfigureMachineArtifacts(string(encoded), base64.RawURLEncoding.EncodeToString(publicKey)); err != nil {
+	if err := service.ConfigureMachineArtifacts("https://updates.example.test/paperboat/", "2026.08.07"); err != nil {
 		t.Fatal(err)
 	}
-	artifact.Signature = base64.RawURLEncoding.EncodeToString(make([]byte, ed25519.SignatureSize))
-	encoded, _ = json.Marshal([]MachineArtifact{artifact})
-	if err := service.ConfigureMachineArtifacts(string(encoded), base64.RawURLEncoding.EncodeToString(publicKey)); err == nil {
-		t.Fatal("invalid artifact signature was accepted")
+	artifact, ok := service.machineArtifact("linux", "amd64")
+	if !ok || artifact.Schema != "paperboat.tuf-target/v1" || artifact.RepositoryURL != "https://updates.example.test/paperboat" || artifact.TargetPath != "pb-linux-amd64" || artifact.Version != "2026.08.07" {
+		t.Fatalf("artifact=%+v ok=%v", artifact, ok)
+	}
+	if err := service.ConfigureMachineArtifacts("http://updates.example.test", "2026.08.07"); err == nil {
+		t.Fatal("insecure artifact repository was accepted")
 	}
 }
 

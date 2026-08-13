@@ -47,6 +47,7 @@ type Session struct {
 }
 type Descriptor struct {
 	Session             Session   `json:"session"`
+	MachineGeneration   uint64    `json:"machine_generation"`
 	ManagementURL       string    `json:"management_url"`
 	WebSocketURL        string    `json:"websocket_url"`
 	ManageCredential    string    `json:"manage_credential"`
@@ -219,8 +220,8 @@ func (s *Service) descriptor(row dbsqlc.CodexSession) (Descriptor, error) {
 	if err != nil {
 		return Descriptor{}, err
 	}
-	httpsURL := "https://" + row.EdgeAssignmentHost + "/v1/codex-sessions/" + row.ID
-	return Descriptor{Session: mapSession(row), ManagementURL: httpsURL, WebSocketURL: "wss://" + row.EdgeAssignmentHost + "/v1/codex-sessions/" + row.ID + "/ws", ManageCredential: manage, ConnectCredential: connect, CredentialsExpireAt: expires}, nil
+	httpsURL := "https://machine.paperboat.invalid/v1/codex-sessions/" + row.ID
+	return Descriptor{Session: mapSession(row), MachineGeneration: uint64(row.InstallationGeneration), ManagementURL: httpsURL, WebSocketURL: "wss://machine.paperboat.invalid/v1/codex-sessions/" + row.ID + "/ws", ManageCredential: manage, ConnectCredential: connect, CredentialsExpireAt: expires}, nil
 }
 func mapSession(r dbsqlc.CodexSession) Session {
 	return Session{ID: r.ID, EnvironmentID: r.EnvironmentID, MachineID: r.MachineID, State: r.State, LeaseExpiresAt: r.LeaseExpiresAt, RemoteCodexVersion: r.RemoteCodexVersion.String, FailureCode: r.FailureCode.String}

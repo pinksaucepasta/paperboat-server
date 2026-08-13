@@ -50,6 +50,7 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 				ConnectorGeneration uint64    `json:"connector_generation"`
 				ObservedAt          time.Time `json:"observed_at"`
 			} `json:"runtime_diagnostics"`
+			RelayLatency *metering.RelayLatencyVector `json:"relay_latency,omitempty"`
 		}
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20+1))
 		decoder := json.NewDecoder(bytes.NewReader(body))
@@ -64,6 +65,10 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 		}
 		if req.RuntimeDiagnostics != nil && (req.RuntimeDiagnostics.WorkerGeneration < 1 || req.RuntimeDiagnostics.OSBootID == "" || len(req.RuntimeDiagnostics.OSBootID) > 256 || strings.ContainsAny(req.RuntimeDiagnostics.OSBootID, "\x00\r\n") || !validObservedCapabilities(req.RuntimeDiagnostics.Capabilities) || !slices.Contains([]string{"unknown", "user", "system"}, req.RuntimeDiagnostics.WorkerServiceScope) || !slices.Contains([]string{"ready", "degraded", "unavailable"}, req.RuntimeDiagnostics.ConnectorState) || req.RuntimeDiagnostics.ObservedAt.IsZero()) {
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "Runtime diagnostics are invalid.")
+			return
+		}
+		if req.RelayLatency != nil && (req.RuntimeDiagnostics == nil || !req.RelayLatency.Valid(req.SampledAt)) {
+			writeError(w, r, http.StatusBadRequest, "invalid_request", "Relay latency observation is invalid.")
 			return
 		}
 		got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
@@ -121,6 +126,7 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 			observation.Capabilities = append([]string(nil), req.RuntimeDiagnostics.Capabilities...)
 			observation.DiagnosticsObservedAt = req.RuntimeDiagnostics.ObservedAt.UTC()
 		}
+		observation.RelayLatency = req.RelayLatency
 		if err := repo.RecordRuntimeObservation(r.Context(), observation); err != nil {
 			if errors.Is(err, metering.ErrDuplicateMachineIdentity) {
 				writeError(w, r, http.StatusConflict, "duplicate_machine_identity", "This machine identity is active on another installation. Run pb setup to create a distinct machine identity.")

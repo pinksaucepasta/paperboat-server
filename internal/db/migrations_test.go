@@ -102,6 +102,79 @@ func TestMigrateRequiresPostgresIntegrationDSN(t *testing.T) {
 	if !servedPreviewMigrationApplied {
 		t.Fatal("served preview metadata migration was not recorded")
 	}
+	for _, version := range []int{81, 82, 83, 87, 88, 89, 90} {
+		var applied bool
+		if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (SELECT 1 FROM paperboat.goose_db_version WHERE version_id=$1 AND is_applied)`, version).Scan(&applied); err != nil {
+			t.Fatal(err)
+		}
+		if !applied {
+			t.Fatalf("peer authority migration %d was not recorded", version)
+		}
+	}
+	var aliasMigrationApplied bool
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (SELECT 1 FROM paperboat.goose_db_version WHERE version_id=91 AND is_applied)`).Scan(&aliasMigrationApplied); err != nil {
+		t.Fatal(err)
+	}
+	if !aliasMigrationApplied {
+		t.Fatal("machine alias migration was not recorded")
+	}
+	var aliasColumnRequired, aliasIndexPresent bool
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema='paperboat' AND table_name='user_machines' AND column_name='alias' AND is_nullable='NO'
+	)`).Scan(&aliasColumnRequired); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT to_regclass('paperboat.user_machines_active_alias') IS NOT NULL`).Scan(&aliasIndexPresent); err != nil {
+		t.Fatal(err)
+	}
+	if !aliasColumnRequired || !aliasIndexPresent {
+		t.Fatalf("machine alias schema column=%v index=%v", aliasColumnRequired, aliasIndexPresent)
+	}
+	for _, table := range []string{"account_e2ee_roots", "peer_endpoint_certificates", "peer_session_intents", "peer_signaling_grants", "peer_relay_allocations", "peer_endpoint_enrollment_requests", "managed_ssh_client_keys", "machine_ssh_host_key_owners", "machine_ssh_host_key_sets", "machine_ssh_host_keys"} {
+		var exists bool
+		if err := store.SQL().QueryRowContext(context.Background(), `SELECT to_regclass('paperboat.' || $1) IS NOT NULL`, table).Scan(&exists); err != nil {
+			t.Fatal(err)
+		}
+		if !exists {
+			t.Fatalf("peer authority table %s was not created", table)
+		}
+	}
+	var peerTransportPurposeAllowed bool
+	if err := store.SQL().QueryRowContext(context.Background(), `
+		SELECT pg_get_constraintdef(oid) LIKE '%peer_transport%'
+		FROM pg_constraint
+		WHERE conrelid='paperboat.peer_session_intents'::regclass
+		  AND conname='peer_session_intents_purpose_check'
+	`).Scan(&peerTransportPurposeAllowed); err != nil {
+		t.Fatal(err)
+	}
+	if !peerTransportPurposeAllowed {
+		t.Fatal("peer session persistence rejects the peer_transport purpose")
+	}
+	var forbiddenPeerColumns int
+	if err := store.SQL().QueryRowContext(context.Background(), `
+		SELECT count(*) FROM information_schema.columns
+		WHERE table_schema='paperboat' AND table_name IN ('account_e2ee_roots','peer_endpoint_certificates','peer_session_intents','peer_signaling_grants','peer_relay_allocations')
+		  AND (column_name LIKE '%private_key%' OR column_name LIKE '%candidate%' OR column_name LIKE '%payload%' OR column_name IN ('credential','token','credential_ciphertext'))
+	`).Scan(&forbiddenPeerColumns); err != nil {
+		t.Fatal(err)
+	}
+	if forbiddenPeerColumns != 0 {
+		t.Fatalf("peer authority schema contains %d forbidden private-content columns", forbiddenPeerColumns)
+	}
+	var forbiddenSSHColumns int
+	if err := store.SQL().QueryRowContext(context.Background(), `
+		SELECT count(*) FROM information_schema.columns
+		WHERE table_schema='paperboat'
+		  AND table_name IN ('managed_ssh_client_keys','machine_ssh_host_key_owners','machine_ssh_host_key_sets','machine_ssh_host_keys')
+		  AND (column_name LIKE '%private%' OR column_name LIKE '%password%' OR column_name LIKE '%secret%')
+	`).Scan(&forbiddenSSHColumns); err != nil {
+		t.Fatal(err)
+	}
+	if forbiddenSSHColumns != 0 {
+		t.Fatalf("managed SSH schema contains %d forbidden private-key/password columns", forbiddenSSHColumns)
+	}
 	for column, defaultValue := range map[string]string{"source_kind": "'application'::text", "owner_mode": "'runtime'::text"} {
 		var nullable, actualDefault string
 		if err := store.SQL().QueryRowContext(context.Background(), `SELECT is_nullable, column_default FROM information_schema.columns WHERE table_schema='paperboat' AND table_name='control_previews' AND column_name=$1`, column).Scan(&nullable, &actualDefault); err != nil {
@@ -257,6 +330,8 @@ DELETE FROM paperboat.users WHERE id='usr_migration_client_revocation_probe'`); 
 		t.Fatal("account lifecycle client-revocation trigger was not applied")
 	}
 	for _, table := range []string{
+		"account_e2ee_roots",
+		"peer_endpoint_certificates",
 		"control_environments",
 		"control_helpers",
 		"control_helper_enrollments",

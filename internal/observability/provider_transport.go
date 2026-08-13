@@ -24,11 +24,13 @@ type providerTransport struct {
 }
 
 func DefaultProviderClient(provider string) *http.Client {
+	//paperboat:allow-source-policy default-http owner=server-observability reason=instrument-standard-transport-behind-bounded-client
 	return &http.Client{Timeout: 30 * time.Second, Transport: InstrumentProviderTransport(provider, http.DefaultTransport)}
 }
 
 func InstrumentProviderTransport(provider string, next http.RoundTripper) http.RoundTripper {
 	if next == nil {
+		//paperboat:allow-source-policy default-http owner=server-observability reason=instrument-standard-transport-fallback
 		next = http.DefaultTransport
 	}
 	return providerTransport{provider: normalizeProvider(provider), next: next}

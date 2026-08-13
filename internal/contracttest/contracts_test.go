@@ -83,7 +83,7 @@ func TestCredentialClassesAreNonInterchangeable(t *testing.T) {
 			seenAuthority[key] = class.ID
 		}
 	}
-	for _, required := range []string{"cli_session", "helper_enrollment", "helper_identity", "connector_admission", "terminal_operation", "file_transfer", "preview_registration", "config_sync", "signed_update", "edge_control", "usage_report"} {
+	for _, required := range []string{"cli_session", "helper_enrollment", "helper_identity", "connector_admission", "terminal_operation", "exec_operation", "file_transfer", "preview_registration", "config_sync", "signed_update", "edge_control", "usage_report"} {
 		if !seenID[required] {
 			t.Errorf("missing credential class %q", required)
 		}

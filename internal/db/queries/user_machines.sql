@@ -225,23 +225,32 @@ WHERE id = sqlc.arg(id) AND state = 'pending' AND expires_at <= now();
 
 -- name: CreateInteractiveMachine :one
 INSERT INTO user_machines (
-  id, user_id, environment_id, display_name, platform, architecture, workspace_root,
+  id, user_id, environment_id, display_name, alias, platform, architecture, workspace_root,
   state, seat_state, runtime_versions, setup_roles, setup_mode, configured_capabilities, public_identity_key, enrolled_at
 ) VALUES (
-  sqlc.arg(id), sqlc.arg(user_id), sqlc.arg(environment_id), sqlc.arg(display_name),
+  sqlc.arg(id), sqlc.arg(user_id), sqlc.arg(environment_id), sqlc.arg(display_name), sqlc.arg(alias),
   sqlc.arg(platform), sqlc.arg(architecture), sqlc.arg(workspace_root),
   'offline', 'released', sqlc.arg(runtime_versions), ARRAY['interactive']::text[], sqlc.arg(setup_mode), sqlc.arg(configured_capabilities), sqlc.arg(public_identity_key), now()
 ) RETURNING *;
 
 -- name: CreateHostedMachine :one
 INSERT INTO user_machines (
-  id, user_id, environment_id, display_name, platform, architecture, workspace_root,
+  id, user_id, environment_id, display_name, alias, platform, architecture, workspace_root,
   state, seat_state, runtime_versions, setup_roles, machine_kind
 ) VALUES (
-  sqlc.arg(id), sqlc.arg(user_id), sqlc.arg(environment_id), sqlc.arg(display_name),
+  sqlc.arg(id), sqlc.arg(user_id), sqlc.arg(environment_id), sqlc.arg(display_name), sqlc.arg(alias),
   'linux', 'unknown', '/workspace', 'pending', 'occupied', '{}'::jsonb,
   ARRAY['host']::text[], 'hosted'
 ) RETURNING *;
+
+-- name: UserMachineAliasExists :one
+SELECT EXISTS (
+  SELECT 1 FROM user_machines
+  WHERE user_id = sqlc.arg(user_id) AND lower(alias) = lower(sqlc.arg(alias)) AND deleted_at IS NULL
+);
+
+-- name: LockUserMachineAliases :exec
+SELECT pg_advisory_xact_lock(hashtextextended(sqlc.arg(user_id), 0));
 
 -- name: GetUserMachineByPublicIdentityForUpdate :one
 SELECT * FROM user_machines
@@ -395,14 +404,14 @@ SET availability_observed_mode=sqlc.arg(observed_mode),
     availability_error_code=nullif(sqlc.arg(error_code),''),
     host_service_version=nullif(sqlc.arg(host_service_version),''),
     host_service_scope=nullif(sqlc.arg(host_service_scope),''),
-    host_update_rollbacks=greatest(host_update_rollbacks, sqlc.arg(update_rollbacks)), updated_at=now()
+    host_update_rollbacks=greatest(host_update_rollbacks, sqlc.arg(update_rollbacks)),
+    update_health=sqlc.arg(update_health), updated_at=now()
 WHERE id=sqlc.arg(id) AND environment_id=sqlc.arg(environment_id) AND deleted_at IS NULL
   AND sqlc.arg(observed_version) <= availability_desired_version
   AND (availability_observed_at IS NULL OR sqlc.arg(observed_version) > availability_observed_version OR (
     sqlc.arg(observed_version) = availability_observed_version
     AND availability_observed_mode IS NOT DISTINCT FROM sqlc.arg(observed_mode)
-    AND availability_status = sqlc.arg(status)
-    AND coalesce(availability_error_code,'') = sqlc.arg(error_code)
+    AND sqlc.arg(observed_at) >= availability_observed_at
     AND sqlc.arg(update_rollbacks) >= host_update_rollbacks
   ));
 
@@ -826,3 +835,13 @@ WHERE id=sqlc.arg(id) AND deleted_at IS NULL;
 UPDATE user_machine_terminal_session_operations
 SET attempts=attempts+1,next_attempt_at=now()+make_interval(secs => sqlc.arg(retry_seconds)),last_error=sqlc.arg(last_error),updated_at=now()
 WHERE id=sqlc.arg(id) AND state='pending';
+-- name: RecordUserMachineRelayLatencyVector :execrows
+UPDATE user_machines
+SET relay_latency_worker_generation = sqlc.arg(worker_generation),
+    relay_latency_generation = sqlc.arg(vector_generation),
+    relay_latency_observed_at = sqlc.arg(observed_at),
+    relay_latency_vector = sqlc.arg(vector)
+WHERE id = sqlc.arg(id) AND environment_id = sqlc.arg(environment_id)
+  AND (relay_latency_worker_generation < sqlc.arg(worker_generation)
+    OR (relay_latency_worker_generation = sqlc.arg(worker_generation)
+      AND relay_latency_generation < sqlc.arg(vector_generation)));

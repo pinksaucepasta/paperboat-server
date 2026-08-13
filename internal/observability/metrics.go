@@ -1,6 +1,9 @@
 package observability
 
-import "sync/atomic"
+import (
+	"sort"
+	"sync/atomic"
+)
 
 var platformMetrics struct {
 	deviceRequested           atomic.Int64
@@ -87,6 +90,16 @@ func MetricsSnapshot() map[string]int64 {
 		result[key] = value
 	}
 	return result
+}
+
+func MetricNames() []string {
+	snapshot := MetricsSnapshot()
+	names := make([]string, 0, len(snapshot))
+	for name := range snapshot {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func updateMax(value *atomic.Int64, candidate int64) {

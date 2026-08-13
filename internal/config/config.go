@@ -39,6 +39,7 @@ type Config struct {
 	GitHub            GitHub           `json:"github"`
 	Fly               Fly              `json:"fly"`
 	Access            Access           `json:"access"`
+	Diagnostics       Diagnostics      `json:"diagnostics"`
 	Providers         Providers        `json:"providers"`
 	Secrets           Secrets          `json:"secrets"`
 }
@@ -103,13 +104,13 @@ type Metering struct {
 }
 
 type UserMachines struct {
-	PairingLifetime          time.Duration `json:"pairing_lifetime"`
-	OfflineAfter             time.Duration `json:"offline_after"`
-	AllowedPlatforms         []string      `json:"allowed_platforms"`
-	RuntimeListenPort        int32         `json:"runtime_listen_port"`
-	BootstrapCommand         string        `json:"bootstrap_command"`
-	MachineArtifactsJSON     string        `json:"machine_artifacts_json"`
-	MachineArtifactPublicKey string        `json:"machine_artifact_public_key"`
+	PairingLifetime       time.Duration `json:"pairing_lifetime"`
+	OfflineAfter          time.Duration `json:"offline_after"`
+	AllowedPlatforms      []string      `json:"allowed_platforms"`
+	RuntimeListenPort     int32         `json:"runtime_listen_port"`
+	BootstrapCommand      string        `json:"bootstrap_command"`
+	ArtifactRepositoryURL string        `json:"artifact_repository_url"`
+	ArtifactVersion       string        `json:"artifact_version"`
 }
 
 type TerminalSessions struct {
@@ -186,6 +187,8 @@ type Fly struct {
 	MountPath              string        `json:"mount_path"`
 	BootCommand            []string      `json:"boot_command"`
 	HostedReadinessBaseURL string        `json:"hosted_readiness_base_url,omitempty"`
+	HostedSSHUser          string        `json:"hosted_ssh_user"`
+	HostedSSHPort          int           `json:"hosted_ssh_port"`
 	OperationTimeout       time.Duration `json:"operation_timeout"`
 	OrchestrationLease     time.Duration `json:"orchestration_lease"`
 }
@@ -221,6 +224,14 @@ type FileTransferPolicy struct {
 	MaxPendingSpoolBytes   int64         `json:"max_pending_spool_bytes"`
 }
 
+type Diagnostics struct {
+	ObjectEndpoint string        `json:"object_endpoint"`
+	ObjectRegion   string        `json:"object_region"`
+	ObjectBucket   string        `json:"object_bucket"`
+	ForcePathStyle bool          `json:"force_path_style"`
+	Retention      time.Duration `json:"retention"`
+}
+
 type Secrets struct {
 	SessionKeys           []string `json:"session_keys"`
 	EncryptionKey         string   `json:"encryption_key"`
@@ -236,6 +247,8 @@ type Secrets struct {
 	EdgeControlCredential string   `json:"edge_control_credential"`
 	PreviewIdentityKey    string   `json:"preview_identity_key"`
 	MintSigningKeys       []string `json:"mint_signing_keys"`
+	DiagnosticsAccessKey  string   `json:"diagnostics_access_key"`
+	DiagnosticsSecretKey  string   `json:"diagnostics_secret_key"`
 }
 
 type LoadOptions struct {
@@ -316,7 +329,7 @@ func Default() Config {
 			VerificationURL:          "http://localhost:3000/cli/authorize",
 			MachinesURL:              "http://localhost:3000/dashboard/machines",
 			ClientID:                 "paperboat",
-			AllowedScopes:            []string{"account:read", "clients:revoke", "projects:read", "projects:connect", "session:refresh"},
+			AllowedScopes:            []string{"account:read", "clients:revoke", "projects:read", "projects:connect", "session:refresh", "diagnostics:upload"},
 			DeviceGrantLifetime:      10 * time.Minute,
 			AccessTokenLifetime:      15 * time.Minute,
 			RefreshTokenLifetime:     30 * 24 * time.Hour,
@@ -338,6 +351,7 @@ func Default() Config {
 				DeliveryTimeout: 10 * time.Minute, MaxPendingSpoolBytes: 1 << 30,
 			},
 		},
+		Diagnostics: Diagnostics{Retention: 7 * 24 * time.Hour},
 		Providers: Providers{
 			FakeMode: true,
 			GitHub: ProviderConfig{
@@ -360,6 +374,8 @@ func Default() Config {
 			Hostname:           "paperboat",
 			MountPath:          "/workspace",
 			BootCommand:        []string{"/usr/local/bin/pb", "__runtime-host"},
+			HostedSSHUser:      "paperboat",
+			HostedSSHPort:      22,
 			OperationTimeout:   30 * time.Second,
 			OrchestrationLease: 5 * time.Minute,
 		},
@@ -424,8 +440,8 @@ func (c Config) Validate() error {
 		}
 	}
 	if c.Environment == EnvironmentProduction {
-		if strings.TrimSpace(c.UserMachines.BootstrapCommand) == "" || strings.TrimSpace(c.UserMachines.MachineArtifactsJSON) == "" || strings.TrimSpace(c.UserMachines.MachineArtifactPublicKey) == "" || strings.TrimSpace(c.RuntimeBaseDomain) == "" || c.UserMachines.RuntimeListenPort < 1024 {
-			errs = append(errs, fmt.Errorf("user_machines pairing command and signed pb artifacts are required in production"))
+		if strings.TrimSpace(c.UserMachines.BootstrapCommand) == "" || strings.TrimSpace(c.UserMachines.ArtifactRepositoryURL) == "" || strings.TrimSpace(c.UserMachines.ArtifactVersion) == "" || strings.TrimSpace(c.RuntimeBaseDomain) == "" || c.UserMachines.RuntimeListenPort < 1024 {
+			errs = append(errs, fmt.Errorf("user_machines pairing command and TUF artifact repository are required in production"))
 		}
 		if strings.TrimSpace(c.Preview.BaseDomain) == "" || strings.TrimSpace(c.Secrets.PreviewIdentityKey) == "" {
 			errs = append(errs, fmt.Errorf("preview base domain and identity key are required in production"))
@@ -498,6 +514,18 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(transfer.Revision) == "" || transfer.MaxFileBytes < 1 || transfer.MaxFileBytes > 50<<20 || transfer.MaxBatchFiles < 1 || transfer.MaxBatchFiles > 10 || transfer.MaxBatchBytes < transfer.MaxFileBytes || transfer.MaxBatchBytes > 500<<20 || transfer.MaxConcurrentTransfers < 1 || transfer.MaxConcurrentTransfers > 2 || transfer.Retention <= 0 || transfer.DeliveryTimeout <= 0 || transfer.MaxPendingSpoolBytes < transfer.MaxBatchBytes {
 		errs = append(errs, fmt.Errorf("access.file_transfer policy is invalid"))
 	}
+	diagnosticsConfigured := strings.TrimSpace(c.Diagnostics.ObjectEndpoint) != "" || strings.TrimSpace(c.Diagnostics.ObjectRegion) != "" || strings.TrimSpace(c.Diagnostics.ObjectBucket) != "" || strings.TrimSpace(c.Secrets.DiagnosticsAccessKey) != "" || strings.TrimSpace(c.Secrets.DiagnosticsSecretKey) != ""
+	if diagnosticsConfigured {
+		endpoint, err := url.Parse(c.Diagnostics.ObjectEndpoint)
+		if err != nil || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || endpoint.Path != "" || endpoint.Scheme != "https" && !(c.Environment != EnvironmentProduction && endpoint.Scheme == "http") {
+			errs = append(errs, fmt.Errorf("diagnostics.object_endpoint must be an HTTPS origin"))
+		}
+		if !validStorageName(c.Diagnostics.ObjectRegion, 1, 128) || !validStorageName(c.Diagnostics.ObjectBucket, 3, 63) || c.Diagnostics.Retention < time.Hour || c.Diagnostics.Retention > 30*24*time.Hour || len(c.Secrets.DiagnosticsAccessKey) < 3 || len(c.Secrets.DiagnosticsSecretKey) < 8 {
+			errs = append(errs, fmt.Errorf("diagnostics object storage configuration is incomplete or invalid"))
+		}
+	} else if c.Environment == EnvironmentProduction {
+		errs = append(errs, fmt.Errorf("diagnostics object storage is required in production"))
+	}
 	if strings.TrimSpace(c.GitHub.OAuthAuthorizeURL) == "" || strings.TrimSpace(c.GitHub.OAuthTokenURL) == "" {
 		errs = append(errs, fmt.Errorf("github oauth urls are required"))
 	}
@@ -524,6 +552,9 @@ func (c Config) Validate() error {
 		if err != nil || readinessURL.Host == "" || readinessURL.User != nil || readinessURL.RawQuery != "" || readinessURL.Fragment != "" || readinessURL.Path != "" || readinessURL.Scheme != "http" && readinessURL.Scheme != "https" {
 			errs = append(errs, fmt.Errorf("fly.hosted_readiness_base_url must be an HTTP(S) origin"))
 		}
+	}
+	if !validSSHOSUser(c.Fly.HostedSSHUser) || c.Fly.HostedSSHPort < 1 || c.Fly.HostedSSHPort > 65535 {
+		errs = append(errs, fmt.Errorf("fly hosted SSH user and port are invalid"))
 	}
 	if c.Environment == EnvironmentProduction && strings.TrimSpace(c.Fly.OrgSlug) == "" {
 		errs = append(errs, fmt.Errorf("fly.org_slug is required in production"))
@@ -583,6 +614,19 @@ func immutableImageReference(value string) bool {
 	return true
 }
 
+func validStorageName(value string, minimum, maximum int) bool {
+	value = strings.TrimSpace(value)
+	if len(value) < minimum || len(value) > maximum {
+		return false
+	}
+	for _, character := range value {
+		if !(character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '-' || character == '.' || character == '_') {
+			return false
+		}
+	}
+	return true
+}
+
 func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(string) ([]byte, error)) error {
 	setString := func(name string, target *string) {
 		if v, ok := lookup(name); ok {
@@ -632,18 +676,18 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_FLY_MOUNT_PATH", &c.Fly.MountPath)
 	setString("PAPERBOAT_RUNTIME_BASE_DOMAIN", &c.RuntimeBaseDomain)
 	setString("PAPERBOAT_FLY_HOSTED_READINESS_BASE_URL", &c.Fly.HostedReadinessBaseURL)
+	setString("PAPERBOAT_FLY_HOSTED_SSH_USER", &c.Fly.HostedSSHUser)
 	setString("PAPERBOAT_WORKOS_BASE_URL", &c.Providers.WorkOS.BaseURL)
 	setString("PAPERBOAT_POLAR_BASE_URL", &c.Providers.Polar.BaseURL)
 	setString("PAPERBOAT_GITHUB_BASE_URL", &c.Providers.GitHub.BaseURL)
 	setString("PAPERBOAT_FLY_BASE_URL", &c.Providers.Fly.BaseURL)
 	setString("PAPERBOAT_PREVIEW_SUBDOMAIN_PREFIX", &c.Access.RouteSubdomainPrefix)
+	setString("PAPERBOAT_DIAGNOSTICS_OBJECT_ENDPOINT", &c.Diagnostics.ObjectEndpoint)
+	setString("PAPERBOAT_DIAGNOSTICS_OBJECT_REGION", &c.Diagnostics.ObjectRegion)
+	setString("PAPERBOAT_DIAGNOSTICS_OBJECT_BUCKET", &c.Diagnostics.ObjectBucket)
 	setString("PAPERBOAT_USER_MACHINES_BOOTSTRAP_COMMAND", &c.UserMachines.BootstrapCommand)
-	if err := setSecret("PAPERBOAT_USER_MACHINES_ARTIFACTS_JSON", &c.UserMachines.MachineArtifactsJSON); err != nil {
-		return err
-	}
-	if err := setSecret("PAPERBOAT_USER_MACHINES_ARTIFACT_PUBLIC_KEY", &c.UserMachines.MachineArtifactPublicKey); err != nil {
-		return err
-	}
+	setString("PAPERBOAT_USER_MACHINES_ARTIFACT_REPOSITORY_URL", &c.UserMachines.ArtifactRepositoryURL)
+	setString("PAPERBOAT_USER_MACHINES_ARTIFACT_VERSION", &c.UserMachines.ArtifactVersion)
 	if value, ok := lookup("PAPERBOAT_USER_MACHINES_OFFLINE_AFTER_SECONDS"); ok {
 		parsed, err := strconv.ParseInt(value, 10, 64)
 		if err != nil {
@@ -788,6 +832,7 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 		"PAPERBOAT_CLI_NETWORK_REQUESTS_PER_MINUTE": &c.CLIAuth.NetworkRequestsPerMinute,
 		"PAPERBOAT_CLI_GRANT_POLLS_PER_MINUTE":      &c.CLIAuth.GrantPollsPerMinute,
 		"PAPERBOAT_CLI_ACCOUNT_ACTIONS_PER_MINUTE":  &c.CLIAuth.AccountActionsPerMinute,
+		"PAPERBOAT_FLY_HOSTED_SSH_PORT":             &c.Fly.HostedSSHPort,
 	} {
 		if v, ok := lookup(name); ok {
 			parsed, err := strconv.Atoi(v)
@@ -899,6 +944,26 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	if err := setSecret("PAPERBOAT_EDGE_CONTROL_CREDENTIAL", &c.Secrets.EdgeControlCredential); err != nil {
 		return err
 	}
+	if err := setSecret("PAPERBOAT_DIAGNOSTICS_ACCESS_KEY", &c.Secrets.DiagnosticsAccessKey); err != nil {
+		return err
+	}
+	if err := setSecret("PAPERBOAT_DIAGNOSTICS_SECRET_KEY", &c.Secrets.DiagnosticsSecretKey); err != nil {
+		return err
+	}
+	if value, ok := lookup("PAPERBOAT_DIAGNOSTICS_FORCE_PATH_STYLE"); ok {
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("PAPERBOAT_DIAGNOSTICS_FORCE_PATH_STYLE: %w", err)
+		}
+		c.Diagnostics.ForcePathStyle = parsed
+	}
+	if value, ok := lookup("PAPERBOAT_DIAGNOSTICS_RETENTION"); ok {
+		parsed, err := time.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("PAPERBOAT_DIAGNOSTICS_RETENTION: %w", err)
+		}
+		c.Diagnostics.Retention = parsed
+	}
 	if v, ok := lookup("PAPERBOAT_SESSION_KEYS"); ok {
 		c.Secrets.SessionKeys = splitCSV(v)
 	}
@@ -934,19 +999,20 @@ func splitCSV(v string) []string {
 	return out
 }
 
-func appendUnique(existing []string, values ...string) []string {
-	seen := make(map[string]struct{}, len(existing)+len(values))
-	out := make([]string, 0, len(existing)+len(values))
-	for _, value := range append(append([]string{}, existing...), values...) {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
+func validSSHOSUser(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if value != trimmed || value == "" || value == "root" || len(value) > 32 || !asciiSSHUserStart(value[0]) {
+		return false
 	}
-	return out
+	for index := 1; index < len(value); index++ {
+		character := value[index]
+		if !asciiSSHUserStart(character) && (character < '0' || character > '9') && character != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func asciiSSHUserStart(character byte) bool {
+	return character == '_' || character >= 'a' && character <= 'z'
 }

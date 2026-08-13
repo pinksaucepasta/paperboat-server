@@ -8,7 +8,6 @@ package dbsqlc
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"time"
 )
 
@@ -24,7 +23,7 @@ type ApplyProjectRuntimeConfigParams struct {
 }
 
 func (q *Queries) ApplyProjectRuntimeConfig(ctx context.Context, arg ApplyProjectRuntimeConfigParams) error {
-	_, err := q.db.ExecContext(ctx, applyProjectRuntimeConfig, arg.ProjectID, arg.AppliedStorageGb)
+	_, err := q.db.Exec(ctx, applyProjectRuntimeConfig, arg.ProjectID, arg.AppliedStorageGb)
 	return err
 }
 
@@ -40,11 +39,11 @@ type BlockOrchestrationJobParams struct {
 }
 
 func (q *Queries) BlockOrchestrationJob(ctx context.Context, arg BlockOrchestrationJobParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, blockOrchestrationJob, arg.LastError, arg.ID, arg.LeaseToken)
+	result, err := q.db.Exec(ctx, blockOrchestrationJob, arg.LastError, arg.ID, arg.LeaseToken)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const claimNextOrchestrationJob = `-- name: ClaimNextOrchestrationJob :one
@@ -70,12 +69,12 @@ type ClaimNextOrchestrationJobRow struct {
 	ID          string
 	JobType     string
 	AggregateID string
-	Payload     json.RawMessage
+	Payload     []byte
 	LeaseToken  string
 }
 
 func (q *Queries) ClaimNextOrchestrationJob(ctx context.Context, arg ClaimNextOrchestrationJobParams) (ClaimNextOrchestrationJobRow, error) {
-	row := q.db.QueryRowContext(ctx, claimNextOrchestrationJob, arg.LeaseToken, arg.LeaseExpiresAt, arg.Now)
+	row := q.db.QueryRow(ctx, claimNextOrchestrationJob, arg.LeaseToken, arg.LeaseExpiresAt, arg.Now)
 	var i ClaimNextOrchestrationJobRow
 	err := row.Scan(
 		&i.ID,
@@ -99,7 +98,7 @@ type CompleteHostedProviderOperationParams struct {
 }
 
 func (q *Queries) CompleteHostedProviderOperation(ctx context.Context, arg CompleteHostedProviderOperationParams) error {
-	_, err := q.db.ExecContext(ctx, completeHostedProviderOperation, arg.ProviderRequestID, arg.ID)
+	_, err := q.db.Exec(ctx, completeHostedProviderOperation, arg.ProviderRequestID, arg.ID)
 	return err
 }
 
@@ -114,11 +113,11 @@ type CompleteOrchestrationJobParams struct {
 }
 
 func (q *Queries) CompleteOrchestrationJob(ctx context.Context, arg CompleteOrchestrationJobParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, completeOrchestrationJob, arg.ID, arg.LeaseToken)
+	result, err := q.db.Exec(ctx, completeOrchestrationJob, arg.ID, arg.LeaseToken)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const deleteHostedControlEnvironment = `-- name: DeleteHostedControlEnvironment :exec
@@ -126,7 +125,7 @@ DELETE FROM control_environments WHERE id = $1
 `
 
 func (q *Queries) DeleteHostedControlEnvironment(ctx context.Context, id string) error {
-	_, err := q.db.ExecContext(ctx, deleteHostedControlEnvironment, id)
+	_, err := q.db.Exec(ctx, deleteHostedControlEnvironment, id)
 	return err
 }
 
@@ -135,7 +134,7 @@ DELETE FROM fly_machines WHERE project_id=$1
 `
 
 func (q *Queries) DeleteProjectMachineRecord(ctx context.Context, projectID string) error {
-	_, err := q.db.ExecContext(ctx, deleteProjectMachineRecord, projectID)
+	_, err := q.db.Exec(ctx, deleteProjectMachineRecord, projectID)
 	return err
 }
 
@@ -144,7 +143,7 @@ DELETE FROM fly_volumes WHERE project_id=$1
 `
 
 func (q *Queries) DeleteProjectVolumeRecord(ctx context.Context, projectID string) error {
-	_, err := q.db.ExecContext(ctx, deleteProjectVolumeRecord, projectID)
+	_, err := q.db.Exec(ctx, deleteProjectVolumeRecord, projectID)
 	return err
 }
 
@@ -163,7 +162,7 @@ type EnsureHostedControlEnvironmentParams struct {
 }
 
 func (q *Queries) EnsureHostedControlEnvironment(ctx context.Context, arg EnsureHostedControlEnvironmentParams) (ControlEnvironment, error) {
-	row := q.db.QueryRowContext(ctx, ensureHostedControlEnvironment, arg.ID, arg.WorkspaceID, arg.OwnerUserID)
+	row := q.db.QueryRow(ctx, ensureHostedControlEnvironment, arg.ID, arg.WorkspaceID, arg.OwnerUserID)
 	var i ControlEnvironment
 	err := row.Scan(
 		&i.ID,
@@ -174,6 +173,63 @@ func (q *Queries) EnsureHostedControlEnvironment(ctx context.Context, arg Ensure
 		&i.AppliedState,
 		&i.AppliedVersion,
 		&i.RevokedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const ensureHostedMachineSSHTarget = `-- name: EnsureHostedMachineSSHTarget :one
+INSERT INTO machine_ssh_targets
+  (user_machine_id, machine_generation, os_user, target_port,
+   reconciliation_version, created_at, updated_at)
+SELECT m.id, m.installation_generation, $1, $2,
+       1, $3, $3
+FROM user_machines m
+WHERE m.environment_id = $4
+  AND m.user_id = $5
+  AND m.machine_kind = 'hosted'
+  AND m.state NOT IN ('revoked', 'deleted')
+  AND m.deleted_at IS NULL
+ON CONFLICT (user_machine_id) DO UPDATE
+SET machine_generation = EXCLUDED.machine_generation,
+    os_user = EXCLUDED.os_user,
+    target_port = EXCLUDED.target_port,
+    reconciliation_version = machine_ssh_targets.reconciliation_version +
+      CASE WHEN machine_ssh_targets.machine_generation IS DISTINCT FROM EXCLUDED.machine_generation
+             OR machine_ssh_targets.os_user IS DISTINCT FROM EXCLUDED.os_user
+             OR machine_ssh_targets.target_port IS DISTINCT FROM EXCLUDED.target_port
+           THEN 1 ELSE 0 END,
+    updated_at = CASE WHEN machine_ssh_targets.machine_generation IS DISTINCT FROM EXCLUDED.machine_generation
+                        OR machine_ssh_targets.os_user IS DISTINCT FROM EXCLUDED.os_user
+                        OR machine_ssh_targets.target_port IS DISTINCT FROM EXCLUDED.target_port
+                      THEN EXCLUDED.updated_at ELSE machine_ssh_targets.updated_at END
+RETURNING user_machine_id, machine_generation, os_user, target_port, reconciliation_version, created_at, updated_at
+`
+
+type EnsureHostedMachineSSHTargetParams struct {
+	OsUser        string
+	TargetPort    int32
+	Now           time.Time
+	EnvironmentID string
+	OwnerUserID   string
+}
+
+func (q *Queries) EnsureHostedMachineSSHTarget(ctx context.Context, arg EnsureHostedMachineSSHTargetParams) (MachineSshTarget, error) {
+	row := q.db.QueryRow(ctx, ensureHostedMachineSSHTarget,
+		arg.OsUser,
+		arg.TargetPort,
+		arg.Now,
+		arg.EnvironmentID,
+		arg.OwnerUserID,
+	)
+	var i MachineSshTarget
+	err := row.Scan(
+		&i.UserMachineID,
+		&i.MachineGeneration,
+		&i.OsUser,
+		&i.TargetPort,
+		&i.ReconciliationVersion,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -197,7 +253,7 @@ type FailHostedProviderOperationParams struct {
 }
 
 func (q *Queries) FailHostedProviderOperation(ctx context.Context, arg FailHostedProviderOperationParams) error {
-	_, err := q.db.ExecContext(ctx, failHostedProviderOperation,
+	_, err := q.db.Exec(ctx, failHostedProviderOperation,
 		arg.Uncertain,
 		arg.Outcome,
 		arg.ProviderRequestID,
@@ -214,11 +270,11 @@ UPDATE reconciliation_runs SET state=$2,findings=$3::jsonb,finished_at=now() WHE
 type FinishReconciliationRunParams struct {
 	ID      string
 	State   string
-	Column3 json.RawMessage
+	Column3 []byte
 }
 
 func (q *Queries) FinishReconciliationRun(ctx context.Context, arg FinishReconciliationRunParams) error {
-	_, err := q.db.ExecContext(ctx, finishReconciliationRun, arg.ID, arg.State, arg.Column3)
+	_, err := q.db.Exec(ctx, finishReconciliationRun, arg.ID, arg.State, arg.Column3)
 	return err
 }
 
@@ -232,7 +288,7 @@ type GetGitHubConfigRepositoryRow struct {
 }
 
 func (q *Queries) GetGitHubConfigRepository(ctx context.Context, userID string) (GetGitHubConfigRepositoryRow, error) {
-	row := q.db.QueryRowContext(ctx, getGitHubConfigRepository, userID)
+	row := q.db.QueryRow(ctx, getGitHubConfigRepository, userID)
 	var i GetGitHubConfigRepositoryRow
 	err := row.Scan(&i.CloneUrl, &i.DefaultBranch)
 	return i, err
@@ -243,14 +299,14 @@ SELECT token_ciphertext FROM github_oauth_tokens WHERE user_id=$1 AND revoked_at
 `
 
 func (q *Queries) GetLatestGitHubTokenCiphertext(ctx context.Context, userID string) ([]byte, error) {
-	row := q.db.QueryRowContext(ctx, getLatestGitHubTokenCiphertext, userID)
+	row := q.db.QueryRow(ctx, getLatestGitHubTokenCiphertext, userID)
 	var token_ciphertext []byte
 	err := row.Scan(&token_ciphertext)
 	return token_ciphertext, err
 }
 
 const getOrchestrationProjectIntent = `-- name: GetOrchestrationProjectIntent :one
-SELECT p.id,p.user_id,m.id AS machine_id,pr.source_url,pr.default_branch,psa.assigned_gb,mt.code AS machine_type_code,mtv.vcpu,mtv.memory_mb,rg.code AS region_code,
+SELECT p.id,p.user_id,m.id AS machine_id,m.installation_generation AS machine_generation,pr.source_url,pr.default_branch,psa.assigned_gb,mt.code AS machine_type_code,mtv.vcpu,mtv.memory_mb,rg.code AS region_code,
 coalesce(json_agg(vp.code ORDER BY vp.code) FILTER (WHERE vp.code IS NOT NULL),'[]'::json) AS preset_codes,
 prc.setup_script_ref,prc.desired_config_hash,prc.pending_restart_apply
 FROM projects p JOIN user_machines m ON m.environment_id=p.id AND m.machine_kind='hosted'
@@ -265,6 +321,7 @@ type GetOrchestrationProjectIntentRow struct {
 	ID                  string
 	UserID              string
 	MachineID           string
+	MachineGeneration   int64
 	SourceUrl           string
 	DefaultBranch       string
 	AssignedGb          int32
@@ -279,12 +336,13 @@ type GetOrchestrationProjectIntentRow struct {
 }
 
 func (q *Queries) GetOrchestrationProjectIntent(ctx context.Context, id string) (GetOrchestrationProjectIntentRow, error) {
-	row := q.db.QueryRowContext(ctx, getOrchestrationProjectIntent, id)
+	row := q.db.QueryRow(ctx, getOrchestrationProjectIntent, id)
 	var i GetOrchestrationProjectIntentRow
 	err := row.Scan(
 		&i.ID,
 		&i.UserID,
 		&i.MachineID,
+		&i.MachineGeneration,
 		&i.SourceUrl,
 		&i.DefaultBranch,
 		&i.AssignedGb,
@@ -311,7 +369,7 @@ type GetOrchestrationProviderRouteResourceRow struct {
 }
 
 func (q *Queries) GetOrchestrationProviderRouteResource(ctx context.Context, projectID string) (GetOrchestrationProviderRouteResourceRow, error) {
-	row := q.db.QueryRowContext(ctx, getOrchestrationProviderRouteResource, projectID)
+	row := q.db.QueryRow(ctx, getOrchestrationProviderRouteResource, projectID)
 	var i GetOrchestrationProviderRouteResourceRow
 	err := row.Scan(&i.TunnelID, &i.ClientID, &i.MachineTokenCiphertext)
 	return i, err
@@ -327,7 +385,7 @@ type GetProjectMachineRow struct {
 }
 
 func (q *Queries) GetProjectMachine(ctx context.Context, projectID string) (GetProjectMachineRow, error) {
-	row := q.db.QueryRowContext(ctx, getProjectMachine, projectID)
+	row := q.db.QueryRow(ctx, getProjectMachine, projectID)
 	var i GetProjectMachineRow
 	err := row.Scan(&i.FlyMachineID, &i.State)
 	return i, err
@@ -343,7 +401,7 @@ type GetProjectSetupScriptCiphertextParams struct {
 }
 
 func (q *Queries) GetProjectSetupScriptCiphertext(ctx context.Context, arg GetProjectSetupScriptCiphertextParams) ([]byte, error) {
-	row := q.db.QueryRowContext(ctx, getProjectSetupScriptCiphertext, arg.ProjectID, arg.ID)
+	row := q.db.QueryRow(ctx, getProjectSetupScriptCiphertext, arg.ProjectID, arg.ID)
 	var script_ciphertext []byte
 	err := row.Scan(&script_ciphertext)
 	return script_ciphertext, err
@@ -360,7 +418,7 @@ type GetProjectVolumeRow struct {
 }
 
 func (q *Queries) GetProjectVolume(ctx context.Context, projectID string) (GetProjectVolumeRow, error) {
-	row := q.db.QueryRowContext(ctx, getProjectVolume, projectID)
+	row := q.db.QueryRow(ctx, getProjectVolume, projectID)
 	var i GetProjectVolumeRow
 	err := row.Scan(&i.FlyVolumeID, &i.SizeGb, &i.State)
 	return i, err
@@ -381,7 +439,7 @@ type InsertFlyVolumeRecordParams struct {
 }
 
 func (q *Queries) InsertFlyVolumeRecord(ctx context.Context, arg InsertFlyVolumeRecordParams) error {
-	_, err := q.db.ExecContext(ctx, insertFlyVolumeRecord,
+	_, err := q.db.Exec(ctx, insertFlyVolumeRecord,
 		arg.ID,
 		arg.ProjectID,
 		arg.FlyVolumeID,
@@ -404,12 +462,12 @@ type InsertHostedReadinessObservationParams struct {
 	Stage              string
 	State              string
 	Reason             string
-	Evidence           json.RawMessage
+	Evidence           []byte
 	ObservedAt         time.Time
 }
 
 func (q *Queries) InsertHostedReadinessObservation(ctx context.Context, arg InsertHostedReadinessObservationParams) error {
-	_, err := q.db.ExecContext(ctx, insertHostedReadinessObservation,
+	_, err := q.db.Exec(ctx, insertHostedReadinessObservation,
 		arg.ID,
 		arg.ProjectID,
 		arg.OrchestrationJobID,
@@ -431,11 +489,11 @@ type InsertOrchestrationProjectEventParams struct {
 	ProjectID string
 	EventType string
 	Message   string
-	Metadata  json.RawMessage
+	Metadata  []byte
 }
 
 func (q *Queries) InsertOrchestrationProjectEvent(ctx context.Context, arg InsertOrchestrationProjectEventParams) error {
-	_, err := q.db.ExecContext(ctx, insertOrchestrationProjectEvent,
+	_, err := q.db.Exec(ctx, insertOrchestrationProjectEvent,
 		arg.ID,
 		arg.ProjectID,
 		arg.EventType,
@@ -458,7 +516,7 @@ type ListRecordedFlyMachinesRow struct {
 }
 
 func (q *Queries) ListRecordedFlyMachines(ctx context.Context) ([]ListRecordedFlyMachinesRow, error) {
-	rows, err := q.db.QueryContext(ctx, listRecordedFlyMachines)
+	rows, err := q.db.Query(ctx, listRecordedFlyMachines)
 	if err != nil {
 		return nil, err
 	}
@@ -477,9 +535,6 @@ func (q *Queries) ListRecordedFlyMachines(ctx context.Context) ([]ListRecordedFl
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -491,7 +546,7 @@ UPDATE projects SET state='stopped',version=version+1,updated_at=now() WHERE id=
 `
 
 func (q *Queries) MarkProvisionedProjectStopped(ctx context.Context, id string) error {
-	_, err := q.db.ExecContext(ctx, markProvisionedProjectStopped, id)
+	_, err := q.db.Exec(ctx, markProvisionedProjectStopped, id)
 	return err
 }
 
@@ -510,7 +565,7 @@ type ProviderOperationSucceededParams struct {
 }
 
 func (q *Queries) ProviderOperationSucceeded(ctx context.Context, arg ProviderOperationSucceededParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, providerOperationSucceeded, arg.OrchestrationJobID, arg.Step)
+	row := q.db.QueryRow(ctx, providerOperationSucceeded, arg.OrchestrationJobID, arg.Step)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
@@ -533,7 +588,7 @@ type ReserveHostedProviderOperationParams struct {
 }
 
 func (q *Queries) ReserveHostedProviderOperation(ctx context.Context, arg ReserveHostedProviderOperationParams) (HostedProviderOperation, error) {
-	row := q.db.QueryRowContext(ctx, reserveHostedProviderOperation,
+	row := q.db.QueryRow(ctx, reserveHostedProviderOperation,
 		arg.ID,
 		arg.OrchestrationJobID,
 		arg.Step,
@@ -567,7 +622,7 @@ WHERE id=$1 AND state IN ('running','succeeded','uncertain','failed')
 `
 
 func (q *Queries) ResetHostedProviderOperationAfterAbsentObservation(ctx context.Context, id string) error {
-	_, err := q.db.ExecContext(ctx, resetHostedProviderOperationAfterAbsentObservation, id)
+	_, err := q.db.Exec(ctx, resetHostedProviderOperationAfterAbsentObservation, id)
 	return err
 }
 
@@ -583,7 +638,7 @@ type ResolveHostedProviderOperationByObservationParams struct {
 }
 
 func (q *Queries) ResolveHostedProviderOperationByObservation(ctx context.Context, arg ResolveHostedProviderOperationByObservationParams) error {
-	_, err := q.db.ExecContext(ctx, resolveHostedProviderOperationByObservation, arg.ProviderRequestID, arg.ID)
+	_, err := q.db.Exec(ctx, resolveHostedProviderOperationByObservation, arg.ProviderRequestID, arg.ID)
 	return err
 }
 
@@ -597,7 +652,7 @@ type RestoreRestartingProjectStateParams struct {
 }
 
 func (q *Queries) RestoreRestartingProjectState(ctx context.Context, arg RestoreRestartingProjectStateParams) error {
-	_, err := q.db.ExecContext(ctx, restoreRestartingProjectState, arg.ID, arg.State)
+	_, err := q.db.Exec(ctx, restoreRestartingProjectState, arg.ID, arg.State)
 	return err
 }
 
@@ -613,11 +668,11 @@ type RetryOrchestrationJobParams struct {
 }
 
 func (q *Queries) RetryOrchestrationJob(ctx context.Context, arg RetryOrchestrationJobParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, retryOrchestrationJob, arg.LastError, arg.ID, arg.LeaseToken)
+	result, err := q.db.Exec(ctx, retryOrchestrationJob, arg.LastError, arg.ID, arg.LeaseToken)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const setProjectFlyVolumeID = `-- name: SetProjectFlyVolumeID :exec
@@ -630,7 +685,7 @@ type SetProjectFlyVolumeIDParams struct {
 }
 
 func (q *Queries) SetProjectFlyVolumeID(ctx context.Context, arg SetProjectFlyVolumeIDParams) error {
-	_, err := q.db.ExecContext(ctx, setProjectFlyVolumeID, arg.ProjectID, arg.FlyVolumeID)
+	_, err := q.db.Exec(ctx, setProjectFlyVolumeID, arg.ProjectID, arg.FlyVolumeID)
 	return err
 }
 
@@ -640,7 +695,7 @@ WHERE id=$1 AND state IN ('pending','uncertain')
 `
 
 func (q *Queries) StartHostedProviderOperation(ctx context.Context, id string) error {
-	_, err := q.db.ExecContext(ctx, startHostedProviderOperation, id)
+	_, err := q.db.Exec(ctx, startHostedProviderOperation, id)
 	return err
 }
 
@@ -655,7 +710,7 @@ type StartReconciliationRunParams struct {
 }
 
 func (q *Queries) StartReconciliationRun(ctx context.Context, arg StartReconciliationRunParams) error {
-	_, err := q.db.ExecContext(ctx, startReconciliationRun, arg.ID, arg.Scope, arg.State)
+	_, err := q.db.Exec(ctx, startReconciliationRun, arg.ID, arg.Scope, arg.State)
 	return err
 }
 
@@ -674,7 +729,7 @@ type UpdateOrchestratedMachineObservationParams struct {
 }
 
 func (q *Queries) UpdateOrchestratedMachineObservation(ctx context.Context, arg UpdateOrchestratedMachineObservationParams) error {
-	_, err := q.db.ExecContext(ctx, updateOrchestratedMachineObservation,
+	_, err := q.db.Exec(ctx, updateOrchestratedMachineObservation,
 		arg.State,
 		arg.ImageRef,
 		arg.ObservedConfigHash,
@@ -693,7 +748,7 @@ type UpdateOrchestratedMachineStateParams struct {
 }
 
 func (q *Queries) UpdateOrchestratedMachineState(ctx context.Context, arg UpdateOrchestratedMachineStateParams) error {
-	_, err := q.db.ExecContext(ctx, updateOrchestratedMachineState, arg.ProjectID, arg.State)
+	_, err := q.db.Exec(ctx, updateOrchestratedMachineState, arg.ProjectID, arg.State)
 	return err
 }
 
@@ -707,7 +762,7 @@ type UpdateOrchestratedProjectStateParams struct {
 }
 
 func (q *Queries) UpdateOrchestratedProjectState(ctx context.Context, arg UpdateOrchestratedProjectStateParams) error {
-	_, err := q.db.ExecContext(ctx, updateOrchestratedProjectState, arg.ID, arg.State)
+	_, err := q.db.Exec(ctx, updateOrchestratedProjectState, arg.ID, arg.State)
 	return err
 }
 
@@ -732,7 +787,7 @@ type UpsertFlyMachineRecordParams struct {
 }
 
 func (q *Queries) UpsertFlyMachineRecord(ctx context.Context, arg UpsertFlyMachineRecordParams) error {
-	_, err := q.db.ExecContext(ctx, upsertFlyMachineRecord,
+	_, err := q.db.Exec(ctx, upsertFlyMachineRecord,
 		arg.ID,
 		arg.ProjectID,
 		arg.FlyMachineID,
@@ -754,11 +809,11 @@ type UpsertOrphanRemediationJobParams struct {
 	ID             string
 	FlyMachineID   string
 	IdempotencyKey string
-	Payload        json.RawMessage
+	Payload        []byte
 }
 
 func (q *Queries) UpsertOrphanRemediationJob(ctx context.Context, arg UpsertOrphanRemediationJobParams) error {
-	_, err := q.db.ExecContext(ctx, upsertOrphanRemediationJob,
+	_, err := q.db.Exec(ctx, upsertOrphanRemediationJob,
 		arg.ID,
 		arg.FlyMachineID,
 		arg.IdempotencyKey,

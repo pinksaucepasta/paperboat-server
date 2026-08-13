@@ -8,7 +8,6 @@ package dbsqlc
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"time"
 )
 
@@ -22,7 +21,7 @@ type AddCreditBalanceParams struct {
 }
 
 func (q *Queries) AddCreditBalance(ctx context.Context, arg AddCreditBalanceParams) error {
-	_, err := q.db.ExecContext(ctx, addCreditBalance, arg.Amount, arg.ID)
+	_, err := q.db.Exec(ctx, addCreditBalance, arg.Amount, arg.ID)
 	return err
 }
 
@@ -32,7 +31,7 @@ WHERE provider='polar' AND provider_subscription_id=$1 AND pending_plan_version_
 `
 
 func (q *Queries) ClearAppliedPendingSubscriptionPlan(ctx context.Context, providerSubscriptionID string) error {
-	_, err := q.db.ExecContext(ctx, clearAppliedPendingSubscriptionPlan, providerSubscriptionID)
+	_, err := q.db.Exec(ctx, clearAppliedPendingSubscriptionPlan, providerSubscriptionID)
 	return err
 }
 
@@ -41,7 +40,7 @@ UPDATE billing_checkout_reservations SET state='completed', updated_at=now() WHE
 `
 
 func (q *Queries) ClearBillingCheckoutReservation(ctx context.Context, userID string) error {
-	_, err := q.db.ExecContext(ctx, clearBillingCheckoutReservation, userID)
+	_, err := q.db.Exec(ctx, clearBillingCheckoutReservation, userID)
 	return err
 }
 
@@ -58,7 +57,7 @@ type CompleteBillingCheckoutReservationParams struct {
 }
 
 func (q *Queries) CompleteBillingCheckoutReservation(ctx context.Context, arg CompleteBillingCheckoutReservationParams) error {
-	_, err := q.db.ExecContext(ctx, completeBillingCheckoutReservation,
+	_, err := q.db.Exec(ctx, completeBillingCheckoutReservation,
 		arg.ProviderCheckoutID,
 		arg.CheckoutUrl,
 		arg.UserID,
@@ -78,11 +77,11 @@ type CompleteBillingPortalOperationParams struct {
 }
 
 func (q *Queries) CompleteBillingPortalOperation(ctx context.Context, arg CompleteBillingPortalOperationParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, completeBillingPortalOperation, arg.ResultCiphertext, arg.IdempotencyKey)
+	result, err := q.db.Exec(ctx, completeBillingPortalOperation, arg.ResultCiphertext, arg.IdempotencyKey)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const completeCreditAutoTopup = `-- name: CompleteCreditAutoTopup :exec
@@ -97,7 +96,7 @@ type CompleteCreditAutoTopupParams struct {
 }
 
 func (q *Queries) CompleteCreditAutoTopup(ctx context.Context, arg CompleteCreditAutoTopupParams) error {
-	_, err := q.db.ExecContext(ctx, completeCreditAutoTopup,
+	_, err := q.db.Exec(ctx, completeCreditAutoTopup,
 		arg.ProviderOrderID,
 		arg.State,
 		arg.LastError,
@@ -116,7 +115,7 @@ type DecreaseAllocatedStorageParams struct {
 }
 
 func (q *Queries) DecreaseAllocatedStorage(ctx context.Context, arg DecreaseAllocatedStorageParams) error {
-	_, err := q.db.ExecContext(ctx, decreaseAllocatedStorage, arg.ID, arg.AllocatedGb)
+	_, err := q.db.Exec(ctx, decreaseAllocatedStorage, arg.ID, arg.AllocatedGb)
 	return err
 }
 
@@ -125,7 +124,7 @@ UPDATE credit_auto_topup_policies SET enabled = false, updated_at = now() WHERE 
 `
 
 func (q *Queries) DisableCreditAutoTopupPolicy(ctx context.Context, userID string) error {
-	_, err := q.db.ExecContext(ctx, disableCreditAutoTopupPolicy, userID)
+	_, err := q.db.Exec(ctx, disableCreditAutoTopupPolicy, userID)
 	return err
 }
 
@@ -134,7 +133,7 @@ UPDATE billing_checkout_reservations SET state='failed', last_error=NULL, update
 `
 
 func (q *Queries) FailBillingCheckoutReservation(ctx context.Context, userID string) error {
-	_, err := q.db.ExecContext(ctx, failBillingCheckoutReservation, userID)
+	_, err := q.db.Exec(ctx, failBillingCheckoutReservation, userID)
 	return err
 }
 
@@ -154,7 +153,7 @@ type GetActivePlanVersionForWebhookRow struct {
 }
 
 func (q *Queries) GetActivePlanVersionForWebhook(ctx context.Context, code string) (GetActivePlanVersionForWebhookRow, error) {
-	row := q.db.QueryRowContext(ctx, getActivePlanVersionForWebhook, code)
+	row := q.db.QueryRow(ctx, getActivePlanVersionForWebhook, code)
 	var i GetActivePlanVersionForWebhookRow
 	err := row.Scan(
 		&i.ID,
@@ -194,7 +193,7 @@ type GetActivePolarSubscriptionForUserRow struct {
 }
 
 func (q *Queries) GetActivePolarSubscriptionForUser(ctx context.Context, userID string) (GetActivePolarSubscriptionForUserRow, error) {
-	row := q.db.QueryRowContext(ctx, getActivePolarSubscriptionForUser, userID)
+	row := q.db.QueryRow(ctx, getActivePolarSubscriptionForUser, userID)
 	var i GetActivePolarSubscriptionForUserRow
 	err := row.Scan(
 		&i.ProviderSubscriptionID,
@@ -213,7 +212,7 @@ SELECT allocated_gb FROM storage_accounts WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) GetAllocatedStorageForUpdate(ctx context.Context, id string) (int32, error) {
-	row := q.db.QueryRowContext(ctx, getAllocatedStorageForUpdate, id)
+	row := q.db.QueryRow(ctx, getAllocatedStorageForUpdate, id)
 	var allocated_gb int32
 	err := row.Scan(&allocated_gb)
 	return allocated_gb, err
@@ -240,7 +239,7 @@ type GetBillingAddonProductRow struct {
 }
 
 func (q *Queries) GetBillingAddonProduct(ctx context.Context, arg GetBillingAddonProductParams) (GetBillingAddonProductRow, error) {
-	row := q.db.QueryRowContext(ctx, getBillingAddonProduct, arg.CatalogType, arg.CatalogRef)
+	row := q.db.QueryRow(ctx, getBillingAddonProduct, arg.CatalogType, arg.CatalogRef)
 	var i GetBillingAddonProductRow
 	err := row.Scan(
 		&i.Code,
@@ -268,7 +267,7 @@ type GetBillingCheckoutReservationRow struct {
 }
 
 func (q *Queries) GetBillingCheckoutReservation(ctx context.Context, userID string) (GetBillingCheckoutReservationRow, error) {
-	row := q.db.QueryRowContext(ctx, getBillingCheckoutReservation, userID)
+	row := q.db.QueryRow(ctx, getBillingCheckoutReservation, userID)
 	var i GetBillingCheckoutReservationRow
 	err := row.Scan(
 		&i.ID,
@@ -299,7 +298,7 @@ type GetBillingEntitlementRow struct {
 }
 
 func (q *Queries) GetBillingEntitlement(ctx context.Context, userID string) (GetBillingEntitlementRow, error) {
-	row := q.db.QueryRowContext(ctx, getBillingEntitlement, userID)
+	row := q.db.QueryRow(ctx, getBillingEntitlement, userID)
 	var i GetBillingEntitlementRow
 	err := row.Scan(
 		&i.State,
@@ -316,7 +315,7 @@ SELECT idempotency_key, user_id, request_hash, state, result_ciphertext, last_er
 `
 
 func (q *Queries) GetBillingPortalOperation(ctx context.Context, idempotencyKey string) (BillingPortalOperation, error) {
-	row := q.db.QueryRowContext(ctx, getBillingPortalOperation, idempotencyKey)
+	row := q.db.QueryRow(ctx, getBillingPortalOperation, idempotencyKey)
 	var i BillingPortalOperation
 	err := row.Scan(
 		&i.IdempotencyKey,
@@ -356,7 +355,7 @@ type GetBillingProductByCodeRow struct {
 }
 
 func (q *Queries) GetBillingProductByCode(ctx context.Context, code string) (GetBillingProductByCodeRow, error) {
-	row := q.db.QueryRowContext(ctx, getBillingProductByCode, code)
+	row := q.db.QueryRow(ctx, getBillingProductByCode, code)
 	var i GetBillingProductByCodeRow
 	err := row.Scan(
 		&i.Code,
@@ -389,7 +388,7 @@ type GetBillingProductByProviderIDsRow struct {
 }
 
 func (q *Queries) GetBillingProductByProviderIDs(ctx context.Context, providerProductID string) (GetBillingProductByProviderIDsRow, error) {
-	row := q.db.QueryRowContext(ctx, getBillingProductByProviderIDs, providerProductID)
+	row := q.db.QueryRow(ctx, getBillingProductByProviderIDs, providerProductID)
 	var i GetBillingProductByProviderIDsRow
 	err := row.Scan(
 		&i.Code,
@@ -406,7 +405,7 @@ SELECT idempotency_key, user_id, provider_subscription_id, request_hash, state, 
 `
 
 func (q *Queries) GetBillingSubscriptionUpdate(ctx context.Context, idempotencyKey string) (BillingSubscriptionUpdateOperation, error) {
-	row := q.db.QueryRowContext(ctx, getBillingSubscriptionUpdate, idempotencyKey)
+	row := q.db.QueryRow(ctx, getBillingSubscriptionUpdate, idempotencyKey)
 	var i BillingSubscriptionUpdateOperation
 	err := row.Scan(
 		&i.IdempotencyKey,
@@ -437,7 +436,7 @@ type GetBillingUncertainMetricsRow struct {
 }
 
 func (q *Queries) GetBillingUncertainMetrics(ctx context.Context) (GetBillingUncertainMetricsRow, error) {
-	row := q.db.QueryRowContext(ctx, getBillingUncertainMetrics)
+	row := q.db.QueryRow(ctx, getBillingUncertainMetrics)
 	var i GetBillingUncertainMetricsRow
 	err := row.Scan(
 		&i.CheckoutUncertain,
@@ -453,7 +452,7 @@ SELECT idempotency_key, operation_kind, operation_id, request_hash, actor_user_i
 `
 
 func (q *Queries) GetBillingUncertainRecovery(ctx context.Context, idempotencyKey string) (BillingUncertainRecovery, error) {
-	row := q.db.QueryRowContext(ctx, getBillingUncertainRecovery, idempotencyKey)
+	row := q.db.QueryRow(ctx, getBillingUncertainRecovery, idempotencyKey)
 	var i BillingUncertainRecovery
 	err := row.Scan(
 		&i.IdempotencyKey,
@@ -485,7 +484,7 @@ type GetBillingUsageRow struct {
 }
 
 func (q *Queries) GetBillingUsage(ctx context.Context, id string) (GetBillingUsageRow, error) {
-	row := q.db.QueryRowContext(ctx, getBillingUsage, id)
+	row := q.db.QueryRow(ctx, getBillingUsage, id)
 	var i GetBillingUsageRow
 	err := row.Scan(
 		&i.CreditsBalance,
@@ -519,7 +518,7 @@ type GetConvertedTrialPlanVersionForWebhookRow struct {
 }
 
 func (q *Queries) GetConvertedTrialPlanVersionForWebhook(ctx context.Context, code string) (GetConvertedTrialPlanVersionForWebhookRow, error) {
-	row := q.db.QueryRowContext(ctx, getConvertedTrialPlanVersionForWebhook, code)
+	row := q.db.QueryRow(ctx, getConvertedTrialPlanVersionForWebhook, code)
 	var i GetConvertedTrialPlanVersionForWebhookRow
 	err := row.Scan(
 		&i.Code,
@@ -553,7 +552,7 @@ type GetCreditAutoTopupPolicyRow struct {
 }
 
 func (q *Queries) GetCreditAutoTopupPolicy(ctx context.Context, userID string) (GetCreditAutoTopupPolicyRow, error) {
-	row := q.db.QueryRowContext(ctx, getCreditAutoTopupPolicy, userID)
+	row := q.db.QueryRow(ctx, getCreditAutoTopupPolicy, userID)
 	var i GetCreditAutoTopupPolicyRow
 	err := row.Scan(
 		&i.ID,
@@ -574,7 +573,7 @@ SELECT balance::text FROM credit_accounts WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) GetCreditBalanceForUpdate(ctx context.Context, id string) (string, error) {
-	row := q.db.QueryRowContext(ctx, getCreditBalanceForUpdate, id)
+	row := q.db.QueryRow(ctx, getCreditBalanceForUpdate, id)
 	var balance string
 	err := row.Scan(&balance)
 	return balance, err
@@ -594,7 +593,7 @@ type GetCreditLedgerEntryRow struct {
 }
 
 func (q *Queries) GetCreditLedgerEntry(ctx context.Context, idempotencyKey string) (GetCreditLedgerEntryRow, error) {
-	row := q.db.QueryRowContext(ctx, getCreditLedgerEntry, idempotencyKey)
+	row := q.db.QueryRow(ctx, getCreditLedgerEntry, idempotencyKey)
 	var i GetCreditLedgerEntryRow
 	err := row.Scan(
 		&i.AccountID,
@@ -619,7 +618,7 @@ type GetCreditTopupUnitRow struct {
 }
 
 func (q *Queries) GetCreditTopupUnit(ctx context.Context) (GetCreditTopupUnitRow, error) {
-	row := q.db.QueryRowContext(ctx, getCreditTopupUnit)
+	row := q.db.QueryRow(ctx, getCreditTopupUnit)
 	var i GetCreditTopupUnitRow
 	err := row.Scan(&i.Code, &i.CatalogRef, &i.ProviderProductID)
 	return i, err
@@ -639,7 +638,7 @@ type GetFreeBillingPlanRow struct {
 }
 
 func (q *Queries) GetFreeBillingPlan(ctx context.Context) (GetFreeBillingPlanRow, error) {
-	row := q.db.QueryRowContext(ctx, getFreeBillingPlan)
+	row := q.db.QueryRow(ctx, getFreeBillingPlan)
 	var i GetFreeBillingPlanRow
 	err := row.Scan(
 		&i.ID,
@@ -660,7 +659,7 @@ type GetIncludedAndAllocatedStorageForUpdateRow struct {
 }
 
 func (q *Queries) GetIncludedAndAllocatedStorageForUpdate(ctx context.Context, id string) (GetIncludedAndAllocatedStorageForUpdateRow, error) {
-	row := q.db.QueryRowContext(ctx, getIncludedAndAllocatedStorageForUpdate, id)
+	row := q.db.QueryRow(ctx, getIncludedAndAllocatedStorageForUpdate, id)
 	var i GetIncludedAndAllocatedStorageForUpdateRow
 	err := row.Scan(&i.IncludedGb, &i.AllocatedGb)
 	return i, err
@@ -692,7 +691,7 @@ type GetPolarSubscriptionForUpdateRow struct {
 }
 
 func (q *Queries) GetPolarSubscriptionForUpdate(ctx context.Context, arg GetPolarSubscriptionForUpdateParams) (GetPolarSubscriptionForUpdateRow, error) {
-	row := q.db.QueryRowContext(ctx, getPolarSubscriptionForUpdate, arg.ProviderSubscriptionID, arg.UserID)
+	row := q.db.QueryRow(ctx, getPolarSubscriptionForUpdate, arg.ProviderSubscriptionID, arg.UserID)
 	var i GetPolarSubscriptionForUpdateRow
 	err := row.Scan(
 		&i.ID,
@@ -724,7 +723,7 @@ type HasSubscriptionPeriodCreditsParams struct {
 }
 
 func (q *Queries) HasSubscriptionPeriodCredits(ctx context.Context, arg HasSubscriptionPeriodCreditsParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, hasSubscriptionPeriodCredits, arg.UserID, arg.ProviderSubscriptionID, arg.PeriodKeyPrefix)
+	row := q.db.QueryRow(ctx, hasSubscriptionPeriodCredits, arg.UserID, arg.ProviderSubscriptionID, arg.PeriodKeyPrefix)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
@@ -744,11 +743,11 @@ type InsertCreditLedgerEntryParams struct {
 	SourceType     string
 	SourceID       string
 	IdempotencyKey string
-	Metadata       json.RawMessage
+	Metadata       []byte
 }
 
 func (q *Queries) InsertCreditLedgerEntry(ctx context.Context, arg InsertCreditLedgerEntryParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, insertCreditLedgerEntry,
+	result, err := q.db.Exec(ctx, insertCreditLedgerEntry,
 		arg.ID,
 		arg.AccountID,
 		arg.EntryType,
@@ -761,7 +760,7 @@ func (q *Queries) InsertCreditLedgerEntry(ctx context.Context, arg InsertCreditL
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const insertPolarEvent = `-- name: InsertPolarEvent :execrows
@@ -773,11 +772,11 @@ type InsertPolarEventParams struct {
 	ID              string
 	ProviderEventID string
 	EventType       string
-	Payload         json.RawMessage
+	Payload         []byte
 }
 
 func (q *Queries) InsertPolarEvent(ctx context.Context, arg InsertPolarEventParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, insertPolarEvent,
+	result, err := q.db.Exec(ctx, insertPolarEvent,
 		arg.ID,
 		arg.ProviderEventID,
 		arg.EventType,
@@ -786,7 +785,7 @@ func (q *Queries) InsertPolarEvent(ctx context.Context, arg InsertPolarEventPara
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const insertStorageLedgerEntry = `-- name: InsertStorageLedgerEntry :exec
@@ -802,11 +801,11 @@ type InsertStorageLedgerEntryParams struct {
 	SourceType     string
 	SourceID       string
 	IdempotencyKey string
-	Metadata       json.RawMessage
+	Metadata       []byte
 }
 
 func (q *Queries) InsertStorageLedgerEntry(ctx context.Context, arg InsertStorageLedgerEntryParams) error {
-	_, err := q.db.ExecContext(ctx, insertStorageLedgerEntry,
+	_, err := q.db.Exec(ctx, insertStorageLedgerEntry,
 		arg.ID,
 		arg.AccountID,
 		arg.EntryType,
@@ -833,11 +832,11 @@ type InsertStorageLedgerEntryIdempotentParams struct {
 	SourceType     string
 	SourceID       string
 	IdempotencyKey string
-	Metadata       json.RawMessage
+	Metadata       []byte
 }
 
 func (q *Queries) InsertStorageLedgerEntryIdempotent(ctx context.Context, arg InsertStorageLedgerEntryIdempotentParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, insertStorageLedgerEntryIdempotent,
+	result, err := q.db.Exec(ctx, insertStorageLedgerEntryIdempotent,
 		arg.ID,
 		arg.AccountID,
 		arg.EntryType,
@@ -850,7 +849,7 @@ func (q *Queries) InsertStorageLedgerEntryIdempotent(ctx context.Context, arg In
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const listBillingPlanProducts = `-- name: ListBillingPlanProducts :many
@@ -866,11 +865,11 @@ type ListBillingPlanProductsRow struct {
 	PlanName          string
 	IncludedCredits   string
 	IncludedStorageGb int32
-	Metadata          json.RawMessage
+	Metadata          []byte
 }
 
 func (q *Queries) ListBillingPlanProducts(ctx context.Context) ([]ListBillingPlanProductsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listBillingPlanProducts)
+	rows, err := q.db.Query(ctx, listBillingPlanProducts)
 	if err != nil {
 		return nil, err
 	}
@@ -889,9 +888,6 @@ func (q *Queries) ListBillingPlanProducts(ctx context.Context) ([]ListBillingPla
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -916,7 +912,7 @@ type ListEligibleCreditAutoTopupsRow struct {
 }
 
 func (q *Queries) ListEligibleCreditAutoTopups(ctx context.Context) ([]ListEligibleCreditAutoTopupsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listEligibleCreditAutoTopups)
+	rows, err := q.db.Query(ctx, listEligibleCreditAutoTopups)
 	if err != nil {
 		return nil, err
 	}
@@ -933,9 +929,6 @@ func (q *Queries) ListEligibleCreditAutoTopups(ctx context.Context) ([]ListEligi
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -957,7 +950,7 @@ type MarkBillingCheckoutUncertainParams struct {
 }
 
 func (q *Queries) MarkBillingCheckoutUncertain(ctx context.Context, arg MarkBillingCheckoutUncertainParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, markBillingCheckoutUncertain,
+	result, err := q.db.Exec(ctx, markBillingCheckoutUncertain,
 		arg.LastError,
 		arg.Now,
 		arg.UserID,
@@ -966,7 +959,7 @@ func (q *Queries) MarkBillingCheckoutUncertain(ctx context.Context, arg MarkBill
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const markBillingPortalOperation = `-- name: MarkBillingPortalOperation :execrows
@@ -981,11 +974,11 @@ type MarkBillingPortalOperationParams struct {
 }
 
 func (q *Queries) MarkBillingPortalOperation(ctx context.Context, arg MarkBillingPortalOperationParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, markBillingPortalOperation, arg.State, arg.LastError, arg.IdempotencyKey)
+	result, err := q.db.Exec(ctx, markBillingPortalOperation, arg.State, arg.LastError, arg.IdempotencyKey)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const markBillingSubscriptionUpdate = `-- name: MarkBillingSubscriptionUpdate :execrows
@@ -1000,11 +993,11 @@ type MarkBillingSubscriptionUpdateParams struct {
 }
 
 func (q *Queries) MarkBillingSubscriptionUpdate(ctx context.Context, arg MarkBillingSubscriptionUpdateParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, markBillingSubscriptionUpdate, arg.State, arg.LastError, arg.IdempotencyKey)
+	result, err := q.db.Exec(ctx, markBillingSubscriptionUpdate, arg.State, arg.LastError, arg.IdempotencyKey)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const markPolarEventFailed = `-- name: MarkPolarEventFailed :exec
@@ -1012,7 +1005,7 @@ UPDATE polar_events SET processed_state = 'failed', processed_at = now() WHERE p
 `
 
 func (q *Queries) MarkPolarEventFailed(ctx context.Context, providerEventID string) error {
-	_, err := q.db.ExecContext(ctx, markPolarEventFailed, providerEventID)
+	_, err := q.db.Exec(ctx, markPolarEventFailed, providerEventID)
 	return err
 }
 
@@ -1021,7 +1014,7 @@ UPDATE polar_events SET processed_state = 'processed', processed_at = now() WHER
 `
 
 func (q *Queries) MarkPolarEventProcessed(ctx context.Context, providerEventID string) error {
-	_, err := q.db.ExecContext(ctx, markPolarEventProcessed, providerEventID)
+	_, err := q.db.Exec(ctx, markPolarEventProcessed, providerEventID)
 	return err
 }
 
@@ -1035,7 +1028,7 @@ type NumericEqualParams struct {
 }
 
 func (q *Queries) NumericEqual(ctx context.Context, arg NumericEqualParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, numericEqual, arg.Column1, arg.Column2)
+	row := q.db.QueryRow(ctx, numericEqual, arg.Column1, arg.Column2)
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -1051,7 +1044,7 @@ type NumericGreaterThanOrEqualParams struct {
 }
 
 func (q *Queries) NumericGreaterThanOrEqual(ctx context.Context, arg NumericGreaterThanOrEqualParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, numericGreaterThanOrEqual, arg.Column1, arg.Column2)
+	row := q.db.QueryRow(ctx, numericGreaterThanOrEqual, arg.Column1, arg.Column2)
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -1063,11 +1056,11 @@ WHERE idempotency_key=$1 AND state='uncertain'
 `
 
 func (q *Queries) RecoverUncertainBillingAutoTopup(ctx context.Context, idempotencyKey string) (int64, error) {
-	result, err := q.db.ExecContext(ctx, recoverUncertainBillingAutoTopup, idempotencyKey)
+	result, err := q.db.Exec(ctx, recoverUncertainBillingAutoTopup, idempotencyKey)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const recoverUncertainBillingCheckout = `-- name: RecoverUncertainBillingCheckout :execrows
@@ -1076,11 +1069,11 @@ WHERE idempotency_key=$1 AND state='uncertain'
 `
 
 func (q *Queries) RecoverUncertainBillingCheckout(ctx context.Context, idempotencyKey string) (int64, error) {
-	result, err := q.db.ExecContext(ctx, recoverUncertainBillingCheckout, idempotencyKey)
+	result, err := q.db.Exec(ctx, recoverUncertainBillingCheckout, idempotencyKey)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const recoverUncertainBillingPortal = `-- name: RecoverUncertainBillingPortal :execrows
@@ -1089,11 +1082,11 @@ WHERE idempotency_key=$1 AND state='uncertain'
 `
 
 func (q *Queries) RecoverUncertainBillingPortal(ctx context.Context, idempotencyKey string) (int64, error) {
-	result, err := q.db.ExecContext(ctx, recoverUncertainBillingPortal, idempotencyKey)
+	result, err := q.db.Exec(ctx, recoverUncertainBillingPortal, idempotencyKey)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const recoverUncertainBillingSubscriptionUpdate = `-- name: RecoverUncertainBillingSubscriptionUpdate :execrows
@@ -1102,11 +1095,11 @@ WHERE idempotency_key=$1 AND state='uncertain'
 `
 
 func (q *Queries) RecoverUncertainBillingSubscriptionUpdate(ctx context.Context, idempotencyKey string) (int64, error) {
-	result, err := q.db.ExecContext(ctx, recoverUncertainBillingSubscriptionUpdate, idempotencyKey)
+	result, err := q.db.Exec(ctx, recoverUncertainBillingSubscriptionUpdate, idempotencyKey)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const reserveBillingCheckout = `-- name: ReserveBillingCheckout :one
@@ -1139,7 +1132,7 @@ type ReserveBillingCheckoutRow struct {
 }
 
 func (q *Queries) ReserveBillingCheckout(ctx context.Context, arg ReserveBillingCheckoutParams) (ReserveBillingCheckoutRow, error) {
-	row := q.db.QueryRowContext(ctx, reserveBillingCheckout,
+	row := q.db.QueryRow(ctx, reserveBillingCheckout,
 		arg.ID,
 		arg.UserID,
 		arg.ProductCode,
@@ -1176,7 +1169,7 @@ type ReserveBillingPortalOperationParams struct {
 }
 
 func (q *Queries) ReserveBillingPortalOperation(ctx context.Context, arg ReserveBillingPortalOperationParams) (BillingPortalOperation, error) {
-	row := q.db.QueryRowContext(ctx, reserveBillingPortalOperation, arg.IdempotencyKey, arg.UserID, arg.RequestHash)
+	row := q.db.QueryRow(ctx, reserveBillingPortalOperation, arg.IdempotencyKey, arg.UserID, arg.RequestHash)
 	var i BillingPortalOperation
 	err := row.Scan(
 		&i.IdempotencyKey,
@@ -1210,7 +1203,7 @@ type ReserveBillingSubscriptionUpdateParams struct {
 }
 
 func (q *Queries) ReserveBillingSubscriptionUpdate(ctx context.Context, arg ReserveBillingSubscriptionUpdateParams) (BillingSubscriptionUpdateOperation, error) {
-	row := q.db.QueryRowContext(ctx, reserveBillingSubscriptionUpdate,
+	row := q.db.QueryRow(ctx, reserveBillingSubscriptionUpdate,
 		arg.IdempotencyKey,
 		arg.UserID,
 		arg.ProviderSubscriptionID,
@@ -1246,7 +1239,7 @@ type ReserveBillingUncertainRecoveryParams struct {
 }
 
 func (q *Queries) ReserveBillingUncertainRecovery(ctx context.Context, arg ReserveBillingUncertainRecoveryParams) (BillingUncertainRecovery, error) {
-	row := q.db.QueryRowContext(ctx, reserveBillingUncertainRecovery,
+	row := q.db.QueryRow(ctx, reserveBillingUncertainRecovery,
 		arg.IdempotencyKey,
 		arg.OperationKind,
 		arg.OperationID,
@@ -1281,7 +1274,7 @@ type ReserveCreditAutoTopupParams struct {
 }
 
 func (q *Queries) ReserveCreditAutoTopup(ctx context.Context, arg ReserveCreditAutoTopupParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, reserveCreditAutoTopup,
+	result, err := q.db.Exec(ctx, reserveCreditAutoTopup,
 		arg.ID,
 		arg.UserID,
 		arg.IdempotencyKey,
@@ -1290,7 +1283,7 @@ func (q *Queries) ReserveCreditAutoTopup(ctx context.Context, arg ReserveCreditA
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const setPendingSubscriptionPlan = `-- name: SetPendingSubscriptionPlan :exec
@@ -1305,7 +1298,7 @@ type SetPendingSubscriptionPlanParams struct {
 }
 
 func (q *Queries) SetPendingSubscriptionPlan(ctx context.Context, arg SetPendingSubscriptionPlanParams) error {
-	_, err := q.db.ExecContext(ctx, setPendingSubscriptionPlan, arg.PendingPlanVersionID, arg.ProviderSubscriptionID, arg.UserID)
+	_, err := q.db.Exec(ctx, setPendingSubscriptionPlan, arg.PendingPlanVersionID, arg.ProviderSubscriptionID, arg.UserID)
 	return err
 }
 
@@ -1321,7 +1314,7 @@ type SetPendingSubscriptionStorageParams struct {
 }
 
 func (q *Queries) SetPendingSubscriptionStorage(ctx context.Context, arg SetPendingSubscriptionStorageParams) error {
-	_, err := q.db.ExecContext(ctx, setPendingSubscriptionStorage, arg.PendingStorageUnits, arg.ProviderSubscriptionID, arg.UserID)
+	_, err := q.db.Exec(ctx, setPendingSubscriptionStorage, arg.PendingStorageUnits, arg.ProviderSubscriptionID, arg.UserID)
 	return err
 }
 
@@ -1335,7 +1328,7 @@ type SetPurchasedStorageParams struct {
 }
 
 func (q *Queries) SetPurchasedStorage(ctx context.Context, arg SetPurchasedStorageParams) error {
-	_, err := q.db.ExecContext(ctx, setPurchasedStorage, arg.ID, arg.PurchasedGb)
+	_, err := q.db.Exec(ctx, setPurchasedStorage, arg.ID, arg.PurchasedGb)
 	return err
 }
 
@@ -1344,7 +1337,7 @@ SELECT EXISTS (SELECT 1 FROM storage_ledger_entries WHERE idempotency_key = $1)
 `
 
 func (q *Queries) StorageLedgerEntryExists(ctx context.Context, idempotencyKey string) (bool, error) {
-	row := q.db.QueryRowContext(ctx, storageLedgerEntryExists, idempotencyKey)
+	row := q.db.QueryRow(ctx, storageLedgerEntryExists, idempotencyKey)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
@@ -1360,7 +1353,7 @@ type SubtractCreditBalanceParams struct {
 }
 
 func (q *Queries) SubtractCreditBalance(ctx context.Context, arg SubtractCreditBalanceParams) error {
-	_, err := q.db.ExecContext(ctx, subtractCreditBalance, arg.Amount, arg.ID)
+	_, err := q.db.Exec(ctx, subtractCreditBalance, arg.Amount, arg.ID)
 	return err
 }
 
@@ -1376,7 +1369,7 @@ type UpdateRefundedSubscriptionParams struct {
 }
 
 func (q *Queries) UpdateRefundedSubscription(ctx context.Context, arg UpdateRefundedSubscriptionParams) error {
-	_, err := q.db.ExecContext(ctx, updateRefundedSubscription, arg.State, arg.ProviderSubscriptionID, arg.UserID)
+	_, err := q.db.Exec(ctx, updateRefundedSubscription, arg.State, arg.ProviderSubscriptionID, arg.UserID)
 	return err
 }
 
@@ -1393,7 +1386,7 @@ type UpdateSubscriptionStorageParams struct {
 }
 
 func (q *Queries) UpdateSubscriptionStorage(ctx context.Context, arg UpdateSubscriptionStorageParams) error {
-	_, err := q.db.ExecContext(ctx, updateSubscriptionStorage,
+	_, err := q.db.Exec(ctx, updateSubscriptionStorage,
 		arg.StorageUnits,
 		arg.PendingStorageUnits,
 		arg.ProviderSubscriptionID,
@@ -1419,7 +1412,7 @@ type UpsertCreditAutoTopupPolicyParams struct {
 }
 
 func (q *Queries) UpsertCreditAutoTopupPolicy(ctx context.Context, arg UpsertCreditAutoTopupPolicyParams) error {
-	_, err := q.db.ExecContext(ctx, upsertCreditAutoTopupPolicy,
+	_, err := q.db.Exec(ctx, upsertCreditAutoTopupPolicy,
 		arg.ID,
 		arg.UserID,
 		arg.Enabled,
@@ -1453,7 +1446,7 @@ type UpsertPolarSubscriptionParams struct {
 }
 
 func (q *Queries) UpsertPolarSubscription(ctx context.Context, arg UpsertPolarSubscriptionParams) error {
-	_, err := q.db.ExecContext(ctx, upsertPolarSubscription,
+	_, err := q.db.Exec(ctx, upsertPolarSubscription,
 		arg.ID,
 		arg.UserID,
 		arg.ProviderSubscriptionID,
@@ -1472,7 +1465,7 @@ SELECT EXISTS (SELECT 1 FROM subscriptions WHERE user_id = $1 AND provider = 'po
 `
 
 func (q *Queries) UserHasPolarSubscriptionHistory(ctx context.Context, userID string) (bool, error) {
-	row := q.db.QueryRowContext(ctx, userHasPolarSubscriptionHistory, userID)
+	row := q.db.QueryRow(ctx, userHasPolarSubscriptionHistory, userID)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err

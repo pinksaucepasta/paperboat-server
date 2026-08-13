@@ -118,11 +118,7 @@ func (s *Service) ApplyPending(ctx context.Context, projectID string) error {
 		}
 		operations := make([]dbsqlc.ListDueTerminalSessionOperationsRow, 0, len(items))
 		for _, item := range items {
-			operations = append(operations, dbsqlc.ListDueTerminalSessionOperationsRow{
-				ID: item.ID, ProjectID: item.ProjectID, TerminalSessionID: item.TerminalSessionID,
-				Operation: item.Operation, Attempts: item.Attempts, UserID: item.UserID,
-				ThreadID: item.ThreadID, TerminalID: item.TerminalID,
-			})
+			operations = append(operations, dbsqlc.ListDueTerminalSessionOperationsRow(item))
 		}
 		if err := s.applyOperations(ctx, operations); err != nil {
 			return err

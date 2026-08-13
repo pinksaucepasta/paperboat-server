@@ -8,7 +8,6 @@ package dbsqlc
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 )
 
 const listMachineTypes = `-- name: ListMachineTypes :many
@@ -31,7 +30,7 @@ type ListMachineTypesRow struct {
 }
 
 func (q *Queries) ListMachineTypes(ctx context.Context) ([]ListMachineTypesRow, error) {
-	rows, err := q.db.QueryContext(ctx, listMachineTypes)
+	rows, err := q.db.Query(ctx, listMachineTypes)
 	if err != nil {
 		return nil, err
 	}
@@ -55,9 +54,6 @@ func (q *Queries) ListMachineTypes(ctx context.Context) ([]ListMachineTypesRow, 
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -79,12 +75,12 @@ type ListPlansRow struct {
 	CurrentVersionID  sql.NullString
 	PvIncludedCredits string
 	IncludedStorageGb int32
-	Metadata          json.RawMessage
+	Metadata          []byte
 	Version           int64
 }
 
 func (q *Queries) ListPlans(ctx context.Context) ([]ListPlansRow, error) {
-	rows, err := q.db.QueryContext(ctx, listPlans)
+	rows, err := q.db.Query(ctx, listPlans)
 	if err != nil {
 		return nil, err
 	}
@@ -106,9 +102,6 @@ func (q *Queries) ListPlans(ctx context.Context) ([]ListPlansRow, error) {
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -133,7 +126,7 @@ type ListPresetsRow struct {
 }
 
 func (q *Queries) ListPresets(ctx context.Context) ([]ListPresetsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listPresets)
+	rows, err := q.db.Query(ctx, listPresets)
 	if err != nil {
 		return nil, err
 	}
@@ -153,9 +146,6 @@ func (q *Queries) ListPresets(ctx context.Context) ([]ListPresetsRow, error) {
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -178,7 +168,7 @@ type ListRegionsRow struct {
 }
 
 func (q *Queries) ListRegions(ctx context.Context) ([]ListRegionsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listRegions)
+	rows, err := q.db.Query(ctx, listRegions)
 	if err != nil {
 		return nil, err
 	}
@@ -196,9 +186,6 @@ func (q *Queries) ListRegions(ctx context.Context) ([]ListRegionsRow, error) {
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -223,6 +210,6 @@ type SyncRegionParams struct {
 }
 
 func (q *Queries) SyncRegion(ctx context.Context, arg SyncRegionParams) error {
-	_, err := q.db.ExecContext(ctx, syncRegion, arg.Code, arg.Name, arg.ProviderEnabled)
+	_, err := q.db.Exec(ctx, syncRegion, arg.Code, arg.Name, arg.ProviderEnabled)
 	return err
 }

@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -60,6 +59,9 @@ func TestSetupIsIdempotentAndUnpairPreservesInteractiveIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if first.Alias != "studio" {
+		t.Fatalf("first alias=%q", first.Alias)
+	}
 	if _, err := service.CreateConfiguredTerminalSession(ctx, userID, first.ID, "forbidden", "receive-terminal"); !errors.Is(err, ErrMachineCapabilityUnavailable) {
 		t.Fatalf("receive terminal session error = %v, want ErrMachineCapabilityUnavailable", err)
 	}
@@ -89,6 +91,20 @@ func TestSetupIsIdempotentAndUnpairPreservesInteractiveIdentity(t *testing.T) {
 	replacement.PublicIdentityKey = base64.RawURLEncoding.EncodeToString(replacementPublic)
 	if _, err := service.Setup(ctx, userID, replacement); !errors.Is(err, ErrMachineNameConflict) {
 		t.Fatalf("replacement setup error = %v, want ErrMachineNameConflict", err)
+	}
+	collisionPublic, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collision := input
+	collision.DisplayName = "Studio!!!"
+	collision.PublicIdentityKey = base64.RawURLEncoding.EncodeToString(collisionPublic)
+	collidingMachine, err := service.Setup(ctx, userID, collision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if collidingMachine.Alias != "studio-2" {
+		t.Fatalf("collision alias=%q", collidingMachine.Alias)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machines SET setup_mode='host',setup_roles=ARRAY['host','interactive'],configured_capabilities=ARRAY['file_receive','preview_launch','terminal_host','codex_host','session_host','keep_awake'],observed_capabilities=ARRAY['file_receive','preview_launch','terminal_host','codex_host','session_host','keep_awake'],seat_state='occupied' WHERE id=$1`, first.ID); err != nil {
 		t.Fatal(err)
@@ -140,14 +156,20 @@ func TestOnlineReceiveMachineCanUpgradeToHost(t *testing.T) {
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_"+suffix, "receive-upgrade-"+suffix+"@example.test"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machine_entitlements (id,user_id,provider_subscription_id,product_code,state,seat_quantity,allowance_bytes,current_period_start,current_period_end) VALUES ($1,$2,$3,'connected-test','active',1,1048576,now()-interval '1 hour',now()+interval '1 hour')`, "ume_receive_upgrade_"+suffix, userID, "sub_receive_upgrade_"+suffix); err != nil {
+		t.Fatal(err)
+	}
 	public, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	publicKey := base64.RawURLEncoding.EncodeToString(public)
 	service := New(store, audit.NewWriter(store), Policy{PairingLifetime: 10 * time.Minute, AllowedPlatforms: []string{"linux"}}, testSeatAuthorizer{})
-	service.ConfigureProvisioning(nil, "receive-upgrade-key")
+	service.ConfigureProvisioning(access.FakeClient{}, "receive-upgrade-key")
 	service.ConfigureAccess(nil, "https://api.paperboat.test", 5*time.Minute)
+	service.ConfigureHelperEnrollment(func(context.Context, string, string, string, time.Duration) (HelperEnrollmentGrant, error) {
+		return HelperEnrollmentGrant{EnrollmentID: "henr_receive_upgrade_" + suffix, HelperID: "helper_receive_upgrade_" + suffix, Credential: "receive-upgrade-credential", ExpiresAt: time.Now().UTC().Add(10 * time.Minute)}, nil
+	})
 	if err := service.ConfigureRuntimeRoute("runtime.example.test", 38080); err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +250,7 @@ func TestCreateTerminalSessionMapsDuplicateNameToConflict(t *testing.T) {
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_"+suffix, "session-"+suffix+"@example.test"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,'Sessions','linux','amd64','/home/test','online','occupied',true)`, machineID, userID, "env_session_"+suffix); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online,configured_capabilities,observed_capabilities) VALUES ($1,$2,$3,'Sessions','linux','amd64','/home/test','online','occupied',true,ARRAY['terminal_host'],ARRAY['terminal_host'])`, machineID, userID, "env_session_"+suffix); err != nil {
 		t.Fatal(err)
 	}
 	service := New(store, audit.NewWriter(store), Policy{}, nil)
@@ -248,7 +270,7 @@ func TestCreateTerminalSessionEvictsClosedSessionAtRetentionLimit(t *testing.T) 
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_"+suffix, "limit-"+suffix+"@example.test"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,'Limit','linux','amd64','/home/test','online','occupied',true)`, machineID, userID, "env_limit_"+suffix); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online,configured_capabilities,observed_capabilities) VALUES ($1,$2,$3,'Limit','linux','amd64','/home/test','online','occupied',true,ARRAY['terminal_host'],ARRAY['terminal_host'])`, machineID, userID, "env_limit_"+suffix); err != nil {
 		t.Fatal(err)
 	}
 	service := New(store, audit.NewWriter(store), Policy{}, nil)
@@ -283,7 +305,7 @@ func TestCreateTerminalSessionAllocatesNameWhenOmitted(t *testing.T) {
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_"+suffix, "auto-session-"+suffix+"@example.test"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,'Auto Sessions','linux','amd64','/home/test','online','occupied',true)`, machineID, userID, "env_auto_session_"+suffix); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online,configured_capabilities,observed_capabilities) VALUES ($1,$2,$3,'Auto Sessions','linux','amd64','/home/test','online','occupied',true,ARRAY['terminal_host'],ARRAY['terminal_host'])`, machineID, userID, "env_auto_session_"+suffix); err != nil {
 		t.Fatal(err)
 	}
 	service := New(store, audit.NewWriter(store), Policy{}, nil)
@@ -345,7 +367,7 @@ func TestAvailabilityPolicyLifecycle(t *testing.T) {
 		t.Fatalf("wrong-helper resolution error = %v", err)
 	}
 	initialObservedAt := time.Now().UTC().Truncate(time.Microsecond)
-	initialObservation := AvailabilityObservation{Schema: AvailabilityPolicySchemaV1, Mode: "keep_awake", Version: 0, Status: "applied", ObservedAt: initialObservedAt, HostServiceVersion: "1.2.3", HostServiceScope: "system"}
+	initialObservation := AvailabilityObservation{Schema: AvailabilityPolicySchemaV1, Mode: "keep_awake", Version: 0, Status: "applied", ObservedAt: initialObservedAt, HostServiceVersion: "1.2.3", HostServiceScope: "system", UpdateHealth: "healthy"}
 	if err := service.RecordAvailabilityObservation(ctx, environmentID, machineID, initialObservation); err != nil {
 		t.Fatalf("initial version-zero observation: %v", err)
 	}
@@ -386,7 +408,7 @@ func TestAvailabilityPolicyLifecycle(t *testing.T) {
 	}
 
 	observedAt := time.Now().UTC().Truncate(time.Microsecond)
-	observation := AvailabilityObservation{Schema: AvailabilityPolicySchemaV1, Mode: "allow_sleep", Version: 2, Status: "applied", ObservedAt: observedAt, HostServiceVersion: "1.2.3", HostServiceScope: "system", UpdateRollbacks: 2}
+	observation := AvailabilityObservation{Schema: AvailabilityPolicySchemaV1, Mode: "allow_sleep", Version: 2, Status: "applied", ObservedAt: observedAt, HostServiceVersion: "1.2.3", HostServiceScope: "system", UpdateRollbacks: 2, UpdateHealth: "recovery_required"}
 	if err := service.RecordAvailabilityObservation(ctx, environmentID, machineID, observation); err != nil {
 		t.Fatal(err)
 	}
@@ -394,6 +416,7 @@ func TestAvailabilityPolicyLifecycle(t *testing.T) {
 		t.Fatalf("exact observation replay: %v", err)
 	}
 	higherRollbacks := observation
+	higherRollbacks.ObservedAt = observedAt.Add(time.Second)
 	higherRollbacks.UpdateRollbacks = 3
 	if err := service.RecordAvailabilityObservation(ctx, environmentID, machineID, higherRollbacks); err != nil {
 		t.Fatalf("new rollback observation: %v", err)
@@ -401,10 +424,18 @@ func TestAvailabilityPolicyLifecycle(t *testing.T) {
 	if err := service.RecordAvailabilityObservation(ctx, environmentID, machineID, observation); !errors.Is(err, ErrAvailabilityObservationStale) {
 		t.Fatalf("decreasing rollback observation error = %v", err)
 	}
+	recovered := higherRollbacks
+	recovered.ObservedAt = observedAt.Add(2 * time.Second)
+	recovered.Status = "applied"
+	recovered.HostServiceVersion = "1.2.4"
+	recovered.UpdateHealth = "healthy"
+	if err := service.RecordAvailabilityObservation(ctx, environmentID, machineID, recovered); err != nil {
+		t.Fatalf("same-policy health update: %v", err)
+	}
 	for name, candidate := range map[string]AvailabilityObservation{
 		"stale":          {Schema: AvailabilityPolicySchemaV1, Mode: "keep_awake", Version: 1, Status: "applied", ObservedAt: observedAt, HostServiceVersion: "1.2.3", HostServiceScope: "system"},
 		"future":         {Schema: AvailabilityPolicySchemaV1, Mode: "allow_sleep", Version: 3, Status: "applied", ObservedAt: observedAt, HostServiceVersion: "1.2.3", HostServiceScope: "system"},
-		"same-different": {Schema: AvailabilityPolicySchemaV1, Mode: "allow_sleep", Version: 2, Status: "error", ErrorCode: "apply_failed", ObservedAt: observedAt, HostServiceVersion: "1.2.3", HostServiceScope: "system"},
+		"same-older":     {Schema: AvailabilityPolicySchemaV1, Mode: "allow_sleep", Version: 2, Status: "error", ErrorCode: "apply_failed", ObservedAt: observedAt, HostServiceVersion: "1.2.3", HostServiceScope: "system", UpdateRollbacks: 3, UpdateHealth: "recovery_required"},
 	} {
 		if err := service.RecordAvailabilityObservation(ctx, environmentID, machineID, candidate); !errors.Is(err, ErrAvailabilityObservationStale) {
 			t.Errorf("%s observation error = %v", name, err)
@@ -416,7 +447,7 @@ func TestAvailabilityPolicyLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	availability := mapAvailability(machine)
-	if availability.Status != "applied" || availability.ObservedMode != "allow_sleep" || availability.ObservedVersion != 2 || availability.HostServiceVersion != "1.2.3" || availability.UpdateRollbacks != 3 {
+	if availability.Status != "applied" || availability.ObservedMode != "allow_sleep" || availability.ObservedVersion != 2 || availability.HostServiceVersion != "1.2.4" || availability.UpdateRollbacks != 3 || availability.UpdateHealth != "healthy" {
 		t.Fatalf("observed availability = %+v", availability)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machines SET online=false WHERE id=$1`, machineID); err != nil {
@@ -843,29 +874,7 @@ func TestInstallationFailureRevokesIdentityReleasesSeatAndRetryIssuesNewIdentity
 
 func configureSignedTestArtifact(t *testing.T, service *Service) {
 	t.Helper()
-	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sign := func(kind, name, body string) MachineArtifact {
-		digest := sha256.Sum256([]byte(body))
-		artifact := MachineArtifact{Schema: "paperboat.machine-artifact/v1", Kind: kind, Version: "test", Platform: "linux", Architecture: "amd64", URL: "https://updates.example.test/" + name, ByteLength: int64(len(body)), SHA256: hex.EncodeToString(digest[:])}
-		payload, _ := json.Marshal(struct {
-			Architecture string `json:"architecture"`
-			ByteLength   int64  `json:"byte_length"`
-			Kind         string `json:"kind"`
-			Platform     string `json:"platform"`
-			Schema       string `json:"schema"`
-			SHA256       string `json:"sha256"`
-			URL          string `json:"url"`
-			Version      string `json:"version"`
-		}{artifact.Architecture, artifact.ByteLength, artifact.Kind, artifact.Platform, artifact.Schema, artifact.SHA256, artifact.URL, artifact.Version})
-		artifact.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, payload))
-		return artifact
-	}
-	artifact := sign("pb", "pb", "runtime")
-	encoded, _ := json.Marshal([]MachineArtifact{artifact})
-	if err := service.ConfigureMachineArtifacts(string(encoded), base64.RawURLEncoding.EncodeToString(publicKey)); err != nil {
+	if err := service.ConfigureMachineArtifacts("https://updates.example.test/paperboat", "test"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -948,6 +957,60 @@ func TestConnectIssuesEnvironmentBoundDescriptor(t *testing.T) {
 		if claims.EnvironmentID != environmentID || claims.UserID != userID || claims.CLIClientSessionID != "cls_1" || claims.SessionID != terminalSessionID || class == "file_transfer" && claims.SourceMachineID != sourceMachineID {
 			t.Fatalf("%s credential bindings = %#v", class, claims)
 		}
+	}
+}
+
+func TestExecDescriptorPersistsExactRevocableCredential(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID, machineID, environmentID := "usr_exec_"+suffix, "um_exec_"+suffix, "env_exec_"+suffix
+	sourceMachineID, helperID, edgeNodeID := "um_exec_source_"+suffix, "helper_exec_"+suffix, "edge_exec_"+suffix
+	statements := []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, []any{userID, "workos_exec_" + suffix, "exec-" + suffix + "@example.test"}},
+		{`INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,'Exec Host','linux','amd64','/workspace','online','occupied',true)`, []any{machineID, userID, environmentID}},
+		{`UPDATE paperboat.user_machines SET observed_capabilities=configured_capabilities WHERE id=$1`, []any{machineID}},
+		{`INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,'Exec Source','linux','amd64','/source','online','occupied',true)`, []any{sourceMachineID, userID, "env_exec_source_" + suffix}},
+		{`INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id,desired_state) VALUES ($1,$2,$3,'active')`, []any{environmentID, machineID, userID}},
+		{`INSERT INTO paperboat.control_helpers (id,environment_id,state) VALUES ($1,$2,'active')`, []any{helperID, environmentID}},
+		{`INSERT INTO paperboat.control_tunnel_nodes (id,edge_pool,protocol_version,process_epoch,state,ready,last_heartbeat_at) VALUES ($1,'development','1.0',$2,'ready',true,now())`, []any{edgeNodeID, "epoch_exec_" + suffix}},
+		{`INSERT INTO paperboat.control_connector_generations (environment_id,machine_id,generation,edge_pool,edge_node_id,state) VALUES ($1,$2,1,'development',$3,'admitted')`, []any{environmentID, machineID, edgeNodeID}},
+		{`INSERT INTO paperboat.control_routes (id,environment_id,kind,public_host,target_host,target_port,desired_revision,applied_revision,applied_node_id,applied_generation) VALUES ($1,$2,'runtime_https_wss',$3,'127.0.0.1',8080,1,1,$4,1)`, []any{"route_exec_" + suffix, environmentID, "exec-" + suffix + ".example.test", edgeNodeID}},
+	}
+	for _, statement := range statements {
+		if _, err := store.SQL().ExecContext(ctx, statement.query, statement.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	signer, err := mint.NewEphemeral(5 * time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := New(store, audit.NewWriter(store), Policy{}, nil)
+	service.ConfigureAccess(access.FakeCredentialIssuer{}, "https://api.paperboat.test", 5*time.Minute)
+	service.ConfigureTerminalSessions(4, signer, nil)
+	operationID := "operation_exec_" + suffix
+	descriptor, err := service.ExecDescriptor(ctx, userID, sourceMachineID, machineID, "cli_exec_1", operationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, _ := descriptor.Auth["token"].(string)
+	claims, err := signer.VerifyCredential(token, "https://api.paperboat.test", "exec_operation", time.Now().UTC())
+	if err != nil || claims.OperationID != operationID || claims.MachineID != machineID || claims.UserID != userID || claims.CLIClientSessionID != "cli_exec_1" {
+		t.Fatalf("claims=%#v err=%v", claims, err)
+	}
+	var sessionID, state string
+	if err := store.SQL().QueryRowContext(ctx, `SELECT helper_terminal_session_id,state FROM paperboat.user_machine_access_sessions WHERE user_machine_id=$1`, machineID).Scan(&sessionID, &state); err != nil || sessionID != claims.JTI || state != "active" {
+		t.Fatalf("session id=%q state=%q err=%v", sessionID, state, err)
+	}
+	if err := service.RevokeUserMachineSessions(ctx, machineID, "test_revocation"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state FROM paperboat.user_machine_access_sessions WHERE user_machine_id=$1`, machineID).Scan(&state); err != nil || state != "revoked" {
+		t.Fatalf("revoked state=%q err=%v", state, err)
 	}
 }
 

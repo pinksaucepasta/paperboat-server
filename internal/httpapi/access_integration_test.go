@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/pinksaucepasta/paperboat-server/internal/access"
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/auth"
@@ -40,7 +40,7 @@ func TestConnectionReadinessDoesNotRequireConfigRepoReadiness(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/v1/projects/"+projectID+"/connection-readiness", nil)
+	req := httptest.NewRequest(http.MethodGet, accessReadinessURL(projectID), nil)
 	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -90,7 +90,7 @@ func TestConnectionReadinessWaitsForTerminalSessionReconciliation(t *testing.T) 
 	})
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/v1/projects/"+projectID+"/connection-readiness", nil)
+	req := httptest.NewRequest(http.MethodGet, accessReadinessURL(projectID), nil)
 	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || calls != 1 {
@@ -116,7 +116,7 @@ VALUES ($2, $1, 'project.stop_queued.credit_exhausted', 'stopped for test', '{}'
 		t.Fatal(err)
 	}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/v1/projects/"+projectID+"/connection-readiness", nil)
+	req := httptest.NewRequest(http.MethodGet, accessReadinessURL(projectID), nil)
 	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -234,7 +234,7 @@ func TestAccessConnectRequiresEntitlementBeforeProviderSideEffects(t *testing.T)
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", strings.NewReader(accessDescriptorBody(projectID)))
 	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusPaymentRequired {
@@ -254,7 +254,7 @@ func TestProjectConnectionDescriptorIssuesHelperDescriptorWithScopedAuth(t *test
 	cookies := loginCookies(t, router, "workos_seed_cli-ready@example.com:cli-ready@example.com:CLI Ready")
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", strings.NewReader(accessDescriptorBody(projectID)))
 	addCookies(req, cookies)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
@@ -262,7 +262,7 @@ func TestProjectConnectionDescriptorIssuesHelperDescriptorWithScopedAuth(t *test
 	}
 
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", nil)
+	req = httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", strings.NewReader(accessDescriptorBody(projectID)))
 	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -295,10 +295,14 @@ func TestProjectConnectionDescriptorUsesCanonicalHostedHelperRoute(t *testing.T)
 	}
 	accessService.ConfigureCanonicalAccess(signer)
 	seedHostedHelperRoute(t, store, projectID, userID, "hosted-canonical.example.test")
+	var hostedMachineID string
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT user_machine_id FROM paperboat.fly_machines WHERE project_id=$1`, projectID).Scan(&hostedMachineID); err != nil {
+		t.Fatal(err)
+	}
 	tokens := authorizeCLI(t, router, cookies)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", strings.NewReader(`{"source_machine_id":"source_`+projectID+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", strings.NewReader(`{"source_machine_id":"source_`+projectID+`","terminal_session_id":"`+accessTerminalSessionID(projectID)+`"}`))
 	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -317,7 +321,6 @@ func TestProjectConnectionDescriptorUsesCanonicalHostedHelperRoute(t *testing.T)
 	if terminalEndpoints["wss"] != "wss://hosted-canonical.example.test/v1/runtime" || envelope.Data.FileTransfer["endpoint"] != "https://hosted-canonical.example.test/v1/file-transfers" {
 		t.Fatalf("canonical endpoints missing: %s", rec.Body.String())
 	}
-	terminalSessionID, _ := envelope.Data.Terminal["session_id"].(string)
 	var revokedJTIs []string
 	for class, descriptor := range map[string]map[string]any{"terminal_operation": envelope.Data.Terminal, "file_transfer": envelope.Data.FileTransfer} {
 		authValue, _ := descriptor["auth"].(map[string]any)
@@ -326,7 +329,7 @@ func TestProjectConnectionDescriptorUsesCanonicalHostedHelperRoute(t *testing.T)
 		if verifyErr != nil {
 			t.Fatalf("verify %s: %v", class, verifyErr)
 		}
-		if claims.EnvironmentID != projectID || claims.UserID != userID || claims.MachineID != "machine_"+projectID || claims.CLIClientSessionID != tokens.CLIClientSessionID || claims.SessionID != terminalSessionID {
+		if claims.EnvironmentID != projectID || claims.UserID != userID || claims.MachineID != hostedMachineID || claims.CLIClientSessionID != tokens.CLIClientSessionID || claims.SessionID != accessTerminalSessionID(projectID) {
 			t.Fatalf("%s bindings=%#v", class, claims)
 		}
 		revokedJTIs = append(revokedJTIs, claims.JTI)
@@ -373,7 +376,7 @@ func TestCLIClientRevocationRevokesLinkedAccessSessions(t *testing.T) {
 	}
 	tokens := pollDevice(t, router, grant.DeviceCode, http.StatusOK)
 
-	req = httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", nil)
+	req = httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", strings.NewReader(accessDescriptorBody(projectID)))
 	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -405,7 +408,7 @@ func TestCLIClientRevocationPersistsBeforeHelperDelivery(t *testing.T) {
 	tokens := authorizeCLI(t, router, cookies)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", strings.NewReader(accessDescriptorBody(projectID)))
 	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -471,7 +474,7 @@ func TestHelperRevocationRetryContinuesAfterIndependentFailure(t *testing.T) {
 	tokens := authorizeCLI(t, router, cookies)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", strings.NewReader(accessDescriptorBody(projectID)))
 	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -533,7 +536,7 @@ FOR EACH ROW EXECUTE FUNCTION paperboat.reject_access_session_insert()`); err !=
 	})
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", strings.NewReader(accessDescriptorBody(projectID)))
 	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code < 500 {
@@ -588,7 +591,7 @@ func TestLogoutRevokesActiveAccessSessions(t *testing.T) {
 	cookies := loginCookies(t, router, "workos_seed_logout-revokes@example.com:logout-revokes@example.com:Logout Revokes")
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", strings.NewReader(accessDescriptorBody(projectID)))
 	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -612,7 +615,7 @@ func TestProjectStopRevokesActiveAccessSessions(t *testing.T) {
 	cookies := loginCookies(t, router, "workos_seed_stop-revokes@example.com:stop-revokes@example.com:Stop Revokes")
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", strings.NewReader(accessDescriptorBody(projectID)))
 	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -641,7 +644,7 @@ func TestProjectStopCleansTunnelWhenHelperRevocationFails(t *testing.T) {
 	tokens := authorizeCLI(t, router, cookies)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", strings.NewReader(accessDescriptorBody(projectID)))
 	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -668,7 +671,7 @@ func TestProjectStopRevokesLocalSessionWhenProviderCleanupFails(t *testing.T) {
 	cookies := loginCookies(t, router, "workos_seed_stop-cleanup-fails@example.com:stop-cleanup-fails@example.com:Stop Cleanup Fails")
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", strings.NewReader(accessDescriptorBody(projectID)))
 	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -704,7 +707,7 @@ func TestProjectStopRetriesFailedProviderCleanup(t *testing.T) {
 	cookies := loginCookies(t, router, "workos_seed_stop-cleanup-retry@example.com:stop-cleanup-retry@example.com:Stop Cleanup Retry")
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", strings.NewReader(accessDescriptorBody(projectID)))
 	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -750,7 +753,7 @@ func TestProjectDeleteRevokesActiveAccessSessions(t *testing.T) {
 	cookies := loginCookies(t, router, "workos_seed_delete-revokes@example.com:delete-revokes@example.com:Delete Revokes")
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", strings.NewReader(accessDescriptorBody(projectID)))
 	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -783,7 +786,7 @@ func TestProjectConnectionDescriptorRequiresGitHubConfigBeforeProviderSideEffect
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", strings.NewReader(accessDescriptorBody(projectID)))
 	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusConflict {
@@ -812,7 +815,7 @@ func TestProjectConnectionDescriptorRequiresCredentialIssuerBeforeProviderSideEf
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", strings.NewReader(accessDescriptorBody(projectID)))
 	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
@@ -848,7 +851,7 @@ func TestProjectConnectionDescriptorRequiresCredentialPreflightBeforeProviderSid
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", strings.NewReader(accessDescriptorBody(projectID)))
 	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
@@ -877,7 +880,7 @@ func TestProjectConnectionDescriptorPersistsFailedPartialIssuanceCleanup(t *test
 	tokens := authorizeCLI(t, router, cookies)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", strings.NewReader(accessDescriptorBody(projectID)))
 	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
@@ -886,7 +889,7 @@ func TestProjectConnectionDescriptorPersistsFailedPartialIssuanceCleanup(t *test
 	var sessionIDs []string
 	if err := store.SQL().QueryRowContext(context.Background(), `
 SELECT session_ids FROM paperboat.helper_revocation_outbox
-WHERE project_id=$1 AND propagated_at IS NULL`, projectID).Scan(pq.Array(&sessionIDs)); err != nil {
+WHERE project_id=$1 AND propagated_at IS NULL`, projectID).Scan(pgtype.NewMap().SQLScanner(&sessionIDs)); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Join(sessionIDs, ",") != "partial-terminal-session,partial-file-session" {
@@ -907,7 +910,7 @@ func TestAccessConnectDeniesWrongOwnerAndRecordsDenial(t *testing.T) {
 	grantActiveSubscription(t, store, otherID)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", strings.NewReader(accessDescriptorBody(projectID)))
 	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, otherCookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
@@ -933,7 +936,7 @@ func TestAccessConnectDoesNotStartWhenTunnelUnavailable(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", strings.NewReader(accessDescriptorBody(projectID)))
 	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
@@ -964,7 +967,7 @@ func TestAccessConnectQueuesStartWhenStoppedTunnelIsOffline(t *testing.T) {
 	insertAccessResource(t, store, projectID)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/"+projectID+"/connection-descriptor", strings.NewReader(accessDescriptorBody(projectID)))
 	req.Header.Set("Authorization", "Bearer "+authorizeCLI(t, router, cookies).AccessToken)
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusAccepted {
@@ -1065,8 +1068,25 @@ func newAccessIntegrationRouterWithService(t *testing.T, email string, client ac
 		t.Fatal(err)
 	}
 	applyAccessProjectConfig(t, store, project.ID)
+	if _, err := store.SQL().ExecContext(context.Background(), `
+INSERT INTO paperboat.project_terminal_sessions (id, project_id, terminal_id, name)
+VALUES ($1, $2, $3, 'integration')`, accessTerminalSessionID(project.ID), project.ID, "term_"+project.ID); err != nil {
+		t.Fatal(err)
+	}
 	_ = cookies
 	return store, router, accessService, project.ID
+}
+
+func accessTerminalSessionID(projectID string) string {
+	return "pts_" + projectID
+}
+
+func accessReadinessURL(projectID string) string {
+	return "/v1/projects/" + projectID + "/connection-readiness?terminal_session_id=" + accessTerminalSessionID(projectID)
+}
+
+func accessDescriptorBody(projectID string) string {
+	return `{"terminal_session_id":"` + accessTerminalSessionID(projectID) + `"}`
 }
 
 func grantGitHubConfigReady(t *testing.T, store *db.DB, userID string) {

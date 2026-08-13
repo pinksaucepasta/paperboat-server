@@ -21,14 +21,18 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
+	"github.com/pinksaucepasta/paperboat-server/internal/diagnosticuploads"
 	"github.com/pinksaucepasta/paperboat-server/internal/favorites"
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
 	"github.com/pinksaucepasta/paperboat-server/internal/httpapi"
+	"github.com/pinksaucepasta/paperboat-server/internal/managedssh"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
 	"github.com/pinksaucepasta/paperboat-server/internal/mint"
 	"github.com/pinksaucepasta/paperboat-server/internal/observability"
 	"github.com/pinksaucepasta/paperboat-server/internal/orchestrator"
+	"github.com/pinksaucepasta/paperboat-server/internal/peeridentity"
+	"github.com/pinksaucepasta/paperboat-server/internal/peersessions"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 	"github.com/pinksaucepasta/paperboat-server/internal/terminalsessions"
 	"github.com/pinksaucepasta/paperboat-server/internal/usermachines"
@@ -58,7 +62,7 @@ func New(opts Options) (*App, error) {
 	}
 	auditWriter := audit.NewWriter(store)
 	billingRepo := billing.NewRepository(store)
-	catalogRepo := catalog.NewRepository(store.SQL())
+	catalogRepo := catalog.NewRepository(store)
 	flyProvider := flyClient(opts.Config)
 	authService := auth.NewService(store, auditWriter, workOSVerifier(opts.Config), opts.Config.Secrets.SessionKeys, publicURLSecure(opts.Config.HTTP.PublicBaseURL))
 	deviceAuthService := auth.NewDeviceService(store, auditWriter, opts.Config.CLIAuth, opts.Config.Secrets.SessionKeys)
@@ -128,7 +132,7 @@ func New(opts Options) (*App, error) {
 	if err := userMachineService.ConfigureRuntimeRoute(opts.Config.RuntimeBaseDomain, opts.Config.UserMachines.RuntimeListenPort); err != nil {
 		return nil, err
 	}
-	if err := userMachineService.ConfigureMachineArtifacts(opts.Config.UserMachines.MachineArtifactsJSON, opts.Config.UserMachines.MachineArtifactPublicKey); err != nil {
+	if err := userMachineService.ConfigureMachineArtifacts(opts.Config.UserMachines.ArtifactRepositoryURL, opts.Config.UserMachines.ArtifactVersion); err != nil {
 		return nil, err
 	}
 	billingService.SetUserMachineSessionRevoker(userMachineService)
@@ -271,6 +275,54 @@ func New(opts Options) (*App, error) {
 	operationRecovery := controlplane.NewOperationRecoveryService(store, auditWriter)
 	hostedProviderRecovery := controlplane.NewHostedProviderRecoveryService(store, auditWriter)
 	billingRecovery := billing.NewRecoveryService(store, auditWriter)
+	peerIdentityRepository, err := peeridentity.NewSQLRepository(store, auditWriter)
+	if err != nil {
+		return nil, err
+	}
+	peerIdentityService, err := peeridentity.NewService(peerIdentityRepository)
+	if err != nil {
+		return nil, err
+	}
+	peerSessionRepository, err := peersessions.NewSQLRepository(store, auditWriter, controlplane.ControlTunnelNodeStaleAfter(), opts.Config.Secrets.EncryptionKey)
+	if err != nil {
+		return nil, err
+	}
+	peerSessionService, err := peersessions.New(peerSessionRepository, mintKeys, config.NormalizeIssuer(opts.Config.HTTP.PublicBaseURL))
+	if err != nil {
+		return nil, err
+	}
+	managedSSHRepository, err := managedssh.NewSQLRepository(store, auditWriter)
+	if err != nil {
+		return nil, err
+	}
+	managedSSHService, err := managedssh.NewService(managedSSHRepository)
+	if err != nil {
+		return nil, err
+	}
+	var diagnosticUploadService *diagnosticuploads.Service
+	if opts.Config.Diagnostics.ObjectEndpoint != "" {
+		diagnosticRepository, repositoryErr := diagnosticuploads.NewSQLRepository(store, auditWriter)
+		if repositoryErr != nil {
+			_ = store.Close()
+			return nil, repositoryErr
+		}
+		objectContext, cancelObjects := context.WithTimeout(context.Background(), opts.Config.HTTP.RequestTimeout)
+		objectStore, objectErr := diagnosticuploads.NewS3ObjectStore(objectContext, opts.Config.Diagnostics, opts.Config.Secrets.DiagnosticsAccessKey, opts.Config.Secrets.DiagnosticsSecretKey, &http.Client{Timeout: opts.Config.HTTP.RequestTimeout})
+		cancelObjects()
+		if objectErr != nil {
+			_ = store.Close()
+			return nil, objectErr
+		}
+		diagnosticUploadService, err = diagnosticuploads.New(diagnosticRepository, objectStore)
+		if err != nil {
+			_ = store.Close()
+			return nil, err
+		}
+		if err = diagnosticUploadService.SetRetention(opts.Config.Diagnostics.Retention); err != nil {
+			_ = store.Close()
+			return nil, err
+		}
+	}
 	var edgeControlHandler http.Handler
 	var edgeControlService *controlplane.EdgeService
 	if opts.Config.Secrets.EdgeControlCredential != "" {
@@ -303,6 +355,7 @@ func New(opts Options) (*App, error) {
 		MintKeys:               mintKeys,
 		EdgeControl:            edgeControlHandler,
 		EdgeControlAdmin:       edgeControlService,
+		ProbeRegions:           edgeControlService,
 		Enrollment:             enrollmentService,
 		HostedBootstrap:        hostedBootstrapService,
 		ConfigAssignments:      configAssignmentService,
@@ -317,9 +370,14 @@ func New(opts Options) (*App, error) {
 		Favorites:              favorites.NewService(store),
 		ControlDiagnostics:     controlDiagnostics,
 		OperationRecovery:      operationRecovery,
+		PeerIdentity:           peerIdentityService,
+		PeerSessions:           peerSessionService,
+		ManagedSSH:             managedSSHService,
+		DiagnosticUploads:      diagnosticUploadService,
 		HostedProviderRecovery: hostedProviderRecovery,
 	})
 	serverWorkers := []workers.Worker{
+		peerSessionService.ExpiryWorker(opts.Config.TerminalSessions.WorkerInterval),
 		orchestratorService.Worker(2 * opts.Config.HTTP.RequestTimeout / 15),
 		meteringService.Worker(opts.Config.HTTP.RequestTimeout),
 		billingService.AutoTopupWorker(opts.Config.HTTP.RequestTimeout),
@@ -331,6 +389,9 @@ func New(opts Options) (*App, error) {
 	}
 	if edgeControlService != nil {
 		serverWorkers = append(serverWorkers, edgeControlService.StaleNodeWorker(opts.Config.TerminalSessions.WorkerInterval, controlplane.ControlTunnelNodeStaleAfter()))
+	}
+	if diagnosticUploadService != nil {
+		serverWorkers = append(serverWorkers, diagnosticUploadService.Worker(time.Minute, opts.Logger))
 	}
 	return &App{
 		cfg:    opts.Config,
@@ -406,6 +467,7 @@ func workOSVerifier(cfg config.Config) auth.WorkOSVerifier {
 }
 
 func providerHTTPClient(provider string, timeout time.Duration) *http.Client {
+	//paperboat:allow-source-policy default-http owner=server-runtime reason=instrument-standard-transport-behind-configured-timeout
 	return &http.Client{Timeout: timeout, Transport: observability.InstrumentProviderTransport(provider, http.DefaultTransport)}
 }
 

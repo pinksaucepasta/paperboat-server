@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -100,6 +101,52 @@ func TestEdgeAssignmentSerializesRevokedAsBoolean(t *testing.T) {
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || body.Revoked != false {
 		t.Fatalf("assignment=%s err=%v", response.Body.String(), err)
+	}
+}
+
+func TestListProbeRegionsSelectsFreshReadyNodePerRegion(t *testing.T) {
+	store := openControlPlaneTestDB(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	suffix := strings.ReplaceAll(t.Name(), "/", "_") + now.Format("150405")
+	nodes := []string{"node_fsn_old_" + suffix, "node_fsn_new_" + suffix, "node_hel_" + suffix, "node_stale_" + suffix, "node_unready_" + suffix}
+	for _, node := range nodes {
+		t.Cleanup(func() {
+			_, _ = store.SQL().ExecContext(context.Background(), `DELETE FROM paperboat.control_tunnel_nodes WHERE id=$1`, node)
+		})
+	}
+	insert := `INSERT INTO paperboat.control_tunnel_nodes
+		(id,edge_pool,protocol_version,process_epoch,state,ready,last_heartbeat_at,signaling_host,stun_host,stun_port)
+		VALUES ($1,$2,'1.0',$1,$3,$4,$5,$6,$7,$8)`
+	rows := []struct {
+		id, region, state, signal, stun string
+		ready                           bool
+		heartbeat                       time.Time
+		port                            int
+	}{
+		{nodes[0], "fsn1", "ready", "old.example.test", "old-stun.example.test", true, now.Add(-time.Minute), 3478},
+		{nodes[1], "fsn1", "ready", "fsn.example.test", "fsn-stun.example.test", true, now.Add(-10 * time.Second), 3478},
+		{nodes[2], "hel1", "ready", "hel.example.test", "hel-stun.example.test", true, now.Add(-20 * time.Second), 5349},
+		{nodes[3], "nbg1", "ready", "stale.example.test", "stale-stun.example.test", true, now.Add(-3 * time.Minute), 3478},
+		{nodes[4], "ash1", "registered", "unready.example.test", "unready-stun.example.test", false, now.Add(-time.Second), 3478},
+	}
+	for _, row := range rows {
+		if _, err := store.SQL().ExecContext(ctx, insert, row.id, row.region, row.state, row.ready, row.heartbeat, row.signal, row.stun, row.port); err != nil {
+			t.Fatal(err)
+		}
+	}
+	service := NewEdgeService(store, "test")
+	service.SetClock(func() time.Time { return now })
+	got, err := service.ListProbeRegions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ProbeRegion{
+		{Region: "fsn1", STUNURL: "stun:fsn-stun.example.test:3478", HTTPSURL: "https://fsn.example.test/network-check/v1"},
+		{Region: "hel1", STUNURL: "stun:hel-stun.example.test:5349", HTTPSURL: "https://hel.example.test/network-check/v1"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("regions = %#v, want %#v", got, want)
 	}
 }
 

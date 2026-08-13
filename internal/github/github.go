@@ -299,7 +299,7 @@ func (s *Service) ProvisionConfigRepo(ctx context.Context, userID, idempotencyKe
 	if err := s.storeRepo(ctx, userID, idempotencyKey, repo); err != nil {
 		return ConfigRepo{}, err
 	}
-	return ConfigRepo{ID: repo.ID, Owner: repo.Owner, Name: repo.Name, DefaultBranch: repo.DefaultBranch, CloneURL: repo.CloneURL, HTMLURL: repo.HTMLURL, Private: repo.Private}, nil
+	return ConfigRepo(repo), nil
 }
 
 func githubOutcomeUncertain(err error) bool {
@@ -713,18 +713,6 @@ func (c HTTPClient) httpClient() *http.Client {
 	return observability.DefaultProviderClient("github")
 }
 
-type githubRepoResponse struct {
-	ID            json.Number `json:"id"`
-	Name          string      `json:"name"`
-	DefaultBranch string      `json:"default_branch"`
-	CloneURL      string      `json:"clone_url"`
-	HTMLURL       string      `json:"html_url"`
-	Private       bool        `json:"private"`
-	Owner         struct {
-		Login string `json:"login"`
-	} `json:"owner"`
-}
-
 type FakeClient struct {
 	Token       OAuthToken
 	User        GitHubUser
@@ -828,8 +816,6 @@ func splitScopes(raw string) []string {
 	}
 	return fields
 }
-
-type stringArray []string
 
 func newID(prefix string) string {
 	var b [16]byte

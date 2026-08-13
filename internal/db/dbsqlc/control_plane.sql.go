@@ -8,7 +8,6 @@ package dbsqlc
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"time"
 )
 
@@ -30,7 +29,7 @@ type AcceptControlConfigConsentParams struct {
 }
 
 func (q *Queries) AcceptControlConfigConsent(ctx context.Context, arg AcceptControlConfigConsentParams) (ControlConfigAssignment, error) {
-	row := q.db.QueryRowContext(ctx, acceptControlConfigConsent,
+	row := q.db.QueryRow(ctx, acceptControlConfigConsent,
 		arg.WarningRevision,
 		arg.Now,
 		arg.EnvironmentID,
@@ -65,11 +64,11 @@ type AcknowledgeControlUsageReceiptParams struct {
 }
 
 func (q *Queries) AcknowledgeControlUsageReceipt(ctx context.Context, arg AcknowledgeControlUsageReceiptParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, acknowledgeControlUsageReceipt, arg.Now, arg.OperationID)
+	result, err := q.db.Exec(ctx, acknowledgeControlUsageReceipt, arg.Now, arg.OperationID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const activateControlHelper = `-- name: ActivateControlHelper :one
@@ -88,7 +87,7 @@ type ActivateControlHelperParams struct {
 }
 
 func (q *Queries) ActivateControlHelper(ctx context.Context, arg ActivateControlHelperParams) (ControlHelper, error) {
-	row := q.db.QueryRowContext(ctx, activateControlHelper,
+	row := q.db.QueryRow(ctx, activateControlHelper,
 		arg.KeyThumbprint,
 		arg.PublicKey,
 		arg.Now,
@@ -133,7 +132,7 @@ type AdvanceControlConnectorGenerationParams struct {
 }
 
 func (q *Queries) AdvanceControlConnectorGeneration(ctx context.Context, arg AdvanceControlConnectorGenerationParams) (ControlConnectorGeneration, error) {
-	row := q.db.QueryRowContext(ctx, advanceControlConnectorGeneration,
+	row := q.db.QueryRow(ctx, advanceControlConnectorGeneration,
 		arg.EnvironmentID,
 		arg.ConnectorID,
 		arg.MachineID,
@@ -178,7 +177,7 @@ type AdvanceControlRouteRevisionParams struct {
 }
 
 func (q *Queries) AdvanceControlRouteRevision(ctx context.Context, arg AdvanceControlRouteRevisionParams) (ControlRoute, error) {
-	row := q.db.QueryRowContext(ctx, advanceControlRouteRevision,
+	row := q.db.QueryRow(ctx, advanceControlRouteRevision,
 		arg.DesiredState,
 		arg.DrainDeadline,
 		arg.Now,
@@ -220,11 +219,11 @@ type AdvanceControlRoutesForNodeLossParams struct {
 }
 
 func (q *Queries) AdvanceControlRoutesForNodeLoss(ctx context.Context, arg AdvanceControlRoutesForNodeLossParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, advanceControlRoutesForNodeLoss, arg.Now, arg.EdgeNodeID)
+	result, err := q.db.Exec(ctx, advanceControlRoutesForNodeLoss, arg.Now, arg.EdgeNodeID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const applyControlConfigConflictResolution = `-- name: ApplyControlConfigConflictResolution :one
@@ -252,7 +251,7 @@ type ApplyControlConfigConflictResolutionParams struct {
 }
 
 func (q *Queries) ApplyControlConfigConflictResolution(ctx context.Context, arg ApplyControlConfigConflictResolutionParams) (ControlConfigConflictResolution, error) {
-	row := q.db.QueryRowContext(ctx, applyControlConfigConflictResolution,
+	row := q.db.QueryRow(ctx, applyControlConfigConflictResolution,
 		arg.LandedRevision,
 		arg.Now,
 		arg.ID,
@@ -297,7 +296,7 @@ type ApplyControlEnvironmentStateParams struct {
 }
 
 func (q *Queries) ApplyControlEnvironmentState(ctx context.Context, arg ApplyControlEnvironmentStateParams) (ControlEnvironment, error) {
-	row := q.db.QueryRowContext(ctx, applyControlEnvironmentState,
+	row := q.db.QueryRow(ctx, applyControlEnvironmentState,
 		arg.AppliedState,
 		arg.DesiredVersion,
 		arg.Now,
@@ -351,7 +350,7 @@ type ApplyControlPreviewHelperObservationParams struct {
 }
 
 func (q *Queries) ApplyControlPreviewHelperObservation(ctx context.Context, arg ApplyControlPreviewHelperObservationParams) (ControlPreview, error) {
-	row := q.db.QueryRowContext(ctx, applyControlPreviewHelperObservation,
+	row := q.db.QueryRow(ctx, applyControlPreviewHelperObservation,
 		arg.HelperReady,
 		arg.TargetReady,
 		arg.ObservationRevision,
@@ -418,7 +417,7 @@ type ApplyControlRouteObservationParams struct {
 }
 
 func (q *Queries) ApplyControlRouteObservation(ctx context.Context, arg ApplyControlRouteObservationParams) (ControlRoute, error) {
-	row := q.db.QueryRowContext(ctx, applyControlRouteObservation,
+	row := q.db.QueryRow(ctx, applyControlRouteObservation,
 		arg.RouteRevision,
 		arg.EdgeNodeID,
 		arg.ConnectorGeneration,
@@ -464,7 +463,7 @@ type BYODHelperOwnsMachineParams struct {
 }
 
 func (q *Queries) BYODHelperOwnsMachine(ctx context.Context, arg BYODHelperOwnsMachineParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, bYODHelperOwnsMachine, arg.HelperID, arg.EnvironmentID, arg.MachineID)
+	row := q.db.QueryRow(ctx, bYODHelperOwnsMachine, arg.HelperID, arg.EnvironmentID, arg.MachineID)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
@@ -487,7 +486,7 @@ type BindControlConnectorMachineParams struct {
 }
 
 func (q *Queries) BindControlConnectorMachine(ctx context.Context, arg BindControlConnectorMachineParams) (ControlConnectorGeneration, error) {
-	row := q.db.QueryRowContext(ctx, bindControlConnectorMachine,
+	row := q.db.QueryRow(ctx, bindControlConnectorMachine,
 		arg.EnvironmentID,
 		arg.ConnectorID,
 		arg.MachineID,
@@ -543,7 +542,7 @@ type CanIssueControlRouteCertificateParams struct {
 }
 
 func (q *Queries) CanIssueControlRouteCertificate(ctx context.Context, arg CanIssueControlRouteCertificateParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, canIssueControlRouteCertificate, arg.PublicHost, arg.Now)
+	row := q.db.QueryRow(ctx, canIssueControlRouteCertificate, arg.PublicHost, arg.Now)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
@@ -564,7 +563,7 @@ type ClearControlConfigAssignmentParams struct {
 }
 
 func (q *Queries) ClearControlConfigAssignment(ctx context.Context, arg ClearControlConfigAssignmentParams) (ControlConfigAssignment, error) {
-	row := q.db.QueryRowContext(ctx, clearControlConfigAssignment, arg.Now, arg.EnvironmentID, arg.ExpectedVersion)
+	row := q.db.QueryRow(ctx, clearControlConfigAssignment, arg.Now, arg.EnvironmentID, arg.ExpectedVersion)
 	var i ControlConfigAssignment
 	err := row.Scan(
 		&i.ID,
@@ -599,7 +598,7 @@ type CompleteControlConfigRepositoryAccessParams struct {
 }
 
 func (q *Queries) CompleteControlConfigRepositoryAccess(ctx context.Context, arg CompleteControlConfigRepositoryAccessParams) (ControlConfigRepositoryAccessOperation, error) {
-	row := q.db.QueryRowContext(ctx, completeControlConfigRepositoryAccess,
+	row := q.db.QueryRow(ctx, completeControlConfigRepositoryAccess,
 		arg.AccessCiphertext,
 		arg.ExpiresAt,
 		arg.Now,
@@ -636,14 +635,14 @@ WHERE id = $3 AND state = 'running' AND lease_expires_at = $4
 `
 
 type CompleteControlOperationParams struct {
-	Result         json.RawMessage
+	Result         []byte
 	Now            sql.NullTime
 	ID             string
 	LeaseExpiresAt sql.NullTime
 }
 
 func (q *Queries) CompleteControlOperation(ctx context.Context, arg CompleteControlOperationParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, completeControlOperation,
+	result, err := q.db.Exec(ctx, completeControlOperation,
 		arg.Result,
 		arg.Now,
 		arg.ID,
@@ -652,7 +651,7 @@ func (q *Queries) CompleteControlOperation(ctx context.Context, arg CompleteCont
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const consumeControlHelperEnrollment = `-- name: ConsumeControlHelperEnrollment :one
@@ -671,7 +670,7 @@ type ConsumeControlHelperEnrollmentParams struct {
 }
 
 func (q *Queries) ConsumeControlHelperEnrollment(ctx context.Context, arg ConsumeControlHelperEnrollmentParams) (ControlHelperEnrollment, error) {
-	row := q.db.QueryRowContext(ctx, consumeControlHelperEnrollment, arg.Now, arg.ID, arg.JtiHash)
+	row := q.db.QueryRow(ctx, consumeControlHelperEnrollment, arg.Now, arg.ID, arg.JtiHash)
 	var i ControlHelperEnrollment
 	err := row.Scan(
 		&i.ID,
@@ -702,7 +701,7 @@ type CountActiveControlPreviewsParams struct {
 }
 
 func (q *Queries) CountActiveControlPreviews(ctx context.Context, arg CountActiveControlPreviewsParams) (int32, error) {
-	row := q.db.QueryRowContext(ctx, countActiveControlPreviews, arg.EnvironmentID, arg.Now)
+	row := q.db.QueryRow(ctx, countActiveControlPreviews, arg.EnvironmentID, arg.Now)
 	var column_1 int32
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -743,7 +742,7 @@ type CreateControlConfigConflictResolutionParams struct {
 }
 
 func (q *Queries) CreateControlConfigConflictResolution(ctx context.Context, arg CreateControlConfigConflictResolutionParams) (ControlConfigConflictResolution, error) {
-	row := q.db.QueryRowContext(ctx, createControlConfigConflictResolution,
+	row := q.db.QueryRow(ctx, createControlConfigConflictResolution,
 		arg.ID,
 		arg.EnvironmentID,
 		arg.RepositoryID,
@@ -802,7 +801,7 @@ type CreateControlConfigCredentialParams struct {
 }
 
 func (q *Queries) CreateControlConfigCredential(ctx context.Context, arg CreateControlConfigCredentialParams) (ControlConfigCredential, error) {
-	row := q.db.QueryRowContext(ctx, createControlConfigCredential,
+	row := q.db.QueryRow(ctx, createControlConfigCredential,
 		arg.JtiHash,
 		arg.Jti,
 		arg.OperationKey,
@@ -860,7 +859,7 @@ type CreateControlConfigLeaseOperationParams struct {
 }
 
 func (q *Queries) CreateControlConfigLeaseOperation(ctx context.Context, arg CreateControlConfigLeaseOperationParams) (ControlConfigRepositoryLeaseOperation, error) {
-	row := q.db.QueryRowContext(ctx, createControlConfigLeaseOperation,
+	row := q.db.QueryRow(ctx, createControlConfigLeaseOperation,
 		arg.OperationID,
 		arg.OperationType,
 		arg.RequestHash,
@@ -929,7 +928,7 @@ type CreateControlConfigRepositoryParams struct {
 }
 
 func (q *Queries) CreateControlConfigRepository(ctx context.Context, arg CreateControlConfigRepositoryParams) (ControlConfigRepository, error) {
-	row := q.db.QueryRowContext(ctx, createControlConfigRepository,
+	row := q.db.QueryRow(ctx, createControlConfigRepository,
 		arg.ID,
 		arg.OwnerUserID,
 		arg.Provider,
@@ -982,7 +981,7 @@ type CreateControlEnvironmentParams struct {
 }
 
 func (q *Queries) CreateControlEnvironment(ctx context.Context, arg CreateControlEnvironmentParams) (ControlEnvironment, error) {
-	row := q.db.QueryRowContext(ctx, createControlEnvironment,
+	row := q.db.QueryRow(ctx, createControlEnvironment,
 		arg.ID,
 		arg.WorkspaceID,
 		arg.OwnerUserID,
@@ -1016,7 +1015,7 @@ type CreateControlHelperParams struct {
 }
 
 func (q *Queries) CreateControlHelper(ctx context.Context, arg CreateControlHelperParams) (ControlHelper, error) {
-	row := q.db.QueryRowContext(ctx, createControlHelper, arg.ID, arg.EnvironmentID)
+	row := q.db.QueryRow(ctx, createControlHelper, arg.ID, arg.EnvironmentID)
 	var i ControlHelper
 	err := row.Scan(
 		&i.ID,
@@ -1054,7 +1053,7 @@ type CreateControlHelperEnrollmentParams struct {
 }
 
 func (q *Queries) CreateControlHelperEnrollment(ctx context.Context, arg CreateControlHelperEnrollmentParams) (ControlHelperEnrollment, error) {
-	row := q.db.QueryRowContext(ctx, createControlHelperEnrollment,
+	row := q.db.QueryRow(ctx, createControlHelperEnrollment,
 		arg.ID,
 		arg.EnvironmentID,
 		arg.HelperID,
@@ -1110,7 +1109,7 @@ type CreateControlPreviewParams struct {
 }
 
 func (q *Queries) CreateControlPreview(ctx context.Context, arg CreateControlPreviewParams) (ControlPreview, error) {
-	row := q.db.QueryRowContext(ctx, createControlPreview,
+	row := q.db.QueryRow(ctx, createControlPreview,
 		arg.ID,
 		arg.EnvironmentID,
 		arg.LogicalName,
@@ -1171,7 +1170,7 @@ type CreateControlRouteParams struct {
 }
 
 func (q *Queries) CreateControlRoute(ctx context.Context, arg CreateControlRouteParams) (ControlRoute, error) {
-	row := q.db.QueryRowContext(ctx, createControlRoute,
+	row := q.db.QueryRow(ctx, createControlRoute,
 		arg.ID,
 		arg.EnvironmentID,
 		arg.ConnectorID,
@@ -1218,7 +1217,7 @@ type CreateControlUsageVerificationKeyParams struct {
 }
 
 func (q *Queries) CreateControlUsageVerificationKey(ctx context.Context, arg CreateControlUsageVerificationKeyParams) (ControlUsageVerificationKey, error) {
-	row := q.db.QueryRowContext(ctx, createControlUsageVerificationKey,
+	row := q.db.QueryRow(ctx, createControlUsageVerificationKey,
 		arg.KeyID,
 		arg.EdgeNodeID,
 		arg.PublicKey,
@@ -1255,7 +1254,7 @@ type CreateHostedHelperIdentityRenewalParams struct {
 }
 
 func (q *Queries) CreateHostedHelperIdentityRenewal(ctx context.Context, arg CreateHostedHelperIdentityRenewalParams) (HostedHelperIdentityRenewal, error) {
-	row := q.db.QueryRowContext(ctx, createHostedHelperIdentityRenewal,
+	row := q.db.QueryRow(ctx, createHostedHelperIdentityRenewal,
 		arg.OperationKey,
 		arg.HelperID,
 		arg.EnvironmentID,
@@ -1289,11 +1288,11 @@ type DisableControlConfigAssignmentsForRepositoryParams struct {
 }
 
 func (q *Queries) DisableControlConfigAssignmentsForRepository(ctx context.Context, arg DisableControlConfigAssignmentsForRepositoryParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, disableControlConfigAssignmentsForRepository, arg.Now, arg.RepositoryID)
+	result, err := q.db.Exec(ctx, disableControlConfigAssignmentsForRepository, arg.Now, arg.RepositoryID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const disconnectOwnedControlConfigRepository = `-- name: DisconnectOwnedControlConfigRepository :one
@@ -1310,7 +1309,7 @@ type DisconnectOwnedControlConfigRepositoryParams struct {
 }
 
 func (q *Queries) DisconnectOwnedControlConfigRepository(ctx context.Context, arg DisconnectOwnedControlConfigRepositoryParams) (ControlConfigRepository, error) {
-	row := q.db.QueryRowContext(ctx, disconnectOwnedControlConfigRepository, arg.Now, arg.ID, arg.OwnerUserID)
+	row := q.db.QueryRow(ctx, disconnectOwnedControlConfigRepository, arg.Now, arg.ID, arg.OwnerUserID)
 	var i ControlConfigRepository
 	err := row.Scan(
 		&i.ID,
@@ -1340,7 +1339,7 @@ UPDATE control_tunnel_nodes
 SET state = 'draining', ready = false, drain_deadline = $1,
     version = version + 1, updated_at = $2
 WHERE id = $3 AND version = $4 AND state IN ('registered','ready')
-RETURNING id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at
+RETURNING id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port
 `
 
 type DrainControlTunnelNodeParams struct {
@@ -1351,7 +1350,7 @@ type DrainControlTunnelNodeParams struct {
 }
 
 func (q *Queries) DrainControlTunnelNode(ctx context.Context, arg DrainControlTunnelNodeParams) (ControlTunnelNode, error) {
-	row := q.db.QueryRowContext(ctx, drainControlTunnelNode,
+	row := q.db.QueryRow(ctx, drainControlTunnelNode,
 		arg.DrainDeadline,
 		arg.Now,
 		arg.ID,
@@ -1375,6 +1374,9 @@ func (q *Queries) DrainControlTunnelNode(ctx context.Context, arg DrainControlTu
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SignalingHost,
+		&i.StunHost,
+		&i.StunPort,
 	)
 	return i, err
 }
@@ -1387,7 +1389,7 @@ RETURNING repository_id, last_fencing_token, lease_id, assignment_id, environmen
 `
 
 func (q *Queries) EnsureControlConfigLeaseAuthority(ctx context.Context, repositoryID string) (ControlConfigRepositoryLeaseAuthority, error) {
-	row := q.db.QueryRowContext(ctx, ensureControlConfigLeaseAuthority, repositoryID)
+	row := q.db.QueryRow(ctx, ensureControlConfigLeaseAuthority, repositoryID)
 	var i ControlConfigRepositoryLeaseAuthority
 	err := row.Scan(
 		&i.RepositoryID,
@@ -1424,7 +1426,7 @@ type EnsureControlConnectorMachineParams struct {
 }
 
 func (q *Queries) EnsureControlConnectorMachine(ctx context.Context, arg EnsureControlConnectorMachineParams) (ControlConnectorGeneration, error) {
-	row := q.db.QueryRowContext(ctx, ensureControlConnectorMachine,
+	row := q.db.QueryRow(ctx, ensureControlConnectorMachine,
 		arg.EnvironmentID,
 		arg.ConnectorID,
 		arg.MachineID,
@@ -1465,11 +1467,11 @@ type FenceControlConnectorsForNodeParams struct {
 }
 
 func (q *Queries) FenceControlConnectorsForNode(ctx context.Context, arg FenceControlConnectorsForNodeParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, fenceControlConnectorsForNode, arg.Now, arg.EdgeNodeID)
+	result, err := q.db.Exec(ctx, fenceControlConnectorsForNode, arg.Now, arg.EdgeNodeID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const finalizeDetachedControlRoute = `-- name: FinalizeDetachedControlRoute :one
@@ -1491,7 +1493,7 @@ type FinalizeDetachedControlRouteParams struct {
 }
 
 func (q *Queries) FinalizeDetachedControlRoute(ctx context.Context, arg FinalizeDetachedControlRouteParams) (ControlRoute, error) {
-	row := q.db.QueryRowContext(ctx, finalizeDetachedControlRoute,
+	row := q.db.QueryRow(ctx, finalizeDetachedControlRoute,
 		arg.Now,
 		arg.ID,
 		arg.DesiredRevision,
@@ -1535,7 +1537,7 @@ type GetActiveControlConfigCredentialByJTIParams struct {
 }
 
 func (q *Queries) GetActiveControlConfigCredentialByJTI(ctx context.Context, arg GetActiveControlConfigCredentialByJTIParams) (ControlConfigCredential, error) {
-	row := q.db.QueryRowContext(ctx, getActiveControlConfigCredentialByJTI,
+	row := q.db.QueryRow(ctx, getActiveControlConfigCredentialByJTI,
 		arg.Jti,
 		arg.EnvironmentID,
 		arg.MachineID,
@@ -1566,7 +1568,7 @@ WHERE id = $1 AND state = 'active'
 `
 
 func (q *Queries) GetActiveControlConfigRepository(ctx context.Context, id string) (ControlConfigRepository, error) {
-	row := q.db.QueryRowContext(ctx, getActiveControlConfigRepository, id)
+	row := q.db.QueryRow(ctx, getActiveControlConfigRepository, id)
 	var i ControlConfigRepository
 	err := row.Scan(
 		&i.ID,
@@ -1603,7 +1605,7 @@ type GetActiveControlHelperParams struct {
 }
 
 func (q *Queries) GetActiveControlHelper(ctx context.Context, arg GetActiveControlHelperParams) (ControlHelper, error) {
-	row := q.db.QueryRowContext(ctx, getActiveControlHelper, arg.ID, arg.EnvironmentID)
+	row := q.db.QueryRow(ctx, getActiveControlHelper, arg.ID, arg.EnvironmentID)
 	var i ControlHelper
 	err := row.Scan(
 		&i.ID,
@@ -1629,7 +1631,7 @@ ORDER BY updated_at DESC LIMIT 1
 `
 
 func (q *Queries) GetActiveControlHelperForEnvironment(ctx context.Context, environmentID string) (ControlHelper, error) {
-	row := q.db.QueryRowContext(ctx, getActiveControlHelperForEnvironment, environmentID)
+	row := q.db.QueryRow(ctx, getActiveControlHelperForEnvironment, environmentID)
 	var i ControlHelper
 	err := row.Scan(
 		&i.ID,
@@ -1661,7 +1663,7 @@ type GetActiveControlUsageVerificationKeyParams struct {
 }
 
 func (q *Queries) GetActiveControlUsageVerificationKey(ctx context.Context, arg GetActiveControlUsageVerificationKeyParams) ([]byte, error) {
-	row := q.db.QueryRowContext(ctx, getActiveControlUsageVerificationKey, arg.KeyID, arg.EdgeNodeID, arg.Now)
+	row := q.db.QueryRow(ctx, getActiveControlUsageVerificationKey, arg.KeyID, arg.EdgeNodeID, arg.Now)
 	var public_key []byte
 	err := row.Scan(&public_key)
 	return public_key, err
@@ -1686,7 +1688,7 @@ LIMIT 1
 `
 
 func (q *Queries) GetActiveHelperRouteForEnvironment(ctx context.Context, environmentID string) (ControlRoute, error) {
-	row := q.db.QueryRowContext(ctx, getActiveHelperRouteForEnvironment, environmentID)
+	row := q.db.QueryRow(ctx, getActiveHelperRouteForEnvironment, environmentID)
 	var i ControlRoute
 	err := row.Scan(
 		&i.ID,
@@ -1746,7 +1748,7 @@ type GetConfigSyncMetricsRow struct {
 }
 
 func (q *Queries) GetConfigSyncMetrics(ctx context.Context) (GetConfigSyncMetricsRow, error) {
-	row := q.db.QueryRowContext(ctx, getConfigSyncMetrics)
+	row := q.db.QueryRow(ctx, getConfigSyncMetrics)
 	var i GetConfigSyncMetricsRow
 	err := row.Scan(
 		&i.EligibleEnvironments,
@@ -1768,7 +1770,7 @@ SELECT id, environment_id, repository_id, mode, consent_state, warning_revision,
 `
 
 func (q *Queries) GetControlConfigAssignment(ctx context.Context, environmentID string) (ControlConfigAssignment, error) {
-	row := q.db.QueryRowContext(ctx, getControlConfigAssignment, environmentID)
+	row := q.db.QueryRow(ctx, getControlConfigAssignment, environmentID)
 	var i ControlConfigAssignment
 	err := row.Scan(
 		&i.ID,
@@ -1792,7 +1794,7 @@ SELECT jti_hash, jti, operation_key, request_hash, environment_id, machine_id, a
 `
 
 func (q *Queries) GetControlConfigCredentialByOperation(ctx context.Context, operationKey string) (ControlConfigCredential, error) {
-	row := q.db.QueryRowContext(ctx, getControlConfigCredentialByOperation, operationKey)
+	row := q.db.QueryRow(ctx, getControlConfigCredentialByOperation, operationKey)
 	var i ControlConfigCredential
 	err := row.Scan(
 		&i.JtiHash,
@@ -1818,7 +1820,7 @@ FOR UPDATE
 `
 
 func (q *Queries) GetControlConfigLeaseAuthorityForUpdate(ctx context.Context, repositoryID string) (ControlConfigRepositoryLeaseAuthority, error) {
-	row := q.db.QueryRowContext(ctx, getControlConfigLeaseAuthorityForUpdate, repositoryID)
+	row := q.db.QueryRow(ctx, getControlConfigLeaseAuthorityForUpdate, repositoryID)
 	var i ControlConfigRepositoryLeaseAuthority
 	err := row.Scan(
 		&i.RepositoryID,
@@ -1844,7 +1846,7 @@ SELECT operation_id, operation_type, request_hash, repository_id, lease_id, fenc
 `
 
 func (q *Queries) GetControlConfigLeaseOperation(ctx context.Context, operationID string) (ControlConfigRepositoryLeaseOperation, error) {
-	row := q.db.QueryRowContext(ctx, getControlConfigLeaseOperation, operationID)
+	row := q.db.QueryRow(ctx, getControlConfigLeaseOperation, operationID)
 	var i ControlConfigRepositoryLeaseOperation
 	err := row.Scan(
 		&i.OperationID,
@@ -1870,7 +1872,7 @@ WHERE operation_id = $1
 `
 
 func (q *Queries) GetControlConfigRepositoryAccessOperation(ctx context.Context, operationID string) (ControlConfigRepositoryAccessOperation, error) {
-	row := q.db.QueryRowContext(ctx, getControlConfigRepositoryAccessOperation, operationID)
+	row := q.db.QueryRow(ctx, getControlConfigRepositoryAccessOperation, operationID)
 	var i ControlConfigRepositoryAccessOperation
 	err := row.Scan(
 		&i.OperationID,
@@ -1911,7 +1913,7 @@ type GetControlConfigSyncRevisionParams struct {
 }
 
 func (q *Queries) GetControlConfigSyncRevision(ctx context.Context, arg GetControlConfigSyncRevisionParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, getControlConfigSyncRevision,
+	row := q.db.QueryRow(ctx, getControlConfigSyncRevision,
 		arg.EnvironmentID,
 		arg.AssignmentID,
 		arg.MachineID,
@@ -1946,7 +1948,7 @@ type GetControlConfigWarningContextRow struct {
 }
 
 func (q *Queries) GetControlConfigWarningContext(ctx context.Context, arg GetControlConfigWarningContextParams) (GetControlConfigWarningContextRow, error) {
-	row := q.db.QueryRowContext(ctx, getControlConfigWarningContext, arg.EnvironmentID, arg.OwnerUserID)
+	row := q.db.QueryRow(ctx, getControlConfigWarningContext, arg.EnvironmentID, arg.OwnerUserID)
 	var i GetControlConfigWarningContextRow
 	err := row.Scan(
 		&i.MachineName,
@@ -1981,7 +1983,7 @@ type GetControlConnectorAssignmentRow struct {
 }
 
 func (q *Queries) GetControlConnectorAssignment(ctx context.Context, arg GetControlConnectorAssignmentParams) (GetControlConnectorAssignmentRow, error) {
-	row := q.db.QueryRowContext(ctx, getControlConnectorAssignment, arg.EnvironmentID, arg.MachineID, arg.ConnectorID)
+	row := q.db.QueryRow(ctx, getControlConnectorAssignment, arg.EnvironmentID, arg.MachineID, arg.ConnectorID)
 	var i GetControlConnectorAssignmentRow
 	err := row.Scan(
 		&i.Generation,
@@ -2004,7 +2006,7 @@ type GetControlConnectorGenerationForUpdateParams struct {
 }
 
 func (q *Queries) GetControlConnectorGenerationForUpdate(ctx context.Context, arg GetControlConnectorGenerationForUpdateParams) (ControlConnectorGeneration, error) {
-	row := q.db.QueryRowContext(ctx, getControlConnectorGenerationForUpdate, arg.EnvironmentID, arg.ConnectorID)
+	row := q.db.QueryRow(ctx, getControlConnectorGenerationForUpdate, arg.EnvironmentID, arg.ConnectorID)
 	var i ControlConnectorGeneration
 	err := row.Scan(
 		&i.EnvironmentID,
@@ -2031,7 +2033,7 @@ SELECT id, workspace_id, owner_user_id, desired_state, desired_version, applied_
 `
 
 func (q *Queries) GetControlEnvironment(ctx context.Context, id string) (ControlEnvironment, error) {
-	row := q.db.QueryRowContext(ctx, getControlEnvironment, id)
+	row := q.db.QueryRow(ctx, getControlEnvironment, id)
 	var i ControlEnvironment
 	err := row.Scan(
 		&i.ID,
@@ -2053,7 +2055,7 @@ SELECT id, environment_id, helper_id, jti_hash, operation_key, request_hash, gra
 `
 
 func (q *Queries) GetControlHelperEnrollmentByOperationKey(ctx context.Context, operationKey string) (ControlHelperEnrollment, error) {
-	row := q.db.QueryRowContext(ctx, getControlHelperEnrollmentByOperationKey, operationKey)
+	row := q.db.QueryRow(ctx, getControlHelperEnrollmentByOperationKey, operationKey)
 	var i ControlHelperEnrollment
 	err := row.Scan(
 		&i.ID,
@@ -2082,7 +2084,7 @@ type GetControlHelperForUpdateParams struct {
 }
 
 func (q *Queries) GetControlHelperForUpdate(ctx context.Context, arg GetControlHelperForUpdateParams) (ControlHelper, error) {
-	row := q.db.QueryRowContext(ctx, getControlHelperForUpdate, arg.ID, arg.EnvironmentID)
+	row := q.db.QueryRow(ctx, getControlHelperForUpdate, arg.ID, arg.EnvironmentID)
 	var i ControlHelper
 	err := row.Scan(
 		&i.ID,
@@ -2106,7 +2108,7 @@ SELECT id, operation_key, operation_type, request_hash, state, result, last_erro
 `
 
 func (q *Queries) GetControlOperationByKey(ctx context.Context, operationKey string) (ControlOperation, error) {
-	row := q.db.QueryRowContext(ctx, getControlOperationByKey, operationKey)
+	row := q.db.QueryRow(ctx, getControlOperationByKey, operationKey)
 	var i ControlOperation
 	err := row.Scan(
 		&i.ID,
@@ -2132,7 +2134,7 @@ SELECT operation_key, operation_id, actor_user_id, created_at FROM control_opera
 `
 
 func (q *Queries) GetControlOperationRecovery(ctx context.Context, operationKey string) (ControlOperationRecovery, error) {
-	row := q.db.QueryRowContext(ctx, getControlOperationRecovery, operationKey)
+	row := q.db.QueryRow(ctx, getControlOperationRecovery, operationKey)
 	var i ControlOperationRecovery
 	err := row.Scan(
 		&i.OperationKey,
@@ -2182,7 +2184,7 @@ type GetControlPlaneQueueMetricsRow struct {
 }
 
 func (q *Queries) GetControlPlaneQueueMetrics(ctx context.Context) (GetControlPlaneQueueMetricsRow, error) {
-	row := q.db.QueryRowContext(ctx, getControlPlaneQueueMetrics)
+	row := q.db.QueryRow(ctx, getControlPlaneQueueMetrics)
 	var i GetControlPlaneQueueMetricsRow
 	err := row.Scan(
 		&i.OperationDepth,
@@ -2209,7 +2211,7 @@ SELECT id, environment_id, logical_name, preview_key, collision_counter, public_
 `
 
 func (q *Queries) GetControlPreviewByKey(ctx context.Context, previewKey string) (ControlPreview, error) {
-	row := q.db.QueryRowContext(ctx, getControlPreviewByKey, previewKey)
+	row := q.db.QueryRow(ctx, getControlPreviewByKey, previewKey)
 	var i ControlPreview
 	err := row.Scan(
 		&i.ID,
@@ -2253,7 +2255,7 @@ type GetControlPreviewForUpdateParams struct {
 }
 
 func (q *Queries) GetControlPreviewForUpdate(ctx context.Context, arg GetControlPreviewForUpdateParams) (ControlPreview, error) {
-	row := q.db.QueryRowContext(ctx, getControlPreviewForUpdate, arg.EnvironmentID, arg.LogicalName)
+	row := q.db.QueryRow(ctx, getControlPreviewForUpdate, arg.EnvironmentID, arg.LogicalName)
 	var i ControlPreview
 	err := row.Scan(
 		&i.ID,
@@ -2289,7 +2291,7 @@ SELECT operation_key, operation_type, request_hash, preview_id, result, created_
 `
 
 func (q *Queries) GetControlPreviewOperation(ctx context.Context, operationKey string) (ControlPreviewOperation, error) {
-	row := q.db.QueryRowContext(ctx, getControlPreviewOperation, operationKey)
+	row := q.db.QueryRow(ctx, getControlPreviewOperation, operationKey)
 	var i ControlPreviewOperation
 	err := row.Scan(
 		&i.OperationKey,
@@ -2307,7 +2309,7 @@ SELECT id, environment_id, kind, public_host, target_host, target_port, desired_
 `
 
 func (q *Queries) GetControlRouteForUpdate(ctx context.Context, id string) (ControlRoute, error) {
-	row := q.db.QueryRowContext(ctx, getControlRouteForUpdate, id)
+	row := q.db.QueryRow(ctx, getControlRouteForUpdate, id)
 	var i ControlRoute
 	err := row.Scan(
 		&i.ID,
@@ -2335,7 +2337,7 @@ SELECT operation_key, operation_type, request_hash, route_id, result_revision, r
 `
 
 func (q *Queries) GetControlRouteOperation(ctx context.Context, operationKey string) (ControlRouteOperation, error) {
-	row := q.db.QueryRowContext(ctx, getControlRouteOperation, operationKey)
+	row := q.db.QueryRow(ctx, getControlRouteOperation, operationKey)
 	var i ControlRouteOperation
 	err := row.Scan(
 		&i.OperationKey,
@@ -2354,7 +2356,7 @@ SELECT operation_key, key_id, reason, created_at FROM control_signing_key_revoca
 `
 
 func (q *Queries) GetControlSigningKeyRevocationOperation(ctx context.Context, operationKey string) (ControlSigningKeyRevocationOperation, error) {
-	row := q.db.QueryRowContext(ctx, getControlSigningKeyRevocationOperation, operationKey)
+	row := q.db.QueryRow(ctx, getControlSigningKeyRevocationOperation, operationKey)
 	var i ControlSigningKeyRevocationOperation
 	err := row.Scan(
 		&i.OperationKey,
@@ -2382,7 +2384,7 @@ type GetControlUsageCounterForUpdateParams struct {
 }
 
 func (q *Queries) GetControlUsageCounterForUpdate(ctx context.Context, arg GetControlUsageCounterForUpdateParams) (ControlUsageCounter, error) {
-	row := q.db.QueryRowContext(ctx, getControlUsageCounterForUpdate,
+	row := q.db.QueryRow(ctx, getControlUsageCounterForUpdate,
 		arg.EdgeNodeID,
 		arg.CounterEpoch,
 		arg.EnvironmentID,
@@ -2408,7 +2410,7 @@ SELECT operation_id, edge_node_id, counter_epoch, environment_id, route_id, rout
 `
 
 func (q *Queries) GetControlUsageReceipt(ctx context.Context, operationID string) (ControlUsageReceipt, error) {
-	row := q.db.QueryRowContext(ctx, getControlUsageReceipt, operationID)
+	row := q.db.QueryRow(ctx, getControlUsageReceipt, operationID)
 	var i ControlUsageReceipt
 	err := row.Scan(
 		&i.OperationID,
@@ -2433,7 +2435,7 @@ SELECT key_id, edge_node_id, public_key, not_before, expires_at, revoked_at, cre
 `
 
 func (q *Queries) GetControlUsageVerificationKey(ctx context.Context, keyID string) (ControlUsageVerificationKey, error) {
-	row := q.db.QueryRowContext(ctx, getControlUsageVerificationKey, keyID)
+	row := q.db.QueryRow(ctx, getControlUsageVerificationKey, keyID)
 	var i ControlUsageVerificationKey
 	err := row.Scan(
 		&i.KeyID,
@@ -2470,7 +2472,7 @@ type GetEligibleControlConfigAssignmentParams struct {
 }
 
 func (q *Queries) GetEligibleControlConfigAssignment(ctx context.Context, arg GetEligibleControlConfigAssignmentParams) (ControlConfigAssignment, error) {
-	row := q.db.QueryRowContext(ctx, getEligibleControlConfigAssignment, arg.EnvironmentID, arg.MachineID, arg.InstallationGeneration)
+	row := q.db.QueryRow(ctx, getEligibleControlConfigAssignment, arg.EnvironmentID, arg.MachineID, arg.InstallationGeneration)
 	var i ControlConfigAssignment
 	err := row.Scan(
 		&i.ID,
@@ -2512,7 +2514,7 @@ type GetEligibleMachineConfigAssignmentParams struct {
 }
 
 func (q *Queries) GetEligibleMachineConfigAssignment(ctx context.Context, arg GetEligibleMachineConfigAssignmentParams) (ControlConfigAssignment, error) {
-	row := q.db.QueryRowContext(ctx, getEligibleMachineConfigAssignment, arg.MachineID, arg.EnvironmentID, arg.InstallationGeneration)
+	row := q.db.QueryRow(ctx, getEligibleMachineConfigAssignment, arg.MachineID, arg.EnvironmentID, arg.InstallationGeneration)
 	var i ControlConfigAssignment
 	err := row.Scan(
 		&i.ID,
@@ -2541,7 +2543,7 @@ LIMIT 1
 `
 
 func (q *Queries) GetHelperRouteForEnvironment(ctx context.Context, environmentID string) (ControlRoute, error) {
-	row := q.db.QueryRowContext(ctx, getHelperRouteForEnvironment, environmentID)
+	row := q.db.QueryRow(ctx, getHelperRouteForEnvironment, environmentID)
 	var i ControlRoute
 	err := row.Scan(
 		&i.ID,
@@ -2579,7 +2581,7 @@ type GetHostedEnvironmentForMachineRow struct {
 }
 
 func (q *Queries) GetHostedEnvironmentForMachine(ctx context.Context, machineID string) (GetHostedEnvironmentForMachineRow, error) {
-	row := q.db.QueryRowContext(ctx, getHostedEnvironmentForMachine, machineID)
+	row := q.db.QueryRow(ctx, getHostedEnvironmentForMachine, machineID)
 	var i GetHostedEnvironmentForMachineRow
 	err := row.Scan(&i.ID, &i.OwnerUserID)
 	return i, err
@@ -2590,7 +2592,7 @@ SELECT operation_key, helper_id, environment_id, request_hash, identity_cipherte
 `
 
 func (q *Queries) GetHostedHelperIdentityRenewal(ctx context.Context, operationKey string) (HostedHelperIdentityRenewal, error) {
-	row := q.db.QueryRowContext(ctx, getHostedHelperIdentityRenewal, operationKey)
+	row := q.db.QueryRow(ctx, getHostedHelperIdentityRenewal, operationKey)
 	var i HostedHelperIdentityRenewal
 	err := row.Scan(
 		&i.OperationKey,
@@ -2614,7 +2616,7 @@ WHERE environment_id = $1
 `
 
 func (q *Queries) GetHostedMachineIDForEnvironment(ctx context.Context, environmentID string) (string, error) {
-	row := q.db.QueryRowContext(ctx, getHostedMachineIDForEnvironment, environmentID)
+	row := q.db.QueryRow(ctx, getHostedMachineIDForEnvironment, environmentID)
 	var id string
 	err := row.Scan(&id)
 	return id, err
@@ -2643,7 +2645,7 @@ type GetHostedProjectSetupIntentRow struct {
 }
 
 func (q *Queries) GetHostedProjectSetupIntent(ctx context.Context, environmentID string) (GetHostedProjectSetupIntentRow, error) {
-	row := q.db.QueryRowContext(ctx, getHostedProjectSetupIntent, environmentID)
+	row := q.db.QueryRow(ctx, getHostedProjectSetupIntent, environmentID)
 	var i GetHostedProjectSetupIntentRow
 	err := row.Scan(
 		&i.ProjectID,
@@ -2659,7 +2661,7 @@ SELECT operation_key, provider_operation_id, actor_user_id, action, evidence_ref
 `
 
 func (q *Queries) GetHostedProviderOperationRecovery(ctx context.Context, operationKey string) (HostedProviderOperationRecovery, error) {
-	row := q.db.QueryRowContext(ctx, getHostedProviderOperationRecovery, operationKey)
+	row := q.db.QueryRow(ctx, getHostedProviderOperationRecovery, operationKey)
 	var i HostedProviderOperationRecovery
 	err := row.Scan(
 		&i.OperationKey,
@@ -2691,7 +2693,7 @@ type GetMachineIDForActiveHelperParams struct {
 }
 
 func (q *Queries) GetMachineIDForActiveHelper(ctx context.Context, arg GetMachineIDForActiveHelperParams) (string, error) {
-	row := q.db.QueryRowContext(ctx, getMachineIDForActiveHelper, arg.HelperID, arg.EnvironmentID)
+	row := q.db.QueryRow(ctx, getMachineIDForActiveHelper, arg.HelperID, arg.EnvironmentID)
 	var machine_id string
 	err := row.Scan(&machine_id)
 	return machine_id, err
@@ -2728,11 +2730,11 @@ type GetOwnedControlConfigConflictContextRow struct {
 	AssignmentMode    string
 	RepositoryID      sql.NullString
 	RemoteRevision    sql.NullString
-	Conflicts         json.RawMessage
+	Conflicts         []byte
 }
 
 func (q *Queries) GetOwnedControlConfigConflictContext(ctx context.Context, arg GetOwnedControlConfigConflictContextParams) (GetOwnedControlConfigConflictContextRow, error) {
-	row := q.db.QueryRowContext(ctx, getOwnedControlConfigConflictContext, arg.EnvironmentID, arg.OwnerUserID)
+	row := q.db.QueryRow(ctx, getOwnedControlConfigConflictContext, arg.EnvironmentID, arg.OwnerUserID)
 	var i GetOwnedControlConfigConflictContextRow
 	err := row.Scan(
 		&i.AssignmentID,
@@ -2756,7 +2758,7 @@ type GetOwnedControlConfigRepositoryParams struct {
 }
 
 func (q *Queries) GetOwnedControlConfigRepository(ctx context.Context, arg GetOwnedControlConfigRepositoryParams) (ControlConfigRepository, error) {
-	row := q.db.QueryRowContext(ctx, getOwnedControlConfigRepository, arg.ID, arg.OwnerUserID)
+	row := q.db.QueryRow(ctx, getOwnedControlConfigRepository, arg.ID, arg.OwnerUserID)
 	var i ControlConfigRepository
 	err := row.Scan(
 		&i.ID,
@@ -2794,7 +2796,7 @@ type GetOwnedControlPreviewParams struct {
 }
 
 func (q *Queries) GetOwnedControlPreview(ctx context.Context, arg GetOwnedControlPreviewParams) (ControlPreview, error) {
-	row := q.db.QueryRowContext(ctx, getOwnedControlPreview, arg.ID, arg.OwnerUserID)
+	row := q.db.QueryRow(ctx, getOwnedControlPreview, arg.ID, arg.OwnerUserID)
 	var i ControlPreview
 	err := row.Scan(
 		&i.ID,
@@ -2832,7 +2834,7 @@ ORDER BY created_at DESC LIMIT 1
 `
 
 func (q *Queries) GetPendingControlHelperEnrollmentForEnvironment(ctx context.Context, environmentID string) (ControlHelperEnrollment, error) {
-	row := q.db.QueryRowContext(ctx, getPendingControlHelperEnrollmentForEnvironment, environmentID)
+	row := q.db.QueryRow(ctx, getPendingControlHelperEnrollmentForEnvironment, environmentID)
 	var i ControlHelperEnrollment
 	err := row.Scan(
 		&i.ID,
@@ -2858,7 +2860,7 @@ ORDER BY updated_at DESC LIMIT 1
 `
 
 func (q *Queries) GetPendingControlHelperForEnvironment(ctx context.Context, environmentID string) (ControlHelper, error) {
-	row := q.db.QueryRowContext(ctx, getPendingControlHelperForEnvironment, environmentID)
+	row := q.db.QueryRow(ctx, getPendingControlHelperForEnvironment, environmentID)
 	var i ControlHelper
 	err := row.Scan(
 		&i.ID,
@@ -2911,7 +2913,7 @@ type GrantControlConfigRepositoryLeaseParams struct {
 }
 
 func (q *Queries) GrantControlConfigRepositoryLease(ctx context.Context, arg GrantControlConfigRepositoryLeaseParams) (ControlConfigRepositoryLeaseAuthority, error) {
-	row := q.db.QueryRowContext(ctx, grantControlConfigRepositoryLease,
+	row := q.db.QueryRow(ctx, grantControlConfigRepositoryLease,
 		arg.LeaseID,
 		arg.AssignmentID,
 		arg.EnvironmentID,
@@ -2950,20 +2952,20 @@ SET state = CASE WHEN $1::boolean THEN 'draining' WHEN state = 'registered' AND 
     observation = coalesce($3::jsonb, '{}'::jsonb),
     last_heartbeat_at = $4, version = version + 1, updated_at = $4
 WHERE id = $5 AND process_epoch = $6 AND state NOT IN ('offline','retired')
-RETURNING id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at
+RETURNING id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port
 `
 
 type HeartbeatControlTunnelNodeParams struct {
 	Draining     bool
 	Ready        bool
-	Observation  json.RawMessage
+	Observation  []byte
 	Now          sql.NullTime
 	ID           string
 	ProcessEpoch string
 }
 
 func (q *Queries) HeartbeatControlTunnelNode(ctx context.Context, arg HeartbeatControlTunnelNodeParams) (ControlTunnelNode, error) {
-	row := q.db.QueryRowContext(ctx, heartbeatControlTunnelNode,
+	row := q.db.QueryRow(ctx, heartbeatControlTunnelNode,
 		arg.Draining,
 		arg.Ready,
 		arg.Observation,
@@ -2989,6 +2991,9 @@ func (q *Queries) HeartbeatControlTunnelNode(ctx context.Context, arg HeartbeatC
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SignalingHost,
+		&i.StunHost,
+		&i.StunPort,
 	)
 	return i, err
 }
@@ -3009,7 +3014,7 @@ type HostedHelperOwnsMachineParams struct {
 }
 
 func (q *Queries) HostedHelperOwnsMachine(ctx context.Context, arg HostedHelperOwnsMachineParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, hostedHelperOwnsMachine, arg.HelperID, arg.EnvironmentID, arg.MachineID)
+	row := q.db.QueryRow(ctx, hostedHelperOwnsMachine, arg.HelperID, arg.EnvironmentID, arg.MachineID)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
@@ -3042,7 +3047,7 @@ type InsertControlConfigSyncStatusHistoryParams struct {
 }
 
 func (q *Queries) InsertControlConfigSyncStatusHistory(ctx context.Context, arg InsertControlConfigSyncStatusHistoryParams) error {
-	_, err := q.db.ExecContext(ctx, insertControlConfigSyncStatusHistory,
+	_, err := q.db.Exec(ctx, insertControlConfigSyncStatusHistory,
 		arg.EnvironmentID,
 		arg.SyncRevision,
 		arg.RepositoryID,
@@ -3084,7 +3089,7 @@ type InsertControlUsageReceiptParams struct {
 }
 
 func (q *Queries) InsertControlUsageReceipt(ctx context.Context, arg InsertControlUsageReceiptParams) (ControlUsageReceipt, error) {
-	row := q.db.QueryRowContext(ctx, insertControlUsageReceipt,
+	row := q.db.QueryRow(ctx, insertControlUsageReceipt,
 		arg.OperationID,
 		arg.EdgeNodeID,
 		arg.CounterEpoch,
@@ -3126,7 +3131,7 @@ SELECT EXISTS (
 `
 
 func (q *Queries) IsControlEnvironmentBYOD(ctx context.Context, environmentID string) (bool, error) {
-	row := q.db.QueryRowContext(ctx, isControlEnvironmentBYOD, environmentID)
+	row := q.db.QueryRow(ctx, isControlEnvironmentBYOD, environmentID)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
@@ -3154,7 +3159,7 @@ type LeaseControlOperationsParams struct {
 }
 
 func (q *Queries) LeaseControlOperations(ctx context.Context, arg LeaseControlOperationsParams) ([]ControlOperation, error) {
-	rows, err := q.db.QueryContext(ctx, leaseControlOperations, arg.LeaseExpiresAt, arg.Now, arg.BatchSize)
+	rows, err := q.db.Query(ctx, leaseControlOperations, arg.LeaseExpiresAt, arg.Now, arg.BatchSize)
 	if err != nil {
 		return nil, err
 	}
@@ -3182,9 +3187,6 @@ func (q *Queries) LeaseControlOperations(ctx context.Context, arg LeaseControlOp
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -3204,7 +3206,7 @@ type ListControlConfigRepositoriesParams struct {
 }
 
 func (q *Queries) ListControlConfigRepositories(ctx context.Context, arg ListControlConfigRepositoriesParams) ([]ControlConfigRepository, error) {
-	rows, err := q.db.QueryContext(ctx, listControlConfigRepositories, arg.OwnerUserID, arg.RowOffset, arg.RowLimit)
+	rows, err := q.db.Query(ctx, listControlConfigRepositories, arg.OwnerUserID, arg.RowOffset, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -3236,9 +3238,6 @@ func (q *Queries) ListControlConfigRepositories(ctx context.Context, arg ListCon
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -3259,7 +3258,7 @@ type ListControlConfigRepositoryAccessPendingProviderRevokeParams struct {
 }
 
 func (q *Queries) ListControlConfigRepositoryAccessPendingProviderRevoke(ctx context.Context, arg ListControlConfigRepositoryAccessPendingProviderRevokeParams) ([]ControlConfigRepositoryAccessOperation, error) {
-	rows, err := q.db.QueryContext(ctx, listControlConfigRepositoryAccessPendingProviderRevoke, arg.Now, arg.RowLimit)
+	rows, err := q.db.Query(ctx, listControlConfigRepositoryAccessPendingProviderRevoke, arg.Now, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -3290,9 +3289,6 @@ func (q *Queries) ListControlConfigRepositoryAccessPendingProviderRevoke(ctx con
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -3307,7 +3303,7 @@ ORDER BY logical_name, id
 `
 
 func (q *Queries) ListControlPreviews(ctx context.Context, environmentID string) ([]ControlPreview, error) {
-	rows, err := q.db.QueryContext(ctx, listControlPreviews, environmentID)
+	rows, err := q.db.Query(ctx, listControlPreviews, environmentID)
 	if err != nil {
 		return nil, err
 	}
@@ -3345,9 +3341,6 @@ func (q *Queries) ListControlPreviews(ctx context.Context, environmentID string)
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -3380,7 +3373,7 @@ type ListControlRoutesForEnvironmentAdmissionRow struct {
 }
 
 func (q *Queries) ListControlRoutesForEnvironmentAdmission(ctx context.Context, arg ListControlRoutesForEnvironmentAdmissionParams) ([]ListControlRoutesForEnvironmentAdmissionRow, error) {
-	rows, err := q.db.QueryContext(ctx, listControlRoutesForEnvironmentAdmission, arg.EnvironmentID, arg.ConnectorID)
+	rows, err := q.db.Query(ctx, listControlRoutesForEnvironmentAdmission, arg.EnvironmentID, arg.ConnectorID)
 	if err != nil {
 		return nil, err
 	}
@@ -3399,9 +3392,6 @@ func (q *Queries) ListControlRoutesForEnvironmentAdmission(ctx context.Context, 
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -3447,7 +3437,7 @@ type ListControlRoutesForNodeRow struct {
 }
 
 func (q *Queries) ListControlRoutesForNode(ctx context.Context, arg ListControlRoutesForNodeParams) ([]ListControlRoutesForNodeRow, error) {
-	rows, err := q.db.QueryContext(ctx, listControlRoutesForNode, arg.EdgeNodeID, arg.Now)
+	rows, err := q.db.Query(ctx, listControlRoutesForNode, arg.EdgeNodeID, arg.Now)
 	if err != nil {
 		return nil, err
 	}
@@ -3473,9 +3463,6 @@ func (q *Queries) ListControlRoutesForNode(ctx context.Context, arg ListControlR
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -3494,7 +3481,7 @@ type ListDetachingControlRoutesForNodeRow struct {
 }
 
 func (q *Queries) ListDetachingControlRoutesForNode(ctx context.Context, edgeNodeID sql.NullString) ([]ListDetachingControlRoutesForNodeRow, error) {
-	rows, err := q.db.QueryContext(ctx, listDetachingControlRoutesForNode, edgeNodeID)
+	rows, err := q.db.Query(ctx, listDetachingControlRoutesForNode, edgeNodeID)
 	if err != nil {
 		return nil, err
 	}
@@ -3506,9 +3493,6 @@ func (q *Queries) ListDetachingControlRoutesForNode(ctx context.Context, edgeNod
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -3601,10 +3585,10 @@ type ListOwnedControlConfigSyncStatusRow struct {
 	PendingCleanPathCount        sql.NullInt32
 	LastAppliedRevision          sql.NullString
 	LastPublishedRevision        sql.NullString
-	Skipped                      json.RawMessage
-	Conflicts                    json.RawMessage
+	Skipped                      []byte
+	Conflicts                    []byte
 	ErrorCode                    sql.NullString
-	RecoveryActions              json.RawMessage
+	RecoveryActions              []byte
 	LastAttemptAt                sql.NullTime
 	LastSuccessfulAt             sql.NullTime
 	MachineUpdatedAt             sql.NullTime
@@ -3612,7 +3596,7 @@ type ListOwnedControlConfigSyncStatusRow struct {
 }
 
 func (q *Queries) ListOwnedControlConfigSyncStatus(ctx context.Context, ownerUserID sql.NullString) ([]ListOwnedControlConfigSyncStatusRow, error) {
-	rows, err := q.db.QueryContext(ctx, listOwnedControlConfigSyncStatus, ownerUserID)
+	rows, err := q.db.Query(ctx, listOwnedControlConfigSyncStatus, ownerUserID)
 	if err != nil {
 		return nil, err
 	}
@@ -3662,9 +3646,6 @@ func (q *Queries) ListOwnedControlConfigSyncStatus(ctx context.Context, ownerUse
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -3724,7 +3705,7 @@ type ListOwnedControlPreviewsRow struct {
 }
 
 func (q *Queries) ListOwnedControlPreviews(ctx context.Context, ownerUserID sql.NullString) ([]ListOwnedControlPreviewsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listOwnedControlPreviews, ownerUserID)
+	rows, err := q.db.Query(ctx, listOwnedControlPreviews, ownerUserID)
 	if err != nil {
 		return nil, err
 	}
@@ -3768,9 +3749,6 @@ func (q *Queries) ListOwnedControlPreviews(ctx context.Context, ownerUserID sql.
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -3795,7 +3773,7 @@ type ListPendingControlConfigConflictResolutionsParams struct {
 }
 
 func (q *Queries) ListPendingControlConfigConflictResolutions(ctx context.Context, arg ListPendingControlConfigConflictResolutionsParams) ([]ControlConfigConflictResolution, error) {
-	rows, err := q.db.QueryContext(ctx, listPendingControlConfigConflictResolutions, arg.EnvironmentID, arg.RepositoryID, arg.AssignmentID)
+	rows, err := q.db.Query(ctx, listPendingControlConfigConflictResolutions, arg.EnvironmentID, arg.RepositoryID, arg.AssignmentID)
 	if err != nil {
 		return nil, err
 	}
@@ -3824,8 +3802,49 @@ func (q *Queries) ListPendingControlConfigConflictResolutions(ctx context.Contex
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
+	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	return items, nil
+}
+
+const listReadyControlTunnelProbeRegions = `-- name: ListReadyControlTunnelProbeRegions :many
+SELECT DISTINCT ON (edge_pool) edge_pool, signaling_host, stun_host, stun_port
+FROM control_tunnel_nodes
+WHERE state = 'ready' AND ready = true
+  AND last_heartbeat_at > $1
+  AND signaling_host IS NOT NULL AND trim(signaling_host) <> ''
+  AND stun_host IS NOT NULL AND trim(stun_host) <> ''
+  AND stun_port BETWEEN 1 AND 65535
+ORDER BY edge_pool, last_heartbeat_at DESC, id
+LIMIT 32
+`
+
+type ListReadyControlTunnelProbeRegionsRow struct {
+	EdgePool      string
+	SignalingHost sql.NullString
+	StunHost      sql.NullString
+	StunPort      sql.NullInt32
+}
+
+func (q *Queries) ListReadyControlTunnelProbeRegions(ctx context.Context, staleAfter sql.NullTime) ([]ListReadyControlTunnelProbeRegionsRow, error) {
+	rows, err := q.db.Query(ctx, listReadyControlTunnelProbeRegions, staleAfter)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListReadyControlTunnelProbeRegionsRow
+	for rows.Next() {
+		var i ListReadyControlTunnelProbeRegionsRow
+		if err := rows.Scan(
+			&i.EdgePool,
+			&i.SignalingHost,
+			&i.StunHost,
+			&i.StunPort,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -3847,7 +3866,7 @@ type ListRevokedConnectorGenerationsRow struct {
 }
 
 func (q *Queries) ListRevokedConnectorGenerations(ctx context.Context, rowLimit int32) ([]ListRevokedConnectorGenerationsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listRevokedConnectorGenerations, rowLimit)
+	rows, err := q.db.Query(ctx, listRevokedConnectorGenerations, rowLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -3859,9 +3878,6 @@ func (q *Queries) ListRevokedConnectorGenerations(ctx context.Context, rowLimit 
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -3885,6 +3901,27 @@ SELECT revoked.jti FROM (
   UNION ALL
   SELECT m.helper_file_session_id AS jti, m.revoked_at FROM user_machine_access_sessions m
   WHERE m.revoked_at IS NOT NULL AND m.expires_at > $1 AND m.helper_file_session_id IS NOT NULL
+  UNION ALL
+  SELECT g.jti, coalesce(g.revoked_at, i.revoked_at, client.revoked_at, endpoint.revoked_at, root.revoked_at) AS revoked_at
+  FROM peer_signaling_grants g
+  JOIN peer_session_intents i ON i.id = g.intent_id
+  JOIN cli_client_sessions client ON client.id = i.cli_client_session_id
+  JOIN peer_endpoint_certificates endpoint ON endpoint.fingerprint = CASE g.role
+    WHEN 'controlling' THEN i.controlling_certificate_fingerprint
+    ELSE i.controlled_certificate_fingerprint END
+  JOIN account_e2ee_roots root ON root.user_id = i.user_id
+  WHERE g.expires_at > $1 AND
+    (g.revoked_at IS NOT NULL OR i.revoked_at IS NOT NULL OR client.state = 'revoked' OR endpoint.revoked_at IS NOT NULL OR root.revoked_at IS NOT NULL)
+  UNION ALL
+  SELECT relay.jti, coalesce(relay.revoked_at, i.revoked_at, client.revoked_at, controlling.revoked_at, controlled.revoked_at, root.revoked_at) AS revoked_at
+  FROM peer_relay_allocations relay
+  JOIN peer_session_intents i ON i.id = relay.intent_id
+  JOIN cli_client_sessions client ON client.id = i.cli_client_session_id
+  JOIN peer_endpoint_certificates controlling ON controlling.fingerprint = i.controlling_certificate_fingerprint
+  JOIN peer_endpoint_certificates controlled ON controlled.fingerprint = i.controlled_certificate_fingerprint
+  JOIN account_e2ee_roots root ON root.user_id = i.user_id
+  WHERE relay.expires_at > $1 AND
+    (relay.revoked_at IS NOT NULL OR i.revoked_at IS NOT NULL OR client.state = 'revoked' OR controlling.revoked_at IS NOT NULL OR controlled.revoked_at IS NOT NULL OR root.revoked_at IS NOT NULL)
 ) revoked
 ORDER BY revoked.revoked_at, revoked.jti
 LIMIT $2
@@ -3896,7 +3933,7 @@ type ListRevokedControlCredentialJTIsParams struct {
 }
 
 func (q *Queries) ListRevokedControlCredentialJTIs(ctx context.Context, arg ListRevokedControlCredentialJTIsParams) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, listRevokedControlCredentialJTIs, arg.Now, arg.RowLimit)
+	rows, err := q.db.Query(ctx, listRevokedControlCredentialJTIs, arg.Now, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -3908,9 +3945,6 @@ func (q *Queries) ListRevokedControlCredentialJTIs(ctx context.Context, arg List
 			return nil, err
 		}
 		items = append(items, jti)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -3926,7 +3960,7 @@ LIMIT $1
 `
 
 func (q *Queries) ListRevokedControlEnvironments(ctx context.Context, rowLimit int32) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, listRevokedControlEnvironments, rowLimit)
+	rows, err := q.db.Query(ctx, listRevokedControlEnvironments, rowLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -3938,9 +3972,6 @@ func (q *Queries) ListRevokedControlEnvironments(ctx context.Context, rowLimit i
 			return nil, err
 		}
 		items = append(items, id)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -3955,7 +3986,7 @@ LIMIT $1
 `
 
 func (q *Queries) ListRevokedControlSigningKeyIDs(ctx context.Context, rowLimit int32) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, listRevokedControlSigningKeyIDs, rowLimit)
+	rows, err := q.db.Query(ctx, listRevokedControlSigningKeyIDs, rowLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -3968,9 +3999,6 @@ func (q *Queries) ListRevokedControlSigningKeyIDs(ctx context.Context, rowLimit 
 		}
 		items = append(items, key_id)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -3978,7 +4006,7 @@ func (q *Queries) ListRevokedControlSigningKeyIDs(ctx context.Context, rowLimit 
 }
 
 const listStaleControlTunnelNodesForUpdate = `-- name: ListStaleControlTunnelNodesForUpdate :many
-SELECT id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at FROM control_tunnel_nodes
+SELECT id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port FROM control_tunnel_nodes
 WHERE state IN ('registered','ready') AND (last_heartbeat_at IS NULL OR last_heartbeat_at <= $1)
 ORDER BY coalesce(last_heartbeat_at, created_at), id
 FOR UPDATE SKIP LOCKED LIMIT $2
@@ -3990,7 +4018,7 @@ type ListStaleControlTunnelNodesForUpdateParams struct {
 }
 
 func (q *Queries) ListStaleControlTunnelNodesForUpdate(ctx context.Context, arg ListStaleControlTunnelNodesForUpdateParams) ([]ControlTunnelNode, error) {
-	rows, err := q.db.QueryContext(ctx, listStaleControlTunnelNodesForUpdate, arg.Cutoff, arg.BatchSize)
+	rows, err := q.db.Query(ctx, listStaleControlTunnelNodesForUpdate, arg.Cutoff, arg.BatchSize)
 	if err != nil {
 		return nil, err
 	}
@@ -4015,13 +4043,13 @@ func (q *Queries) ListStaleControlTunnelNodesForUpdate(ctx context.Context, arg 
 			&i.Version,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.SignalingHost,
+			&i.StunHost,
+			&i.StunPort,
 		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -4041,11 +4069,11 @@ type MarkControlConfigRepositoryAccessProviderRevokedParams struct {
 }
 
 func (q *Queries) MarkControlConfigRepositoryAccessProviderRevoked(ctx context.Context, arg MarkControlConfigRepositoryAccessProviderRevokedParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, markControlConfigRepositoryAccessProviderRevoked, arg.Now, arg.OperationID)
+	result, err := q.db.Exec(ctx, markControlConfigRepositoryAccessProviderRevoked, arg.Now, arg.OperationID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const markControlConfigRepositoryAccessUncertain = `-- name: MarkControlConfigRepositoryAccessUncertain :execrows
@@ -4061,11 +4089,11 @@ type MarkControlConfigRepositoryAccessUncertainParams struct {
 }
 
 func (q *Queries) MarkControlConfigRepositoryAccessUncertain(ctx context.Context, arg MarkControlConfigRepositoryAccessUncertainParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, markControlConfigRepositoryAccessUncertain, arg.LastErrorCode, arg.Now, arg.OperationID)
+	result, err := q.db.Exec(ctx, markControlConfigRepositoryAccessUncertain, arg.LastErrorCode, arg.Now, arg.OperationID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const markControlOperationFailed = `-- name: MarkControlOperationFailed :execrows
@@ -4086,7 +4114,7 @@ type MarkControlOperationFailedParams struct {
 }
 
 func (q *Queries) MarkControlOperationFailed(ctx context.Context, arg MarkControlOperationFailedParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, markControlOperationFailed,
+	result, err := q.db.Exec(ctx, markControlOperationFailed,
 		arg.MaxAttempts,
 		arg.LastError,
 		arg.NextAttemptAt,
@@ -4097,7 +4125,7 @@ func (q *Queries) MarkControlOperationFailed(ctx context.Context, arg MarkContro
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const markControlOperationUncertain = `-- name: MarkControlOperationUncertain :execrows
@@ -4116,7 +4144,7 @@ type MarkControlOperationUncertainParams struct {
 }
 
 func (q *Queries) MarkControlOperationUncertain(ctx context.Context, arg MarkControlOperationUncertainParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, markControlOperationUncertain,
+	result, err := q.db.Exec(ctx, markControlOperationUncertain,
 		arg.LastError,
 		arg.Now,
 		arg.NextAttemptAt,
@@ -4126,7 +4154,7 @@ func (q *Queries) MarkControlOperationUncertain(ctx context.Context, arg MarkCon
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const markControlTunnelNodeOffline = `-- name: MarkControlTunnelNodeOffline :execrows
@@ -4141,11 +4169,11 @@ type MarkControlTunnelNodeOfflineParams struct {
 }
 
 func (q *Queries) MarkControlTunnelNodeOffline(ctx context.Context, arg MarkControlTunnelNodeOfflineParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, markControlTunnelNodeOffline, arg.Now, arg.ID, arg.ExpectedVersion)
+	result, err := q.db.Exec(ctx, markControlTunnelNodeOffline, arg.Now, arg.ID, arg.ExpectedVersion)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const reactivateHelperRouteForEnvironment = `-- name: ReactivateHelperRouteForEnvironment :one
@@ -4166,7 +4194,7 @@ type ReactivateHelperRouteForEnvironmentParams struct {
 }
 
 func (q *Queries) ReactivateHelperRouteForEnvironment(ctx context.Context, arg ReactivateHelperRouteForEnvironmentParams) (ControlRoute, error) {
-	row := q.db.QueryRowContext(ctx, reactivateHelperRouteForEnvironment, arg.Now, arg.EnvironmentID)
+	row := q.db.QueryRow(ctx, reactivateHelperRouteForEnvironment, arg.Now, arg.EnvironmentID)
 	var i ControlRoute
 	err := row.Scan(
 		&i.ID,
@@ -4237,7 +4265,7 @@ type ReconcileStaleControlConfigWarningParams struct {
 }
 
 func (q *Queries) ReconcileStaleControlConfigWarning(ctx context.Context, arg ReconcileStaleControlConfigWarningParams) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, reconcileStaleControlConfigWarning, arg.WarningRevision, arg.Now)
+	rows, err := q.db.Query(ctx, reconcileStaleControlConfigWarning, arg.WarningRevision, arg.Now)
 	if err != nil {
 		return nil, err
 	}
@@ -4249,9 +4277,6 @@ func (q *Queries) ReconcileStaleControlConfigWarning(ctx context.Context, arg Re
 			return nil, err
 		}
 		items = append(items, environment_id)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -4272,11 +4297,11 @@ type RecordControlConfigRepositoryAccessRevokeFailureParams struct {
 }
 
 func (q *Queries) RecordControlConfigRepositoryAccessRevokeFailure(ctx context.Context, arg RecordControlConfigRepositoryAccessRevokeFailureParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, recordControlConfigRepositoryAccessRevokeFailure, arg.LastErrorCode, arg.Now, arg.OperationID)
+	result, err := q.db.Exec(ctx, recordControlConfigRepositoryAccessRevokeFailure, arg.LastErrorCode, arg.Now, arg.OperationID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const recordControlConfigSyncStatus = `-- name: RecordControlConfigSyncStatus :one
@@ -4347,10 +4372,10 @@ type RecordControlConfigSyncStatusParams struct {
 	LastPublishedRevision  sql.NullString
 	LeaseID                sql.NullString
 	FencingToken           sql.NullInt64
-	Skipped                json.RawMessage
-	Conflicts              json.RawMessage
+	Skipped                []byte
+	Conflicts              []byte
 	ErrorCode              sql.NullString
-	RecoveryActions        json.RawMessage
+	RecoveryActions        []byte
 	LastAttemptAt          sql.NullTime
 	LastSuccessfulAt       sql.NullTime
 	MachineUpdatedAt       time.Time
@@ -4358,7 +4383,7 @@ type RecordControlConfigSyncStatusParams struct {
 }
 
 func (q *Queries) RecordControlConfigSyncStatus(ctx context.Context, arg RecordControlConfigSyncStatusParams) (ControlConfigSyncStatus, error) {
-	row := q.db.QueryRowContext(ctx, recordControlConfigSyncStatus,
+	row := q.db.QueryRow(ctx, recordControlConfigSyncStatus,
 		arg.EnvironmentID,
 		arg.RepositoryID,
 		arg.AssignmentID,
@@ -4433,11 +4458,11 @@ type RecoverDeadLetterControlOperationParams struct {
 }
 
 func (q *Queries) RecoverDeadLetterControlOperation(ctx context.Context, arg RecoverDeadLetterControlOperationParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, recoverDeadLetterControlOperation, arg.Now, arg.ID)
+	result, err := q.db.Exec(ctx, recoverDeadLetterControlOperation, arg.Now, arg.ID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const recoverUncertainHostedProviderOperation = `-- name: RecoverUncertainHostedProviderOperation :execrows
@@ -4454,11 +4479,11 @@ type RecoverUncertainHostedProviderOperationParams struct {
 }
 
 func (q *Queries) RecoverUncertainHostedProviderOperation(ctx context.Context, arg RecoverUncertainHostedProviderOperationParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, recoverUncertainHostedProviderOperation, arg.Action, arg.ID)
+	result, err := q.db.Exec(ctx, recoverUncertainHostedProviderOperation, arg.Action, arg.ID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const refreshControlPreviewEdgeReadiness = `-- name: RefreshControlPreviewEdgeReadiness :exec
@@ -4478,21 +4503,22 @@ WHERE p.route_id = r.id AND p.state <> 'removed'
 `
 
 func (q *Queries) RefreshControlPreviewEdgeReadiness(ctx context.Context, now time.Time) error {
-	_, err := q.db.ExecContext(ctx, refreshControlPreviewEdgeReadiness, now)
+	_, err := q.db.Exec(ctx, refreshControlPreviewEdgeReadiness, now)
 	return err
 }
 
 const registerControlTunnelNode = `-- name: RegisterControlTunnelNode :one
-INSERT INTO control_tunnel_nodes (id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, last_heartbeat_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, 'registered', false,
-        coalesce($8::jsonb, '{}'::jsonb), $9)
+INSERT INTO control_tunnel_nodes (id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, signaling_host, stun_host, stun_port, state, ready, capacity, last_heartbeat_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'registered', false,
+        coalesce($11::jsonb, '{}'::jsonb), $12)
 ON CONFLICT (id) DO UPDATE
 SET protocol_version = EXCLUDED.protocol_version, process_epoch = EXCLUDED.process_epoch,
     endpoint_host = EXCLUDED.endpoint_host, endpoint_tcp_port = EXCLUDED.endpoint_tcp_port, endpoint_quic_port = EXCLUDED.endpoint_quic_port,
+    signaling_host = EXCLUDED.signaling_host, stun_host = EXCLUDED.stun_host, stun_port = EXCLUDED.stun_port,
     state = 'registered', ready = false, capacity = EXCLUDED.capacity,
     observation = '{}'::jsonb, last_heartbeat_at = EXCLUDED.last_heartbeat_at,
     drain_deadline = NULL, version = control_tunnel_nodes.version + 1, updated_at = EXCLUDED.last_heartbeat_at
-RETURNING id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at
+RETURNING id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port
 `
 
 type RegisterControlTunnelNodeParams struct {
@@ -4503,12 +4529,15 @@ type RegisterControlTunnelNodeParams struct {
 	EndpointHost     sql.NullString
 	EndpointTcpPort  sql.NullInt32
 	EndpointQuicPort sql.NullInt32
-	Capacity         json.RawMessage
+	SignalingHost    sql.NullString
+	StunHost         sql.NullString
+	StunPort         sql.NullInt32
+	Capacity         []byte
 	Now              sql.NullTime
 }
 
 func (q *Queries) RegisterControlTunnelNode(ctx context.Context, arg RegisterControlTunnelNodeParams) (ControlTunnelNode, error) {
-	row := q.db.QueryRowContext(ctx, registerControlTunnelNode,
+	row := q.db.QueryRow(ctx, registerControlTunnelNode,
 		arg.ID,
 		arg.EdgePool,
 		arg.ProtocolVersion,
@@ -4516,6 +4545,9 @@ func (q *Queries) RegisterControlTunnelNode(ctx context.Context, arg RegisterCon
 		arg.EndpointHost,
 		arg.EndpointTcpPort,
 		arg.EndpointQuicPort,
+		arg.SignalingHost,
+		arg.StunHost,
+		arg.StunPort,
 		arg.Capacity,
 		arg.Now,
 	)
@@ -4537,6 +4569,9 @@ func (q *Queries) RegisterControlTunnelNode(ctx context.Context, arg RegisterCon
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SignalingHost,
+		&i.StunHost,
+		&i.StunPort,
 	)
 	return i, err
 }
@@ -4560,7 +4595,7 @@ type ReleaseControlConfigRepositoryLeaseParams struct {
 }
 
 func (q *Queries) ReleaseControlConfigRepositoryLease(ctx context.Context, arg ReleaseControlConfigRepositoryLeaseParams) (ControlConfigRepositoryLeaseAuthority, error) {
-	row := q.db.QueryRowContext(ctx, releaseControlConfigRepositoryLease,
+	row := q.db.QueryRow(ctx, releaseControlConfigRepositoryLease,
 		arg.Now,
 		arg.RepositoryID,
 		arg.LeaseID,
@@ -4603,7 +4638,7 @@ type RemoveControlConfigConsentParams struct {
 }
 
 func (q *Queries) RemoveControlConfigConsent(ctx context.Context, arg RemoveControlConfigConsentParams) (ControlConfigAssignment, error) {
-	row := q.db.QueryRowContext(ctx, removeControlConfigConsent,
+	row := q.db.QueryRow(ctx, removeControlConfigConsent,
 		arg.WarningRevision,
 		arg.Now,
 		arg.EnvironmentID,
@@ -4644,7 +4679,7 @@ type RemoveControlPreviewParams struct {
 }
 
 func (q *Queries) RemoveControlPreview(ctx context.Context, arg RemoveControlPreviewParams) (ControlPreview, error) {
-	row := q.db.QueryRowContext(ctx, removeControlPreview,
+	row := q.db.QueryRow(ctx, removeControlPreview,
 		arg.Now,
 		arg.RetainedUntil,
 		arg.ID,
@@ -4695,11 +4730,11 @@ type RemoveControlPreviewRouteParams struct {
 }
 
 func (q *Queries) RemoveControlPreviewRoute(ctx context.Context, arg RemoveControlPreviewRouteParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, removeControlPreviewRoute, arg.Now, arg.ID, arg.EnvironmentID)
+	result, err := q.db.Exec(ctx, removeControlPreviewRoute, arg.Now, arg.ID, arg.EnvironmentID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const renewControlConfigRepositoryLease = `-- name: RenewControlConfigRepositoryLease :one
@@ -4720,7 +4755,7 @@ type RenewControlConfigRepositoryLeaseParams struct {
 }
 
 func (q *Queries) RenewControlConfigRepositoryLease(ctx context.Context, arg RenewControlConfigRepositoryLeaseParams) (ControlConfigRepositoryLeaseAuthority, error) {
-	row := q.db.QueryRowContext(ctx, renewControlConfigRepositoryLease,
+	row := q.db.QueryRow(ctx, renewControlConfigRepositoryLease,
 		arg.ExpiresAt,
 		arg.Now,
 		arg.RepositoryID,
@@ -4763,7 +4798,7 @@ type ReplaceControlHelperParams struct {
 }
 
 func (q *Queries) ReplaceControlHelper(ctx context.Context, arg ReplaceControlHelperParams) (ControlHelper, error) {
-	row := q.db.QueryRowContext(ctx, replaceControlHelper,
+	row := q.db.QueryRow(ctx, replaceControlHelper,
 		arg.OperationKey,
 		arg.RevokedAt,
 		arg.ID,
@@ -4811,7 +4846,7 @@ type ReserveControlConfigRepositoryAccessParams struct {
 }
 
 func (q *Queries) ReserveControlConfigRepositoryAccess(ctx context.Context, arg ReserveControlConfigRepositoryAccessParams) (ControlConfigRepositoryAccessOperation, error) {
-	row := q.db.QueryRowContext(ctx, reserveControlConfigRepositoryAccess,
+	row := q.db.QueryRow(ctx, reserveControlConfigRepositoryAccess,
 		arg.OperationID,
 		arg.RequestHash,
 		arg.RepositoryID,
@@ -4859,7 +4894,7 @@ type ReserveControlOperationParams struct {
 }
 
 func (q *Queries) ReserveControlOperation(ctx context.Context, arg ReserveControlOperationParams) (ControlOperation, error) {
-	row := q.db.QueryRowContext(ctx, reserveControlOperation,
+	row := q.db.QueryRow(ctx, reserveControlOperation,
 		arg.ID,
 		arg.OperationKey,
 		arg.OperationType,
@@ -4899,7 +4934,7 @@ type ReserveControlOperationRecoveryParams struct {
 }
 
 func (q *Queries) ReserveControlOperationRecovery(ctx context.Context, arg ReserveControlOperationRecoveryParams) (ControlOperationRecovery, error) {
-	row := q.db.QueryRowContext(ctx, reserveControlOperationRecovery, arg.OperationKey, arg.OperationID, arg.ActorUserID)
+	row := q.db.QueryRow(ctx, reserveControlOperationRecovery, arg.OperationKey, arg.OperationID, arg.ActorUserID)
 	var i ControlOperationRecovery
 	err := row.Scan(
 		&i.OperationKey,
@@ -4925,7 +4960,7 @@ type ReserveControlPreviewOperationParams struct {
 }
 
 func (q *Queries) ReserveControlPreviewOperation(ctx context.Context, arg ReserveControlPreviewOperationParams) (ControlPreviewOperation, error) {
-	row := q.db.QueryRowContext(ctx, reserveControlPreviewOperation,
+	row := q.db.QueryRow(ctx, reserveControlPreviewOperation,
 		arg.OperationKey,
 		arg.OperationType,
 		arg.RequestHash,
@@ -4959,7 +4994,7 @@ type ReserveControlRouteOperationParams struct {
 }
 
 func (q *Queries) ReserveControlRouteOperation(ctx context.Context, arg ReserveControlRouteOperationParams) (ControlRouteOperation, error) {
-	row := q.db.QueryRowContext(ctx, reserveControlRouteOperation,
+	row := q.db.QueryRow(ctx, reserveControlRouteOperation,
 		arg.OperationKey,
 		arg.OperationType,
 		arg.RequestHash,
@@ -4993,7 +5028,7 @@ type ReserveControlSigningKeyRevocationParams struct {
 }
 
 func (q *Queries) ReserveControlSigningKeyRevocation(ctx context.Context, arg ReserveControlSigningKeyRevocationParams) (ControlSigningKeyRevocationOperation, error) {
-	row := q.db.QueryRowContext(ctx, reserveControlSigningKeyRevocation, arg.OperationKey, arg.KeyID, arg.Reason)
+	row := q.db.QueryRow(ctx, reserveControlSigningKeyRevocation, arg.OperationKey, arg.KeyID, arg.Reason)
 	var i ControlSigningKeyRevocationOperation
 	err := row.Scan(
 		&i.OperationKey,
@@ -5020,7 +5055,7 @@ type ReserveHostedProviderOperationRecoveryParams struct {
 }
 
 func (q *Queries) ReserveHostedProviderOperationRecovery(ctx context.Context, arg ReserveHostedProviderOperationRecoveryParams) (HostedProviderOperationRecovery, error) {
-	row := q.db.QueryRowContext(ctx, reserveHostedProviderOperationRecovery,
+	row := q.db.QueryRow(ctx, reserveHostedProviderOperationRecovery,
 		arg.OperationKey,
 		arg.ProviderOperationID,
 		arg.ActorUserID,
@@ -5050,11 +5085,11 @@ type RevokeControlConfigCredentialsForEnvironmentParams struct {
 }
 
 func (q *Queries) RevokeControlConfigCredentialsForEnvironment(ctx context.Context, arg RevokeControlConfigCredentialsForEnvironmentParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, revokeControlConfigCredentialsForEnvironment, arg.RevokedAt, arg.EnvironmentID)
+	result, err := q.db.Exec(ctx, revokeControlConfigCredentialsForEnvironment, arg.RevokedAt, arg.EnvironmentID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const revokeControlConfigCredentialsForRepository = `-- name: RevokeControlConfigCredentialsForRepository :execrows
@@ -5070,11 +5105,11 @@ type RevokeControlConfigCredentialsForRepositoryParams struct {
 }
 
 func (q *Queries) RevokeControlConfigCredentialsForRepository(ctx context.Context, arg RevokeControlConfigCredentialsForRepositoryParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, revokeControlConfigCredentialsForRepository, arg.Now, arg.RepositoryID)
+	result, err := q.db.Exec(ctx, revokeControlConfigCredentialsForRepository, arg.Now, arg.RepositoryID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const revokeControlConfigRepositoryAccessForEnvironment = `-- name: RevokeControlConfigRepositoryAccessForEnvironment :execrows
@@ -5089,11 +5124,11 @@ type RevokeControlConfigRepositoryAccessForEnvironmentParams struct {
 }
 
 func (q *Queries) RevokeControlConfigRepositoryAccessForEnvironment(ctx context.Context, arg RevokeControlConfigRepositoryAccessForEnvironmentParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, revokeControlConfigRepositoryAccessForEnvironment, arg.Now, arg.EnvironmentID)
+	result, err := q.db.Exec(ctx, revokeControlConfigRepositoryAccessForEnvironment, arg.Now, arg.EnvironmentID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const revokeControlConfigRepositoryAccessForRepository = `-- name: RevokeControlConfigRepositoryAccessForRepository :execrows
@@ -5108,11 +5143,11 @@ type RevokeControlConfigRepositoryAccessForRepositoryParams struct {
 }
 
 func (q *Queries) RevokeControlConfigRepositoryAccessForRepository(ctx context.Context, arg RevokeControlConfigRepositoryAccessForRepositoryParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, revokeControlConfigRepositoryAccessForRepository, arg.Now, arg.RepositoryID)
+	result, err := q.db.Exec(ctx, revokeControlConfigRepositoryAccessForRepository, arg.Now, arg.RepositoryID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const revokeControlConfigRepositoryLease = `-- name: RevokeControlConfigRepositoryLease :one
@@ -5128,7 +5163,7 @@ type RevokeControlConfigRepositoryLeaseParams struct {
 }
 
 func (q *Queries) RevokeControlConfigRepositoryLease(ctx context.Context, arg RevokeControlConfigRepositoryLeaseParams) (ControlConfigRepositoryLeaseAuthority, error) {
-	row := q.db.QueryRowContext(ctx, revokeControlConfigRepositoryLease, arg.Now, arg.RepositoryID)
+	row := q.db.QueryRow(ctx, revokeControlConfigRepositoryLease, arg.Now, arg.RepositoryID)
 	var i ControlConfigRepositoryLeaseAuthority
 	err := row.Scan(
 		&i.RepositoryID,
@@ -5161,11 +5196,11 @@ type RevokeControlConfigRepositoryLeasesForEnvironmentParams struct {
 }
 
 func (q *Queries) RevokeControlConfigRepositoryLeasesForEnvironment(ctx context.Context, arg RevokeControlConfigRepositoryLeasesForEnvironmentParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, revokeControlConfigRepositoryLeasesForEnvironment, arg.Now, arg.EnvironmentID)
+	result, err := q.db.Exec(ctx, revokeControlConfigRepositoryLeasesForEnvironment, arg.Now, arg.EnvironmentID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const revokeControlConnectorForEnvironment = `-- name: RevokeControlConnectorForEnvironment :execrows
@@ -5182,11 +5217,11 @@ type RevokeControlConnectorForEnvironmentParams struct {
 }
 
 func (q *Queries) RevokeControlConnectorForEnvironment(ctx context.Context, arg RevokeControlConnectorForEnvironmentParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, revokeControlConnectorForEnvironment, arg.RevokedAt, arg.EnvironmentID)
+	result, err := q.db.Exec(ctx, revokeControlConnectorForEnvironment, arg.RevokedAt, arg.EnvironmentID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const revokeControlHelperEnrollmentsForEnvironment = `-- name: RevokeControlHelperEnrollmentsForEnvironment :execrows
@@ -5202,11 +5237,11 @@ type RevokeControlHelperEnrollmentsForEnvironmentParams struct {
 }
 
 func (q *Queries) RevokeControlHelperEnrollmentsForEnvironment(ctx context.Context, arg RevokeControlHelperEnrollmentsForEnvironmentParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, revokeControlHelperEnrollmentsForEnvironment, arg.RevokedAt, arg.EnvironmentID)
+	result, err := q.db.Exec(ctx, revokeControlHelperEnrollmentsForEnvironment, arg.RevokedAt, arg.EnvironmentID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const revokeControlHelpersForEnvironment = `-- name: RevokeControlHelpersForEnvironment :execrows
@@ -5223,11 +5258,11 @@ type RevokeControlHelpersForEnvironmentParams struct {
 }
 
 func (q *Queries) RevokeControlHelpersForEnvironment(ctx context.Context, arg RevokeControlHelpersForEnvironmentParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, revokeControlHelpersForEnvironment, arg.RevokedAt, arg.EnvironmentID)
+	result, err := q.db.Exec(ctx, revokeControlHelpersForEnvironment, arg.RevokedAt, arg.EnvironmentID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const revokeControlRoutesForEnvironment = `-- name: RevokeControlRoutesForEnvironment :execrows
@@ -5244,11 +5279,11 @@ type RevokeControlRoutesForEnvironmentParams struct {
 }
 
 func (q *Queries) RevokeControlRoutesForEnvironment(ctx context.Context, arg RevokeControlRoutesForEnvironmentParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, revokeControlRoutesForEnvironment, arg.Now, arg.EnvironmentID)
+	result, err := q.db.Exec(ctx, revokeControlRoutesForEnvironment, arg.Now, arg.EnvironmentID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const revokeControlSigningKey = `-- name: RevokeControlSigningKey :one
@@ -5266,7 +5301,7 @@ type RevokeControlSigningKeyParams struct {
 }
 
 func (q *Queries) RevokeControlSigningKey(ctx context.Context, arg RevokeControlSigningKeyParams) (ControlSigningKeyRevocation, error) {
-	row := q.db.QueryRowContext(ctx, revokeControlSigningKey,
+	row := q.db.QueryRow(ctx, revokeControlSigningKey,
 		arg.KeyID,
 		arg.Reason,
 		arg.RevokedAt,
@@ -5294,11 +5329,11 @@ type RevokeControlUsageVerificationKeyParams struct {
 }
 
 func (q *Queries) RevokeControlUsageVerificationKey(ctx context.Context, arg RevokeControlUsageVerificationKeyParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, revokeControlUsageVerificationKey, arg.RevokedAt, arg.KeyID)
+	result, err := q.db.Exec(ctx, revokeControlUsageVerificationKey, arg.RevokedAt, arg.KeyID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const revokeExpiredControlHelperEnrollments = `-- name: RevokeExpiredControlHelperEnrollments :execrows
@@ -5313,11 +5348,11 @@ type RevokeExpiredControlHelperEnrollmentsParams struct {
 }
 
 func (q *Queries) RevokeExpiredControlHelperEnrollments(ctx context.Context, arg RevokeExpiredControlHelperEnrollmentsParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, revokeExpiredControlHelperEnrollments, arg.Now, arg.EnvironmentID)
+	result, err := q.db.Exec(ctx, revokeExpiredControlHelperEnrollments, arg.Now, arg.EnvironmentID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const revokePendingHelperEnrollments = `-- name: RevokePendingHelperEnrollments :execrows
@@ -5332,11 +5367,11 @@ type RevokePendingHelperEnrollmentsParams struct {
 }
 
 func (q *Queries) RevokePendingHelperEnrollments(ctx context.Context, arg RevokePendingHelperEnrollmentsParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, revokePendingHelperEnrollments, arg.RevokedAt, arg.HelperID)
+	result, err := q.db.Exec(ctx, revokePendingHelperEnrollments, arg.RevokedAt, arg.HelperID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const selectControlPreviewForEviction = `-- name: SelectControlPreviewForEviction :one
@@ -5353,7 +5388,7 @@ type SelectControlPreviewForEvictionParams struct {
 }
 
 func (q *Queries) SelectControlPreviewForEviction(ctx context.Context, arg SelectControlPreviewForEvictionParams) (ControlPreview, error) {
-	row := q.db.QueryRowContext(ctx, selectControlPreviewForEviction, arg.EnvironmentID, arg.Now)
+	row := q.db.QueryRow(ctx, selectControlPreviewForEviction, arg.EnvironmentID, arg.Now)
 	var i ControlPreview
 	err := row.Scan(
 		&i.ID,
@@ -5384,21 +5419,21 @@ func (q *Queries) SelectControlPreviewForEviction(ctx context.Context, arg Selec
 	return i, err
 }
 
-const selectReadyControlTunnelNodeForUpdate = `-- name: SelectReadyControlTunnelNodeForUpdate :one
-SELECT id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at FROM control_tunnel_nodes
+const selectReadyControlTunnelNode = `-- name: SelectReadyControlTunnelNode :one
+SELECT id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port FROM control_tunnel_nodes
 WHERE edge_pool = $1 AND state = 'ready' AND ready = true
   AND last_heartbeat_at > $2
 ORDER BY last_heartbeat_at DESC, id
-FOR UPDATE SKIP LOCKED LIMIT 1
+LIMIT 1
 `
 
-type SelectReadyControlTunnelNodeForUpdateParams struct {
+type SelectReadyControlTunnelNodeParams struct {
 	EdgePool   string
 	StaleAfter sql.NullTime
 }
 
-func (q *Queries) SelectReadyControlTunnelNodeForUpdate(ctx context.Context, arg SelectReadyControlTunnelNodeForUpdateParams) (ControlTunnelNode, error) {
-	row := q.db.QueryRowContext(ctx, selectReadyControlTunnelNodeForUpdate, arg.EdgePool, arg.StaleAfter)
+func (q *Queries) SelectReadyControlTunnelNode(ctx context.Context, arg SelectReadyControlTunnelNodeParams) (ControlTunnelNode, error) {
+	row := q.db.QueryRow(ctx, selectReadyControlTunnelNode, arg.EdgePool, arg.StaleAfter)
 	var i ControlTunnelNode
 	err := row.Scan(
 		&i.ID,
@@ -5417,6 +5452,9 @@ func (q *Queries) SelectReadyControlTunnelNodeForUpdate(ctx context.Context, arg
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SignalingHost,
+		&i.StunHost,
+		&i.StunPort,
 	)
 	return i, err
 }
@@ -5447,7 +5485,7 @@ type SetControlConfigAssignmentParams struct {
 }
 
 func (q *Queries) SetControlConfigAssignment(ctx context.Context, arg SetControlConfigAssignmentParams) (ControlConfigAssignment, error) {
-	row := q.db.QueryRowContext(ctx, setControlConfigAssignment,
+	row := q.db.QueryRow(ctx, setControlConfigAssignment,
 		arg.AssignmentID,
 		arg.EnvironmentID,
 		arg.RepositoryID,
@@ -5500,7 +5538,7 @@ type SetControlConnectorAdmissionParams struct {
 }
 
 func (q *Queries) SetControlConnectorAdmission(ctx context.Context, arg SetControlConnectorAdmissionParams) (ControlConnectorGeneration, error) {
-	row := q.db.QueryRowContext(ctx, setControlConnectorAdmission,
+	row := q.db.QueryRow(ctx, setControlConnectorAdmission,
 		arg.EdgeNodeID,
 		arg.AdmissionJtiHash,
 		arg.AdmissionOperationKey,
@@ -5547,7 +5585,7 @@ type SetControlHelperReplacementGenerationParams struct {
 }
 
 func (q *Queries) SetControlHelperReplacementGeneration(ctx context.Context, arg SetControlHelperReplacementGenerationParams) (ControlHelper, error) {
-	row := q.db.QueryRowContext(ctx, setControlHelperReplacementGeneration,
+	row := q.db.QueryRow(ctx, setControlHelperReplacementGeneration,
 		arg.ConnectorGeneration,
 		arg.UpdatedAt,
 		arg.ID,
@@ -5577,13 +5615,13 @@ WHERE operation_key = $3
 `
 
 type SetControlPreviewOperationResultParams struct {
-	Result       json.RawMessage
+	Result       []byte
 	PreviewID    sql.NullString
 	OperationKey string
 }
 
 func (q *Queries) SetControlPreviewOperationResult(ctx context.Context, arg SetControlPreviewOperationResultParams) error {
-	_, err := q.db.ExecContext(ctx, setControlPreviewOperationResult, arg.Result, arg.PreviewID, arg.OperationKey)
+	_, err := q.db.Exec(ctx, setControlPreviewOperationResult, arg.Result, arg.PreviewID, arg.OperationKey)
 	return err
 }
 
@@ -5600,7 +5638,7 @@ type SetControlPreviewRouteParams struct {
 }
 
 func (q *Queries) SetControlPreviewRoute(ctx context.Context, arg SetControlPreviewRouteParams) (ControlPreview, error) {
-	row := q.db.QueryRowContext(ctx, setControlPreviewRoute, arg.RouteID, arg.Now, arg.ID)
+	row := q.db.QueryRow(ctx, setControlPreviewRoute, arg.RouteID, arg.Now, arg.ID)
 	var i ControlPreview
 	err := row.Scan(
 		&i.ID,
@@ -5638,16 +5676,16 @@ WHERE operation_key = $3 AND result_revision IS NULL
 
 type SetControlRouteOperationResultParams struct {
 	ResultRevision sql.NullInt64
-	Result         json.RawMessage
+	Result         []byte
 	OperationKey   string
 }
 
 func (q *Queries) SetControlRouteOperationResult(ctx context.Context, arg SetControlRouteOperationResultParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, setControlRouteOperationResult, arg.ResultRevision, arg.Result, arg.OperationKey)
+	result, err := q.db.Exec(ctx, setControlRouteOperationResult, arg.ResultRevision, arg.Result, arg.OperationKey)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const suspendControlEnvironmentForQuota = `-- name: SuspendControlEnvironmentForQuota :execrows
@@ -5662,11 +5700,11 @@ type SuspendControlEnvironmentForQuotaParams struct {
 }
 
 func (q *Queries) SuspendControlEnvironmentForQuota(ctx context.Context, arg SuspendControlEnvironmentForQuotaParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, suspendControlEnvironmentForQuota, arg.Now, arg.ID)
+	result, err := q.db.Exec(ctx, suspendControlEnvironmentForQuota, arg.Now, arg.ID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const updateControlEnvironmentDesiredState = `-- name: UpdateControlEnvironmentDesiredState :one
@@ -5686,7 +5724,7 @@ type UpdateControlEnvironmentDesiredStateParams struct {
 }
 
 func (q *Queries) UpdateControlEnvironmentDesiredState(ctx context.Context, arg UpdateControlEnvironmentDesiredStateParams) (ControlEnvironment, error) {
-	row := q.db.QueryRowContext(ctx, updateControlEnvironmentDesiredState,
+	row := q.db.QueryRow(ctx, updateControlEnvironmentDesiredState,
 		arg.DesiredState,
 		arg.Now,
 		arg.ID,
@@ -5733,7 +5771,7 @@ type UpdateControlPreviewParams struct {
 }
 
 func (q *Queries) UpdateControlPreview(ctx context.Context, arg UpdateControlPreviewParams) (ControlPreview, error) {
-	row := q.db.QueryRowContext(ctx, updateControlPreview,
+	row := q.db.QueryRow(ctx, updateControlPreview,
 		arg.TargetHost,
 		arg.TargetPort,
 		arg.SourceKind,
@@ -5792,7 +5830,7 @@ type UpdateControlPreviewRouteTargetParams struct {
 }
 
 func (q *Queries) UpdateControlPreviewRouteTarget(ctx context.Context, arg UpdateControlPreviewRouteTargetParams) (ControlRoute, error) {
-	row := q.db.QueryRowContext(ctx, updateControlPreviewRouteTarget,
+	row := q.db.QueryRow(ctx, updateControlPreviewRouteTarget,
 		arg.TargetHost,
 		arg.TargetPort,
 		arg.Now,
@@ -5846,7 +5884,7 @@ type UpsertControlUsageCounterParams struct {
 }
 
 func (q *Queries) UpsertControlUsageCounter(ctx context.Context, arg UpsertControlUsageCounterParams) (ControlUsageCounter, error) {
-	row := q.db.QueryRowContext(ctx, upsertControlUsageCounter,
+	row := q.db.QueryRow(ctx, upsertControlUsageCounter,
 		arg.EdgeNodeID,
 		arg.CounterEpoch,
 		arg.EnvironmentID,

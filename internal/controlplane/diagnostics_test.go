@@ -7,6 +7,23 @@ import (
 	"time"
 )
 
+func TestDiagnosticMetricSchemaIsExact(t *testing.T) {
+	values := make(map[string]int64, len(DiagnosticMetricNames()))
+	for _, name := range DiagnosticMetricNames() {
+		if _, exists := values[name]; exists {
+			t.Fatalf("duplicate diagnostic metric %q", name)
+		}
+		values[name] = 0
+	}
+	if !validDiagnosticMetricSet(values) {
+		t.Fatal("published diagnostic metric names fail their own schema")
+	}
+	values["undocumented"] = 0
+	if validDiagnosticMetricSet(values) {
+		t.Fatal("undocumented diagnostic metric passed schema validation")
+	}
+}
+
 func TestDiagnosticsMetricsReportDurableBacklogs(t *testing.T) {
 	store := openControlPlaneTestDB(t)
 	ctx := context.Background()

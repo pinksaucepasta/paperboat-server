@@ -11,8 +11,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/golang-jwt/jwt/v4"
 )
 
 func TestWorkloadIdentityVerifierValidatesFlyClaims(t *testing.T) {
@@ -42,16 +40,14 @@ func TestWorkloadIdentityVerifierValidatesFlyClaims(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	claims := jwt.MapClaims{
+	claims := map[string]any{
 		"iss": issuer, "aud": "https://control.example/v1/hosted-helper-enrollments",
 		"iat": now.Unix(), "nbf": now.Add(-time.Second).Unix(), "exp": now.Add(10 * time.Minute).Unix(),
 		"jti": "fly-oidc-token-1", "app_name": "paperboat-projects",
 		"machine_id": "machine-1", "machine_name": "pbvm-project-1",
 		"image_digest": "sha256:" + strings.Repeat("a", 64),
 	}
-	token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims)
-	token.Header["kid"] = "fly-test"
-	raw, err := token.SignedString(privateKey)
+	raw, err := signTestJWT(privateKey, "fly-test", claims)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,20 +59,35 @@ func TestWorkloadIdentityVerifierValidatesFlyClaims(t *testing.T) {
 		t.Fatalf("identity = %#v", identity)
 	}
 
-	wrongAudience := jwt.NewWithClaims(jwt.SigningMethodEdDSA, jwt.MapClaims{
+	wrongAudienceClaims := map[string]any{
 		"iss": issuer, "aud": "https://attacker.example", "iat": now.Unix(), "nbf": now.Unix(),
 		"exp": now.Add(time.Minute).Unix(), "jti": "fly-oidc-token-2",
 		"app_name": "paperboat-projects", "machine_id": "machine-1",
 		"machine_name": "pbvm-project-1", "image_digest": "sha256:" + strings.Repeat("a", 64),
-	})
-	wrongAudience.Header["kid"] = "fly-test"
-	rawWrongAudience, err := wrongAudience.SignedString(privateKey)
+	}
+	rawWrongAudience, err := signTestJWT(privateKey, "fly-test", wrongAudienceClaims)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := verifier.Verify(context.Background(), rawWrongAudience); err == nil {
 		t.Fatal("wrong audience workload identity was accepted")
 	}
+}
+
+func signTestJWT(privateKey ed25519.PrivateKey, keyID string, claims map[string]any) (string, error) {
+	header, err := json.Marshal(map[string]string{"alg": "EdDSA", "kid": keyID, "typ": "JWT"})
+	if err != nil {
+		return "", err
+	}
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		return "", err
+	}
+	encodedHeader := base64.RawURLEncoding.EncodeToString(header)
+	encodedPayload := base64.RawURLEncoding.EncodeToString(payload)
+	message := encodedHeader + "." + encodedPayload
+	signature := ed25519.Sign(privateKey, []byte(message))
+	return message + "." + base64.RawURLEncoding.EncodeToString(signature), nil
 }
 
 func TestNewWorkloadIdentityVerifierRejectsUnsafeOrgSlug(t *testing.T) {

@@ -137,8 +137,8 @@ func (s *Service) provisionProject(ctx context.Context, projectID string) error 
 	if err != nil {
 		return err
 	}
-	if ensureErr := s.repo.EnsureHostedControlEnvironment(ctx, intent.ID, intent.UserID); ensureErr != nil {
-		return fmt.Errorf("ensure hosted control environment: %w", ensureErr)
+	if ensureErr := s.repo.EnsureHostedRuntimeAuthority(ctx, intent.ID, intent.UserID, s.cfg.Fly.HostedSSHUser, s.cfg.Fly.HostedSSHPort); ensureErr != nil {
+		return fmt.Errorf("ensure hosted runtime authority: %w", ensureErr)
 	}
 	if s.ensureHostedRoute != nil {
 		host := providerName(s.cfg.Access.RouteSubdomainPrefix, intent.ID) + "." + strings.Trim(strings.ToLower(s.cfg.RuntimeBaseDomain), ".")
@@ -465,6 +465,9 @@ func (s *Service) machineSpec(intent ProjectIntent, volumeID string) fly.Machine
 		"PAPERBOAT_CONTROL_ISSUER":                   config.NormalizeIssuer(s.cfg.HTTP.PublicBaseURL),
 		"PAPERBOAT_PROJECT_ID":                       intent.ID,
 		"PAPERBOAT_MACHINE_ID":                       intent.MachineID,
+		"PAPERBOAT_MACHINE_GENERATION":               fmt.Sprint(intent.MachineGeneration),
+		"PAPERBOAT_SSH_USER":                         s.cfg.Fly.HostedSSHUser,
+		"PAPERBOAT_SSH_PORT":                         fmt.Sprint(s.cfg.Fly.HostedSSHPort),
 		"PAPERBOAT_REPOSITORY_URL":                   intent.RepositoryURL,
 		"PAPERBOAT_DEFAULT_BRANCH":                   intent.DefaultBranch,
 		"PAPERBOAT_PRESET_CODES":                     strings.Join(intent.PresetCodes, ","),
@@ -731,6 +734,7 @@ type Job struct {
 type ProjectIntent struct {
 	ID                  string
 	MachineID           string
+	MachineGeneration   int64
 	RepositoryURL       string
 	DefaultBranch       string
 	UserID              string
@@ -803,9 +807,14 @@ func (r *Repository) CompleteJob(ctx context.Context, jobID, leaseToken string) 
 	})
 }
 
-func (r *Repository) EnsureHostedControlEnvironment(ctx context.Context, projectID, ownerID string) error {
-	_, err := r.db.Queries().EnsureHostedControlEnvironment(ctx, dbsqlc.EnsureHostedControlEnvironmentParams{ID: projectID, WorkspaceID: projectID, OwnerUserID: sql.NullString{String: ownerID, Valid: ownerID != ""}})
-	return err
+func (r *Repository) EnsureHostedRuntimeAuthority(ctx context.Context, projectID, ownerID, sshUser string, sshPort int) error {
+	return r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if _, err := tx.Queries().EnsureHostedControlEnvironment(ctx, dbsqlc.EnsureHostedControlEnvironmentParams{ID: projectID, WorkspaceID: projectID, OwnerUserID: sql.NullString{String: ownerID, Valid: ownerID != ""}}); err != nil {
+			return err
+		}
+		_, err := tx.Queries().EnsureHostedMachineSSHTarget(ctx, dbsqlc.EnsureHostedMachineSSHTargetParams{EnvironmentID: projectID, OwnerUserID: ownerID, OsUser: sshUser, TargetPort: int32(sshPort), Now: time.Now().UTC()})
+		return err
+	})
 }
 
 func (r *Repository) BeginHostedEnvironmentDelete(ctx context.Context, projectID string) error {
@@ -869,7 +878,7 @@ func (r *Repository) ProjectIntent(ctx context.Context, projectID string) (Proje
 	if err != nil {
 		return ProjectIntent{}, err
 	}
-	intent := ProjectIntent{ID: row.ID, MachineID: row.MachineID, UserID: row.UserID, RepositoryURL: row.SourceUrl, DefaultBranch: row.DefaultBranch, StorageGB: int(row.AssignedGb), MachineTypeCode: row.MachineTypeCode, VCPU: int(row.Vcpu), MemoryMB: int(row.MemoryMb), RegionCode: row.RegionCode, SetupScriptRef: row.SetupScriptRef, DesiredConfigHash: row.DesiredConfigHash, PendingRestartApply: row.PendingRestartApply}
+	intent := ProjectIntent{ID: row.ID, MachineID: row.MachineID, MachineGeneration: row.MachineGeneration, UserID: row.UserID, RepositoryURL: row.SourceUrl, DefaultBranch: row.DefaultBranch, StorageGB: int(row.AssignedGb), MachineTypeCode: row.MachineTypeCode, VCPU: int(row.Vcpu), MemoryMB: int(row.MemoryMb), RegionCode: row.RegionCode, SetupScriptRef: row.SetupScriptRef, DesiredConfigHash: row.DesiredConfigHash, PendingRestartApply: row.PendingRestartApply}
 	_ = json.Unmarshal(databaseBytes(row.PresetCodes), &intent.PresetCodes)
 	return intent, nil
 }

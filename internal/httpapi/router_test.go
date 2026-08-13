@@ -21,6 +21,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
+	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 )
 
@@ -49,6 +50,76 @@ func TestHealthDoesNotRequireReadiness(t *testing.T) {
 	}
 	if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
 		t.Fatal("missing secure headers")
+	}
+}
+
+func TestNetworkCheckIsExactEmptyNoStoreResponse(t *testing.T) {
+	router := NewRouter(Options{Config: config.Default(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/network-check/v1", nil))
+	if recorder.Code != http.StatusNoContent || recorder.Body.Len() != 0 || recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("status=%d body=%q cache=%q", recorder.Code, recorder.Body.String(), recorder.Header().Get("Cache-Control"))
+	}
+}
+
+type probeRegionReaderFunc func(context.Context) ([]controlplane.ProbeRegion, error)
+
+func (f probeRegionReaderFunc) ListProbeRegions(ctx context.Context) ([]controlplane.ProbeRegion, error) {
+	return f(ctx)
+}
+
+func TestNetworkCheckRegionsReturnsOnlyReaderDocumentWithoutCaching(t *testing.T) {
+	want := controlplane.ProbeRegion{Region: "fsn1", STUNURL: "stun:stun.example.test:3478", HTTPSURL: "https://signal.example.test/network-check/v1"}
+	router := NewRouter(Options{
+		Config: config.Default(),
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		ProbeRegions: probeRegionReaderFunc(func(context.Context) ([]controlplane.ProbeRegion, error) {
+			return []controlplane.ProbeRegion{want}, nil
+		}),
+	})
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/network-check/regions/v1", nil))
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("status=%d cache=%q body=%s", recorder.Code, recorder.Header().Get("Cache-Control"), recorder.Body.String())
+	}
+	var response struct {
+		Data struct {
+			Regions []controlplane.ProbeRegion `json:"regions"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || len(response.Data.Regions) != 1 || response.Data.Regions[0] != want {
+		t.Fatalf("response=%s err=%v", recorder.Body.String(), err)
+	}
+}
+
+func TestNetworkCheckRegionsMapsReaderFailure(t *testing.T) {
+	router := NewRouter(Options{
+		Config: config.Default(),
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		ProbeRegions: probeRegionReaderFunc(func(context.Context) ([]controlplane.ProbeRegion, error) {
+			return nil, errors.New("database unavailable")
+		}),
+	})
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/network-check/regions/v1", nil))
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestDiagnosticUploadUnavailableDoesNotFallThroughToEdgeControl(t *testing.T) {
+	edge := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusUnauthorized)
+		_, _ = writer.Write([]byte(`{"code":"edge_control"}`))
+	})
+	router := NewRouter(Options{Config: config.Default(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), EdgeControl: edge})
+	for _, path := range []string{"/v1/diagnostic-upload-intents", "/v1/diagnostic-upload-intents/diag_test/complete"} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
+		router.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), `"code":"diagnostic_upload_unavailable"`) || strings.Contains(recorder.Body.String(), "edge_control") {
+			t.Fatalf("path=%s status=%d body=%s", path, recorder.Code, recorder.Body.String())
+		}
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
+	"github.com/pinksaucepasta/paperboat-server/internal/machinealias"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
 	"github.com/pinksaucepasta/paperboat-server/internal/secrets"
 )
@@ -531,8 +532,12 @@ func (r *Repository) createIntentOnce(ctx context.Context, input CreateInput, re
 		if err := q.InsertProject(ctx, dbsqlc.InsertProjectParams{ID: projectID, UserID: input.UserID, Name: input.Name, IdempotencyKey: input.IdempotencyKey, CreateRequestHash: createRequestHash(input)}); err != nil {
 			return err
 		}
+		alias, err := allocateHostedMachineAlias(ctx, q, input.UserID, input.Name)
+		if err != nil {
+			return err
+		}
 		if _, err := q.CreateHostedMachine(ctx, dbsqlc.CreateHostedMachineParams{
-			ID: newID("mch"), UserID: input.UserID, EnvironmentID: projectID, DisplayName: input.Name,
+			ID: newID("mch"), UserID: input.UserID, EnvironmentID: projectID, DisplayName: input.Name, Alias: alias,
 		}); err != nil {
 			return err
 		}
@@ -572,6 +577,23 @@ func (r *Repository) createIntentOnce(ctx context.Context, input CreateInput, re
 		return insertEvent(ctx, tx, projectID, "project.provisioning_queued", "Project provisioning was queued.", map[string]any{"state": "provisioning_storage"})
 	})
 	return projectID, err
+}
+
+func allocateHostedMachineAlias(ctx context.Context, queries *dbsqlc.Queries, userID, displayName string) (string, error) {
+	if err := queries.LockUserMachineAliases(ctx, userID); err != nil {
+		return "", err
+	}
+	for ordinal := 1; ordinal <= 10_000; ordinal++ {
+		candidate := machinealias.Candidate(displayName, ordinal)
+		exists, err := queries.UserMachineAliasExists(ctx, dbsqlc.UserMachineAliasExistsParams{UserID: userID, Alias: candidate})
+		if err != nil {
+			return "", err
+		}
+		if !exists {
+			return candidate, nil
+		}
+	}
+	return "", ErrInvalidState
 }
 
 func (r *Repository) List(ctx context.Context, userID string) ([]Project, error) {

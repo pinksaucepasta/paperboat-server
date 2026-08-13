@@ -63,6 +63,46 @@
           "data": {}
         }
       },
+      "NetworkCheckRegions": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "regions"
+        ],
+        "properties": {
+          "regions": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "$ref": "#/components/schemas/NetworkCheckRegion"
+            }
+          }
+        }
+      },
+      "NetworkCheckRegion": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "region",
+          "stun_url",
+          "https_url"
+        ],
+        "properties": {
+          "region": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 63
+          },
+          "stun_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "https_url": {
+            "type": "string",
+            "format": "uri"
+          }
+        }
+      },
       "ClientConfiguration": {
         "type": "object",
         "additionalProperties": false,
@@ -1659,6 +1699,7 @@
           "connector_generation",
           "edge_pool",
           "edge_node_id",
+          "relay_http_endpoint",
           "edge_endpoint",
           "routes",
           "protocol_version",
@@ -1697,6 +1738,12 @@
           "edge_node_id": {
             "type": "string",
             "pattern": "^[a-z][a-z0-9_-]{0,127}$"
+          },
+          "relay_http_endpoint": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https://",
+            "maxLength": 2048
           },
           "edge_endpoint": {
             "type": "object",
@@ -1754,7 +1801,8 @@
           "desired_version",
           "observed_version",
           "status",
-          "update_rollbacks"
+          "update_rollbacks",
+          "update_health"
         ],
         "properties": {
           "schema": {
@@ -1813,6 +1861,14 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "update_health": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "healthy",
+              "recovery_required"
+            ]
           }
         }
       },
@@ -1827,7 +1883,8 @@
           "observed_at",
           "host_service_version",
           "host_service_scope",
-          "update_rollbacks"
+          "update_rollbacks",
+          "update_health"
         ],
         "properties": {
           "schema": {
@@ -1873,6 +1930,13 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "update_health": {
+            "type": "string",
+            "enum": [
+              "healthy",
+              "recovery_required"
+            ]
           }
         }
       },
@@ -1947,11 +2011,72 @@
           "runtime_diagnostics": {
             "$ref": "#/components/schemas/UserMachineRuntimeDiagnostics"
           },
+          "relay_latency": {
+            "$ref": "#/components/schemas/RelayLatencyVector"
+          },
           "environment_id": {
             "type": "string"
           },
           "resource_id": {
             "type": "string"
+          }
+        }
+      },
+      "RelayLatencyVector": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "generation",
+          "observed_at",
+          "samples"
+        ],
+        "properties": {
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "samples": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 32,
+            "items": {
+              "$ref": "#/components/schemas/RelayLatencySample"
+            }
+          },
+          "relay_success_region": {
+            "type": "string",
+            "maxLength": 63,
+            "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
+          },
+          "relay_success_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "RelayLatencySample": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "region",
+          "rtt_ms"
+        ],
+        "properties": {
+          "region": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 63
+          },
+          "rtt_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "maximum": 60000
           }
         }
       }
@@ -2096,6 +2221,48 @@
           }
         },
         "operationId": "get_healthz"
+      }
+    },
+    "/network-check/v1": {
+      "get": {
+        "summary": "Captive portal network check",
+        "security": [],
+        "responses": {
+          "204": {
+            "description": "Exact empty response for captive portal detection."
+          }
+        },
+        "operationId": "get_network_check_v1"
+      }
+    },
+    "/network-check/regions/v1": {
+      "get": {
+        "summary": "List healthy relay probe regions",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Bounded fresh relay probe inventory.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/NetworkCheckRegions"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "get_network_check_regions_v1"
       }
     },
     "/v1/edge/assignments/current": {
@@ -6420,6 +6587,62 @@
         "operationId": "post_v1_user_machines_machine_id_connection_descriptor"
       }
     },
+    "/v1/machines/{machine_id}/exec-descriptor": {
+      "parameters": [{ "name": "machine_id", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "post": {
+        "summary": "Create a machine execution descriptor",
+        "description": "Returns a short-lived credential bound to one exact remote execution operation.",
+        "security": [{ "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["projects:connect"],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "additionalProperties": false,
+            "required": ["source_machine_id", "operation_id"],
+            "properties": {
+              "source_machine_id": { "type": "string", "minLength": 1 },
+              "operation_id": { "type": "string", "minLength": 8, "maxLength": 128 }
+            }
+          } } }
+        },
+        "responses": {
+          "200": { "description": "Fresh execution descriptor." },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "409": { "$ref": "#/components/responses/Error" }
+        },
+        "operationId": "post_v1_machines_machine_id_exec_descriptor"
+      }
+    },
+    "/v1/machines/{machine_id}/ssh-descriptor": {
+      "parameters": [{ "name": "machine_id", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "post": {
+        "summary": "Create a machine SSH descriptor",
+        "description": "Returns a short-lived credential bound to one exact SSH carrier operation.",
+        "security": [{ "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["projects:connect"],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "additionalProperties": false,
+            "required": ["source_machine_id", "operation_id"],
+            "properties": {
+              "source_machine_id": { "type": "string", "minLength": 1 },
+              "operation_id": { "type": "string", "minLength": 8, "maxLength": 128 }
+            }
+          } } }
+        },
+        "responses": {
+          "200": { "description": "Fresh SSH descriptor." },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "409": { "$ref": "#/components/responses/Error" }
+        },
+        "operationId": "post_v1_machines_machine_id_ssh_descriptor"
+      }
+    },
     "/v1/machines/{machine_id}/file-transfer-descriptor": {
       "parameters": [{ "name": "machine_id", "in": "path", "required": true, "schema": { "type": "string" } }],
       "post": {
@@ -6780,6 +7003,429 @@
           }
         },
         "operationId": "post_v1_admin_users_user_id_adjust_storage"
+      }
+    },
+    "/v1/e2ee/root": {
+      "get": {
+        "summary": "Retrieve the immutable public account E2EE root",
+        "operationId": "get_v1_e2ee_root",
+        "security": [{ "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["projects:read"],
+        "responses": {
+          "200": { "description": "Active public account root.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" }, "403": { "$ref": "#/components/responses/Error" }, "404": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/v1/e2ee/pending-endpoints": {
+      "get": {
+        "summary": "List machine endpoint public keys awaiting a paired CLI signature",
+        "operationId": "get_v1_e2ee_pending_endpoints",
+        "security": [{ "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["projects:read"],
+        "responses": {
+          "200": { "description": "Pending endpoint signing requests.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "401": { "$ref": "#/components/responses/Error" }, "403": { "$ref": "#/components/responses/Error" }, "503": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/v1/e2ee/bootstrap": {
+      "post": {
+        "summary": "Create the immutable account E2EE root and first CLI endpoint certificate",
+        "operationId": "post_v1_e2ee_bootstrap",
+        "security": [{ "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["projects:connect"],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "additionalProperties": false,
+            "required": ["root_public_key", "certificate"],
+            "properties": {
+              "root_public_key": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" },
+              "certificate": {
+                "type": "object", "additionalProperties": false,
+                "required": ["version", "account_id", "root_fingerprint", "endpoint_id", "role", "generation", "serial", "issued_at", "expires_at", "certificate", "certificate_fingerprint"],
+                "properties": {
+                  "version": { "const": 1 },
+                  "account_id": { "type": "string", "maxLength": 128 },
+                  "root_fingerprint": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                  "endpoint_id": { "type": "string", "maxLength": 128 },
+                  "role": { "const": "cli" },
+                  "generation": { "const": 1 },
+                  "serial": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+                  "issued_at": { "type": "string", "format": "date-time" },
+                  "expires_at": { "type": "string", "format": "date-time" },
+                  "certificate": { "type": "string", "pattern": "^[A-Za-z0-9_-]{230,568}$" },
+                  "certificate_fingerprint": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+                }
+              }
+            }
+          } } }
+        },
+        "responses": {
+          "201": { "description": "Account root and CLI certificate created or exactly replayed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" }, "403": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" }, "503": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/v1/machine-peer-identity": {
+      "post": {
+        "summary": "Publish the current machine installation's endpoint public keys for CLI signing",
+        "operationId": "post_v1_machine_peer_identity",
+        "security": [{ "bearerAccess": [] }],
+        "parameters": [{ "name": "X-Paperboat-Machine-Proof", "in": "header", "required": true, "schema": { "type": "string", "maxLength": 16384 } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "additionalProperties": false,
+            "required": ["operation_id", "generation", "noise_public_key", "quic_public_key"],
+            "properties": {
+              "operation_id": { "type": "string", "minLength": 8, "maxLength": 128 },
+              "generation": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+              "noise_public_key": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" },
+              "quic_public_key": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" }
+            }
+          } } }
+        },
+        "responses": {
+          "201": { "description": "Machine endpoint signing request created or exactly replayed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" }, "503": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/v1/machine-peer-identity/status": {
+      "post": {
+        "summary": "Retrieve the current machine installation's approved endpoint certificate",
+        "operationId": "post_v1_machine_peer_identity_status",
+        "security": [{ "bearerAccess": [] }],
+        "parameters": [{ "name": "X-Paperboat-Machine-Proof", "in": "header", "required": true, "schema": { "type": "string", "maxLength": 16384 } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "additionalProperties": false,
+            "required": ["operation_id", "generation"],
+            "properties": {
+              "operation_id": { "type": "string", "minLength": 8, "maxLength": 128 },
+              "generation": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
+            }
+          } } }
+        },
+        "responses": {
+          "200": { "description": "Approved root and machine endpoint certificate.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "202": { "description": "Machine endpoint approval remains pending.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" }, "503": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/v1/machine-peer-attempts/next": {
+      "post": {
+        "summary": "Retrieve the current machine installation's next controlled peer attempt",
+        "operationId": "post_v1_machine_peer_attempts_next",
+        "security": [{ "bearerAccess": [] }],
+        "parameters": [{ "name": "X-Paperboat-Machine-Proof", "in": "header", "required": true, "schema": { "type": "string", "maxLength": 16384 } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "additionalProperties": false,
+            "required": ["operation_id", "generation"],
+            "properties": {
+              "operation_id": { "type": "string", "minLength": 8, "maxLength": 128 },
+              "generation": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
+            }
+          } } }
+        },
+        "responses": {
+          "200": { "description": "Controlled peer attempt descriptor.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "204": { "description": "No controlled peer attempt is currently pending." },
+          "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" }, "503": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/v1/diagnostic-upload-intents": {
+      "post": {
+        "summary": "Authorize one explicit redacted diagnostic bundle upload",
+        "operationId": "post_v1_diagnostic_upload_intent",
+        "security": [{ "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["diagnostics:upload"],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "additionalProperties": false,
+            "required": ["schema", "correlation_id", "bytes", "sha256", "categories"],
+            "properties": {
+              "schema": { "const": "paperboat.diagnostic-upload-intent-request/v1" },
+              "correlation_id": { "type": "string", "pattern": "^pb-[a-f0-9]{32}$" },
+              "bytes": { "type": "integer", "minimum": 1, "maximum": 26214400 },
+              "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+              "categories": { "type": "array", "prefixItems": [
+                { "const": "manifest" }, { "const": "recent_events" },
+                { "const": "redacted_events" }, { "const": "status" }
+              ], "minItems": 4, "maxItems": 4 }
+            }
+          } } }
+        },
+        "responses": {
+          "201": { "description": "Short-lived direct object-storage upload authority.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" },
+          "410": { "$ref": "#/components/responses/Error" }, "503": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/v1/diagnostic-upload-intents/{intent_id}/complete": {
+      "post": {
+        "summary": "Verify and finalize a directly uploaded diagnostic bundle",
+        "operationId": "post_v1_diagnostic_upload_intent_complete",
+        "security": [{ "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["diagnostics:upload"],
+        "parameters": [{ "name": "intent_id", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^diag_[A-Za-z0-9_-]{16,128}$" } }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "additionalProperties": false, "maxProperties": 0 } } } },
+        "responses": {
+          "200": { "description": "Verified diagnostic upload correlation.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" }, "404": { "$ref": "#/components/responses/Error" },
+          "410": { "$ref": "#/components/responses/Error" }, "422": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/v1/peer-attempts": {
+      "post": {
+        "summary": "Create an authorized private peer attempt",
+        "operationId": "post_v1_peer_attempts",
+        "security": [{ "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["projects:connect"],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "additionalProperties": false,
+            "required": ["operation_id", "environment_id", "purpose", "consumer", "controlling_certificate_fingerprint", "controlled_certificate_fingerprint", "attempt_generation", "network_generation"],
+            "properties": {
+              "operation_id": { "type": "string", "minLength": 16, "maxLength": 256 },
+              "environment_id": { "type": "string", "maxLength": 128 },
+              "purpose": { "type": "string", "enum": ["interactive", "private_preview", "codex", "health_probe", "direct_probe", "file_transfer_key"] },
+              "consumer": { "type": "string", "enum": ["terminal", "exec", "ssh", "private_preview", "codex", "health_probe", "file_transfer_key"] },
+              "controlling_certificate_fingerprint": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+              "controlled_certificate_fingerprint": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+              "attempt_generation": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+              "network_generation": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+              "relay_latency": { "$ref": "#/components/schemas/RelayLatencyVector" },
+              "transfer": {
+                "type": "object", "additionalProperties": false,
+                "required": ["transfer_id", "generation", "expires_at"],
+                "properties": {
+                  "transfer_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+                  "generation": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+                  "expires_at": { "type": "string", "format": "date-time" }
+                }
+              }
+            },
+            "allOf": [{
+              "if": { "properties": { "purpose": { "const": "file_transfer_key" } }, "required": ["purpose"] },
+              "then": { "required": ["transfer"] },
+              "else": { "not": { "required": ["transfer"] } }
+            }]
+          } } }
+        },
+        "responses": {
+          "201": { "description": "Peer attempt descriptor created.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" }, "403": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" }, "503": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/v1/peer-attempts/{intent_id}/{attempt_generation}": {
+      "delete": {
+        "summary": "Cancel an exact peer attempt generation",
+        "operationId": "delete_v1_peer_attempt",
+        "security": [{ "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["projects:connect"],
+        "parameters": [
+          { "name": "intent_id", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^psi_[A-Za-z0-9_-]{16,128}$" } },
+          { "name": "attempt_generation", "in": "path", "required": true, "schema": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 } },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "responses": {
+          "200": { "description": "Peer attempt revoked.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" }, "403": { "$ref": "#/components/responses/Error" }, "404": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/v1/ssh/client-keys/{fingerprint}": {
+      "put": {
+        "summary": "Register the current CLI session managed SSH public key",
+        "operationId": "put_v1_ssh_client_key",
+        "security": [{ "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["projects:connect"],
+        "parameters": [
+          { "name": "fingerprint", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^SHA256:[A-Za-z0-9+/]{43}$" } },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "additionalProperties": false, "required": ["public_key"], "properties": { "public_key": { "type": "string", "maxLength": 8192 } } } } } },
+        "responses": { "201": { "description": "Client key registered.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" }, "403": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" } }
+      },
+      "delete": {
+        "summary": "Revoke a managed SSH client public key",
+        "operationId": "delete_v1_ssh_client_key",
+        "security": [{ "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["projects:connect"],
+        "parameters": [
+          { "name": "fingerprint", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^SHA256:[A-Za-z0-9+/]{43}$" } },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "additionalProperties": false, "required": ["reason"], "properties": { "reason": { "type": "string", "enum": ["client_revoked", "client_logout", "account_revoked", "key_rotated", "key_compromise"] } } } } } },
+        "responses": { "200": { "description": "Client key revoked.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" }, "403": { "$ref": "#/components/responses/Error" }, "404": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" } }
+      }
+    },
+    "/v1/machines/{machine_id}/ssh-target": {
+      "put": {
+        "summary": "Register or update a managed SSH machine target",
+        "operationId": "put_v1_machine_ssh_target",
+        "security": [{ "cookieSession": [], "csrfHeader": [] }, { "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["projects:connect"],
+        "parameters": [{ "name": "machine_id", "in": "path", "required": true, "schema": { "type": "string" } }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "additionalProperties": false, "required": ["machine_generation", "port"], "properties": { "machine_generation": { "type": "integer", "minimum": 1 }, "os_user": { "type": "string", "maxLength": 255 }, "port": { "type": "integer", "minimum": 1, "maximum": 65535 }, "expected_reconciliation_version": { "type": "integer", "minimum": 1 } } } } } },
+        "responses": { "200": { "description": "Target stored.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" }, "403": { "$ref": "#/components/responses/Error" }, "404": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" } }
+      },
+      "get": {
+        "summary": "Get a managed SSH machine target",
+        "operationId": "get_v1_machine_ssh_target",
+        "security": [{ "cookieSession": [] }, { "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["projects:read"],
+        "parameters": [{ "name": "machine_id", "in": "path", "required": true, "schema": { "type": "string" } }, { "name": "machine_generation", "in": "query", "required": true, "schema": { "type": "integer", "minimum": 1 } }],
+        "responses": { "200": { "description": "Current target.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" }, "403": { "$ref": "#/components/responses/Error" }, "404": { "$ref": "#/components/responses/Error" } }
+      }
+    },
+    "/v1/machines/{machine_id}/ssh-host-keys": {
+      "put": {
+        "summary": "Report the complete managed SSH host-key set",
+        "description": "Authenticated by X-Paperboat-Machine-Identity and X-Paperboat-Machine-Proof. The signed operation ID supplies idempotency.",
+        "operationId": "put_v1_machine_ssh_host_keys",
+        "security": [],
+        "parameters": [{ "name": "machine_id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "additionalProperties": false, "required": ["set_id", "observation_generation", "public_keys"], "properties": { "set_id": { "type": "string", "pattern": "^sshks_[A-Za-z0-9_-]{16,128}$" }, "observation_generation": { "type": "integer", "minimum": 1 }, "public_keys": { "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": { "type": "string", "maxLength": 8192 } } } } } } },
+        "responses": { "200": { "description": "Host-key observation stored.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" } }
+      },
+      "get": {
+        "summary": "Get the active managed SSH host-key set",
+        "operationId": "get_v1_machine_ssh_host_keys",
+        "security": [{ "cookieSession": [] }, { "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["projects:read"],
+        "parameters": [{ "name": "machine_id", "in": "path", "required": true, "schema": { "type": "string" } }, { "name": "machine_generation", "in": "query", "required": true, "schema": { "type": "integer", "minimum": 1 } }],
+        "responses": { "200": { "description": "Active host-key set.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" }, "403": { "$ref": "#/components/responses/Error" }, "404": { "$ref": "#/components/responses/Error" } }
+      }
+    },
+    "/v1/machines/{machine_id}/ssh-authorized-keys": {
+      "parameters": [{ "name": "machine_id", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "post": {
+        "summary": "Read active managed SSH client keys for a machine",
+        "description": "Machine-proof authenticated, generation-bound key inventory used only for authorized_keys reconciliation.",
+        "security": [],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "additionalProperties": false } } } },
+        "responses": {
+          "200": { "description": "Current active managed SSH public keys." },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" }
+        },
+        "operationId": "post_v1_machines_machine_id_ssh_authorized_keys"
+      }
+    },
+    "/v1/machines/{machine_id}/ssh-host-keys/{set_id}/promote": {
+      "post": {
+        "summary": "Promote a pending managed SSH host-key set",
+        "operationId": "post_v1_machine_ssh_host_keys_promote",
+        "security": [{ "cookieSession": [], "csrfHeader": [] }, { "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["projects:connect"],
+        "parameters": [{ "name": "machine_id", "in": "path", "required": true, "schema": { "type": "string" } }, { "name": "set_id", "in": "path", "required": true, "schema": { "type": "string" } }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "additionalProperties": false, "required": ["machine_generation", "expected_fingerprint"], "properties": { "machine_generation": { "type": "integer", "minimum": 1 }, "expected_fingerprint": { "type": "string", "pattern": "^SHA256:[A-Za-z0-9+/]{43}$" } } } } } },
+        "responses": { "200": { "description": "Host-key set promoted.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } }, "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" }, "403": { "$ref": "#/components/responses/Error" }, "404": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" } }
+      }
+    },
+    "/v1/endpoints/{endpoint_id}/certificates/{generation}": {
+      "put": {
+        "summary": "Register an account-root-signed endpoint certificate",
+        "operationId": "put_v1_endpoint_certificate",
+        "security": [
+          { "bearerAccess": [] }
+        ],
+        "x-required-bearer-scopes": ["projects:connect"],
+        "parameters": [
+          { "name": "endpoint_id", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" } },
+          { "name": "generation", "in": "path", "required": true, "schema": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 } },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["version", "account_id", "root_fingerprint", "endpoint_id", "role", "generation", "serial", "issued_at", "expires_at", "certificate", "certificate_fingerprint"],
+                "properties": {
+                  "version": { "const": 1 },
+                  "account_id": { "type": "string", "maxLength": 128 },
+                  "root_fingerprint": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                  "endpoint_id": { "type": "string", "maxLength": 128 },
+                  "role": { "type": "string", "enum": ["cli", "machine"] },
+                  "generation": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+                  "serial": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+                  "issued_at": { "type": "string", "format": "date-time" },
+                  "expires_at": { "type": "string", "format": "date-time" },
+                  "certificate": { "type": "string", "pattern": "^[A-Za-z0-9_-]{230,568}$" },
+                  "certificate_fingerprint": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Certificate registered.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "409": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "get": {
+        "summary": "Retrieve an active endpoint certificate",
+        "operationId": "get_v1_endpoint_certificate",
+        "security": [{ "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["projects:read"],
+        "parameters": [
+          { "name": "endpoint_id", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "generation", "in": "path", "required": true, "schema": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 } }
+        ],
+        "responses": {
+          "200": { "description": "Active certificate.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "delete": {
+        "summary": "Revoke an endpoint certificate",
+        "operationId": "delete_v1_endpoint_certificate",
+        "security": [{ "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["projects:connect"],
+        "parameters": [
+          { "name": "endpoint_id", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "generation", "in": "path", "required": true, "schema": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 } },
+          { "$ref": "#/components/parameters/IdempotencyKey" },
+          { "name": "If-Match", "in": "header", "required": true, "schema": { "type": "string", "pattern": "^\"[1-9][0-9]*\"$" } }
+        ],
+        "responses": {
+          "200": { "description": "Certificate revoked.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "409": { "$ref": "#/components/responses/Error" }
+        }
       }
     }
   }

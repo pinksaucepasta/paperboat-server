@@ -32,7 +32,7 @@ type AuthenticateBrowserSessionRow struct {
 }
 
 func (q *Queries) AuthenticateBrowserSession(ctx context.Context, sessionHash string) (AuthenticateBrowserSessionRow, error) {
-	row := q.db.QueryRowContext(ctx, authenticateBrowserSession, sessionHash)
+	row := q.db.QueryRow(ctx, authenticateBrowserSession, sessionHash)
 	var i AuthenticateBrowserSessionRow
 	err := row.Scan(
 		&i.SessionID,
@@ -60,7 +60,7 @@ type BrowserSessionCSRFExistsParams struct {
 }
 
 func (q *Queries) BrowserSessionCSRFExists(ctx context.Context, arg BrowserSessionCSRFExistsParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, browserSessionCSRFExists, arg.SessionHash, arg.CsrfHash)
+	row := q.db.QueryRow(ctx, browserSessionCSRFExists, arg.SessionHash, arg.CsrfHash)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
@@ -80,7 +80,7 @@ type CreateBrowserSessionParams struct {
 }
 
 func (q *Queries) CreateBrowserSession(ctx context.Context, arg CreateBrowserSessionParams) error {
-	_, err := q.db.ExecContext(ctx, createBrowserSession,
+	_, err := q.db.Exec(ctx, createBrowserSession,
 		arg.ID,
 		arg.UserID,
 		arg.SessionHash,
@@ -95,7 +95,7 @@ SELECT EXISTS (SELECT 1 FROM credit_ledger_entries WHERE idempotency_key = $1)
 `
 
 func (q *Queries) CreditLedgerEntryExists(ctx context.Context, idempotencyKey string) (bool, error) {
-	row := q.db.QueryRowContext(ctx, creditLedgerEntryExists, idempotencyKey)
+	row := q.db.QueryRow(ctx, creditLedgerEntryExists, idempotencyKey)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
@@ -112,7 +112,7 @@ type EnsureCreditAccountParams struct {
 }
 
 func (q *Queries) EnsureCreditAccount(ctx context.Context, arg EnsureCreditAccountParams) (string, error) {
-	row := q.db.QueryRowContext(ctx, ensureCreditAccount, arg.ID, arg.UserID)
+	row := q.db.QueryRow(ctx, ensureCreditAccount, arg.ID, arg.UserID)
 	var id string
 	err := row.Scan(&id)
 	return id, err
@@ -129,7 +129,7 @@ type EnsureStorageAccountParams struct {
 }
 
 func (q *Queries) EnsureStorageAccount(ctx context.Context, arg EnsureStorageAccountParams) (string, error) {
-	row := q.db.QueryRowContext(ctx, ensureStorageAccount, arg.ID, arg.UserID)
+	row := q.db.QueryRow(ctx, ensureStorageAccount, arg.ID, arg.UserID)
 	var id string
 	err := row.Scan(&id)
 	return id, err
@@ -148,7 +148,7 @@ type GetFreePlanEntitlementRow struct {
 }
 
 func (q *Queries) GetFreePlanEntitlement(ctx context.Context) (GetFreePlanEntitlementRow, error) {
-	row := q.db.QueryRowContext(ctx, getFreePlanEntitlement)
+	row := q.db.QueryRow(ctx, getFreePlanEntitlement)
 	var i GetFreePlanEntitlementRow
 	err := row.Scan(&i.ID, &i.IncludedCredits, &i.IncludedStorageGb)
 	return i, err
@@ -164,7 +164,7 @@ type GetStorageUsageForUpdateRow struct {
 }
 
 func (q *Queries) GetStorageUsageForUpdate(ctx context.Context, id string) (GetStorageUsageForUpdateRow, error) {
-	row := q.db.QueryRowContext(ctx, getStorageUsageForUpdate, id)
+	row := q.db.QueryRow(ctx, getStorageUsageForUpdate, id)
 	var i GetStorageUsageForUpdateRow
 	err := row.Scan(&i.PurchasedGb, &i.AllocatedGb)
 	return i, err
@@ -180,7 +180,7 @@ type IncreaseCreditBalanceParams struct {
 }
 
 func (q *Queries) IncreaseCreditBalance(ctx context.Context, arg IncreaseCreditBalanceParams) error {
-	_, err := q.db.ExecContext(ctx, increaseCreditBalance, arg.Amount, arg.ID)
+	_, err := q.db.Exec(ctx, increaseCreditBalance, arg.Amount, arg.ID)
 	return err
 }
 
@@ -199,7 +199,7 @@ type InsertFreeCreditGrantParams struct {
 }
 
 func (q *Queries) InsertFreeCreditGrant(ctx context.Context, arg InsertFreeCreditGrantParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, insertFreeCreditGrant,
+	result, err := q.db.Exec(ctx, insertFreeCreditGrant,
 		arg.ID,
 		arg.AccountID,
 		arg.Amount,
@@ -209,7 +209,7 @@ func (q *Queries) InsertFreeCreditGrant(ctx context.Context, arg InsertFreeCredi
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const insertFreeIncludedStorageLedger = `-- name: InsertFreeIncludedStorageLedger :execrows
@@ -227,7 +227,7 @@ type InsertFreeIncludedStorageLedgerParams struct {
 }
 
 func (q *Queries) InsertFreeIncludedStorageLedger(ctx context.Context, arg InsertFreeIncludedStorageLedgerParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, insertFreeIncludedStorageLedger,
+	result, err := q.db.Exec(ctx, insertFreeIncludedStorageLedger,
 		arg.ID,
 		arg.AccountID,
 		arg.AmountGb,
@@ -237,7 +237,7 @@ func (q *Queries) InsertFreeIncludedStorageLedger(ctx context.Context, arg Inser
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const refreshBrowserSessionCSRF = `-- name: RefreshBrowserSessionCSRF :execrows
@@ -251,11 +251,11 @@ type RefreshBrowserSessionCSRFParams struct {
 }
 
 func (q *Queries) RefreshBrowserSessionCSRF(ctx context.Context, arg RefreshBrowserSessionCSRFParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, refreshBrowserSessionCSRF, arg.CsrfHash, arg.ID)
+	result, err := q.db.Exec(ctx, refreshBrowserSessionCSRF, arg.CsrfHash, arg.ID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const revokeBrowserSession = `-- name: RevokeBrowserSession :one
@@ -264,7 +264,7 @@ WHERE session_hash = $1 AND revoked_at IS NULL RETURNING user_id
 `
 
 func (q *Queries) RevokeBrowserSession(ctx context.Context, sessionHash string) (string, error) {
-	row := q.db.QueryRowContext(ctx, revokeBrowserSession, sessionHash)
+	row := q.db.QueryRow(ctx, revokeBrowserSession, sessionHash)
 	var user_id string
 	err := row.Scan(&user_id)
 	return user_id, err
@@ -284,7 +284,7 @@ type RotateBrowserSessionParams struct {
 }
 
 func (q *Queries) RotateBrowserSession(ctx context.Context, arg RotateBrowserSessionParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, rotateBrowserSession,
+	result, err := q.db.Exec(ctx, rotateBrowserSession,
 		arg.SessionHash,
 		arg.CsrfHash,
 		arg.ExpiresAt,
@@ -293,7 +293,7 @@ func (q *Queries) RotateBrowserSession(ctx context.Context, arg RotateBrowserSes
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const setIncludedStorage = `-- name: SetIncludedStorage :exec
@@ -306,7 +306,7 @@ type SetIncludedStorageParams struct {
 }
 
 func (q *Queries) SetIncludedStorage(ctx context.Context, arg SetIncludedStorageParams) error {
-	_, err := q.db.ExecContext(ctx, setIncludedStorage, arg.ID, arg.IncludedGb)
+	_, err := q.db.Exec(ctx, setIncludedStorage, arg.ID, arg.IncludedGb)
 	return err
 }
 
@@ -343,7 +343,7 @@ type UpsertWorkOSUserRow struct {
 }
 
 func (q *Queries) UpsertWorkOSUser(ctx context.Context, arg UpsertWorkOSUserParams) (UpsertWorkOSUserRow, error) {
-	row := q.db.QueryRowContext(ctx, upsertWorkOSUser,
+	row := q.db.QueryRow(ctx, upsertWorkOSUser,
 		arg.UserID,
 		arg.WorkosSubject,
 		arg.PrimaryEmail,
@@ -368,7 +368,7 @@ SELECT EXISTS (SELECT 1 FROM subscriptions WHERE user_id = $1 AND state IN ('act
 `
 
 func (q *Queries) UserHasActiveSubscription(ctx context.Context, userID string) (bool, error) {
-	row := q.db.QueryRowContext(ctx, userHasActiveSubscription, userID)
+	row := q.db.QueryRow(ctx, userHasActiveSubscription, userID)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
@@ -384,7 +384,7 @@ type UserOwnsProjectParams struct {
 }
 
 func (q *Queries) UserOwnsProject(ctx context.Context, arg UserOwnsProjectParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, userOwnsProject, arg.ID, arg.UserID)
+	row := q.db.QueryRow(ctx, userOwnsProject, arg.ID, arg.UserID)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err

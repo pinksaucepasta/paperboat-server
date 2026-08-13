@@ -1,0 +1,134 @@
+-- name: CreateAccountE2EERoot :one
+INSERT INTO account_e2ee_roots (user_id, public_key, fingerprint)
+VALUES (sqlc.arg(user_id), sqlc.arg(public_key), sqlc.arg(fingerprint))
+ON CONFLICT DO NOTHING
+RETURNING *;
+
+-- name: GetAccountE2EERootForUpdate :one
+SELECT * FROM account_e2ee_roots
+WHERE user_id = sqlc.arg(user_id)
+FOR UPDATE;
+
+-- name: GetActiveAccountE2EERoot :one
+SELECT * FROM account_e2ee_roots
+WHERE user_id = sqlc.arg(user_id) AND revoked_at IS NULL;
+
+-- name: CreatePeerEndpointCertificate :one
+INSERT INTO peer_endpoint_certificates
+  (fingerprint, user_id, endpoint_id, role, generation, serial, certificate,
+   noise_public_key, quic_public_key, issued_at, expires_at)
+VALUES
+  (sqlc.arg(fingerprint), sqlc.arg(user_id), sqlc.arg(endpoint_id), sqlc.arg(role),
+   sqlc.arg(generation), sqlc.arg(serial), sqlc.arg(certificate),
+   sqlc.arg(noise_public_key), sqlc.arg(quic_public_key), sqlc.arg(issued_at), sqlc.arg(expires_at))
+ON CONFLICT DO NOTHING
+RETURNING *;
+
+-- name: GetPeerEndpointCertificateByFingerprint :one
+SELECT * FROM peer_endpoint_certificates
+WHERE fingerprint = sqlc.arg(fingerprint);
+
+-- name: GetPeerEndpointCertificateByIdentity :one
+SELECT * FROM peer_endpoint_certificates
+WHERE user_id = sqlc.arg(user_id) AND endpoint_id = sqlc.arg(endpoint_id)
+  AND generation = sqlc.arg(generation);
+
+-- name: GetActivePeerEndpointCertificateForUpdate :one
+SELECT certificate.* FROM peer_endpoint_certificates certificate
+JOIN account_e2ee_roots root ON root.user_id = certificate.user_id
+WHERE certificate.user_id = sqlc.arg(user_id)
+  AND certificate.endpoint_id = sqlc.arg(endpoint_id)
+  AND certificate.generation = sqlc.arg(generation)
+  AND certificate.revoked_at IS NULL
+  AND certificate.issued_at <= sqlc.arg(now)
+  AND certificate.expires_at > sqlc.arg(now)
+  AND root.revoked_at IS NULL
+FOR UPDATE OF certificate, root;
+
+-- name: RevokePeerEndpointCertificate :one
+UPDATE peer_endpoint_certificates
+SET revoked_at = sqlc.arg(now), revocation_reason = sqlc.arg(reason)
+WHERE fingerprint = sqlc.arg(fingerprint) AND revoked_at IS NULL
+RETURNING *;
+
+-- name: RevokeSupersededPeerEndpointCertificates :execrows
+UPDATE peer_endpoint_certificates
+SET revoked_at = sqlc.arg(now), revocation_reason = 'certificate_superseded'
+WHERE user_id = sqlc.arg(user_id) AND endpoint_id = sqlc.arg(endpoint_id)
+  AND generation < sqlc.arg(generation) AND revoked_at IS NULL;
+
+-- name: RevokeAccountE2EERoot :one
+UPDATE account_e2ee_roots
+SET revoked_at = sqlc.arg(now), generation = generation + 1, updated_at = sqlc.arg(now)
+WHERE user_id = sqlc.arg(user_id) AND revoked_at IS NULL
+RETURNING *;
+
+-- name: GetPeerEndpointCertificateOperationForUpdate :one
+SELECT * FROM peer_endpoint_certificate_operations
+WHERE operation_id = sqlc.arg(operation_id)
+FOR UPDATE;
+
+-- name: CreatePeerEndpointCertificateOperation :one
+INSERT INTO peer_endpoint_certificate_operations
+  (operation_id, user_id, request_hash, certificate_fingerprint, created_at)
+VALUES
+  (sqlc.arg(operation_id), sqlc.arg(user_id), sqlc.arg(request_hash),
+   sqlc.arg(certificate_fingerprint), sqlc.arg(created_at))
+RETURNING *;
+
+-- name: GetPeerEndpointCertificateRevocationForUpdate :one
+SELECT * FROM peer_endpoint_certificate_revocations
+WHERE operation_id = sqlc.arg(operation_id)
+FOR UPDATE;
+
+-- name: CreatePeerEndpointCertificateRevocation :one
+INSERT INTO peer_endpoint_certificate_revocations
+  (operation_id, user_id, certificate_fingerprint, serial, reason, created_at)
+VALUES
+  (sqlc.arg(operation_id), sqlc.arg(user_id), sqlc.arg(certificate_fingerprint),
+   sqlc.arg(serial), sqlc.arg(reason), sqlc.arg(created_at))
+RETURNING *;
+
+-- name: CreatePeerEndpointEnrollmentRequest :one
+INSERT INTO peer_endpoint_enrollment_requests
+  (id, operation_key, request_hash, user_id, endpoint_id, generation,
+   noise_public_key, quic_public_key, created_at, expires_at)
+SELECT sqlc.arg(id), sqlc.arg(operation_key), sqlc.arg(request_hash), machine.user_id,
+       machine.id, sqlc.arg(generation), sqlc.arg(noise_public_key),
+       sqlc.arg(quic_public_key), sqlc.arg(created_at), sqlc.arg(expires_at)
+FROM user_machines machine
+WHERE machine.id = sqlc.arg(endpoint_id) AND machine.user_id = sqlc.arg(user_id)
+  AND machine.installation_generation = sqlc.arg(generation)
+  AND machine.revoked_at IS NULL AND machine.deleted_at IS NULL
+ON CONFLICT DO NOTHING
+RETURNING *;
+
+-- name: GetPeerEndpointEnrollmentRequestByOperation :one
+SELECT * FROM peer_endpoint_enrollment_requests
+WHERE operation_key = sqlc.arg(operation_key);
+
+-- name: ListPendingPeerEndpointEnrollmentRequests :many
+SELECT * FROM peer_endpoint_enrollment_requests
+WHERE user_id = sqlc.arg(user_id) AND state = 'pending'
+  AND expires_at > sqlc.arg(now)
+ORDER BY created_at, id
+LIMIT sqlc.arg(row_limit);
+
+-- name: GetMatchingPeerEndpointEnrollmentRequestForUpdate :one
+SELECT * FROM peer_endpoint_enrollment_requests
+WHERE user_id = sqlc.arg(user_id) AND endpoint_id = sqlc.arg(endpoint_id)
+  AND generation = sqlc.arg(generation) AND state = 'pending'
+  AND expires_at > sqlc.arg(now)
+FOR UPDATE;
+
+-- name: FulfillPeerEndpointEnrollmentRequest :one
+UPDATE peer_endpoint_enrollment_requests
+SET state = 'fulfilled', certificate_fingerprint = sqlc.arg(certificate_fingerprint),
+    fulfilled_at = sqlc.arg(now)
+WHERE id = sqlc.arg(id) AND state = 'pending'
+RETURNING *;
+
+-- name: ExpirePeerEndpointEnrollmentRequests :execrows
+UPDATE peer_endpoint_enrollment_requests
+SET state = 'expired'
+WHERE state = 'pending' AND expires_at <= sqlc.arg(now);

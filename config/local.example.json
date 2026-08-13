@@ -38,8 +38,8 @@
     ],
     "runtime_listen_port": 38080,
     "bootstrap_command": "",
-    "helper_artifacts_json": "",
-    "helper_artifact_public_key": ""
+    "artifact_repository_url": "",
+    "artifact_version": ""
   },
   "terminal_sessions": {
     "max_active_per_project": 32,
@@ -56,7 +56,8 @@
       "clients:revoke",
       "projects:read",
       "projects:connect",
-      "session:refresh"
+      "session:refresh",
+      "diagnostics:upload"
     ],
     "mint_active_key_id": "",
     "mint_jwks_max_age": 300000000000,
@@ -97,6 +98,13 @@
     "route_subdomain_prefix": "pb",
     "connect_ready_timeout": 2000000000,
     "connect_poll_interval": 100000000
+  },
+  "diagnostics": {
+    "object_endpoint": "",
+    "object_region": "",
+    "object_bucket": "",
+    "force_path_style": false,
+    "retention": 604800000000000
   },
   "providers": {
     "fake_mode": true,

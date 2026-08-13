@@ -15,7 +15,7 @@ func TestSessionNamesAreStableDistinctAndReserved(t *testing.T) {
 		}
 		seen[name] = true
 	}
-	if Session(1) != Session(1) || len(strings.Split(Session(1), "-")) != 3 {
+	if len(strings.Split(Session(1), "-")) != 3 {
 		t.Fatalf("unexpected naming contract: first=%q", Session(1))
 	}
 }

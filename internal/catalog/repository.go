@@ -2,11 +2,12 @@ package catalog
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
 )
 
@@ -65,12 +66,12 @@ type RegionRecord struct {
 }
 
 type Repository struct {
-	queryer *sql.DB
+	queryer *pgxpool.Pool
 	q       *dbsqlc.Queries
 }
 
-func NewRepository(queryer *sql.DB) *Repository {
-	return &Repository{queryer: queryer, q: dbsqlc.New(queryer)}
+func NewRepository(store *db.DB) *Repository {
+	return &Repository{queryer: store.Pool(), q: store.Queries()}
 }
 
 func (r *Repository) ListPlans(ctx context.Context) ([]PlanRecord, error) {
@@ -125,11 +126,11 @@ func (r *Repository) SyncRegions(ctx context.Context, records []RegionRecord) er
 	if len(records) == 0 {
 		return nil
 	}
-	tx, err := r.queryer.BeginTx(ctx, nil)
+	tx, err := r.queryer.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin sync regions: %w", err)
 	}
-	defer tx.Rollback()
+	defer tx.Rollback(ctx)
 	qtx := r.q.WithTx(tx)
 	for _, record := range records {
 		code := strings.ToLower(strings.TrimSpace(record.Code))
@@ -145,7 +146,7 @@ func (r *Repository) SyncRegions(ctx context.Context, records []RegionRecord) er
 			return fmt.Errorf("sync region %s: %w", code, err)
 		}
 	}
-	if err := tx.Commit(); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit sync regions: %w", err)
 	}
 	return nil

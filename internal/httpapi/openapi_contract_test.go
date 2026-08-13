@@ -116,6 +116,8 @@ func TestOpenAPIDocumentCoversPublicAndFrozenTargetPaths(t *testing.T) {
 		"/v1/client-configuration":                                           {"get"},
 		"/healthz":                                                           {"get"},
 		"/metrics":                                                           {"get"},
+		"/network-check/v1":                                                  {"get"},
+		"/network-check/regions/v1":                                          {"get"},
 		"/readyz":                                                            {"get"},
 		"/v1/config/credentials":                                             {"post"},
 		"/v1/config/leases/acquire":                                          {"post"},

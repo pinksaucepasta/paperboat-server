@@ -72,6 +72,45 @@ func TestUserMachineRuntimeObservationRejectsConcurrentCopiedIdentity(t *testing
 	}
 }
 
+func TestRuntimeRelayLatencyVectorIsWorkerAndGenerationFenced(t *testing.T) {
+	store := openRuntimeTestDB(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID, machineID, environmentID := "usr_latency_"+suffix, "um_latency_"+suffix, "env_latency_"+suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_"+suffix, "latency-"+suffix+"@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,'Latency','linux','amd64','/home/test','offline','occupied',false)`, machineID, userID, environmentID); err != nil {
+		t.Fatal(err)
+	}
+	repository := metering.NewRuntimeRepository(store, "")
+	now := time.Now().UTC()
+	record := func(worker, generation uint64, region string) {
+		t.Helper()
+		observation := metering.RuntimeObservation{ProjectID: environmentID, MachineID: machineID, ObservedAt: now, ReporterVersion: "test", WorkerGeneration: worker, OSBootID: "boot-current", WorkerServiceScope: "system", ConnectorState: "ready", ConnectorGeneration: worker, DiagnosticsObservedAt: now, RelayLatency: &metering.RelayLatencyVector{Generation: generation, ObservedAt: now, Samples: []metering.RelayLatencySample{{Region: region, RTTMS: 20}}}}
+		if err := repository.RecordRuntimeObservation(ctx, observation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	record(2, 3, "fsn1")
+	record(2, 2, "hel1")
+	var worker, generation int64
+	var encoded string
+	if err := store.SQL().QueryRowContext(ctx, `SELECT relay_latency_worker_generation,relay_latency_generation,relay_latency_vector::text FROM paperboat.user_machines WHERE id=$1`, machineID).Scan(&worker, &generation, &encoded); err != nil {
+		t.Fatal(err)
+	}
+	if worker != 2 || generation != 3 || !strings.Contains(encoded, `"fsn1"`) || strings.Contains(encoded, `"hel1"`) {
+		t.Fatalf("worker=%d generation=%d vector=%s", worker, generation, encoded)
+	}
+	record(3, 1, "hel1")
+	if err := store.SQL().QueryRowContext(ctx, `SELECT relay_latency_worker_generation,relay_latency_generation,relay_latency_vector::text FROM paperboat.user_machines WHERE id=$1`, machineID).Scan(&worker, &generation, &encoded); err != nil {
+		t.Fatal(err)
+	}
+	if worker != 3 || generation != 1 || !strings.Contains(encoded, `"hel1"`) {
+		t.Fatalf("replacement worker=%d generation=%d vector=%s", worker, generation, encoded)
+	}
+}
+
 func TestRuntimeMeteringDebitsWeightedConcurrentMachines(t *testing.T) {
 	store := openRuntimeTestDB(t)
 	ctx := context.Background()

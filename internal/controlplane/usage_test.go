@@ -81,6 +81,21 @@ func TestReconcileUsageAbsoluteCounters(t *testing.T) {
 	}
 }
 
+func TestReconcileUsageAcceptsEphemeralPeerRelaySubject(t *testing.T) {
+	store := openControlPlaneTestDB(t)
+	now := time.Date(2026, 8, 6, 21, 0, 0, 0, time.UTC)
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	seedUsageScope(t, store, suffix)
+	report := usageReport("op_peer_usage_"+suffix, "epoch_peer_usage_"+suffix, 128, now)
+	report.EdgeNodeID = "node_" + suffix
+	report.EnvironmentID = "env_" + suffix
+	report.RouteID = "peer_ephemeral_" + suffix
+	receipt, err := ReconcileUsage(context.Background(), store, report, now)
+	if err != nil || receipt.DeltaBytes != 128 {
+		t.Fatalf("peer relay receipt = %#v, %v", receipt, err)
+	}
+}
+
 func TestReconcileUsageRejectsConflictingOperationReplay(t *testing.T) {
 	store := openControlPlaneTestDB(t)
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)

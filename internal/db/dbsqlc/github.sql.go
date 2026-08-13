@@ -8,8 +8,6 @@ package dbsqlc
 import (
 	"context"
 	"database/sql"
-
-	"github.com/lib/pq"
 )
 
 const getGitHubConfigRepoStatus = `-- name: GetGitHubConfigRepoStatus :one
@@ -24,7 +22,7 @@ type GetGitHubConfigRepoStatusRow struct {
 }
 
 func (q *Queries) GetGitHubConfigRepoStatus(ctx context.Context, userID string) (GetGitHubConfigRepoStatusRow, error) {
-	row := q.db.QueryRowContext(ctx, getGitHubConfigRepoStatus, userID)
+	row := q.db.QueryRow(ctx, getGitHubConfigRepoStatus, userID)
 	var i GetGitHubConfigRepoStatusRow
 	err := row.Scan(&i.Owner, &i.Name, &i.DefaultBranch)
 	return i, err
@@ -42,9 +40,9 @@ type GetGitHubConnectionReadinessRow struct {
 }
 
 func (q *Queries) GetGitHubConnectionReadiness(ctx context.Context, userID string) (GetGitHubConnectionReadinessRow, error) {
-	row := q.db.QueryRowContext(ctx, getGitHubConnectionReadiness, userID)
+	row := q.db.QueryRow(ctx, getGitHubConnectionReadiness, userID)
 	var i GetGitHubConnectionReadinessRow
-	err := row.Scan(pq.Array(&i.Scopes), &i.LastValidatedAt, &i.TokenCiphertext)
+	err := row.Scan(&i.Scopes, &i.LastValidatedAt, &i.TokenCiphertext)
 	return i, err
 }
 
@@ -54,9 +52,9 @@ WHERE user_id = $1 AND revoked_at IS NULL ORDER BY updated_at DESC LIMIT 1
 `
 
 func (q *Queries) GetGitHubScopes(ctx context.Context, userID string) ([]string, error) {
-	row := q.db.QueryRowContext(ctx, getGitHubScopes, userID)
+	row := q.db.QueryRow(ctx, getGitHubScopes, userID)
 	var scopes []string
-	err := row.Scan(pq.Array(&scopes))
+	err := row.Scan(&scopes)
 	return scopes, err
 }
 
@@ -72,9 +70,9 @@ type GetGitHubTokenRow struct {
 }
 
 func (q *Queries) GetGitHubToken(ctx context.Context, userID string) (GetGitHubTokenRow, error) {
-	row := q.db.QueryRowContext(ctx, getGitHubToken, userID)
+	row := q.db.QueryRow(ctx, getGitHubToken, userID)
 	var i GetGitHubTokenRow
-	err := row.Scan(&i.TokenCiphertext, &i.ProviderAccountLogin, pq.Array(&i.Scopes))
+	err := row.Scan(&i.TokenCiphertext, &i.ProviderAccountLogin, &i.Scopes)
 	return i, err
 }
 
@@ -92,7 +90,7 @@ type LinkGitHubIdentityParams struct {
 }
 
 func (q *Queries) LinkGitHubIdentity(ctx context.Context, arg LinkGitHubIdentityParams) (string, error) {
-	row := q.db.QueryRowContext(ctx, linkGitHubIdentity, arg.ID, arg.UserID, arg.ProviderSubject)
+	row := q.db.QueryRow(ctx, linkGitHubIdentity, arg.ID, arg.UserID, arg.ProviderSubject)
 	var user_id string
 	err := row.Scan(&user_id)
 	return user_id, err
@@ -103,7 +101,7 @@ UPDATE github_repo_provisioning_attempts SET state = 'succeeded', updated_at = n
 `
 
 func (q *Queries) MarkGitHubProvisioningSucceeded(ctx context.Context, idempotencyKey string) error {
-	_, err := q.db.ExecContext(ctx, markGitHubProvisioningSucceeded, idempotencyKey)
+	_, err := q.db.Exec(ctx, markGitHubProvisioningSucceeded, idempotencyKey)
 	return err
 }
 
@@ -129,7 +127,7 @@ type UpsertGitHubConfigRepositoryParams struct {
 }
 
 func (q *Queries) UpsertGitHubConfigRepository(ctx context.Context, arg UpsertGitHubConfigRepositoryParams) error {
-	_, err := q.db.ExecContext(ctx, upsertGitHubConfigRepository,
+	_, err := q.db.Exec(ctx, upsertGitHubConfigRepository,
 		arg.ID,
 		arg.UserID,
 		arg.ProviderRepoID,
@@ -170,12 +168,12 @@ type UpsertGitHubOAuthTokenParams struct {
 }
 
 func (q *Queries) UpsertGitHubOAuthToken(ctx context.Context, arg UpsertGitHubOAuthTokenParams) error {
-	_, err := q.db.ExecContext(ctx, upsertGitHubOAuthToken,
+	_, err := q.db.Exec(ctx, upsertGitHubOAuthToken,
 		arg.ID,
 		arg.UserID,
 		arg.TokenCiphertext,
 		arg.RefreshTokenCiphertext,
-		pq.Array(arg.Scopes),
+		arg.Scopes,
 		arg.ExpiresAt,
 		arg.ProviderAccountLogin,
 	)
@@ -201,7 +199,7 @@ type UpsertGitHubProvisioningAttemptParams struct {
 }
 
 func (q *Queries) UpsertGitHubProvisioningAttempt(ctx context.Context, arg UpsertGitHubProvisioningAttemptParams) error {
-	_, err := q.db.ExecContext(ctx, upsertGitHubProvisioningAttempt,
+	_, err := q.db.Exec(ctx, upsertGitHubProvisioningAttempt,
 		arg.ID,
 		arg.UserID,
 		arg.IdempotencyKey,

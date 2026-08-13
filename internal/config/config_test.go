@@ -34,6 +34,8 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 		"PAPERBOAT_CONFIG_SYNC_INCLUDES":                        ".bashrc,.gitconfig",
 		"PAPERBOAT_CONFIG_SYNC_ENVIRONMENT_ALLOWLIST":           "env_one,env_two",
 		"PAPERBOAT_MACHINES_URL":                                "https://dashboard.example.test/machines",
+		"PAPERBOAT_FLY_HOSTED_SSH_USER":                         "workspace",
+		"PAPERBOAT_FLY_HOSTED_SSH_PORT":                         "2222",
 	}
 	cfg, err := Load(context.Background(), LoadOptions{
 		LookupEnv: func(key string) (string, bool) {
@@ -55,6 +57,9 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 	}
 	if cfg.RuntimeBaseDomain != "helper.example.test" {
 		t.Fatalf("runtime base domain = %q", cfg.RuntimeBaseDomain)
+	}
+	if cfg.Fly.HostedSSHUser != "workspace" || cfg.Fly.HostedSSHPort != 2222 {
+		t.Fatalf("hosted SSH config = %q:%d", cfg.Fly.HostedSSHUser, cfg.Fly.HostedSSHPort)
 	}
 	if cfg.HTTP.Address != "127.0.0.1:9090" {
 		t.Fatalf("address = %q", cfg.HTTP.Address)
@@ -90,6 +95,24 @@ func TestValidationRejectsInvalidRuntimeBaseDomain(t *testing.T) {
 	cfg.RuntimeBaseDomain = "https://helper.example.test/path"
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "runtime_base_domain") {
 		t.Fatalf("validation error = %v", err)
+	}
+}
+
+func TestValidationRejectsInvalidHostedSSHAuthority(t *testing.T) {
+	for _, mutate := range []func(*Config){
+		func(cfg *Config) { cfg.Fly.HostedSSHUser = "bad user" },
+		func(cfg *Config) { cfg.Fly.HostedSSHUser = " workspace" },
+		func(cfg *Config) { cfg.Fly.HostedSSHUser = "-root" },
+		func(cfg *Config) { cfg.Fly.HostedSSHUser = "Root" },
+		func(cfg *Config) { cfg.Fly.HostedSSHUser = "root" },
+		func(cfg *Config) { cfg.Fly.HostedSSHPort = 0 },
+		func(cfg *Config) { cfg.Fly.HostedSSHPort = 65536 },
+	} {
+		cfg := Default()
+		mutate(&cfg)
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "hosted SSH") {
+			t.Fatalf("validation error = %v", err)
+		}
 	}
 }
 
@@ -182,12 +205,17 @@ func validProductionConfig() Config {
 	cfg.Secrets.EdgeControlCredential = "edge-control-credential-0123456789"
 	cfg.Fly.ImageRef = "registry.example.test/paperboat/project-vm@sha256:" + strings.Repeat("a", 64)
 	cfg.UserMachines.BootstrapCommand = "pb pair --server https://pb.example.test"
-	cfg.UserMachines.MachineArtifactsJSON = `[{"schema":"paperboat.machine-artifact/v1"}]`
-	cfg.UserMachines.MachineArtifactPublicKey = "machine-artifact-public-key"
+	cfg.UserMachines.ArtifactRepositoryURL = "https://updates.example.test/paperboat"
+	cfg.UserMachines.ArtifactVersion = "2026.08.07"
 	cfg.Preview.BaseDomain = "preview.example.test"
 	cfg.Secrets.PreviewIdentityKey = "preview-identity-key-012345678901234567890123456789"
 	cfg.CLIAuth.MintActiveKeyID = "current"
 	cfg.Secrets.MintSigningKeys = []string{"current:" + base64.RawURLEncoding.EncodeToString(make([]byte, 32))}
+	cfg.Diagnostics.ObjectEndpoint = "https://diagnostics.example.test"
+	cfg.Diagnostics.ObjectRegion = "fsn1"
+	cfg.Diagnostics.ObjectBucket = "paperboat-diagnostics"
+	cfg.Secrets.DiagnosticsAccessKey = "diagnostics-access-key"
+	cfg.Secrets.DiagnosticsSecretKey = "diagnostics-secret-key"
 	return cfg
 }
 

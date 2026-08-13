@@ -388,9 +388,7 @@ func projectExpectedVersion(w http.ResponseWriter, r *http.Request, bodyVersion 
 		return bodyVersion, true
 	}
 	raw = strings.Trim(raw, `"`)
-	if strings.HasPrefix(raw, "project-version-") {
-		raw = strings.TrimPrefix(raw, "project-version-")
-	}
+	raw = strings.TrimPrefix(raw, "project-version-")
 	n, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || n <= 0 {
 		writeError(w, r, http.StatusBadRequest, "invalid_version", "If-Match must contain a project version.")

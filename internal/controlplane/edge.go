@@ -8,11 +8,15 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,6 +60,7 @@ type ConnectorAdmission struct {
 	ConnectorGeneration int64  `json:"connector_generation"`
 	EdgePool            string `json:"edge_pool"`
 	EdgeNodeID          string `json:"edge_node_id"`
+	RelayHTTPEndpoint   string `json:"relay_http_endpoint"`
 	EdgeEndpoint        struct {
 		Host     string `json:"host"`
 		Port     int32  `json:"port"`
@@ -79,6 +84,25 @@ type ConnectorRouteHandoff struct {
 		Host string `json:"host"`
 		Port int32  `json:"port"`
 	} `json:"target"`
+}
+
+func connectorRouteBinding(routes []ConnectorRouteHandoff) string {
+	hash := sha256.New()
+	var size [8]byte
+	binary.BigEndian.PutUint64(size[:], uint64(len(routes)))
+	_, _ = hash.Write(size[:])
+	for _, route := range routes {
+		for _, value := range []string{route.RouteID, route.Kind, route.PublicHost, route.ProxyName, route.Target.Host} {
+			binary.BigEndian.PutUint64(size[:], uint64(len(value)))
+			_, _ = hash.Write(size[:])
+			_, _ = io.WriteString(hash, value)
+		}
+		binary.BigEndian.PutUint64(size[:], uint64(route.RouteRevision))
+		_, _ = hash.Write(size[:])
+		binary.BigEndian.PutUint64(size[:], uint64(route.Target.Port))
+		_, _ = hash.Write(size[:])
+	}
+	return base64.RawURLEncoding.EncodeToString(hash.Sum(nil))
 }
 
 type connectorAdmissionRequest struct {
@@ -226,7 +250,10 @@ func (s *EdgeService) IssueConnectorAdmission(ctx context.Context, identityToken
 	requestHash := sha256.Sum256(append([]byte(claims.MachineID+"\x00"+claims.EnvironmentID+"\x00"+request.ConnectorID+"\x00"+edgePool+"\x00"), body...))
 	operationKey := "connector-admission:" + claims.MachineID + ":" + request.ConnectorID + ":" + claims.OperationID
 	var result ConnectorAdmission
-	err = s.store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+	// The connector generation row lock serializes admission for the same
+	// connector. Node selection is observational and does not require SSI
+	// predicate protection across otherwise independent connectors.
+	err = s.store.InReadCommittedTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		routes, err := tx.Queries().ListControlRoutesForEnvironmentAdmission(ctx, dbsqlc.ListControlRoutesForEnvironmentAdmissionParams{EnvironmentID: claims.EnvironmentID, ConnectorID: request.ConnectorID})
 		if err != nil || len(routes) == 0 || len(routes) > 128 {
 			return ErrHelperProof
@@ -250,8 +277,8 @@ func (s *EdgeService) IssueConnectorAdmission(ctx context.Context, identityToken
 				return nil
 			}
 		}
-		node, err := tx.Queries().SelectReadyControlTunnelNodeForUpdate(ctx, dbsqlc.SelectReadyControlTunnelNodeForUpdateParams{EdgePool: edgePool, StaleAfter: sql.NullTime{Time: now.Add(-controlTunnelNodeStaleAfter), Valid: true}})
-		if err != nil || !node.EndpointHost.Valid || !node.EndpointTcpPort.Valid || !node.EndpointQuicPort.Valid {
+		node, err := tx.Queries().SelectReadyControlTunnelNode(ctx, dbsqlc.SelectReadyControlTunnelNodeParams{EdgePool: edgePool, StaleAfter: sql.NullTime{Time: now.Add(-controlTunnelNodeStaleAfter), Valid: true}})
+		if err != nil || !node.EndpointHost.Valid || !node.EndpointTcpPort.Valid || !node.EndpointQuicPort.Valid || !node.SignalingHost.Valid || strings.TrimSpace(node.SignalingHost.String) == "" {
 			return ErrHelperProof
 		}
 		jti, err := randomHex("jti_", 24)
@@ -263,18 +290,20 @@ func (s *EdgeService) IssueConnectorAdmission(ctx context.Context, identityToken
 		if policy.Revision == "" {
 			policy = mint.DefaultFileTransferPolicy
 		}
-		token, err := s.signer.SignCredential(mint.CredentialInput{Issuer: s.issuer, Audience: "paperboat-edge", Subject: claims.MachineID, JTI: jti, IssuedAt: now, ExpiresAt: expiresAt, CredentialClass: "connector_admission", Scopes: []string{"connector:admit"}, EnvironmentID: claims.EnvironmentID, MachineID: claims.MachineID, InstallationGeneration: claims.InstallationGeneration, ConnectorID: request.ConnectorID, ConnectorGeneration: generation.Generation, EdgePool: edgePool, EdgeNodeID: node.ID, FileTransferPolicy: &policy})
-		if err != nil {
-			return err
-		}
-		result = ConnectorAdmission{OperationID: claims.OperationID, Credential: token, EnvironmentID: claims.EnvironmentID, MachineID: claims.MachineID, ConnectorID: request.ConnectorID, ConnectorGeneration: generation.Generation, EdgePool: edgePool, EdgeNodeID: node.ID, Routes: make([]ConnectorRouteHandoff, 0, len(routes)), ProtocolVersion: "1.0", FileTransferPolicy: policy, ExpiresAt: expiresAt}
-		result.EdgeEndpoint.Host, result.EdgeEndpoint.Port = node.EndpointHost.String, node.EndpointTcpPort.Int32
-		result.EdgeEndpoint.TCPPort, result.EdgeEndpoint.QUICPort = node.EndpointTcpPort.Int32, node.EndpointQuicPort.Int32
+		handoffs := make([]ConnectorRouteHandoff, 0, len(routes))
 		for _, route := range routes {
 			handoff := ConnectorRouteHandoff{RouteID: route.RouteID, RouteRevision: route.RouteRevision, Kind: route.Kind, PublicHost: route.PublicHost, ProxyName: route.RouteID}
 			handoff.Target.Host, handoff.Target.Port = route.TargetHost, route.TargetPort
-			result.Routes = append(result.Routes, handoff)
+			handoffs = append(handoffs, handoff)
 		}
+		binding := connectorRouteBinding(handoffs)
+		token, err := s.signer.SignCredential(mint.CredentialInput{Issuer: s.issuer, Audience: "paperboat-edge", Subject: claims.MachineID, JTI: jti, IssuedAt: now, ExpiresAt: expiresAt, CredentialClass: "connector_admission", Scopes: []string{"connector:admit"}, EnvironmentID: claims.EnvironmentID, MachineID: claims.MachineID, InstallationGeneration: claims.InstallationGeneration, ConnectorID: request.ConnectorID, ConnectorGeneration: generation.Generation, EdgePool: edgePool, EdgeNodeID: node.ID, RouteBinding: binding, FileTransferPolicy: &policy})
+		if err != nil {
+			return err
+		}
+		result = ConnectorAdmission{OperationID: claims.OperationID, Credential: token, EnvironmentID: claims.EnvironmentID, MachineID: claims.MachineID, ConnectorID: request.ConnectorID, ConnectorGeneration: generation.Generation, EdgePool: edgePool, EdgeNodeID: node.ID, RelayHTTPEndpoint: "https://" + strings.TrimSpace(node.SignalingHost.String), Routes: handoffs, ProtocolVersion: "1.0", FileTransferPolicy: policy, ExpiresAt: expiresAt}
+		result.EdgeEndpoint.Host, result.EdgeEndpoint.Port = node.EndpointHost.String, node.EndpointTcpPort.Int32
+		result.EdgeEndpoint.TCPPort, result.EdgeEndpoint.QUICPort = node.EndpointTcpPort.Int32, node.EndpointQuicPort.Int32
 		resultJSON, err := json.Marshal(result)
 		if err != nil {
 			return err
@@ -349,6 +378,11 @@ type edgeNodeRegistration struct {
 		TCPPort  uint16 `json:"tcp_port"`
 		QUICPort uint16 `json:"quic_port"`
 	} `json:"connector_endpoint"`
+	SignalingHost string `json:"signaling_host"`
+	STUNEndpoint  struct {
+		Host string `json:"host"`
+		Port uint16 `json:"port"`
+	} `json:"stun_endpoint"`
 }
 
 type edgeNodeObservation struct {
@@ -376,12 +410,57 @@ type edgeUsageRequest struct {
 
 const controlTunnelNodeStaleAfter = 2 * time.Minute
 
+const maxProbeRegions = 32
+
+type ProbeRegion struct {
+	Region   string `json:"region"`
+	STUNURL  string `json:"stun_url"`
+	HTTPSURL string `json:"https_url"`
+}
+
+func (s *EdgeService) ListProbeRegions(ctx context.Context) ([]ProbeRegion, error) {
+	rows, err := s.store.Queries().ListReadyControlTunnelProbeRegions(ctx, sql.NullTime{
+		Time:  s.clock().UTC().Add(-controlTunnelNodeStaleAfter),
+		Valid: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	regions := make([]ProbeRegion, 0, min(len(rows), maxProbeRegions))
+	for _, row := range rows {
+		region := strings.TrimSpace(row.EdgePool)
+		signalingHost := strings.TrimSpace(row.SignalingHost.String)
+		stunHost := strings.TrimSpace(row.StunHost.String)
+		if !validProbeRegion(region) || !validRouteHost(signalingHost) || !validRouteHost(stunHost) || !row.StunPort.Valid || row.StunPort.Int32 < 1 || row.StunPort.Int32 > 65535 {
+			continue
+		}
+		regions = append(regions, ProbeRegion{
+			Region:   region,
+			STUNURL:  "stun:" + net.JoinHostPort(stunHost, strconv.Itoa(int(row.StunPort.Int32))),
+			HTTPSURL: (&url.URL{Scheme: "https", Host: signalingHost, Path: "/network-check/v1"}).String(),
+		})
+	}
+	return regions, nil
+}
+
+func validProbeRegion(value string) bool {
+	if value == "" || len(value) > 63 {
+		return false
+	}
+	for _, r := range value {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+			return false
+		}
+	}
+	return value[0] != '-' && value[len(value)-1] != '-'
+}
+
 func (s *EdgeService) RegisterNode(ctx context.Context, r edgeNodeRegistration) error {
-	if r.NodeID == "" || r.EdgePool == "" || r.Protocol == "" || r.ProcessEpoch == "" || r.Capacity == 0 || r.Endpoint.Host == "" || r.Endpoint.TCPPort == 0 || r.Endpoint.QUICPort == 0 {
+	if r.NodeID == "" || r.EdgePool == "" || r.Protocol == "" || r.ProcessEpoch == "" || r.Capacity == 0 || r.Endpoint.Host == "" || r.Endpoint.TCPPort == 0 || r.Endpoint.QUICPort == 0 || r.SignalingHost == "" || r.STUNEndpoint.Host == "" || r.STUNEndpoint.Port == 0 {
 		return ErrInvalidUsageReport
 	}
 	capacity, _ := json.Marshal(map[string]any{"connectors": r.Capacity, "artifact": r.Artifact})
-	_, err := s.store.Queries().RegisterControlTunnelNode(ctx, dbsqlc.RegisterControlTunnelNodeParams{ID: r.NodeID, EdgePool: r.EdgePool, ProtocolVersion: r.Protocol, ProcessEpoch: r.ProcessEpoch, EndpointHost: sql.NullString{String: r.Endpoint.Host, Valid: true}, EndpointTcpPort: sql.NullInt32{Int32: int32(r.Endpoint.TCPPort), Valid: true}, EndpointQuicPort: sql.NullInt32{Int32: int32(r.Endpoint.QUICPort), Valid: true}, Capacity: capacity, Now: sql.NullTime{Time: s.clock(), Valid: true}})
+	_, err := s.store.Queries().RegisterControlTunnelNode(ctx, dbsqlc.RegisterControlTunnelNodeParams{ID: r.NodeID, EdgePool: r.EdgePool, ProtocolVersion: r.Protocol, ProcessEpoch: r.ProcessEpoch, EndpointHost: sql.NullString{String: r.Endpoint.Host, Valid: true}, EndpointTcpPort: sql.NullInt32{Int32: int32(r.Endpoint.TCPPort), Valid: true}, EndpointQuicPort: sql.NullInt32{Int32: int32(r.Endpoint.QUICPort), Valid: true}, SignalingHost: sql.NullString{String: r.SignalingHost, Valid: true}, StunHost: sql.NullString{String: r.STUNEndpoint.Host, Valid: true}, StunPort: sql.NullInt32{Int32: int32(r.STUNEndpoint.Port), Valid: true}, Capacity: capacity, Now: sql.NullTime{Time: s.clock(), Valid: true}})
 	return err
 }
 

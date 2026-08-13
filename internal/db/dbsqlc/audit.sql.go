@@ -7,7 +7,6 @@ package dbsqlc
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 )
 
@@ -27,11 +26,11 @@ type InsertAuditEventParams struct {
 	ResourceType   string
 	ResourceID     string
 	IdempotencyKey interface{}
-	Metadata       json.RawMessage
+	Metadata       []byte
 }
 
 func (q *Queries) InsertAuditEvent(ctx context.Context, arg InsertAuditEventParams) error {
-	_, err := q.db.ExecContext(ctx, insertAuditEvent,
+	_, err := q.db.Exec(ctx, insertAuditEvent,
 		arg.ID,
 		arg.ActorUserID,
 		arg.ActorType,
@@ -70,12 +69,12 @@ type ListAuditEventsRow struct {
 	ResourceType   string
 	ResourceID     string
 	IdempotencyKey string
-	Metadata       json.RawMessage
+	Metadata       []byte
 	CreatedAt      time.Time
 }
 
 func (q *Queries) ListAuditEvents(ctx context.Context, arg ListAuditEventsParams) ([]ListAuditEventsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listAuditEvents,
+	rows, err := q.db.Query(ctx, listAuditEvents,
 		arg.ResourceType,
 		arg.ResourceID,
 		arg.ActorUserID,
@@ -102,9 +101,6 @@ func (q *Queries) ListAuditEvents(ctx context.Context, arg ListAuditEventsParams
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

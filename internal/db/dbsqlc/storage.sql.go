@@ -23,7 +23,7 @@ type CreateStorageAllocationEntryParams struct {
 }
 
 func (q *Queries) CreateStorageAllocationEntry(ctx context.Context, arg CreateStorageAllocationEntryParams) error {
-	_, err := q.db.ExecContext(ctx, createStorageAllocationEntry,
+	_, err := q.db.Exec(ctx, createStorageAllocationEntry,
 		arg.ID,
 		arg.AccountID,
 		arg.AmountGb,
@@ -61,7 +61,7 @@ type GetStorageAccountForUpdateRow struct {
 }
 
 func (q *Queries) GetStorageAccountForUpdate(ctx context.Context, id string) (GetStorageAccountForUpdateRow, error) {
-	row := q.db.QueryRowContext(ctx, getStorageAccountForUpdate, id)
+	row := q.db.QueryRow(ctx, getStorageAccountForUpdate, id)
 	var i GetStorageAccountForUpdateRow
 	err := row.Scan(&i.IncludedGb, &i.PurchasedGb, &i.AllocatedGb)
 	return i, err
@@ -82,7 +82,7 @@ type GetStorageLedgerEntryByIdempotencyKeyRow struct {
 }
 
 func (q *Queries) GetStorageLedgerEntryByIdempotencyKey(ctx context.Context, idempotencyKey string) (GetStorageLedgerEntryByIdempotencyKeyRow, error) {
-	row := q.db.QueryRowContext(ctx, getStorageLedgerEntryByIdempotencyKey, idempotencyKey)
+	row := q.db.QueryRow(ctx, getStorageLedgerEntryByIdempotencyKey, idempotencyKey)
 	var i GetStorageLedgerEntryByIdempotencyKeyRow
 	err := row.Scan(
 		&i.AccountID,
@@ -106,6 +106,6 @@ type IncreaseAllocatedStorageParams struct {
 }
 
 func (q *Queries) IncreaseAllocatedStorage(ctx context.Context, arg IncreaseAllocatedStorageParams) error {
-	_, err := q.db.ExecContext(ctx, increaseAllocatedStorage, arg.ID, arg.AllocatedGb)
+	_, err := q.db.Exec(ctx, increaseAllocatedStorage, arg.ID, arg.AllocatedGb)
 	return err
 }

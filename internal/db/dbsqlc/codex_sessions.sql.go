@@ -9,8 +9,6 @@ import (
 	"context"
 	"database/sql"
 	"time"
-
-	"github.com/lib/pq"
 )
 
 const completeCodexSessionStop = `-- name: CompleteCodexSessionStop :exec
@@ -23,7 +21,7 @@ type CompleteCodexSessionStopParams struct {
 }
 
 func (q *Queries) CompleteCodexSessionStop(ctx context.Context, arg CompleteCodexSessionStopParams) error {
-	_, err := q.db.ExecContext(ctx, completeCodexSessionStop, arg.Now, arg.ID)
+	_, err := q.db.Exec(ctx, completeCodexSessionStop, arg.Now, arg.ID)
 	return err
 }
 
@@ -40,7 +38,7 @@ type CountActiveCodexSessionsParams struct {
 }
 
 func (q *Queries) CountActiveCodexSessions(ctx context.Context, arg CountActiveCodexSessionsParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, countActiveCodexSessions, arg.UserID, arg.EnvironmentID, arg.Now)
+	row := q.db.QueryRow(ctx, countActiveCodexSessions, arg.UserID, arg.EnvironmentID, arg.Now)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -73,7 +71,7 @@ type CreateCodexSessionParams struct {
 }
 
 func (q *Queries) CreateCodexSession(ctx context.Context, arg CreateCodexSessionParams) (CodexSession, error) {
-	row := q.db.QueryRowContext(ctx, createCodexSession,
+	row := q.db.QueryRow(ctx, createCodexSession,
 		arg.ID,
 		arg.EnvironmentID,
 		arg.MachineID,
@@ -130,7 +128,7 @@ type GetCodexSessionByIdempotencyParams struct {
 }
 
 func (q *Queries) GetCodexSessionByIdempotency(ctx context.Context, arg GetCodexSessionByIdempotencyParams) (CodexSession, error) {
-	row := q.db.QueryRowContext(ctx, getCodexSessionByIdempotency, arg.CLIClientSessionID, arg.IdempotencyKey)
+	row := q.db.QueryRow(ctx, getCodexSessionByIdempotency, arg.CLIClientSessionID, arg.IdempotencyKey)
 	var i CodexSession
 	err := row.Scan(
 		&i.ID,
@@ -181,9 +179,9 @@ type GetCodexSessionMachineCapabilityRow struct {
 }
 
 func (q *Queries) GetCodexSessionMachineCapability(ctx context.Context, arg GetCodexSessionMachineCapabilityParams) (GetCodexSessionMachineCapabilityRow, error) {
-	row := q.db.QueryRowContext(ctx, getCodexSessionMachineCapability, arg.MachineID, arg.EnvironmentID)
+	row := q.db.QueryRow(ctx, getCodexSessionMachineCapability, arg.MachineID, arg.EnvironmentID)
 	var i GetCodexSessionMachineCapabilityRow
-	err := row.Scan(&i.Online, pq.Array(&i.ConfiguredCapabilities), pq.Array(&i.ObservedCapabilities))
+	err := row.Scan(&i.Online, &i.ConfiguredCapabilities, &i.ObservedCapabilities)
 	return i, err
 }
 
@@ -198,7 +196,7 @@ type GetOwnedCodexSessionParams struct {
 }
 
 func (q *Queries) GetOwnedCodexSession(ctx context.Context, arg GetOwnedCodexSessionParams) (CodexSession, error) {
-	row := q.db.QueryRowContext(ctx, getOwnedCodexSession, arg.ID, arg.UserID, arg.CLIClientSessionID)
+	row := q.db.QueryRow(ctx, getOwnedCodexSession, arg.ID, arg.UserID, arg.CLIClientSessionID)
 	var i CodexSession
 	err := row.Scan(
 		&i.ID,
@@ -241,7 +239,7 @@ type ListExpiredCodexSessionsParams struct {
 }
 
 func (q *Queries) ListExpiredCodexSessions(ctx context.Context, arg ListExpiredCodexSessionsParams) ([]CodexSession, error) {
-	rows, err := q.db.QueryContext(ctx, listExpiredCodexSessions, arg.Now, arg.BatchSize)
+	rows, err := q.db.Query(ctx, listExpiredCodexSessions, arg.Now, arg.BatchSize)
 	if err != nil {
 		return nil, err
 	}
@@ -280,9 +278,6 @@ func (q *Queries) ListExpiredCodexSessions(ctx context.Context, arg ListExpiredC
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -294,7 +289,7 @@ SELECT id FROM control_environments WHERE id=$1 FOR UPDATE
 `
 
 func (q *Queries) LockCodexSessionLimit(ctx context.Context, environmentID string) (string, error) {
-	row := q.db.QueryRowContext(ctx, lockCodexSessionLimit, environmentID)
+	row := q.db.QueryRow(ctx, lockCodexSessionLimit, environmentID)
 	var id string
 	err := row.Scan(&id)
 	return id, err
@@ -312,7 +307,7 @@ type MarkCodexSessionReadyParams struct {
 }
 
 func (q *Queries) MarkCodexSessionReady(ctx context.Context, arg MarkCodexSessionReadyParams) (CodexSession, error) {
-	row := q.db.QueryRowContext(ctx, markCodexSessionReady, arg.RemoteCodexVersion, arg.Now, arg.ID)
+	row := q.db.QueryRow(ctx, markCodexSessionReady, arg.RemoteCodexVersion, arg.Now, arg.ID)
 	var i CodexSession
 	err := row.Scan(
 		&i.ID,
@@ -355,7 +350,7 @@ type MarkExpiredCodexSessionStoppedParams struct {
 }
 
 func (q *Queries) MarkExpiredCodexSessionStopped(ctx context.Context, arg MarkExpiredCodexSessionStoppedParams) error {
-	_, err := q.db.ExecContext(ctx, markExpiredCodexSessionStopped, arg.Now, arg.ID)
+	_, err := q.db.Exec(ctx, markExpiredCodexSessionStopped, arg.Now, arg.ID)
 	return err
 }
 
@@ -375,7 +370,7 @@ type RenewCodexSessionParams struct {
 }
 
 func (q *Queries) RenewCodexSession(ctx context.Context, arg RenewCodexSessionParams) (CodexSession, error) {
-	row := q.db.QueryRowContext(ctx, renewCodexSession,
+	row := q.db.QueryRow(ctx, renewCodexSession,
 		arg.LeaseExpiresAt,
 		arg.Now,
 		arg.ID,
@@ -446,7 +441,7 @@ type ResolveCodexSessionEnvironmentRow struct {
 }
 
 func (q *Queries) ResolveCodexSessionEnvironment(ctx context.Context, arg ResolveCodexSessionEnvironmentParams) (ResolveCodexSessionEnvironmentRow, error) {
-	row := q.db.QueryRowContext(ctx, resolveCodexSessionEnvironment, arg.EnvironmentID, arg.UserID)
+	row := q.db.QueryRow(ctx, resolveCodexSessionEnvironment, arg.EnvironmentID, arg.UserID)
 	var i ResolveCodexSessionEnvironmentRow
 	err := row.Scan(
 		&i.EnvironmentID,
@@ -458,8 +453,8 @@ func (q *Queries) ResolveCodexSessionEnvironment(ctx context.Context, arg Resolv
 		&i.EdgeNodeID,
 		&i.PublicHost,
 		&i.Online,
-		pq.Array(&i.ConfiguredCapabilities),
-		pq.Array(&i.ObservedCapabilities),
+		&i.ConfiguredCapabilities,
+		&i.ObservedCapabilities,
 	)
 	return i, err
 }
@@ -478,7 +473,7 @@ type StopCodexSessionParams struct {
 }
 
 func (q *Queries) StopCodexSession(ctx context.Context, arg StopCodexSessionParams) (CodexSession, error) {
-	row := q.db.QueryRowContext(ctx, stopCodexSession,
+	row := q.db.QueryRow(ctx, stopCodexSession,
 		arg.Now,
 		arg.ID,
 		arg.UserID,
@@ -527,9 +522,9 @@ type StopCodexSessionsForMachineParams struct {
 }
 
 func (q *Queries) StopCodexSessionsForMachine(ctx context.Context, arg StopCodexSessionsForMachineParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, stopCodexSessionsForMachine, arg.Now, arg.MachineID)
+	result, err := q.db.Exec(ctx, stopCodexSessionsForMachine, arg.Now, arg.MachineID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }

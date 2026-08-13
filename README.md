@@ -49,14 +49,15 @@ Release container tags use `YYYY.MM.DD.X`. Run `tools/release-version.sh next`, 
 that exact tag without a `v` prefix, and push it.
 
 The server image contains only `paperboat-server`. The unified `pb` release is built and
-published independently. Release CI signs machine artifact manifests containing immutable
-URLs, byte lengths, and SHA-256 digests; mount those manifests and their Ed25519 public key at
-the paths configured by `PAPERBOAT_USER_MACHINES_ARTIFACTS_JSON_FILE` and
-`PAPERBOAT_USER_MACHINES_ARTIFACT_PUBLIC_KEY_FILE`.
+published independently through its TUF repository. Configure the public repository base URL
+and selected release with `PAPERBOAT_USER_MACHINES_ARTIFACT_REPOSITORY_URL` and
+`PAPERBOAT_USER_MACHINES_ARTIFACT_VERSION`; the server never receives signing keys.
 
 The server exposes health/readiness, authentication, billing, usage, project, environment,
 and config-repository APIs. See [docs/api.md](docs/api.md) and
 [docs/contracts/http-api.md](docs/contracts/http-api.md) for the maintained interface.
+P2P control-stream, endpoint-identity, regional-selection, and global-disable recovery is
+defined in [docs/runbooks/p2p-control-plane.md](docs/runbooks/p2p-control-plane.md).
 
 For direct server OAuth testing, set the GitHub OAuth app callback URL to:
 
@@ -112,12 +113,21 @@ Common environment overrides:
 - `PAPERBOAT_FLY_APP_NAME`
 - `PAPERBOAT_FLY_ORG_SLUG`
 - `PAPERBOAT_FLY_IMAGE_REF`
+- `PAPERBOAT_FLY_HOSTED_SSH_USER`
+- `PAPERBOAT_FLY_HOSTED_SSH_PORT`
 - `PAPERBOAT_FLY_OPERATION_TIMEOUT`
 - `PAPERBOAT_USER_MACHINES_BOOTSTRAP_COMMAND`
-- `PAPERBOAT_USER_MACHINES_ARTIFACTS_JSON`
-- `PAPERBOAT_USER_MACHINES_ARTIFACT_PUBLIC_KEY`
+- `PAPERBOAT_USER_MACHINES_ARTIFACT_REPOSITORY_URL`
+- `PAPERBOAT_USER_MACHINES_ARTIFACT_VERSION`
 - `PAPERBOAT_PREVIEW_BASE_DOMAIN`
 - `PAPERBOAT_PREVIEW_IDENTITY_KEY` or `PAPERBOAT_PREVIEW_IDENTITY_KEY_FILE`
+- `PAPERBOAT_DIAGNOSTICS_OBJECT_ENDPOINT`
+- `PAPERBOAT_DIAGNOSTICS_OBJECT_REGION`
+- `PAPERBOAT_DIAGNOSTICS_OBJECT_BUCKET`
+- `PAPERBOAT_DIAGNOSTICS_FORCE_PATH_STYLE`
+- `PAPERBOAT_DIAGNOSTICS_RETENTION`
+- `PAPERBOAT_DIAGNOSTICS_ACCESS_KEY` or `PAPERBOAT_DIAGNOSTICS_ACCESS_KEY_FILE`
+- `PAPERBOAT_DIAGNOSTICS_SECRET_KEY` or `PAPERBOAT_DIAGNOSTICS_SECRET_KEY_FILE`
 - `PAPERBOAT_FLY_ORCHESTRATION_LEASE`
 - `PAPERBOAT_FLY_BASE_URL`
 - `PAPERBOAT_FLY_VOLUME_NAME_PREFIX`

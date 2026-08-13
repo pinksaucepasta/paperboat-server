@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"testing"
 )
@@ -25,7 +26,28 @@ func TestRequestNetworkUsesForwardedAddressOnlyFromTrustedProxy(t *testing.T) {
 			if got := resolve(req); got != tc.want {
 				t.Fatalf("network = %q, want %q", got, tc.want)
 			}
+			if tc.name == "untrusted peer cannot spoof" && (req.Header.Get("Fly-Client-IP") != "" || req.Header.Get("X-Forwarded-For") != "") {
+				t.Fatalf("untrusted forwarding headers retained: %v", req.Header)
+			}
 		})
+	}
+}
+
+func TestTrustedClientNetworkSanitizesBeforeHandler(t *testing.T) {
+	var network string
+	var forwarded string
+	handler := trustedClientNetwork([]string{"10.0.0.0/8"}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		network = resolvedRequestNetwork(r)
+		forwarded = r.Header.Get("X-Forwarded-For")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	request := httptest.NewRequest("GET", "/healthz", nil)
+	request.RemoteAddr = "203.0.113.8:443"
+	request.Header.Set("X-Forwarded-For", "198.51.100.7")
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+	if network != "203.0.113.8" || forwarded != "" {
+		t.Fatalf("network=%q forwarded=%q", network, forwarded)
 	}
 }
 

@@ -27,7 +27,12 @@ func (s *EdgeService) ReconcileStaleNodes(ctx context.Context, cutoff time.Time,
 		batchSize = 25
 	}
 	count := 0
-	err := s.store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+	// SKIP LOCKED partitions stale rows between concurrent workers. Read
+	// committed is intentional: serializable predicate locks make independent
+	// skip-locked claimers conflict, while row locks and expected versions fence
+	// every mutation performed by this transaction.
+	err := s.store.InReadCommittedTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		attemptCount := 0
 		nodes, err := tx.Queries().ListStaleControlTunnelNodesForUpdate(ctx, dbsqlc.ListStaleControlTunnelNodesForUpdateParams{Cutoff: sql.NullTime{Time: cutoff, Valid: true}, BatchSize: int32(batchSize)})
 		if err != nil {
 			return err
@@ -49,8 +54,11 @@ func (s *EdgeService) ReconcileStaleNodes(ctx context.Context, cutoff time.Time,
 			if err := s.audit.WriteTx(ctx, tx, audit.Event{ActorType: audit.ActorSystem, EventType: "edge.node_stale", ResourceType: "edge_node", ResourceID: node.ID, IdempotencyKey: fmt.Sprintf("edge.node_stale:%s:%d", node.ID, node.Version), Metadata: map[string]any{"cutoff": cutoff}}); err != nil {
 				return err
 			}
-			count++
+			attemptCount++
 		}
+		// InTx may replay this closure after a serialization failure. Publish
+		// only the current attempt's count so aborted work is never reported.
+		count = attemptCount
 		return nil
 	})
 	if err == nil {

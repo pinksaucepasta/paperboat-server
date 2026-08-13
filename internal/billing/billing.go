@@ -286,13 +286,6 @@ func (r *Repository) Usage(ctx context.Context, userID string) (Usage, error) {
 	return Usage{CreditsBalance: row.CreditsBalance, IncludedStorageGB: int(row.IncludedStorageGb), PurchasedStorageGB: int(row.PurchasedStorageGb), AllocatedStorageGB: int(row.AllocatedStorageGb), AvailableStorageGB: int(row.AvailableStorageGb)}, nil
 }
 
-type freePlan struct {
-	versionID         string
-	name              string
-	includedCredits   string
-	includedStorageGB int
-}
-
 // Fast path: skip the write transaction once the free-plan resources exist.
 // This keeps read endpoints (usage, entitlement) cheap and avoids
 // serialization contention when they are loaded concurrently.

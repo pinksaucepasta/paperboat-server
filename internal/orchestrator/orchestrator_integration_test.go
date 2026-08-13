@@ -78,6 +78,9 @@ func TestProvisionProjectIsIdempotentAndLeavesMachineStopped(t *testing.T) {
 	if spec.Env["PAPERBOAT_CONFIG_SHUTDOWN_GRACE_SECONDS"] != "2" || spec.Env["PAPERBOAT_CONFIG_SHUTDOWN_DEADLINE_SECONDS"] != "30" {
 		t.Fatalf("shutdown lifecycle env = %#v", spec.Env)
 	}
+	if spec.Env["PAPERBOAT_MACHINE_GENERATION"] != "1" || spec.Env["PAPERBOAT_SSH_USER"] != cfg.Fly.HostedSSHUser || spec.Env["PAPERBOAT_SSH_PORT"] != fmt.Sprint(cfg.Fly.HostedSSHPort) {
+		t.Fatalf("hosted SSH authority env = %#v", spec.Env)
+	}
 	var resources int
 	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.provider_routes WHERE project_id = $1`, project.ID).Scan(&resources); err != nil {
 		t.Fatal(err)
@@ -97,11 +100,23 @@ func TestProvisionProjectIsIdempotentAndLeavesMachineStopped(t *testing.T) {
 	if canonicalMachineID == "" || linkedMachineID != canonicalMachineID || machineKind != "hosted" {
 		t.Fatalf("hosted machine link = canonical %q linked %q kind %q", canonicalMachineID, linkedMachineID, machineKind)
 	}
+	var targetMachineID, targetUser string
+	var targetGeneration, targetVersion int64
+	var targetPort int
+	if err := store.SQL().QueryRowContext(ctx, `SELECT user_machine_id,machine_generation,os_user,target_port,reconciliation_version FROM paperboat.machine_ssh_targets WHERE user_machine_id=$1`, canonicalMachineID).Scan(&targetMachineID, &targetGeneration, &targetUser, &targetPort, &targetVersion); err != nil {
+		t.Fatal(err)
+	}
+	if targetMachineID != canonicalMachineID || targetGeneration != 1 || targetUser != cfg.Fly.HostedSSHUser || targetPort != cfg.Fly.HostedSSHPort || targetVersion != 1 {
+		t.Fatalf("hosted SSH target = machine %q generation %d user %q port %d version %d", targetMachineID, targetGeneration, targetUser, targetPort, targetVersion)
+	}
 	if err := service.provisionProject(ctx, project.ID); err != nil {
 		t.Fatal(err)
 	}
 	if len(fakeFly.Volumes) != 1 || len(fakeFly.Machines) != 1 {
 		t.Fatalf("idempotent reprovision duplicated resources: %d volumes, %d machines", len(fakeFly.Volumes), len(fakeFly.Machines))
+	}
+	if err := store.SQL().QueryRowContext(ctx, `SELECT reconciliation_version FROM paperboat.machine_ssh_targets WHERE user_machine_id=$1`, canonicalMachineID).Scan(&targetVersion); err != nil || targetVersion != 1 {
+		t.Fatalf("idempotent hosted SSH target version = %d, %v", targetVersion, err)
 	}
 }
 

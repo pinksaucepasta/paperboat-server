@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/auth"
+	"github.com/realclientip/realclientip-go"
 )
 
 func deviceAuthorize(service *auth.DeviceService, requestNetwork func(*http.Request) string) http.HandlerFunc {
@@ -226,39 +228,45 @@ func decodeStrictJSON(w http.ResponseWriter, r *http.Request, out any) bool {
 	return true
 }
 func newRequestNetwork(trustedCIDRs []string) func(*http.Request) string {
-	trusted := make([]*net.IPNet, 0, len(trustedCIDRs))
-	for _, raw := range trustedCIDRs {
-		if _, network, err := net.ParseCIDR(strings.TrimSpace(raw)); err == nil {
-			trusted = append(trusted, network)
-		}
-	}
+	trusted, _ := realclientip.AddressesAndRangesToIPNets(trustedCIDRs...)
+	forwarded := realclientip.Must(realclientip.NewRightmostTrustedRangeStrategy("X-Forwarded-For", trusted))
+	fly := realclientip.Must(realclientip.NewSingleIPHeaderStrategy("Fly-Client-IP"))
+	direct := realclientip.RemoteAddrStrategy{}
 	return func(r *http.Request) string {
-		direct := remoteIP(r.RemoteAddr)
-		if direct == nil || !ipInNetworks(direct, trusted) {
-			return ipString(direct, r.RemoteAddr)
+		peer := direct.ClientIP(nil, r.RemoteAddr)
+		peerIP := net.ParseIP(peer)
+		if peerIP == nil || !ipInNetworks(peerIP, trusted) {
+			stripForwardingHeaders(r.Header)
+			return peer
 		}
-		if flyIP := net.ParseIP(strings.TrimSpace(r.Header.Get("Fly-Client-IP"))); flyIP != nil {
-			return flyIP.String()
+		if client := fly.ClientIP(r.Header, r.RemoteAddr); client != "" {
+			return client
 		}
-		parts := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
-		for i := len(parts) - 1; i >= 0; i-- {
-			ip := net.ParseIP(strings.TrimSpace(parts[i]))
-			if ip != nil && !ipInNetworks(ip, trusted) {
-				return ip.String()
-			}
+		if client := forwarded.ClientIP(r.Header, r.RemoteAddr); client != "" {
+			return client
 		}
-		return ipString(direct, r.RemoteAddr)
+		stripForwardingHeaders(r.Header)
+		return peer
 	}
 }
-func remoteIP(address string) net.IP {
-	address = strings.TrimSpace(address)
-	host, _, err := net.SplitHostPort(address)
-	if err == nil {
-		return net.ParseIP(host)
-	}
-	return net.ParseIP(address)
+
+type requestNetworkContextKey struct{}
+
+func trustedClientNetwork(trustedCIDRs []string, next http.Handler) http.Handler {
+	resolve := newRequestNetwork(trustedCIDRs)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		network := resolve(r)
+		ctx := context.WithValue(r.Context(), requestNetworkContextKey{}, network)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
-func ipInNetworks(ip net.IP, networks []*net.IPNet) bool {
+
+func resolvedRequestNetwork(r *http.Request) string {
+	network, _ := r.Context().Value(requestNetworkContextKey{}).(string)
+	return network
+}
+
+func ipInNetworks(ip net.IP, networks []net.IPNet) bool {
 	for _, network := range networks {
 		if network.Contains(ip) {
 			return true
@@ -266,11 +274,11 @@ func ipInNetworks(ip net.IP, networks []*net.IPNet) bool {
 	}
 	return false
 }
-func ipString(ip net.IP, fallback string) string {
-	if ip != nil {
-		return ip.String()
+
+func stripForwardingHeaders(header http.Header) {
+	for _, name := range []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-IP", "Fly-Client-IP"} {
+		header.Del(name)
 	}
-	return strings.TrimSpace(fallback)
 }
 func queryInt(r *http.Request, name string, def int) (int, error) {
 	raw := r.URL.Query().Get(name)

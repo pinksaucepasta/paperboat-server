@@ -93,12 +93,26 @@ type CredentialInput struct {
 	UserID                 string
 	CLIClientSessionID     string
 	SessionID              string
+	OperationID            string
 	KeyThumbprint          string
 	ConnectorID            string
 	ConnectorGeneration    int64
 	InstallationGeneration int64
 	EdgePool               string
 	EdgeNodeID             string
+	RouteBinding           string
+	IntentID               string
+	EndpointID             string
+	PeerEndpointID         string
+	AttemptGeneration      int64
+	NetworkGeneration      int64
+	PeerRole               string
+	RouteAllocation        string
+	RouteGeneration        int64
+	InitiatorEndpointID    string
+	ResponderEndpointID    string
+	RelayByteLimit         int64
+	RelayCarriers          []string
 	FileTransferPolicy     *FileTransferPolicy
 }
 
@@ -134,12 +148,26 @@ type CredentialClaims struct {
 	UserID                 string              `json:"user_id,omitempty"`
 	CLIClientSessionID     string              `json:"cli_client_session_id,omitempty"`
 	SessionID              string              `json:"session_id,omitempty"`
+	OperationID            string              `json:"operation_id,omitempty"`
 	KeyThumbprint          string              `json:"key_thumbprint,omitempty"`
 	ConnectorGeneration    int64               `json:"connector_generation,omitempty"`
 	ConnectorID            string              `json:"connector_id,omitempty"`
 	InstallationGeneration int64               `json:"installation_generation,omitempty"`
 	EdgePool               string              `json:"edge_pool,omitempty"`
 	EdgeNodeID             string              `json:"edge_node_id,omitempty"`
+	RouteBinding           string              `json:"route_binding,omitempty"`
+	IntentID               string              `json:"intent_id,omitempty"`
+	EndpointID             string              `json:"endpoint_id,omitempty"`
+	PeerEndpointID         string              `json:"peer_endpoint_id,omitempty"`
+	AttemptGeneration      int64               `json:"attempt_generation,omitempty"`
+	NetworkGeneration      int64               `json:"network_generation,omitempty"`
+	PeerRole               string              `json:"peer_role,omitempty"`
+	RouteAllocation        string              `json:"route_allocation,omitempty"`
+	RouteGeneration        int64               `json:"route_generation,omitempty"`
+	InitiatorEndpointID    string              `json:"initiator_endpoint_id,omitempty"`
+	ResponderEndpointID    string              `json:"responder_endpoint_id,omitempty"`
+	RelayByteLimit         int64               `json:"relay_byte_limit,omitempty"`
+	RelayCarriers          []string            `json:"relay_carriers,omitempty"`
 	FileTransferPolicy     *FileTransferPolicy `json:"file_transfer_policy,omitempty"`
 }
 
@@ -153,8 +181,13 @@ var credentialPolicies = map[string]struct {
 	"machine_control":      {audience: "paperboat-control", scopes: []string{"machine:connect", "machine:renew"}, maxTTL: time.Hour},
 	"preview_registration": {audience: "paperboat-control", scopes: []string{"preview:register"}, maxTTL: 5 * time.Minute},
 	"connector_admission":  {audience: "paperboat-edge", scopes: []string{"connector:admit"}, maxTTL: 5 * time.Minute},
+	"peer_signaling":       {audience: "paperboat-edge", scopes: []string{"peer:signal"}, maxTTL: 5 * time.Minute},
+	"peer_relay":           {audience: "paperboat-edge", scopes: []string{"peer:relay"}, maxTTL: 5 * time.Minute},
+	"peer_pmtu":            {audience: "paperboat-edge", scopes: []string{"peer:pmtu"}, maxTTL: 5 * time.Minute},
 	"config_sync":          {audience: "paperboat-machine", scopes: []string{"config:pull", "config:apply", "config:report"}, maxTTL: 5 * time.Minute},
 	"terminal_operation":   {audience: "paperboat-machine", scopes: []string{"terminal:operate"}, maxTTL: 5 * time.Minute},
+	"exec_operation":       {audience: "paperboat-machine", scopes: []string{"exec:operate"}, maxTTL: 5 * time.Minute},
+	"ssh_operation":        {audience: "paperboat-machine", scopes: []string{"ssh:operate"}, maxTTL: 5 * time.Minute},
 	"preview_launch":       {audience: "paperboat-machine", scopes: []string{"preview:launch"}, maxTTL: 5 * time.Minute},
 	"file_transfer":        {audience: "paperboat-machine", scopes: []string{"file:transfer"}, maxTTL: 5 * time.Minute},
 	"codex_manage":         {audience: "paperboat-machine", scopes: []string{"codex:prepare", "codex:browse", "codex:renew", "codex:stop"}, maxTTL: 5 * time.Minute},
@@ -316,11 +349,31 @@ func (p *Provider) SignCredential(input CredentialInput) (string, error) {
 		if input.FileTransferPolicy == nil {
 			input.FileTransferPolicy = &DefaultFileTransferPolicy
 		}
-		if input.MachineID == "" || input.InstallationGeneration < 1 || input.ConnectorID == "" || input.ConnectorGeneration < 1 || input.EdgePool == "" || input.EdgeNodeID == "" {
+		binding, bindingErr := base64.RawURLEncoding.Strict().DecodeString(input.RouteBinding)
+		if input.MachineID == "" || input.InstallationGeneration < 1 || input.ConnectorID == "" || input.ConnectorGeneration < 1 || input.EdgePool == "" || input.EdgeNodeID == "" || bindingErr != nil || len(binding) != 32 || base64.RawURLEncoding.EncodeToString(binding) != input.RouteBinding {
 			return "", errors.New("connector admission bindings are required")
 		}
 		claims["machine_id"], claims["installation_generation"], claims["connector_id"], claims["connector_generation"], claims["edge_pool"], claims["edge_node_id"] = input.MachineID, input.InstallationGeneration, input.ConnectorID, input.ConnectorGeneration, input.EdgePool, input.EdgeNodeID
+		claims["route_binding"] = input.RouteBinding
 		claims["file_transfer_policy"] = input.FileTransferPolicy
+	case "peer_signaling":
+		if input.Subject != input.EndpointID || input.IntentID == "" || input.EndpointID == "" || input.PeerEndpointID == "" || input.EndpointID == input.PeerEndpointID || input.AttemptGeneration < 1 || input.NetworkGeneration < 1 || input.EdgeNodeID == "" || input.PeerRole != "controlling" && input.PeerRole != "controlled" {
+			return "", errors.New("peer signaling bindings are required")
+		}
+		claims["intent_id"], claims["endpoint_id"], claims["peer_endpoint_id"] = input.IntentID, input.EndpointID, input.PeerEndpointID
+		claims["attempt_generation"], claims["network_generation"], claims["peer_role"], claims["edge_node_id"] = input.AttemptGeneration, input.NetworkGeneration, input.PeerRole, input.EdgeNodeID
+	case "peer_relay", "peer_pmtu":
+		allocation, err := base64.RawURLEncoding.Strict().DecodeString(input.RouteAllocation)
+		validCarriers := input.CredentialClass == "peer_pmtu" && len(input.RelayCarriers) == 0 || input.CredentialClass == "peer_relay" && slices.Equal(input.RelayCarriers, []string{"relay_quic", "relay_wss"})
+		if err != nil || len(allocation) != 16 || base64.RawURLEncoding.EncodeToString(allocation) != input.RouteAllocation || input.Subject != input.IntentID || input.IntentID == "" || input.EdgeNodeID == "" || input.InitiatorEndpointID == "" || input.ResponderEndpointID == "" || input.InitiatorEndpointID == input.ResponderEndpointID || input.AttemptGeneration < 1 || input.NetworkGeneration < 1 || input.RouteGeneration < 1 || input.RelayByteLimit < 1 || input.RelayByteLimit > 1<<40 || !validCarriers {
+			return "", errors.New("peer relay bindings are required")
+		}
+		claims["intent_id"], claims["edge_node_id"], claims["route_allocation"] = input.IntentID, input.EdgeNodeID, input.RouteAllocation
+		claims["initiator_endpoint_id"], claims["responder_endpoint_id"] = input.InitiatorEndpointID, input.ResponderEndpointID
+		claims["attempt_generation"], claims["network_generation"], claims["route_generation"], claims["relay_byte_limit"] = input.AttemptGeneration, input.NetworkGeneration, input.RouteGeneration, input.RelayByteLimit
+		if input.CredentialClass == "peer_relay" {
+			claims["relay_carriers"] = input.RelayCarriers
+		}
 	case "config_sync":
 		if input.MachineID == "" || input.InstallationGeneration < 1 || input.AssignmentID == "" || input.WarningRevision == "" {
 			return "", errors.New("config sync bindings are required")
@@ -334,6 +387,16 @@ func (p *Provider) SignCredential(input CredentialInput) (string, error) {
 		if input.SourceMachineID != "" {
 			claims["source_machine_id"] = input.SourceMachineID
 		}
+	case "exec_operation":
+		if input.MachineID == "" || input.UserID == "" || input.CLIClientSessionID == "" || !validOperationID(input.OperationID) {
+			return "", errors.New("exec operation bindings are required")
+		}
+		claims["machine_id"], claims["user_id"], claims["cli_client_session_id"], claims["operation_id"] = input.MachineID, input.UserID, input.CLIClientSessionID, input.OperationID
+	case "ssh_operation":
+		if input.MachineID == "" || input.UserID == "" || input.CLIClientSessionID == "" || !validOperationID(input.OperationID) {
+			return "", errors.New("ssh operation bindings are required")
+		}
+		claims["machine_id"], claims["user_id"], claims["cli_client_session_id"], claims["operation_id"] = input.MachineID, input.UserID, input.CLIClientSessionID, input.OperationID
 	case "codex_manage", "codex_connect":
 		if input.MachineID == "" || input.UserID == "" || input.CLIClientSessionID == "" || input.SessionID == "" || input.InstallationGeneration < 1 || input.ConnectorID == "" || input.ConnectorGeneration < 1 || input.EdgePool == "" || input.EdgeNodeID == "" {
 			return "", errors.New("codex session bindings are required")
@@ -446,7 +509,18 @@ func (p *Provider) verifyCredential(token, expectedIssuer, expectedClass string,
 			return CredentialClaims{}, errors.New("credential claims are invalid")
 		}
 	case "connector_admission":
-		if claims.MachineID == "" || claims.InstallationGeneration < 1 || claims.ConnectorID == "" || claims.ConnectorGeneration < 1 || claims.EdgePool == "" || claims.EdgeNodeID == "" {
+		binding, bindingErr := base64.RawURLEncoding.Strict().DecodeString(claims.RouteBinding)
+		if claims.MachineID == "" || claims.InstallationGeneration < 1 || claims.ConnectorID == "" || claims.ConnectorGeneration < 1 || claims.EdgePool == "" || claims.EdgeNodeID == "" || bindingErr != nil || len(binding) != 32 || base64.RawURLEncoding.EncodeToString(binding) != claims.RouteBinding {
+			return CredentialClaims{}, errors.New("credential claims are invalid")
+		}
+	case "peer_signaling":
+		if claims.Subject != claims.EndpointID || claims.IntentID == "" || claims.EndpointID == "" || claims.PeerEndpointID == "" || claims.EndpointID == claims.PeerEndpointID || claims.AttemptGeneration < 1 || claims.NetworkGeneration < 1 || claims.EdgeNodeID == "" || claims.PeerRole != "controlling" && claims.PeerRole != "controlled" {
+			return CredentialClaims{}, errors.New("credential claims are invalid")
+		}
+	case "peer_relay", "peer_pmtu":
+		allocation, err := base64.RawURLEncoding.Strict().DecodeString(claims.RouteAllocation)
+		validCarriers := claims.CredentialClass == "peer_pmtu" && len(claims.RelayCarriers) == 0 || claims.CredentialClass == "peer_relay" && slices.Equal(claims.RelayCarriers, []string{"relay_quic", "relay_wss"})
+		if err != nil || len(allocation) != 16 || base64.RawURLEncoding.EncodeToString(allocation) != claims.RouteAllocation || claims.Subject != claims.IntentID || claims.IntentID == "" || claims.EdgeNodeID == "" || claims.InitiatorEndpointID == "" || claims.ResponderEndpointID == "" || claims.InitiatorEndpointID == claims.ResponderEndpointID || claims.AttemptGeneration < 1 || claims.NetworkGeneration < 1 || claims.RouteGeneration < 1 || claims.RelayByteLimit < 1 || claims.RelayByteLimit > 1<<40 || !validCarriers {
 			return CredentialClaims{}, errors.New("credential claims are invalid")
 		}
 	case "config_sync":
@@ -455,6 +529,14 @@ func (p *Provider) verifyCredential(token, expectedIssuer, expectedClass string,
 		}
 	case "terminal_operation":
 		if claims.MachineID == "" || claims.UserID == "" || claims.CLIClientSessionID == "" || claims.SessionID == "" {
+			return CredentialClaims{}, errors.New("credential claims are invalid")
+		}
+	case "exec_operation":
+		if claims.MachineID == "" || claims.UserID == "" || claims.CLIClientSessionID == "" || !validOperationID(claims.OperationID) {
+			return CredentialClaims{}, errors.New("credential claims are invalid")
+		}
+	case "ssh_operation":
+		if claims.MachineID == "" || claims.UserID == "" || claims.CLIClientSessionID == "" || !validOperationID(claims.OperationID) {
 			return CredentialClaims{}, errors.New("credential claims are invalid")
 		}
 	case "codex_manage", "codex_connect":
@@ -471,6 +553,18 @@ func (p *Provider) verifyCredential(token, expectedIssuer, expectedClass string,
 		}
 	}
 	return claims, nil
+}
+
+func validOperationID(value string) bool {
+	if len(value) < 8 || len(value) > 128 {
+		return false
+	}
+	for _, r := range value {
+		if r != '-' && r != '_' && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 func strictCredentialJSON(data []byte, target any) error {

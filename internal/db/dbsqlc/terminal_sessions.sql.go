@@ -21,11 +21,11 @@ type CloseTerminalSessionParams struct {
 }
 
 func (q *Queries) CloseTerminalSession(ctx context.Context, arg CloseTerminalSessionParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, closeTerminalSession, arg.ProjectID, arg.ID)
+	result, err := q.db.Exec(ctx, closeTerminalSession, arg.ProjectID, arg.ID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const countActiveTerminalSessions = `-- name: CountActiveTerminalSessions :one
@@ -33,7 +33,7 @@ SELECT count(*)::integer FROM project_terminal_sessions WHERE project_id=$1 AND 
 `
 
 func (q *Queries) CountActiveTerminalSessions(ctx context.Context, projectID string) (int32, error) {
-	row := q.db.QueryRowContext(ctx, countActiveTerminalSessions, projectID)
+	row := q.db.QueryRow(ctx, countActiveTerminalSessions, projectID)
 	var column_1 int32
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -55,7 +55,7 @@ type CreateTerminalSessionParams struct {
 }
 
 func (q *Queries) CreateTerminalSession(ctx context.Context, arg CreateTerminalSessionParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, createTerminalSession,
+	result, err := q.db.Exec(ctx, createTerminalSession,
 		arg.ID,
 		arg.ProjectID,
 		arg.TerminalID,
@@ -66,7 +66,7 @@ func (q *Queries) CreateTerminalSession(ctx context.Context, arg CreateTerminalS
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const deleteTerminalSession = `-- name: DeleteTerminalSession :execrows
@@ -80,11 +80,11 @@ type DeleteTerminalSessionParams struct {
 }
 
 func (q *Queries) DeleteTerminalSession(ctx context.Context, arg DeleteTerminalSessionParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, deleteTerminalSession, arg.ProjectID, arg.ID)
+	result, err := q.db.Exec(ctx, deleteTerminalSession, arg.ProjectID, arg.ID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const getActiveTerminalSession = `-- name: GetActiveTerminalSession :one
@@ -98,7 +98,7 @@ type GetActiveTerminalSessionParams struct {
 }
 
 func (q *Queries) GetActiveTerminalSession(ctx context.Context, arg GetActiveTerminalSessionParams) (ProjectTerminalSession, error) {
-	row := q.db.QueryRowContext(ctx, getActiveTerminalSession, arg.ProjectID, arg.ID)
+	row := q.db.QueryRow(ctx, getActiveTerminalSession, arg.ProjectID, arg.ID)
 	var i ProjectTerminalSession
 	err := row.Scan(
 		&i.ID,
@@ -136,7 +136,7 @@ type GetProjectTerminalSessionForUserParams struct {
 }
 
 func (q *Queries) GetProjectTerminalSessionForUser(ctx context.Context, arg GetProjectTerminalSessionForUserParams) (ProjectTerminalSession, error) {
-	row := q.db.QueryRowContext(ctx, getProjectTerminalSessionForUser, arg.ID, arg.UserID)
+	row := q.db.QueryRow(ctx, getProjectTerminalSessionForUser, arg.ID, arg.UserID)
 	var i ProjectTerminalSession
 	err := row.Scan(
 		&i.ID,
@@ -173,7 +173,7 @@ type GetTerminalSessionByIdempotencyKeyParams struct {
 }
 
 func (q *Queries) GetTerminalSessionByIdempotencyKey(ctx context.Context, arg GetTerminalSessionByIdempotencyKeyParams) (ProjectTerminalSession, error) {
-	row := q.db.QueryRowContext(ctx, getTerminalSessionByIdempotencyKey, arg.ProjectID, arg.IdempotencyKey)
+	row := q.db.QueryRow(ctx, getTerminalSessionByIdempotencyKey, arg.ProjectID, arg.IdempotencyKey)
 	var i ProjectTerminalSession
 	err := row.Scan(
 		&i.ID,
@@ -204,7 +204,7 @@ SELECT user_id FROM projects WHERE id=$1 AND state<>'deleted'
 `
 
 func (q *Queries) GetTerminalSessionProjectOwner(ctx context.Context, projectID string) (string, error) {
-	row := q.db.QueryRowContext(ctx, getTerminalSessionProjectOwner, projectID)
+	row := q.db.QueryRow(ctx, getTerminalSessionProjectOwner, projectID)
 	var user_id string
 	err := row.Scan(&user_id)
 	return user_id, err
@@ -217,7 +217,7 @@ ORDER BY is_default DESC, last_activity_at DESC NULLS LAST, name
 `
 
 func (q *Queries) ListActiveTerminalSessions(ctx context.Context, projectID string) ([]ProjectTerminalSession, error) {
-	rows, err := q.db.QueryContext(ctx, listActiveTerminalSessions, projectID)
+	rows, err := q.db.Query(ctx, listActiveTerminalSessions, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -250,9 +250,6 @@ func (q *Queries) ListActiveTerminalSessions(ctx context.Context, projectID stri
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -280,7 +277,7 @@ type ListDueTerminalSessionOperationsRow struct {
 }
 
 func (q *Queries) ListDueTerminalSessionOperations(ctx context.Context, batchSize int32) ([]ListDueTerminalSessionOperationsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listDueTerminalSessionOperations, batchSize)
+	rows, err := q.db.Query(ctx, listDueTerminalSessionOperations, batchSize)
 	if err != nil {
 		return nil, err
 	}
@@ -301,9 +298,6 @@ func (q *Queries) ListDueTerminalSessionOperations(ctx context.Context, batchSiz
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -337,7 +331,7 @@ type ListPendingTerminalSessionOperationsForProjectRow struct {
 }
 
 func (q *Queries) ListPendingTerminalSessionOperationsForProject(ctx context.Context, arg ListPendingTerminalSessionOperationsForProjectParams) ([]ListPendingTerminalSessionOperationsForProjectRow, error) {
-	rows, err := q.db.QueryContext(ctx, listPendingTerminalSessionOperationsForProject, arg.ProjectID, arg.BatchSize)
+	rows, err := q.db.Query(ctx, listPendingTerminalSessionOperationsForProject, arg.ProjectID, arg.BatchSize)
 	if err != nil {
 		return nil, err
 	}
@@ -359,9 +353,6 @@ func (q *Queries) ListPendingTerminalSessionOperationsForProject(ctx context.Con
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -374,7 +365,7 @@ WHERE id=$1 RETURNING id
 `
 
 func (q *Queries) LockProjectTerminalSessions(ctx context.Context, projectID string) (string, error) {
-	row := q.db.QueryRowContext(ctx, lockProjectTerminalSessions, projectID)
+	row := q.db.QueryRow(ctx, lockProjectTerminalSessions, projectID)
 	var id string
 	err := row.Scan(&id)
 	return id, err
@@ -386,7 +377,7 @@ WHERE id=$1 AND state='pending'
 `
 
 func (q *Queries) MarkTerminalSessionOperationApplied(ctx context.Context, id string) error {
-	_, err := q.db.ExecContext(ctx, markTerminalSessionOperationApplied, id)
+	_, err := q.db.Exec(ctx, markTerminalSessionOperationApplied, id)
 	return err
 }
 
@@ -397,7 +388,7 @@ WHERE id=$1
 `
 
 func (q *Queries) MarkTerminalSessionRuntimeClosed(ctx context.Context, id string) error {
-	_, err := q.db.ExecContext(ctx, markTerminalSessionRuntimeClosed, id)
+	_, err := q.db.Exec(ctx, markTerminalSessionRuntimeClosed, id)
 	return err
 }
 
@@ -406,7 +397,7 @@ SELECT coalesce(max(auto_name_ordinal),0)::integer+1 FROM project_terminal_sessi
 `
 
 func (q *Queries) NextTerminalSessionOrdinal(ctx context.Context, projectID string) (int32, error) {
-	row := q.db.QueryRowContext(ctx, nextTerminalSessionOrdinal, projectID)
+	row := q.db.QueryRow(ctx, nextTerminalSessionOrdinal, projectID)
 	var column_1 int32
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -426,7 +417,7 @@ type QueueTerminalSessionOperationParams struct {
 }
 
 func (q *Queries) QueueTerminalSessionOperation(ctx context.Context, arg QueueTerminalSessionOperationParams) error {
-	_, err := q.db.ExecContext(ctx, queueTerminalSessionOperation,
+	_, err := q.db.Exec(ctx, queueTerminalSessionOperation,
 		arg.ID,
 		arg.ProjectID,
 		arg.TerminalSessionID,
@@ -447,11 +438,11 @@ type RenameTerminalSessionParams struct {
 }
 
 func (q *Queries) RenameTerminalSession(ctx context.Context, arg RenameTerminalSessionParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, renameTerminalSession, arg.Name, arg.ProjectID, arg.ID)
+	result, err := q.db.Exec(ctx, renameTerminalSession, arg.Name, arg.ProjectID, arg.ID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const reopenTerminalSession = `-- name: ReopenTerminalSession :exec
@@ -465,7 +456,7 @@ type ReopenTerminalSessionParams struct {
 }
 
 func (q *Queries) ReopenTerminalSession(ctx context.Context, arg ReopenTerminalSessionParams) error {
-	_, err := q.db.ExecContext(ctx, reopenTerminalSession, arg.ProjectID, arg.ID)
+	_, err := q.db.Exec(ctx, reopenTerminalSession, arg.ProjectID, arg.ID)
 	return err
 }
 
@@ -481,7 +472,7 @@ type RetryTerminalSessionOperationParams struct {
 }
 
 func (q *Queries) RetryTerminalSessionOperation(ctx context.Context, arg RetryTerminalSessionOperationParams) error {
-	_, err := q.db.ExecContext(ctx, retryTerminalSessionOperation, arg.RetrySeconds, arg.LastError, arg.ID)
+	_, err := q.db.Exec(ctx, retryTerminalSessionOperation, arg.RetrySeconds, arg.LastError, arg.ID)
 	return err
 }
 
@@ -497,7 +488,7 @@ LIMIT 1 FOR UPDATE
 `
 
 func (q *Queries) SelectTerminalSessionForEviction(ctx context.Context, projectID string) (ProjectTerminalSession, error) {
-	row := q.db.QueryRowContext(ctx, selectTerminalSessionForEviction, projectID)
+	row := q.db.QueryRow(ctx, selectTerminalSessionForEviction, projectID)
 	var i ProjectTerminalSession
 	err := row.Scan(
 		&i.ID,
@@ -530,7 +521,7 @@ WHERE project_id=$1 AND state='pending'
 `
 
 func (q *Queries) SupersedeProjectTerminalSessionOperations(ctx context.Context, projectID string) error {
-	_, err := q.db.ExecContext(ctx, supersedeProjectTerminalSessionOperations, projectID)
+	_, err := q.db.Exec(ctx, supersedeProjectTerminalSessionOperations, projectID)
 	return err
 }
 
@@ -547,7 +538,7 @@ type TerminalSessionOperationPendingParams struct {
 }
 
 func (q *Queries) TerminalSessionOperationPending(ctx context.Context, arg TerminalSessionOperationPendingParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, terminalSessionOperationPending, arg.ProjectID, arg.TerminalSessionID)
+	row := q.db.QueryRow(ctx, terminalSessionOperationPending, arg.ProjectID, arg.TerminalSessionID)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
@@ -560,7 +551,7 @@ WHERE project_id=$1 AND deleted_at IS NULL
 `
 
 func (q *Queries) TombstoneProjectTerminalSessions(ctx context.Context, projectID string) error {
-	_, err := q.db.ExecContext(ctx, tombstoneProjectTerminalSessions, projectID)
+	_, err := q.db.Exec(ctx, tombstoneProjectTerminalSessions, projectID)
 	return err
 }
 
@@ -584,7 +575,7 @@ type UpdateTerminalSessionRuntimeParams struct {
 }
 
 func (q *Queries) UpdateTerminalSessionRuntime(ctx context.Context, arg UpdateTerminalSessionRuntimeParams) error {
-	_, err := q.db.ExecContext(ctx, updateTerminalSessionRuntime,
+	_, err := q.db.Exec(ctx, updateTerminalSessionRuntime,
 		arg.RuntimeState,
 		arg.LaunchCwd,
 		arg.LastActivityAt,

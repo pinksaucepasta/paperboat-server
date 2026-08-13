@@ -6,7 +6,6 @@ package dbsqlc
 
 import (
 	"database/sql"
-	"encoding/json"
 	"time"
 )
 
@@ -16,7 +15,7 @@ type AccessSession struct {
 	ProjectID               string
 	SessionType             string
 	State                   string
-	Descriptor              json.RawMessage
+	Descriptor              []byte
 	ExpiresAt               time.Time
 	RevokedAt               sql.NullTime
 	IdempotencyKey          string
@@ -30,6 +29,16 @@ type AccessSession struct {
 	HttpBaseUrl             string
 }
 
+type AccountE2eeRoot struct {
+	UserID      string
+	PublicKey   []byte
+	Fingerprint []byte
+	Generation  int64
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	RevokedAt   sql.NullTime
+}
+
 type AuditEvent struct {
 	ID             string
 	ActorUserID    sql.NullString
@@ -38,7 +47,7 @@ type AuditEvent struct {
 	ResourceType   string
 	ResourceID     string
 	IdempotencyKey sql.NullString
-	Metadata       json.RawMessage
+	Metadata       []byte
 	CreatedAt      time.Time
 }
 
@@ -178,7 +187,7 @@ type ConnectionEvent struct {
 	AccessSessionID sql.NullString
 	Result          string
 	FailureReason   string
-	Metadata        json.RawMessage
+	Metadata        []byte
 	CreatedAt       time.Time
 }
 
@@ -309,7 +318,7 @@ type ControlConfigRepositoryMigrationReview struct {
 	SourceID     string
 	RepositoryID sql.NullString
 	Reason       string
-	Details      json.RawMessage
+	Details      []byte
 	ReviewedAt   sql.NullTime
 	CreatedAt    time.Time
 }
@@ -320,7 +329,7 @@ type ControlConfigSyncMigrationReview struct {
 	MachineID     string
 	EnvironmentID sql.NullString
 	Reason        string
-	Details       json.RawMessage
+	Details       []byte
 	ReviewedAt    sql.NullTime
 	CreatedAt     time.Time
 }
@@ -345,10 +354,10 @@ type ControlConfigSyncStatus struct {
 	LastPublishedRevision  sql.NullString
 	LeaseID                sql.NullString
 	FencingToken           sql.NullInt64
-	Skipped                json.RawMessage
-	Conflicts              json.RawMessage
+	Skipped                []byte
+	Conflicts              []byte
 	ErrorCode              sql.NullString
-	RecoveryActions        json.RawMessage
+	RecoveryActions        []byte
 	LastAttemptAt          sql.NullTime
 	LastSuccessfulAt       sql.NullTime
 	MachineUpdatedAt       time.Time
@@ -435,7 +444,7 @@ type ControlOperation struct {
 	OperationType  string
 	RequestHash    []byte
 	State          string
-	Result         json.RawMessage
+	Result         []byte
 	LastError      sql.NullString
 	Attempts       int32
 	NextAttemptAt  sql.NullTime
@@ -485,7 +494,7 @@ type ControlPreviewOperation struct {
 	OperationType string
 	RequestHash   []byte
 	PreviewID     sql.NullString
-	Result        json.RawMessage
+	Result        []byte
 	CreatedAt     time.Time
 }
 
@@ -525,7 +534,7 @@ type ControlRouteOperation struct {
 	RequestHash    []byte
 	RouteID        string
 	ResultRevision sql.NullInt64
-	Result         json.RawMessage
+	Result         []byte
 	CreatedAt      time.Time
 }
 
@@ -554,13 +563,16 @@ type ControlTunnelNode struct {
 	EndpointQuicPort sql.NullInt32
 	State            string
 	Ready            bool
-	Capacity         json.RawMessage
-	Observation      json.RawMessage
+	Capacity         []byte
+	Observation      []byte
 	LastHeartbeatAt  sql.NullTime
 	DrainDeadline    sql.NullTime
 	Version          int64
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
+	SignalingHost    sql.NullString
+	StunHost         sql.NullString
+	StunPort         sql.NullInt32
 }
 
 type ControlUsageCounter struct {
@@ -638,7 +650,7 @@ type CreditLedgerEntry struct {
 	SourceType     string
 	SourceID       string
 	IdempotencyKey string
-	Metadata       json.RawMessage
+	Metadata       []byte
 	CreatedAt      time.Time
 }
 
@@ -664,11 +676,30 @@ type DeviceGrant struct {
 	Version             int64
 }
 
+type DiagnosticUploadIntent struct {
+	ID                 string
+	UserID             string
+	CLIClientSessionID string
+	OperationKey       string
+	RequestHash        []byte
+	CorrelationID      string
+	ObjectKey          string
+	ExpectedBytes      int64
+	Sha256             []byte
+	Categories         []string
+	State              string
+	ExpiresAt          time.Time
+	RetainUntil        time.Time
+	CreatedAt          time.Time
+	UploadedAt         sql.NullTime
+	ObjectEtag         sql.NullString
+}
+
 type FeatureFlag struct {
 	ID        string
 	Code      string
 	Enabled   bool
-	Config    json.RawMessage
+	Config    []byte
 	Version   int64
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -802,7 +833,7 @@ type HostedReadinessObservation struct {
 	Stage              string
 	State              string
 	Reason             string
-	Evidence           json.RawMessage
+	Evidence           []byte
 	ObservedAt         time.Time
 	CreatedAt          time.Time
 }
@@ -834,6 +865,45 @@ type MachineRuntimeInterval struct {
 	UpdatedAt            time.Time
 }
 
+type MachineSshHostKey struct {
+	SetID         string
+	UserMachineID string
+	Fingerprint   []byte
+	Ordinal       int16
+}
+
+type MachineSshHostKeyOwner struct {
+	Fingerprint     []byte
+	UserMachineID   string
+	Algorithm       string
+	PublicKey       string
+	FirstObservedAt time.Time
+}
+
+type MachineSshHostKeySet struct {
+	ID                    string
+	UserMachineID         string
+	MachineGeneration     int64
+	ObservationGeneration int64
+	SetFingerprint        []byte
+	State                 string
+	ReconciliationVersion int64
+	ObservedAt            time.Time
+	PromotedAt            sql.NullTime
+	RejectedAt            sql.NullTime
+	RejectionReason       sql.NullString
+}
+
+type MachineSshTarget struct {
+	UserMachineID         string
+	MachineGeneration     int64
+	OsUser                string
+	TargetPort            int32
+	ReconciliationVersion int64
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+}
+
 type MachineType struct {
 	ID                 string
 	Code               string
@@ -856,8 +926,31 @@ type MachineTypeVersion struct {
 	Vcpu          int32
 	MemoryMb      int32
 	CreditWeight  string
-	Metadata      json.RawMessage
+	Metadata      []byte
 	CreatedAt     time.Time
+}
+
+type ManagedSshClientKey struct {
+	Fingerprint           []byte
+	UserID                string
+	CLIClientSessionID    string
+	Algorithm             string
+	PublicKey             string
+	State                 string
+	ReconciliationVersion int64
+	CreatedAt             time.Time
+	RevokedAt             sql.NullTime
+	RevocationReason      sql.NullString
+}
+
+type ManagedSshOperation struct {
+	OperationID    string
+	UserID         string
+	OperationKind  string
+	RequestHash    []byte
+	ResourceID     string
+	ResultRevision int64
+	CreatedAt      time.Time
 }
 
 type MeteringCheckpoint struct {
@@ -886,13 +979,134 @@ type OrchestrationJob struct {
 	State          string
 	Attempts       int32
 	NextRunAt      time.Time
-	Payload        json.RawMessage
+	Payload        []byte
 	LastError      string
 	Version        int64
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 	LeaseToken     string
 	LeaseExpiresAt sql.NullTime
+}
+
+type PeerEndpointCertificate struct {
+	Fingerprint      []byte
+	UserID           string
+	EndpointID       string
+	Role             string
+	Generation       int64
+	Serial           int64
+	Certificate      []byte
+	NoisePublicKey   []byte
+	QuicPublicKey    []byte
+	IssuedAt         time.Time
+	ExpiresAt        time.Time
+	CreatedAt        time.Time
+	RevokedAt        sql.NullTime
+	RevocationReason sql.NullString
+}
+
+type PeerEndpointCertificateOperation struct {
+	OperationID            string
+	UserID                 string
+	RequestHash            []byte
+	CertificateFingerprint []byte
+	CreatedAt              time.Time
+}
+
+type PeerEndpointCertificateRevocation struct {
+	OperationID            string
+	UserID                 string
+	CertificateFingerprint []byte
+	Serial                 int64
+	Reason                 string
+	CreatedAt              time.Time
+}
+
+type PeerEndpointEnrollmentRequest struct {
+	ID                     string
+	OperationKey           string
+	RequestHash            []byte
+	UserID                 string
+	EndpointID             string
+	Generation             int64
+	NoisePublicKey         []byte
+	QuicPublicKey          []byte
+	State                  string
+	CertificateFingerprint []byte
+	CreatedAt              time.Time
+	ExpiresAt              time.Time
+	FulfilledAt            sql.NullTime
+}
+
+type PeerRelayAllocation struct {
+	IntentID        string
+	RouteAllocation []byte
+	Jti             string
+	RouteGeneration int64
+	ByteLimit       int64
+	IssuedAt        time.Time
+	ExpiresAt       time.Time
+	RevokedAt       sql.NullTime
+}
+
+type PeerRelaySelectionState struct {
+	UserID                   string
+	MachineID                string
+	NetworkGeneration        int64
+	HostWorkerGeneration     int64
+	CurrentRegion            sql.NullString
+	ClientGeneration         int64
+	ClientObservedAt         sql.NullTime
+	CandidateRegion          sql.NullString
+	CandidateFirstObservedAt sql.NullTime
+	CandidateLastObservedAt  sql.NullTime
+	CandidateSamples         int32
+	UpdatedAt                time.Time
+}
+
+type PeerSessionIntent struct {
+	ID                                string
+	OperationKey                      string
+	RequestHash                       []byte
+	UserID                            string
+	CLIClientSessionID                string
+	EnvironmentID                     string
+	Purpose                           string
+	EdgeNodeID                        string
+	ControllingCertificateFingerprint []byte
+	ControlledCertificateFingerprint  []byte
+	AttemptGeneration                 int64
+	NetworkGeneration                 int64
+	State                             string
+	ExpiresAt                         time.Time
+	RevokedAt                         sql.NullTime
+	RevocationReason                  sql.NullString
+	CreatedAt                         time.Time
+	IceCredentialsCiphertext          []byte
+	EdgePool                          sql.NullString
+	SignalingHost                     sql.NullString
+	StunHost                          sql.NullString
+	StunPort                          sql.NullInt32
+	ControlledDeliveredAt             sql.NullTime
+}
+
+type PeerSessionRevocationOperation struct {
+	OperationKey string
+	IntentID     string
+	ActorUserID  sql.NullString
+	Reason       string
+	CreatedAt    time.Time
+}
+
+type PeerSignalingGrant struct {
+	IntentID       string
+	Role           string
+	EndpointID     string
+	PeerEndpointID string
+	Jti            string
+	IssuedAt       time.Time
+	ExpiresAt      time.Time
+	RevokedAt      sql.NullTime
 }
 
 type Plan struct {
@@ -912,7 +1126,7 @@ type PlanVersion struct {
 	VersionNumber     int32
 	IncludedCredits   string
 	IncludedStorageGb int32
-	Metadata          json.RawMessage
+	Metadata          []byte
 	CreatedAt         time.Time
 }
 
@@ -921,7 +1135,7 @@ type PolarEvent struct {
 	ProviderEventID string
 	EventType       string
 	ProcessedState  string
-	Payload         json.RawMessage
+	Payload         []byte
 	ProcessedAt     sql.NullTime
 	CreatedAt       time.Time
 }
@@ -965,7 +1179,7 @@ type ProjectEvent struct {
 	ProjectID string
 	EventType string
 	Message   string
-	Metadata  json.RawMessage
+	Metadata  []byte
 	CreatedAt time.Time
 }
 
@@ -974,7 +1188,7 @@ type ProjectRepository struct {
 	Provider      string
 	SourceUrl     string
 	DefaultBranch string
-	CloneMetadata json.RawMessage
+	CloneMetadata []byte
 	Version       int64
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
@@ -1048,7 +1262,7 @@ type ProviderEvent struct {
 	ProviderEventID string
 	EventType       string
 	ProcessedState  string
-	Payload         json.RawMessage
+	Payload         []byte
 	ProcessedAt     sql.NullTime
 	CreatedAt       time.Time
 }
@@ -1059,7 +1273,7 @@ type ProviderRoute struct {
 	TunnelID   string
 	ClientID   string
 	ResourceID string
-	Metadata   json.RawMessage
+	Metadata   []byte
 	Version    int64
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
@@ -1079,7 +1293,7 @@ type ReconciliationRun struct {
 	ID         string
 	Scope      string
 	State      string
-	Findings   json.RawMessage
+	Findings   []byte
 	StartedAt  time.Time
 	FinishedAt sql.NullTime
 }
@@ -1089,7 +1303,7 @@ type Region struct {
 	Code            string
 	Name            string
 	Enabled         bool
-	PlacementPolicy json.RawMessage
+	PlacementPolicy []byte
 	Version         int64
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
@@ -1127,7 +1341,7 @@ type StorageLedgerEntry struct {
 	SourceType     string
 	SourceID       string
 	IdempotencyKey string
-	Metadata       json.RawMessage
+	Metadata       []byte
 	CreatedAt      time.Time
 }
 
@@ -1206,7 +1420,7 @@ type UserMachine struct {
 	ProviderRouteClientID         sql.NullString
 	ProviderRouteHttpBaseUrl      sql.NullString
 	ProviderRouteWebsocketBaseUrl sql.NullString
-	RuntimeVersions               json.RawMessage
+	RuntimeVersions               []byte
 	EnrolledAt                    sql.NullTime
 	LastSeenAt                    sql.NullTime
 	RevokedAt                     sql.NullTime
@@ -1238,6 +1452,12 @@ type UserMachine struct {
 	SetupMode                     string
 	ConfiguredCapabilities        []string
 	ObservedCapabilities          []string
+	Alias                         string
+	UpdateHealth                  string
+	RelayLatencyWorkerGeneration  int64
+	RelayLatencyGeneration        int64
+	RelayLatencyObservedAt        sql.NullTime
+	RelayLatencyVector            []byte
 }
 
 type UserMachineAccessSession struct {
@@ -1267,7 +1487,7 @@ type UserMachineAvailabilityOperation struct {
 	ExpectedVersion  int64
 	ResultingVersion int64
 	Mode             string
-	Result           json.RawMessage
+	Result           []byte
 	CreatedAt        time.Time
 }
 
@@ -1339,7 +1559,7 @@ type UserMachinePairing struct {
 	Platform                     string
 	Architecture                 string
 	WorkspaceRoot                string
-	RuntimeVersions              json.RawMessage
+	RuntimeVersions              []byte
 	State                        string
 	ApprovedByUserID             sql.NullString
 	UserMachineID                sql.NullString
@@ -1414,6 +1634,6 @@ type VmPresetVersion struct {
 	ID            string
 	PresetID      string
 	VersionNumber int32
-	Manifest      json.RawMessage
+	Manifest      []byte
 	CreatedAt     time.Time
 }

@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "include": [
+    {
+      "name": "harness",
+      "platform": "linux",
+      "timeout_seconds": 300,
+      "run": "^(TestSplitDigestImageRequiresExactSHA256|TestRunIDsAndRolesAreBounded|TestClearingInactiveNetworkImpairmentIsNoop|TestBoundedLogsAndResourceValidators|TestConcurrentScopesOwnAndCleanOnlyTheirResources|TestNetworkFaultInjectionAffectsOwnedUDPAndRecovers)$"
+    },
+    {
+      "name": "transport",
+      "platform": "linux",
+      "timeout_seconds": 900,
+      "run": "^(TestRegionalRelaySelectionAuthorityAcrossPostgres|TestOwnedTunnelSTUNAcrossIsolatedContainers|TestAuthenticatedICEAndDirectQUICBypassTunnel|TestAuthenticatedNoiseRelayQUICAcrossEdge|TestAuthenticatedNoiseWSSAcrossEdge|TestAutoSelectsAuthenticatedNoiseRelayQUIC|TestAutoSelectsAuthenticatedNoiseWSSWhenUDPBlocked|TestHostPeerRelayServiceLifecycleAcrossWSS)$"
+    },
+    {
+      "name": "terminal-exec",
+      "platform": "linux",
+      "timeout_seconds": 1200,
+      "run": "^(TestPeerTerminalPingUsesProductionWSSConnector|TestPeerTerminalWorkflowUsesProductionWSSConnector|TestPeerTerminalCancellationUsesProductionWSSConnector|TestPeerTerminalCancellationUsesProductionRelayQUICConnector|TestPeerTerminalCancellationUsesProductionDirectQUICConnector|TestPeerTerminalWorkflowUsesProductionRelayQUICConnector|TestPeerTerminalWorkflowUsesProductionDirectQUICConnector|TestPeerExecUsesProductionWSSConnector|TestPeerExecUsesProductionRelayQUICConnector|TestPeerExecUsesProductionDirectQUICConnector)$"
+    },
+    {
+      "name": "ssh-codex-preview",
+      "platform": "linux",
+      "timeout_seconds": 1200,
+      "run": "^(TestPeerSSHUsesProductionWSSConnector|TestPeerSSHUsesProductionRelayQUICConnector|TestPeerSSHUsesProductionDirectQUICConnector|TestPeerCodexUsesProductionWSSConnector|TestPeerCodexUsesProductionRelayQUICConnector|TestPeerCodexUsesProductionDirectQUICConnector|TestPeerPrivatePreviewUsesProductionWSSConnector|TestPeerPrivatePreviewUsesProductionRelayQUICConnector|TestPeerPrivatePreviewUsesProductionDirectQUICConnector)$"
+    },
+    {
+      "name": "file-transfer",
+      "platform": "linux",
+      "timeout_seconds": 1200,
+      "run": "^(TestPeerFileTransferUsesProductionDirectQUICConnector|TestPeerFileTransferUsesProductionRelayHTTP3|TestPeerReverseFileTransferUsesProductionRelayHTTP3|TestPeerReverseFileTransferPromotesToProductionDirectQUIC|TestPeerReverseFileTransferFallsBackToProductionRelayHTTP2|TestPeerFileTransferFallsBackToProductionRelayHTTP2)$"
+    }
+  ]
+}

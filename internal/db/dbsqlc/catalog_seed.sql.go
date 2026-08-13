@@ -8,7 +8,6 @@ package dbsqlc
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 )
 
 const insertMachineType = `-- name: InsertMachineType :one
@@ -34,7 +33,7 @@ type InsertMachineTypeRow struct {
 }
 
 func (q *Queries) InsertMachineType(ctx context.Context, arg InsertMachineTypeParams) (InsertMachineTypeRow, error) {
-	row := q.db.QueryRowContext(ctx, insertMachineType,
+	row := q.db.QueryRow(ctx, insertMachineType,
 		arg.Code,
 		arg.Name,
 		arg.Vcpu,
@@ -60,11 +59,11 @@ type InsertMachineTypeVersionParams struct {
 	Vcpu          int32
 	MemoryMb      int32
 	CreditWeight  string
-	Metadata      json.RawMessage
+	Metadata      []byte
 }
 
 func (q *Queries) InsertMachineTypeVersion(ctx context.Context, arg InsertMachineTypeVersionParams) error {
-	_, err := q.db.ExecContext(ctx, insertMachineTypeVersion,
+	_, err := q.db.Exec(ctx, insertMachineTypeVersion,
 		arg.ID,
 		arg.MachineTypeID,
 		arg.VersionNumber,
@@ -95,7 +94,7 @@ type InsertPlanRow struct {
 }
 
 func (q *Queries) InsertPlan(ctx context.Context, arg InsertPlanParams) (InsertPlanRow, error) {
-	row := q.db.QueryRowContext(ctx, insertPlan, arg.Code, arg.Name, arg.Active)
+	row := q.db.QueryRow(ctx, insertPlan, arg.Code, arg.Name, arg.Active)
 	var i InsertPlanRow
 	err := row.Scan(&i.ID, &i.Inserted)
 	return i, err
@@ -112,11 +111,11 @@ type InsertPlanVersionParams struct {
 	VersionNumber     int32
 	IncludedCredits   string
 	IncludedStorageGb int32
-	Metadata          json.RawMessage
+	Metadata          []byte
 }
 
 func (q *Queries) InsertPlanVersion(ctx context.Context, arg InsertPlanVersionParams) error {
-	_, err := q.db.ExecContext(ctx, insertPlanVersion,
+	_, err := q.db.Exec(ctx, insertPlanVersion,
 		arg.ID,
 		arg.PlanID,
 		arg.VersionNumber,
@@ -147,7 +146,7 @@ type InsertPresetRow struct {
 }
 
 func (q *Queries) InsertPreset(ctx context.Context, arg InsertPresetParams) (InsertPresetRow, error) {
-	row := q.db.QueryRowContext(ctx, insertPreset,
+	row := q.db.QueryRow(ctx, insertPreset,
 		arg.Code,
 		arg.Name,
 		arg.Description,
@@ -167,11 +166,11 @@ type InsertPresetVersionParams struct {
 	ID            string
 	PresetID      string
 	VersionNumber int32
-	Manifest      json.RawMessage
+	Manifest      []byte
 }
 
 func (q *Queries) InsertPresetVersion(ctx context.Context, arg InsertPresetVersionParams) error {
-	_, err := q.db.ExecContext(ctx, insertPresetVersion,
+	_, err := q.db.Exec(ctx, insertPresetVersion,
 		arg.ID,
 		arg.PresetID,
 		arg.VersionNumber,
@@ -195,7 +194,7 @@ type LatestMachineTypeVersionRow struct {
 }
 
 func (q *Queries) LatestMachineTypeVersion(ctx context.Context, machineTypeID string) (LatestMachineTypeVersionRow, error) {
-	row := q.db.QueryRowContext(ctx, latestMachineTypeVersion, machineTypeID)
+	row := q.db.QueryRow(ctx, latestMachineTypeVersion, machineTypeID)
 	var i LatestMachineTypeVersionRow
 	err := row.Scan(
 		&i.ID,
@@ -222,7 +221,7 @@ type LatestPlanVersionRow struct {
 }
 
 func (q *Queries) LatestPlanVersion(ctx context.Context, planID string) (LatestPlanVersionRow, error) {
-	row := q.db.QueryRowContext(ctx, latestPlanVersion, planID)
+	row := q.db.QueryRow(ctx, latestPlanVersion, planID)
 	var i LatestPlanVersionRow
 	err := row.Scan(
 		&i.ID,
@@ -246,7 +245,7 @@ type LatestPresetVersionRow struct {
 }
 
 func (q *Queries) LatestPresetVersion(ctx context.Context, presetID string) (LatestPresetVersionRow, error) {
-	row := q.db.QueryRowContext(ctx, latestPresetVersion, presetID)
+	row := q.db.QueryRow(ctx, latestPresetVersion, presetID)
 	var i LatestPresetVersionRow
 	err := row.Scan(&i.ID, &i.VersionNumber, &i.Manifest)
 	return i, err
@@ -274,7 +273,7 @@ type UpdateMachineTypeParams struct {
 }
 
 func (q *Queries) UpdateMachineType(ctx context.Context, arg UpdateMachineTypeParams) error {
-	_, err := q.db.ExecContext(ctx, updateMachineType,
+	_, err := q.db.Exec(ctx, updateMachineType,
 		arg.Name,
 		arg.Vcpu,
 		arg.MemoryMb,
@@ -305,7 +304,7 @@ type UpdatePlanParams struct {
 }
 
 func (q *Queries) UpdatePlan(ctx context.Context, arg UpdatePlanParams) error {
-	_, err := q.db.ExecContext(ctx, updatePlan,
+	_, err := q.db.Exec(ctx, updatePlan,
 		arg.Name,
 		arg.Active,
 		arg.CurrentVersionID,
@@ -333,7 +332,7 @@ type UpdatePresetParams struct {
 }
 
 func (q *Queries) UpdatePreset(ctx context.Context, arg UpdatePresetParams) error {
-	_, err := q.db.ExecContext(ctx, updatePreset,
+	_, err := q.db.Exec(ctx, updatePreset,
 		arg.Name,
 		arg.Description,
 		arg.Active,
@@ -369,7 +368,7 @@ type UpsertBillingProductParams struct {
 }
 
 func (q *Queries) UpsertBillingProduct(ctx context.Context, arg UpsertBillingProductParams) error {
-	_, err := q.db.ExecContext(ctx, upsertBillingProduct,
+	_, err := q.db.Exec(ctx, upsertBillingProduct,
 		arg.Code,
 		arg.Provider,
 		arg.ProviderProductID,
@@ -396,11 +395,11 @@ type UpsertCatalogRegionParams struct {
 	Code            string
 	Name            string
 	Enabled         bool
-	PlacementPolicy json.RawMessage
+	PlacementPolicy []byte
 }
 
 func (q *Queries) UpsertCatalogRegion(ctx context.Context, arg UpsertCatalogRegionParams) error {
-	_, err := q.db.ExecContext(ctx, upsertCatalogRegion,
+	_, err := q.db.Exec(ctx, upsertCatalogRegion,
 		arg.Code,
 		arg.Name,
 		arg.Enabled,
@@ -422,10 +421,10 @@ ON CONFLICT (code) DO UPDATE SET
 type UpsertFeatureFlagParams struct {
 	Code    string
 	Enabled bool
-	Config  json.RawMessage
+	Config  []byte
 }
 
 func (q *Queries) UpsertFeatureFlag(ctx context.Context, arg UpsertFeatureFlagParams) error {
-	_, err := q.db.ExecContext(ctx, upsertFeatureFlag, arg.Code, arg.Enabled, arg.Config)
+	_, err := q.db.Exec(ctx, upsertFeatureFlag, arg.Code, arg.Enabled, arg.Config)
 	return err
 }

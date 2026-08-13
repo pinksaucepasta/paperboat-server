@@ -129,7 +129,7 @@ func TestCatalogRepositoryListsSeededCatalogs(t *testing.T) {
 	if err := catalog.Apply(ctx, store, seed); err != nil {
 		t.Fatal(err)
 	}
-	repo := catalog.NewRepository(store.SQL())
+	repo := catalog.NewRepository(store)
 	plans, err := repo.ListPlans(ctx)
 	if err != nil {
 		t.Fatal(err)

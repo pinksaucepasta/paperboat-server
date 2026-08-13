@@ -39,6 +39,7 @@ type AvailabilityPolicy struct {
 	HostServiceVersion string     `json:"host_service_version,omitempty"`
 	HostServiceScope   string     `json:"host_service_scope,omitempty"`
 	UpdateRollbacks    int64      `json:"update_rollbacks"`
+	UpdateHealth       string     `json:"update_health"`
 }
 
 type AvailabilityObservation struct {
@@ -51,6 +52,7 @@ type AvailabilityObservation struct {
 	HostServiceVersion string    `json:"host_service_version"`
 	HostServiceScope   string    `json:"host_service_scope"`
 	UpdateRollbacks    int64     `json:"update_rollbacks"`
+	UpdateHealth       string    `json:"update_health"`
 }
 
 type AvailabilityResolution struct {
@@ -137,7 +139,7 @@ func (s *Service) ResolveAvailabilityPolicy(ctx context.Context, helperID, envir
 }
 
 func (s *Service) RecordAvailabilityObservation(ctx context.Context, environmentID, userMachineID string, observation AvailabilityObservation) error {
-	if environmentID == "" || userMachineID == "" || observation.Schema != AvailabilityPolicySchemaV1 || !validAvailabilityMode(observation.Mode) || observation.Version < 0 || observation.UpdateRollbacks < 0 || !validAvailabilityStatus(observation.Status) || observation.ObservedAt.IsZero() || len(observation.HostServiceVersion) > 128 || observation.HostServiceVersion == "" || observation.HostServiceScope != "system" || (observation.ErrorCode != "" && !safeAvailabilityCode.MatchString(observation.ErrorCode)) || observation.Status == "applied" && observation.ErrorCode != "" || observation.Status != "applied" && observation.ErrorCode == "" {
+	if environmentID == "" || userMachineID == "" || observation.Schema != AvailabilityPolicySchemaV1 || !validAvailabilityMode(observation.Mode) || observation.Version < 0 || observation.UpdateRollbacks < 0 || !validUpdateHealth(observation.UpdateHealth) || !validAvailabilityStatus(observation.Status) || observation.ObservedAt.IsZero() || len(observation.HostServiceVersion) > 128 || observation.HostServiceVersion == "" || observation.HostServiceScope != "system" || (observation.ErrorCode != "" && !safeAvailabilityCode.MatchString(observation.ErrorCode)) || observation.Status == "applied" && observation.ErrorCode != "" || observation.Status != "applied" && observation.ErrorCode == "" {
 		return ErrAvailabilityInvalid
 	}
 	return s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
@@ -152,18 +154,14 @@ func (s *Service) RecordAvailabilityObservation(ctx context.Context, environment
 			return ErrAvailabilityObservationStale
 		}
 		if observation.Version == machine.AvailabilityObservedVersion && machine.AvailabilityObservedAt.Valid {
-			if machine.AvailabilityObservedMode.String == observation.Mode && machine.AvailabilityStatus == observation.Status && machine.AvailabilityErrorCode.String == observation.ErrorCode {
-				if observation.UpdateRollbacks < machine.HostUpdateRollbacks {
-					return ErrAvailabilityObservationStale
-				}
-				if observation.UpdateRollbacks == machine.HostUpdateRollbacks {
-					return nil
-				}
-			} else {
+			if machine.AvailabilityObservedMode.String != observation.Mode || observation.UpdateRollbacks < machine.HostUpdateRollbacks || observation.ObservedAt.Before(machine.AvailabilityObservedAt.Time) {
 				return ErrAvailabilityObservationStale
 			}
+			if machine.AvailabilityStatus == observation.Status && machine.AvailabilityErrorCode.String == observation.ErrorCode && machine.HostServiceVersion.String == observation.HostServiceVersion && machine.HostServiceScope.String == observation.HostServiceScope && machine.HostUpdateRollbacks == observation.UpdateRollbacks && machine.UpdateHealth == observation.UpdateHealth {
+				return nil
+			}
 		}
-		rows, err := tx.Queries().RecordUserMachineAvailabilityObservation(ctx, dbsqlc.RecordUserMachineAvailabilityObservationParams{ObservedMode: sql.NullString{String: observation.Mode, Valid: true}, ObservedVersion: observation.Version, ObservedAt: sql.NullTime{Time: observation.ObservedAt.UTC(), Valid: true}, Status: observation.Status, ErrorCode: observation.ErrorCode, HostServiceVersion: observation.HostServiceVersion, HostServiceScope: observation.HostServiceScope, UpdateRollbacks: observation.UpdateRollbacks, ID: userMachineID, EnvironmentID: environmentID})
+		rows, err := tx.Queries().RecordUserMachineAvailabilityObservation(ctx, dbsqlc.RecordUserMachineAvailabilityObservationParams{ObservedMode: sql.NullString{String: observation.Mode, Valid: true}, ObservedVersion: observation.Version, ObservedAt: sql.NullTime{Time: observation.ObservedAt.UTC(), Valid: true}, Status: observation.Status, ErrorCode: observation.ErrorCode, HostServiceVersion: observation.HostServiceVersion, HostServiceScope: observation.HostServiceScope, UpdateRollbacks: observation.UpdateRollbacks, UpdateHealth: observation.UpdateHealth, ID: userMachineID, EnvironmentID: environmentID})
 		if err != nil {
 			return err
 		}
@@ -179,7 +177,7 @@ func mapAvailability(row dbsqlc.UserMachine) AvailabilityPolicy {
 	if !row.Online {
 		status = "offline"
 	}
-	result := AvailabilityPolicy{Schema: AvailabilityPolicySchemaV1, DesiredMode: row.AvailabilityMode, DesiredVersion: row.AvailabilityDesiredVersion, ObservedMode: row.AvailabilityObservedMode.String, ObservedVersion: row.AvailabilityObservedVersion, Status: status, ErrorCode: row.AvailabilityErrorCode.String, HostServiceVersion: row.HostServiceVersion.String, HostServiceScope: row.HostServiceScope.String, UpdateRollbacks: row.HostUpdateRollbacks}
+	result := AvailabilityPolicy{Schema: AvailabilityPolicySchemaV1, DesiredMode: row.AvailabilityMode, DesiredVersion: row.AvailabilityDesiredVersion, ObservedMode: row.AvailabilityObservedMode.String, ObservedVersion: row.AvailabilityObservedVersion, Status: status, ErrorCode: row.AvailabilityErrorCode.String, HostServiceVersion: row.HostServiceVersion.String, HostServiceScope: row.HostServiceScope.String, UpdateRollbacks: row.HostUpdateRollbacks, UpdateHealth: row.UpdateHealth}
 	if row.AvailabilityObservedAt.Valid {
 		value := row.AvailabilityObservedAt.Time
 		result.ObservedAt = &value
@@ -189,4 +187,7 @@ func mapAvailability(row dbsqlc.UserMachine) AvailabilityPolicy {
 func validAvailabilityMode(value string) bool { return value == "allow_sleep" || value == "keep_awake" }
 func validAvailabilityStatus(value string) bool {
 	return value == "applied" || value == "unsupported" || value == "error"
+}
+func validUpdateHealth(value string) bool {
+	return value == "healthy" || value == "recovery_required"
 }

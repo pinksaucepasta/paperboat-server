@@ -2,6 +2,9 @@ package github
 
 import (
 	"context"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"net/http"
 	"net/url"
@@ -9,7 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bradleyfalzon/ghinstallation/v2"
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 	gh "github.com/google/go-github/v88/github"
 )
 
@@ -68,12 +72,10 @@ type GitHubAppBrokerConfig struct {
 }
 
 type GitHubAppBroker struct {
-	baseURL       *url.URL
-	appID         int64
-	privateKeyPEM []byte
-	client        *http.Client
-	appsClient    *gh.Client
-	clock         func() time.Time
+	baseURL    *url.URL
+	client     *http.Client
+	appsClient *gh.Client
+	clock      func() time.Time
 }
 
 func NewGitHubAppBroker(config GitHubAppBrokerConfig) (*GitHubAppBroker, error) {
@@ -86,11 +88,15 @@ func NewGitHubAppBroker(config GitHubAppBrokerConfig) (*GitHubAppBroker, error) 
 	if config.Client == nil || config.Client.Timeout <= 0 {
 		return nil, ErrRepositoryAccessUnavailable
 	}
+	if config.Clock == nil {
+		config.Clock = func() time.Time { return time.Now().UTC() }
+	}
 	transport := config.Client.Transport
 	if transport == nil {
+		//paperboat:allow-source-policy default-http owner=github-adapter reason=base-transport-for-authenticated-installation-wrapper
 		transport = http.DefaultTransport
 	}
-	appsTransport, err := ghinstallation.NewAppsTransport(transport, appID, []byte(config.PrivateKeyPEM))
+	appsTransport, err := newGitHubAppTransport(transport, appID, []byte(config.PrivateKeyPEM), config.Clock)
 	if err != nil {
 		return nil, ErrRepositoryAccessUnavailable
 	}
@@ -99,13 +105,72 @@ func NewGitHubAppBroker(config GitHubAppBrokerConfig) (*GitHubAppBroker, error) 
 	if err != nil {
 		return nil, ErrRepositoryAccessUnavailable
 	}
-	if config.Clock == nil {
-		config.Clock = func() time.Time { return time.Now().UTC() }
-	}
 	return &GitHubAppBroker{
-		baseURL: base, appID: appID, privateKeyPEM: []byte(config.PrivateKeyPEM),
-		client: config.Client, appsClient: appsClient, clock: config.Clock,
+		baseURL: base, client: config.Client, appsClient: appsClient, clock: config.Clock,
 	}, nil
+}
+
+type githubAppTransport struct {
+	base   http.RoundTripper
+	appID  string
+	signer jose.Signer
+	clock  func() time.Time
+}
+
+func newGitHubAppTransport(base http.RoundTripper, appID int64, privateKeyPEM []byte, clock func() time.Time) (*githubAppTransport, error) {
+	if base == nil || appID < 1 || clock == nil {
+		return nil, ErrRepositoryAccessUnavailable
+	}
+	privateKey, err := parseGitHubAppPrivateKey(privateKeyPEM)
+	if err != nil || privateKey == nil || privateKey.N == nil || privateKey.N.BitLen() < 2048 || privateKey.Validate() != nil {
+		return nil, ErrRepositoryAccessUnavailable
+	}
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: privateKey}, (&jose.SignerOptions{}).WithType("JWT"))
+	if err != nil {
+		return nil, ErrRepositoryAccessUnavailable
+	}
+	return &githubAppTransport{base: base, appID: strconv.FormatInt(appID, 10), signer: signer, clock: clock}, nil
+}
+
+func (t *githubAppTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	if t == nil || request == nil || t.base == nil || t.signer == nil || t.clock == nil {
+		return nil, ErrRepositoryAccessUnavailable
+	}
+	issuedAt := t.clock().UTC().Add(-30 * time.Second).Truncate(time.Second)
+	token, err := jwt.Signed(t.signer).Claims(jwt.Claims{
+		Issuer:   t.appID,
+		IssuedAt: jwt.NewNumericDate(issuedAt),
+		Expiry:   jwt.NewNumericDate(issuedAt.Add(2 * time.Minute)),
+	}).Serialize()
+	if err != nil {
+		return nil, ErrRepositoryAccessUnavailable
+	}
+	clone := request.Clone(request.Context())
+	clone.Header = request.Header.Clone()
+	clone.Header.Set("Authorization", "Bearer "+token)
+	if clone.Header.Get("Accept") == "" {
+		clone.Header.Set("Accept", "application/vnd.github.v3+json")
+	}
+	return t.base.RoundTrip(clone)
+}
+
+func parseGitHubAppPrivateKey(value []byte) (*rsa.PrivateKey, error) {
+	block, rest := pem.Decode(value)
+	if block == nil || len(strings.TrimSpace(string(rest))) != 0 || block.Type != "RSA PRIVATE KEY" && block.Type != "PRIVATE KEY" {
+		return nil, ErrRepositoryAccessUnavailable
+	}
+	if block.Type == "RSA PRIVATE KEY" {
+		return x509.ParsePKCS1PrivateKey(block.Bytes)
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	privateKey, ok := parsed.(*rsa.PrivateKey)
+	if !ok {
+		return nil, ErrRepositoryAccessUnavailable
+	}
+	return privateKey, nil
 }
 
 func (b *GitHubAppBroker) ResolveInstallation(ctx context.Context, oauthToken, repositoryID string) (string, error) {

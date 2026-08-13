@@ -402,7 +402,7 @@ func TestConnectorAdmissionBindsProofGenerationNodeAndReplay(t *testing.T) {
 	edge.SetClock(func() time.Time { return now })
 	edge.SetCredentialIssuer(signer, "https://api.example.test", "admission-encryption-key")
 	admission, err := edge.IssueConnectorAdmission(ctx, identity.Credential, proof, body, "default", "POST", "/v1/connectors/admission")
-	if err != nil || admission.OperationID != "admission-operation-01" || admission.EdgePool != "default" || admission.ProtocolVersion != "1.0" || admission.EdgeNodeID != "node_"+suffix || admission.EdgeEndpoint.Port != 26023 || len(admission.Routes) != 1 || admission.Routes[0].RouteID != "route_admission_"+suffix {
+	if err != nil || admission.OperationID != "admission-operation-01" || admission.EdgePool != "default" || admission.ProtocolVersion != "1.0" || admission.EdgeNodeID != "node_"+suffix || admission.EdgeEndpoint.Port != 26023 || admission.RelayHTTPEndpoint != "https://signal.example.test" || len(admission.Routes) != 1 || admission.Routes[0].RouteID != "route_admission_"+suffix {
 		t.Fatalf("admission = %#v, %v", admission, err)
 	}
 	wire, err := json.Marshal(admission)
@@ -426,9 +426,38 @@ func TestConnectorAdmissionBindsProofGenerationNodeAndReplay(t *testing.T) {
 	nextClaims := HelperProofClaims{HelperID: identity.HelperID, EnvironmentID: environmentID, OperationID: "admission-operation-02", Method: "POST", Path: "/v1/connectors/admission", BodySHA256: base64.RawURLEncoding.EncodeToString(nextHash[:]), IssuedAt: next, ExpiresAt: next.Add(time.Minute)}
 	nextPayload, _ := json.Marshal(nextClaims)
 	nextProof, _ := json.Marshal(helperProofEnvelope{Algorithm: "EdDSA", Payload: base64.RawURLEncoding.EncodeToString(nextPayload), Signature: base64.RawURLEncoding.EncodeToString(ed25519.Sign(helperPrivate, nextPayload))})
-	renewed, err := edge.IssueConnectorAdmission(ctx, identity.Credential, nextProof, nextBody, "default", "POST", "/v1/connectors/admission")
-	if err != nil || renewed.OperationID != "admission-operation-02" || renewed.Credential == admission.Credential {
-		t.Fatalf("admission replacement = %#v, %v", renewed, err)
+	const concurrentRenewals = 16
+	renewals := make(chan ConnectorAdmission, concurrentRenewals)
+	renewalErrors := make(chan error, concurrentRenewals)
+	var renewalGroup sync.WaitGroup
+	for range concurrentRenewals {
+		renewalGroup.Add(1)
+		go func() {
+			defer renewalGroup.Done()
+			renewed, err := edge.IssueConnectorAdmission(ctx, identity.Credential, nextProof, nextBody, "default", "POST", "/v1/connectors/admission")
+			if err != nil {
+				renewalErrors <- err
+				return
+			}
+			renewals <- renewed
+		}()
+	}
+	renewalGroup.Wait()
+	close(renewals)
+	close(renewalErrors)
+	for err := range renewalErrors {
+		t.Errorf("concurrent admission replacement: %v", err)
+	}
+	var renewedCredential string
+	for renewed := range renewals {
+		if renewed.OperationID != "admission-operation-02" || renewed.Credential == admission.Credential {
+			t.Errorf("admission replacement = %#v", renewed)
+		}
+		if renewedCredential == "" {
+			renewedCredential = renewed.Credential
+		} else if renewedCredential != renewed.Credential {
+			t.Errorf("concurrent admission credentials differ")
+		}
 	}
 }
 

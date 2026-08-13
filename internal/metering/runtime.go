@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
@@ -259,6 +261,49 @@ type RuntimeObservation struct {
 	ConnectorGeneration   uint64
 	DiagnosticsObservedAt time.Time
 	Capabilities          []string
+	RelayLatency          *RelayLatencyVector
+}
+
+type RelayLatencySample struct {
+	Region string `json:"region"`
+	RTTMS  int64  `json:"rtt_ms"`
+}
+
+type RelayLatencyVector struct {
+	Generation         uint64               `json:"generation"`
+	ObservedAt         time.Time            `json:"observed_at"`
+	Samples            []RelayLatencySample `json:"samples"`
+	RelaySuccessRegion string               `json:"relay_success_region,omitempty"`
+	RelaySuccessAt     time.Time            `json:"relay_success_at,omitempty"`
+}
+
+func (v RelayLatencyVector) Valid(sampledAt time.Time) bool {
+	if v.Generation == 0 || v.ObservedAt.IsZero() || sampledAt.IsZero() || v.ObservedAt.After(sampledAt) || sampledAt.Sub(v.ObservedAt) > 5*time.Minute || len(v.Samples) == 0 || len(v.Samples) > 32 {
+		return false
+	}
+	seen := make(map[string]bool, len(v.Samples))
+	for _, sample := range v.Samples {
+		if !validRelayRegion(sample.Region) || sample.RTTMS < 1 || sample.RTTMS > 60_000 || seen[sample.Region] {
+			return false
+		}
+		seen[sample.Region] = true
+	}
+	if v.RelaySuccessRegion == "" != v.RelaySuccessAt.IsZero() || v.RelaySuccessRegion != "" && (!validRelayRegion(v.RelaySuccessRegion) || v.RelaySuccessAt.After(v.ObservedAt) || v.ObservedAt.Sub(v.RelaySuccessAt) > 30*time.Second) {
+		return false
+	}
+	return true
+}
+
+func validRelayRegion(value string) bool {
+	if value == "" || len(value) > 63 || strings.TrimSpace(value) != value {
+		return false
+	}
+	for _, r := range value {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+			return false
+		}
+	}
+	return value[0] != '-' && value[len(value)-1] != '-'
 }
 
 func runtimeIntervalFromOpenRow(row dbsqlc.GetOpenRuntimeIntervalRow) RuntimeInterval {
@@ -545,17 +590,21 @@ func (r *RuntimeRepository) RecordRuntimeObservation(ctx context.Context, observ
 					return err
 				}
 			}
+			if observation.RelayLatency != nil {
+				vector := *observation.RelayLatency
+				sort.Slice(vector.Samples, func(i, j int) bool { return vector.Samples[i].Region < vector.Samples[j].Region })
+				encoded, marshalErr := json.Marshal(vector)
+				if marshalErr != nil {
+					return marshalErr
+				}
+				if _, err = tx.Queries().RecordUserMachineRelayLatencyVector(ctx, dbsqlc.RecordUserMachineRelayLatencyVectorParams{ID: observation.MachineID, EnvironmentID: observation.ProjectID, WorkerGeneration: int64(observation.WorkerGeneration), VectorGeneration: int64(vector.Generation), ObservedAt: sql.NullTime{Time: vector.ObservedAt.UTC(), Valid: true}, Vector: encoded}); err != nil {
+					return err
+				}
+			}
 			return nil
 		}
 		return nil
 	})
-}
-
-func nullableTime(value *time.Time) sql.NullTime {
-	if value == nil {
-		return sql.NullTime{}
-	}
-	return sql.NullTime{Time: value.UTC(), Valid: true}
 }
 
 func (r *RuntimeRepository) VerifyHeartbeatCredential(ctx context.Context, projectID, machineID, token string) error {
@@ -596,9 +645,7 @@ func queueSystemStopTx(ctx context.Context, tx *db.Tx, projectID, reason string,
 	}
 	payload := fmt.Sprintf(`{"previous_state":"running","reason":%q}`, reason)
 	key := "project.stop." + reason + ":" + projectID
-	jobID := newID("job")
-	insertedID, err := q.InsertEnforcementStopJob(ctx, dbsqlc.InsertEnforcementStopJobParams{ID: jobID, ProjectID: projectID, IdempotencyKey: key, Payload: json.RawMessage(payload)})
-	jobID = insertedID
+	_, err := q.InsertEnforcementStopJob(ctx, dbsqlc.InsertEnforcementStopJobParams{ID: newID("job"), ProjectID: projectID, IdempotencyKey: key, Payload: json.RawMessage(payload)})
 	inserted := err == nil
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {

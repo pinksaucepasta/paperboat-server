@@ -8,7 +8,6 @@ package dbsqlc
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"time"
 )
 
@@ -23,7 +22,7 @@ type AdvanceRuntimeIntervalMeteringParams struct {
 }
 
 func (q *Queries) AdvanceRuntimeIntervalMetering(ctx context.Context, arg AdvanceRuntimeIntervalMeteringParams) error {
-	_, err := q.db.ExecContext(ctx, advanceRuntimeIntervalMetering, arg.ID, arg.LastMeteredAt, arg.LastMeteredAt_2)
+	_, err := q.db.Exec(ctx, advanceRuntimeIntervalMetering, arg.ID, arg.LastMeteredAt, arg.LastMeteredAt_2)
 	return err
 }
 
@@ -37,7 +36,7 @@ type CalculateRuntimeCreditsParams struct {
 }
 
 func (q *Queries) CalculateRuntimeCredits(ctx context.Context, arg CalculateRuntimeCreditsParams) (string, error) {
-	row := q.db.QueryRowContext(ctx, calculateRuntimeCredits, arg.RuntimeSeconds, arg.CreditWeight)
+	row := q.db.QueryRow(ctx, calculateRuntimeCredits, arg.RuntimeSeconds, arg.CreditWeight)
 	var column_1 string
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -57,7 +56,7 @@ type CloseRuntimeIntervalParams struct {
 }
 
 func (q *Queries) CloseRuntimeInterval(ctx context.Context, arg CloseRuntimeIntervalParams) error {
-	_, err := q.db.ExecContext(ctx, closeRuntimeInterval,
+	_, err := q.db.Exec(ctx, closeRuntimeInterval,
 		arg.ProjectID,
 		arg.StoppedAt,
 		arg.ObservedState,
@@ -78,7 +77,7 @@ type GetHeartbeatMachineTokenCiphertextParams struct {
 }
 
 func (q *Queries) GetHeartbeatMachineTokenCiphertext(ctx context.Context, arg GetHeartbeatMachineTokenCiphertextParams) (string, error) {
-	row := q.db.QueryRowContext(ctx, getHeartbeatMachineTokenCiphertext, arg.ProjectID, arg.FlyMachineID)
+	row := q.db.QueryRow(ctx, getHeartbeatMachineTokenCiphertext, arg.ProjectID, arg.FlyMachineID)
 	var machine_token_ciphertext string
 	err := row.Scan(&machine_token_ciphertext)
 	return machine_token_ciphertext, err
@@ -89,7 +88,7 @@ SELECT period_end FROM metering_checkpoints WHERE runtime_interval_id=$1 ORDER B
 `
 
 func (q *Queries) GetLatestCheckpointEnd(ctx context.Context, runtimeIntervalID string) (time.Time, error) {
-	row := q.db.QueryRowContext(ctx, getLatestCheckpointEnd, runtimeIntervalID)
+	row := q.db.QueryRow(ctx, getLatestCheckpointEnd, runtimeIntervalID)
 	var period_end time.Time
 	err := row.Scan(&period_end)
 	return period_end, err
@@ -113,7 +112,7 @@ type GetOpenRuntimeIntervalRow struct {
 }
 
 func (q *Queries) GetOpenRuntimeInterval(ctx context.Context, projectID string) (GetOpenRuntimeIntervalRow, error) {
-	row := q.db.QueryRowContext(ctx, getOpenRuntimeInterval, projectID)
+	row := q.db.QueryRow(ctx, getOpenRuntimeInterval, projectID)
 	var i GetOpenRuntimeIntervalRow
 	err := row.Scan(
 		&i.ID,
@@ -147,7 +146,7 @@ type GetOpenRuntimeIntervalForUpdateRow struct {
 }
 
 func (q *Queries) GetOpenRuntimeIntervalForUpdate(ctx context.Context, projectID string) (GetOpenRuntimeIntervalForUpdateRow, error) {
-	row := q.db.QueryRowContext(ctx, getOpenRuntimeIntervalForUpdate, projectID)
+	row := q.db.QueryRow(ctx, getOpenRuntimeIntervalForUpdate, projectID)
 	var i GetOpenRuntimeIntervalForUpdateRow
 	err := row.Scan(
 		&i.ID,
@@ -182,7 +181,7 @@ type GetPendingCheckpointForUpdateRow struct {
 }
 
 func (q *Queries) GetPendingCheckpointForUpdate(ctx context.Context, runtimeIntervalID string) (GetPendingCheckpointForUpdateRow, error) {
-	row := q.db.QueryRowContext(ctx, getPendingCheckpointForUpdate, runtimeIntervalID)
+	row := q.db.QueryRow(ctx, getPendingCheckpointForUpdate, runtimeIntervalID)
 	var i GetPendingCheckpointForUpdateRow
 	err := row.Scan(
 		&i.ID,
@@ -214,7 +213,7 @@ type GetRuntimeIntervalForCheckpointRow struct {
 }
 
 func (q *Queries) GetRuntimeIntervalForCheckpoint(ctx context.Context, id string) (GetRuntimeIntervalForCheckpointRow, error) {
-	row := q.db.QueryRowContext(ctx, getRuntimeIntervalForCheckpoint, id)
+	row := q.db.QueryRow(ctx, getRuntimeIntervalForCheckpoint, id)
 	var i GetRuntimeIntervalForCheckpointRow
 	err := row.Scan(
 		&i.ID,
@@ -242,7 +241,7 @@ type GetRuntimeIntervalForFinalCheckpointRow struct {
 }
 
 func (q *Queries) GetRuntimeIntervalForFinalCheckpoint(ctx context.Context, id string) (GetRuntimeIntervalForFinalCheckpointRow, error) {
-	row := q.db.QueryRowContext(ctx, getRuntimeIntervalForFinalCheckpoint, id)
+	row := q.db.QueryRow(ctx, getRuntimeIntervalForFinalCheckpoint, id)
 	var i GetRuntimeIntervalForFinalCheckpointRow
 	err := row.Scan(
 		&i.ID,
@@ -265,11 +264,11 @@ type InsertEnforcementStopJobParams struct {
 	ID             string
 	ProjectID      string
 	IdempotencyKey string
-	Payload        json.RawMessage
+	Payload        []byte
 }
 
 func (q *Queries) InsertEnforcementStopJob(ctx context.Context, arg InsertEnforcementStopJobParams) (string, error) {
-	row := q.db.QueryRowContext(ctx, insertEnforcementStopJob,
+	row := q.db.QueryRow(ctx, insertEnforcementStopJob,
 		arg.ID,
 		arg.ProjectID,
 		arg.IdempotencyKey,
@@ -300,7 +299,7 @@ type InsertMeteringCheckpointParams struct {
 }
 
 func (q *Queries) InsertMeteringCheckpoint(ctx context.Context, arg InsertMeteringCheckpointParams) error {
-	_, err := q.db.ExecContext(ctx, insertMeteringCheckpoint,
+	_, err := q.db.Exec(ctx, insertMeteringCheckpoint,
 		arg.ID,
 		arg.RuntimeIntervalID,
 		arg.ProjectID,
@@ -324,11 +323,11 @@ type InsertMeteringProjectEventParams struct {
 	ProjectID string
 	EventType string
 	Message   string
-	Metadata  json.RawMessage
+	Metadata  []byte
 }
 
 func (q *Queries) InsertMeteringProjectEvent(ctx context.Context, arg InsertMeteringProjectEventParams) error {
-	_, err := q.db.ExecContext(ctx, insertMeteringProjectEvent,
+	_, err := q.db.Exec(ctx, insertMeteringProjectEvent,
 		arg.ID,
 		arg.ProjectID,
 		arg.EventType,
@@ -354,7 +353,7 @@ type InsertRuntimeIntervalParams struct {
 }
 
 func (q *Queries) InsertRuntimeInterval(ctx context.Context, arg InsertRuntimeIntervalParams) error {
-	_, err := q.db.ExecContext(ctx, insertRuntimeInterval,
+	_, err := q.db.Exec(ctx, insertRuntimeInterval,
 		arg.ID,
 		arg.ProjectID,
 		arg.UserID,
@@ -379,7 +378,7 @@ type ListEntitlementLostProjectsForUpdateRow struct {
 }
 
 func (q *Queries) ListEntitlementLostProjectsForUpdate(ctx context.Context, now sql.NullTime) ([]ListEntitlementLostProjectsForUpdateRow, error) {
-	rows, err := q.db.QueryContext(ctx, listEntitlementLostProjectsForUpdate, now)
+	rows, err := q.db.Query(ctx, listEntitlementLostProjectsForUpdate, now)
 	if err != nil {
 		return nil, err
 	}
@@ -391,9 +390,6 @@ func (q *Queries) ListEntitlementLostProjectsForUpdate(ctx context.Context, now 
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -417,7 +413,7 @@ type ListMeterableMachinesRow struct {
 }
 
 func (q *Queries) ListMeterableMachines(ctx context.Context) ([]ListMeterableMachinesRow, error) {
-	rows, err := q.db.QueryContext(ctx, listMeterableMachines)
+	rows, err := q.db.Query(ctx, listMeterableMachines)
 	if err != nil {
 		return nil, err
 	}
@@ -435,9 +431,6 @@ func (q *Queries) ListMeterableMachines(ctx context.Context) ([]ListMeterableMac
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -464,7 +457,7 @@ type ListPendingMeteringCheckpointsRow struct {
 }
 
 func (q *Queries) ListPendingMeteringCheckpoints(ctx context.Context) ([]ListPendingMeteringCheckpointsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listPendingMeteringCheckpoints)
+	rows, err := q.db.Query(ctx, listPendingMeteringCheckpoints)
 	if err != nil {
 		return nil, err
 	}
@@ -488,9 +481,6 @@ func (q *Queries) ListPendingMeteringCheckpoints(ctx context.Context) ([]ListPen
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -507,7 +497,7 @@ type MarkMeteringCheckpointFailedParams struct {
 }
 
 func (q *Queries) MarkMeteringCheckpointFailed(ctx context.Context, arg MarkMeteringCheckpointFailedParams) error {
-	_, err := q.db.ExecContext(ctx, markMeteringCheckpointFailed, arg.ID, arg.LastError)
+	_, err := q.db.Exec(ctx, markMeteringCheckpointFailed, arg.ID, arg.LastError)
 	return err
 }
 
@@ -516,7 +506,7 @@ UPDATE metering_checkpoints SET state='processed',processed_at=now() WHERE id=$1
 `
 
 func (q *Queries) MarkMeteringCheckpointProcessed(ctx context.Context, id string) error {
-	_, err := q.db.ExecContext(ctx, markMeteringCheckpointProcessed, id)
+	_, err := q.db.Exec(ctx, markMeteringCheckpointProcessed, id)
 	return err
 }
 
@@ -525,7 +515,7 @@ UPDATE projects SET state='stopping',version=version+1,updated_at=now() WHERE id
 `
 
 func (q *Queries) MarkProjectStoppingForEnforcement(ctx context.Context, id string) error {
-	_, err := q.db.ExecContext(ctx, markProjectStoppingForEnforcement, id)
+	_, err := q.db.Exec(ctx, markProjectStoppingForEnforcement, id)
 	return err
 }
 
@@ -534,7 +524,7 @@ UPDATE machine_runtime_intervals SET observed_state='running',observation_source
 `
 
 func (q *Queries) MarkRuntimeIntervalRunning(ctx context.Context, id string) error {
-	_, err := q.db.ExecContext(ctx, markRuntimeIntervalRunning, id)
+	_, err := q.db.Exec(ctx, markRuntimeIntervalRunning, id)
 	return err
 }
 
@@ -543,12 +533,12 @@ UPDATE orchestration_jobs SET state='queued',next_run_at=now(),payload=$1::jsonb
 `
 
 type RequeueEnforcementStopJobParams struct {
-	Payload        json.RawMessage
+	Payload        []byte
 	IdempotencyKey string
 }
 
 func (q *Queries) RequeueEnforcementStopJob(ctx context.Context, arg RequeueEnforcementStopJobParams) error {
-	_, err := q.db.ExecContext(ctx, requeueEnforcementStopJob, arg.Payload, arg.IdempotencyKey)
+	_, err := q.db.Exec(ctx, requeueEnforcementStopJob, arg.Payload, arg.IdempotencyKey)
 	return err
 }
 
@@ -564,7 +554,7 @@ type RevokeProjectSessionsForEnforcementParams struct {
 }
 
 func (q *Queries) RevokeProjectSessionsForEnforcement(ctx context.Context, arg RevokeProjectSessionsForEnforcementParams) error {
-	_, err := q.db.ExecContext(ctx, revokeProjectSessionsForEnforcement, arg.Reason, arg.ProjectID)
+	_, err := q.db.Exec(ctx, revokeProjectSessionsForEnforcement, arg.Reason, arg.ProjectID)
 	return err
 }
 
@@ -578,7 +568,7 @@ type UpdateObservedFlyMachineStateParams struct {
 }
 
 func (q *Queries) UpdateObservedFlyMachineState(ctx context.Context, arg UpdateObservedFlyMachineStateParams) error {
-	_, err := q.db.ExecContext(ctx, updateObservedFlyMachineState, arg.ProjectID, arg.State)
+	_, err := q.db.Exec(ctx, updateObservedFlyMachineState, arg.ProjectID, arg.State)
 	return err
 }
 
@@ -593,6 +583,6 @@ type UpdateObservedProjectStateParams struct {
 }
 
 func (q *Queries) UpdateObservedProjectState(ctx context.Context, arg UpdateObservedProjectStateParams) error {
-	_, err := q.db.ExecContext(ctx, updateObservedProjectState, arg.ID, arg.State)
+	_, err := q.db.Exec(ctx, updateObservedProjectState, arg.ID, arg.State)
 	return err
 }

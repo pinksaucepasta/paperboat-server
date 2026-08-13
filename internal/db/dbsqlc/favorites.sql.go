@@ -14,7 +14,7 @@ SELECT count(*) FROM user_favorites WHERE user_id = $1
 `
 
 func (q *Queries) CountUserFavorites(ctx context.Context, userID string) (int64, error) {
-	row := q.db.QueryRowContext(ctx, countUserFavorites, userID)
+	row := q.db.QueryRow(ctx, countUserFavorites, userID)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -33,11 +33,11 @@ type CreateUserFavoriteParams struct {
 }
 
 func (q *Queries) CreateUserFavorite(ctx context.Context, arg CreateUserFavoriteParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, createUserFavorite, arg.UserID, arg.Kind, arg.ResourceID)
+	result, err := q.db.Exec(ctx, createUserFavorite, arg.UserID, arg.Kind, arg.ResourceID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const deleteUserFavorite = `-- name: DeleteUserFavorite :execrows
@@ -52,11 +52,11 @@ type DeleteUserFavoriteParams struct {
 }
 
 func (q *Queries) DeleteUserFavorite(ctx context.Context, arg DeleteUserFavoriteParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, deleteUserFavorite, arg.UserID, arg.Kind, arg.ResourceID)
+	result, err := q.db.Exec(ctx, deleteUserFavorite, arg.UserID, arg.Kind, arg.ResourceID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const listUserFavorites = `-- name: ListUserFavorites :many
@@ -65,7 +65,7 @@ WHERE user_id = $1 ORDER BY created_at, kind, resource_id
 `
 
 func (q *Queries) ListUserFavorites(ctx context.Context, userID string) ([]UserFavorite, error) {
-	rows, err := q.db.QueryContext(ctx, listUserFavorites, userID)
+	rows, err := q.db.Query(ctx, listUserFavorites, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -83,9 +83,6 @@ func (q *Queries) ListUserFavorites(ctx context.Context, userID string) ([]UserF
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -97,7 +94,7 @@ SELECT id FROM users WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) LockUserForFavorites(ctx context.Context, userID string) (string, error) {
-	row := q.db.QueryRowContext(ctx, lockUserForFavorites, userID)
+	row := q.db.QueryRow(ctx, lockUserForFavorites, userID)
 	var id string
 	err := row.Scan(&id)
 	return id, err
@@ -127,7 +124,7 @@ type UserOwnsFavoriteResourceParams struct {
 }
 
 func (q *Queries) UserOwnsFavoriteResource(ctx context.Context, arg UserOwnsFavoriteResourceParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, userOwnsFavoriteResource, arg.Kind, arg.OwnerUserID, arg.ResourceID)
+	row := q.db.QueryRow(ctx, userOwnsFavoriteResource, arg.Kind, arg.OwnerUserID, arg.ResourceID)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err

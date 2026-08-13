@@ -8,10 +8,7 @@ package dbsqlc
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"time"
-
-	"github.com/lib/pq"
 )
 
 const findProjectByIdempotencyKey = `-- name: FindProjectByIdempotencyKey :one
@@ -29,7 +26,7 @@ type FindProjectByIdempotencyKeyRow struct {
 }
 
 func (q *Queries) FindProjectByIdempotencyKey(ctx context.Context, arg FindProjectByIdempotencyKeyParams) (FindProjectByIdempotencyKeyRow, error) {
-	row := q.db.QueryRowContext(ctx, findProjectByIdempotencyKey, arg.UserID, arg.IdempotencyKey)
+	row := q.db.QueryRow(ctx, findProjectByIdempotencyKey, arg.UserID, arg.IdempotencyKey)
 	var i FindProjectByIdempotencyKeyRow
 	err := row.Scan(&i.ID, &i.CreateRequestHash)
 	return i, err
@@ -40,7 +37,7 @@ SELECT current_version_id FROM machine_types WHERE code=$1 AND active AND curren
 `
 
 func (q *Queries) GetActiveMachineTypeVersion(ctx context.Context, code string) (sql.NullString, error) {
-	row := q.db.QueryRowContext(ctx, getActiveMachineTypeVersion, code)
+	row := q.db.QueryRow(ctx, getActiveMachineTypeVersion, code)
 	var current_version_id sql.NullString
 	err := row.Scan(&current_version_id)
 	return current_version_id, err
@@ -51,7 +48,7 @@ SELECT current_version_id FROM vm_presets WHERE code=$1 AND active AND current_v
 `
 
 func (q *Queries) GetActivePresetVersion(ctx context.Context, code string) (sql.NullString, error) {
-	row := q.db.QueryRowContext(ctx, getActivePresetVersion, code)
+	row := q.db.QueryRow(ctx, getActivePresetVersion, code)
 	var current_version_id sql.NullString
 	err := row.Scan(&current_version_id)
 	return current_version_id, err
@@ -62,7 +59,7 @@ SELECT id FROM regions WHERE code=$1 AND enabled
 `
 
 func (q *Queries) GetEnabledRegionID(ctx context.Context, code string) (string, error) {
-	row := q.db.QueryRowContext(ctx, getEnabledRegionID, code)
+	row := q.db.QueryRow(ctx, getEnabledRegionID, code)
 	var id string
 	err := row.Scan(&id)
 	return id, err
@@ -78,7 +75,7 @@ type GetFreePlanStorageRow struct {
 }
 
 func (q *Queries) GetFreePlanStorage(ctx context.Context) (GetFreePlanStorageRow, error) {
-	row := q.db.QueryRowContext(ctx, getFreePlanStorage)
+	row := q.db.QueryRow(ctx, getFreePlanStorage)
 	var i GetFreePlanStorageRow
 	err := row.Scan(&i.ID, &i.IncludedStorageGb)
 	return i, err
@@ -96,7 +93,7 @@ type GetFreePlanStorageLedgerAmountParams struct {
 }
 
 func (q *Queries) GetFreePlanStorageLedgerAmount(ctx context.Context, arg GetFreePlanStorageLedgerAmountParams) (int32, error) {
-	row := q.db.QueryRowContext(ctx, getFreePlanStorageLedgerAmount, arg.IdempotencyKey, arg.AccountID, arg.PlanVersionID)
+	row := q.db.QueryRow(ctx, getFreePlanStorageLedgerAmount, arg.IdempotencyKey, arg.AccountID, arg.PlanVersionID)
 	var amount_gb int32
 	err := row.Scan(&amount_gb)
 	return amount_gb, err
@@ -156,7 +153,7 @@ type GetProjectRow struct {
 }
 
 func (q *Queries) GetProject(ctx context.Context, arg GetProjectParams) (GetProjectRow, error) {
-	row := q.db.QueryRowContext(ctx, getProject, arg.ID, arg.UserID)
+	row := q.db.QueryRow(ctx, getProject, arg.ID, arg.UserID)
 	var i GetProjectRow
 	err := row.Scan(
 		&i.ID,
@@ -201,7 +198,7 @@ type GetProjectStateForUpdateRow struct {
 }
 
 func (q *Queries) GetProjectStateForUpdate(ctx context.Context, arg GetProjectStateForUpdateParams) (GetProjectStateForUpdateRow, error) {
-	row := q.db.QueryRowContext(ctx, getProjectStateForUpdate, arg.ID, arg.UserID)
+	row := q.db.QueryRow(ctx, getProjectStateForUpdate, arg.ID, arg.UserID)
 	var i GetProjectStateForUpdateRow
 	err := row.Scan(&i.State, &i.Version)
 	return i, err
@@ -227,7 +224,7 @@ type GetProjectStorageAllocationForUpdateRow struct {
 }
 
 func (q *Queries) GetProjectStorageAllocationForUpdate(ctx context.Context, arg GetProjectStorageAllocationForUpdateParams) (GetProjectStorageAllocationForUpdateRow, error) {
-	row := q.db.QueryRowContext(ctx, getProjectStorageAllocationForUpdate, arg.ID, arg.UserID)
+	row := q.db.QueryRow(ctx, getProjectStorageAllocationForUpdate, arg.ID, arg.UserID)
 	var i GetProjectStorageAllocationForUpdateRow
 	err := row.Scan(
 		&i.StorageAccountID,
@@ -249,7 +246,7 @@ type GetProjectStorageForDeleteRow struct {
 }
 
 func (q *Queries) GetProjectStorageForDelete(ctx context.Context, projectID string) (GetProjectStorageForDeleteRow, error) {
-	row := q.db.QueryRowContext(ctx, getProjectStorageForDelete, projectID)
+	row := q.db.QueryRow(ctx, getProjectStorageForDelete, projectID)
 	var i GetProjectStorageForDeleteRow
 	err := row.Scan(&i.StorageAccountID, &i.AssignedGb)
 	return i, err
@@ -268,7 +265,7 @@ type GetProjectStorageLedgerAmountParams struct {
 }
 
 func (q *Queries) GetProjectStorageLedgerAmount(ctx context.Context, arg GetProjectStorageLedgerAmountParams) (int32, error) {
-	row := q.db.QueryRowContext(ctx, getProjectStorageLedgerAmount,
+	row := q.db.QueryRow(ctx, getProjectStorageLedgerAmount,
 		arg.IdempotencyKey,
 		arg.AccountID,
 		arg.ProjectID,
@@ -284,7 +281,7 @@ SELECT amount_gb FROM storage_ledger_entries WHERE idempotency_key=$1
 `
 
 func (q *Queries) GetStorageLedgerAmountByKey(ctx context.Context, idempotencyKey string) (int32, error) {
-	row := q.db.QueryRowContext(ctx, getStorageLedgerAmountByKey, idempotencyKey)
+	row := q.db.QueryRow(ctx, getStorageLedgerAmountByKey, idempotencyKey)
 	var amount_gb int32
 	err := row.Scan(&amount_gb)
 	return amount_gb, err
@@ -305,7 +302,7 @@ type HasProjectStartCreditsParams struct {
 }
 
 func (q *Queries) HasProjectStartCredits(ctx context.Context, arg HasProjectStartCreditsParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, hasProjectStartCredits,
+	row := q.db.QueryRow(ctx, hasProjectStartCredits,
 		arg.WindowSeconds,
 		arg.UseDesiredConfig,
 		arg.ProjectID,
@@ -330,7 +327,7 @@ type InsertFreePlanStorageLedgerParams struct {
 }
 
 func (q *Queries) InsertFreePlanStorageLedger(ctx context.Context, arg InsertFreePlanStorageLedgerParams) error {
-	_, err := q.db.ExecContext(ctx, insertFreePlanStorageLedger,
+	_, err := q.db.Exec(ctx, insertFreePlanStorageLedger,
 		arg.ID,
 		arg.AccountID,
 		arg.AmountGb,
@@ -353,7 +350,7 @@ type InsertProjectParams struct {
 }
 
 func (q *Queries) InsertProject(ctx context.Context, arg InsertProjectParams) error {
-	_, err := q.db.ExecContext(ctx, insertProject,
+	_, err := q.db.Exec(ctx, insertProject,
 		arg.ID,
 		arg.UserID,
 		arg.Name,
@@ -372,11 +369,11 @@ type InsertProjectCreateJobParams struct {
 	ID             string
 	AggregateID    string
 	IdempotencyKey string
-	Column4        json.RawMessage
+	Column4        []byte
 }
 
 func (q *Queries) InsertProjectCreateJob(ctx context.Context, arg InsertProjectCreateJobParams) error {
-	_, err := q.db.ExecContext(ctx, insertProjectCreateJob,
+	_, err := q.db.Exec(ctx, insertProjectCreateJob,
 		arg.ID,
 		arg.AggregateID,
 		arg.IdempotencyKey,
@@ -397,7 +394,7 @@ type InsertProjectDeleteJobParams struct {
 }
 
 func (q *Queries) InsertProjectDeleteJob(ctx context.Context, arg InsertProjectDeleteJobParams) error {
-	_, err := q.db.ExecContext(ctx, insertProjectDeleteJob, arg.ID, arg.AggregateID, arg.IdempotencyKey)
+	_, err := q.db.Exec(ctx, insertProjectDeleteJob, arg.ID, arg.AggregateID, arg.IdempotencyKey)
 	return err
 }
 
@@ -410,11 +407,11 @@ type InsertProjectEventParams struct {
 	ProjectID string
 	EventType string
 	Message   string
-	Metadata  json.RawMessage
+	Metadata  []byte
 }
 
 func (q *Queries) InsertProjectEvent(ctx context.Context, arg InsertProjectEventParams) error {
-	_, err := q.db.ExecContext(ctx, insertProjectEvent,
+	_, err := q.db.Exec(ctx, insertProjectEvent,
 		arg.ID,
 		arg.ProjectID,
 		arg.EventType,
@@ -435,7 +432,7 @@ type InsertProjectRepositoryParams struct {
 }
 
 func (q *Queries) InsertProjectRepository(ctx context.Context, arg InsertProjectRepositoryParams) error {
-	_, err := q.db.ExecContext(ctx, insertProjectRepository, arg.ProjectID, arg.SourceUrl, arg.DefaultBranch)
+	_, err := q.db.Exec(ctx, insertProjectRepository, arg.ProjectID, arg.SourceUrl, arg.DefaultBranch)
 	return err
 }
 
@@ -454,10 +451,10 @@ type InsertProjectRuntimeConfigParams struct {
 }
 
 func (q *Queries) InsertProjectRuntimeConfig(ctx context.Context, arg InsertProjectRuntimeConfigParams) error {
-	_, err := q.db.ExecContext(ctx, insertProjectRuntimeConfig,
+	_, err := q.db.Exec(ctx, insertProjectRuntimeConfig,
 		arg.ProjectID,
 		arg.MachineTypeVersionID,
-		pq.Array(arg.PresetVersionIds),
+		arg.PresetVersionIds,
 		arg.SetupScriptRef,
 		arg.RegionID,
 		arg.DesiredConfigHash,
@@ -481,7 +478,7 @@ type InsertProjectSetupScriptRevisionParams struct {
 }
 
 func (q *Queries) InsertProjectSetupScriptRevision(ctx context.Context, arg InsertProjectSetupScriptRevisionParams) error {
-	_, err := q.db.ExecContext(ctx, insertProjectSetupScriptRevision,
+	_, err := q.db.Exec(ctx, insertProjectSetupScriptRevision,
 		arg.ID,
 		arg.ProjectID,
 		arg.RevisionNumber,
@@ -504,7 +501,7 @@ type InsertProjectStorageAllocationParams struct {
 }
 
 func (q *Queries) InsertProjectStorageAllocation(ctx context.Context, arg InsertProjectStorageAllocationParams) error {
-	_, err := q.db.ExecContext(ctx, insertProjectStorageAllocation, arg.ProjectID, arg.StorageAccountID, arg.AssignedGb)
+	_, err := q.db.Exec(ctx, insertProjectStorageAllocation, arg.ProjectID, arg.StorageAccountID, arg.AssignedGb)
 	return err
 }
 
@@ -523,7 +520,7 @@ type InsertProjectStorageLedgerParams struct {
 }
 
 func (q *Queries) InsertProjectStorageLedger(ctx context.Context, arg InsertProjectStorageLedgerParams) error {
-	_, err := q.db.ExecContext(ctx, insertProjectStorageLedger,
+	_, err := q.db.Exec(ctx, insertProjectStorageLedger,
 		arg.ID,
 		arg.AccountID,
 		arg.EntryType,
@@ -542,12 +539,12 @@ type ListProjectEventsRow struct {
 	ID        string
 	EventType string
 	Message   string
-	Metadata  json.RawMessage
+	Metadata  []byte
 	CreatedAt time.Time
 }
 
 func (q *Queries) ListProjectEvents(ctx context.Context, projectID string) ([]ListProjectEventsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listProjectEvents, projectID)
+	rows, err := q.db.Query(ctx, listProjectEvents, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -566,9 +563,6 @@ func (q *Queries) ListProjectEvents(ctx context.Context, projectID string) ([]Li
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -580,7 +574,7 @@ SELECT id FROM projects WHERE user_id=$1 AND state<>'deleted' ORDER BY created_a
 `
 
 func (q *Queries) ListProjectIDs(ctx context.Context, userID string) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, listProjectIDs, userID)
+	rows, err := q.db.Query(ctx, listProjectIDs, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -593,9 +587,6 @@ func (q *Queries) ListProjectIDs(ctx context.Context, userID string) ([]string, 
 		}
 		items = append(items, id)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -607,7 +598,7 @@ UPDATE projects SET state='deleted',version=version+1,updated_at=now() WHERE id=
 `
 
 func (q *Queries) MarkProjectDeleted(ctx context.Context, id string) error {
-	_, err := q.db.ExecContext(ctx, markProjectDeleted, id)
+	_, err := q.db.Exec(ctx, markProjectDeleted, id)
 	return err
 }
 
@@ -621,11 +612,11 @@ type MarkProjectDeletingParams struct {
 }
 
 func (q *Queries) MarkProjectDeleting(ctx context.Context, arg MarkProjectDeletingParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, markProjectDeleting, arg.ID, arg.UserID)
+	result, err := q.db.Exec(ctx, markProjectDeleting, arg.ID, arg.UserID)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const markProjectProvisioningStorage = `-- name: MarkProjectProvisioningStorage :exec
@@ -638,7 +629,7 @@ type MarkProjectProvisioningStorageParams struct {
 }
 
 func (q *Queries) MarkProjectProvisioningStorage(ctx context.Context, arg MarkProjectProvisioningStorageParams) error {
-	_, err := q.db.ExecContext(ctx, markProjectProvisioningStorage, arg.ID, arg.UserID)
+	_, err := q.db.Exec(ctx, markProjectProvisioningStorage, arg.ID, arg.UserID)
 	return err
 }
 
@@ -647,7 +638,7 @@ SELECT coalesce(max(revision_number),0)::integer+1 FROM project_setup_script_rev
 `
 
 func (q *Queries) NextProjectSetupScriptRevision(ctx context.Context, projectID string) (int32, error) {
-	row := q.db.QueryRowContext(ctx, nextProjectSetupScriptRevision, projectID)
+	row := q.db.QueryRow(ctx, nextProjectSetupScriptRevision, projectID)
 	var column_1 int32
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -658,7 +649,7 @@ SELECT EXISTS (SELECT 1 FROM fly_volumes WHERE project_id=$1::text) OR EXISTS (S
 `
 
 func (q *Queries) ProjectHasProviderResources(ctx context.Context, projectID string) (sql.NullBool, error) {
-	row := q.db.QueryRowContext(ctx, projectHasProviderResources, projectID)
+	row := q.db.QueryRow(ctx, projectHasProviderResources, projectID)
 	var column_1 sql.NullBool
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -674,7 +665,7 @@ type SetProjectSetupScriptRefParams struct {
 }
 
 func (q *Queries) SetProjectSetupScriptRef(ctx context.Context, arg SetProjectSetupScriptRefParams) error {
-	_, err := q.db.ExecContext(ctx, setProjectSetupScriptRef, arg.ProjectID, arg.SetupScriptRef)
+	_, err := q.db.Exec(ctx, setProjectSetupScriptRef, arg.ProjectID, arg.SetupScriptRef)
 	return err
 }
 
@@ -684,7 +675,7 @@ WHERE aggregate_type='project' AND aggregate_id=$1 AND state='queued' AND job_ty
 `
 
 func (q *Queries) SupersedeQueuedProjectJobs(ctx context.Context, aggregateID string) error {
-	_, err := q.db.ExecContext(ctx, supersedeQueuedProjectJobs, aggregateID)
+	_, err := q.db.Exec(ctx, supersedeQueuedProjectJobs, aggregateID)
 	return err
 }
 
@@ -698,7 +689,7 @@ type TouchProjectVersionParams struct {
 }
 
 func (q *Queries) TouchProjectVersion(ctx context.Context, arg TouchProjectVersionParams) error {
-	_, err := q.db.ExecContext(ctx, touchProjectVersion, arg.ID, arg.UserID)
+	_, err := q.db.Exec(ctx, touchProjectVersion, arg.ID, arg.UserID)
 	return err
 }
 
@@ -714,7 +705,7 @@ type UpdateProjectAssignedStorageParams struct {
 }
 
 func (q *Queries) UpdateProjectAssignedStorage(ctx context.Context, arg UpdateProjectAssignedStorageParams) error {
-	_, err := q.db.ExecContext(ctx, updateProjectAssignedStorage, arg.AssignedGb, arg.ProjectID, arg.UserID)
+	_, err := q.db.Exec(ctx, updateProjectAssignedStorage, arg.AssignedGb, arg.ProjectID, arg.UserID)
 	return err
 }
 
@@ -735,9 +726,9 @@ type UpdateProjectDesiredRuntimeConfigParams struct {
 }
 
 func (q *Queries) UpdateProjectDesiredRuntimeConfig(ctx context.Context, arg UpdateProjectDesiredRuntimeConfigParams) error {
-	_, err := q.db.ExecContext(ctx, updateProjectDesiredRuntimeConfig,
+	_, err := q.db.Exec(ctx, updateProjectDesiredRuntimeConfig,
 		arg.MachineTypeVersionID,
-		pq.Array(arg.PresetVersionIds),
+		arg.PresetVersionIds,
 		arg.RegionID,
 		arg.DesiredConfigHash,
 		arg.ProjectID,
@@ -757,7 +748,7 @@ type UpdateProjectLifecycleStateParams struct {
 }
 
 func (q *Queries) UpdateProjectLifecycleState(ctx context.Context, arg UpdateProjectLifecycleStateParams) error {
-	_, err := q.db.ExecContext(ctx, updateProjectLifecycleState, arg.ID, arg.UserID, arg.State)
+	_, err := q.db.Exec(ctx, updateProjectLifecycleState, arg.ID, arg.UserID, arg.State)
 	return err
 }
 
@@ -772,11 +763,11 @@ type UpsertProjectLifecycleJobParams struct {
 	JobType        string
 	ProjectID      string
 	IdempotencyKey string
-	Payload        json.RawMessage
+	Payload        []byte
 }
 
 func (q *Queries) UpsertProjectLifecycleJob(ctx context.Context, arg UpsertProjectLifecycleJobParams) error {
-	_, err := q.db.ExecContext(ctx, upsertProjectLifecycleJob,
+	_, err := q.db.Exec(ctx, upsertProjectLifecycleJob,
 		arg.ID,
 		arg.JobType,
 		arg.ProjectID,

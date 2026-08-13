@@ -21,7 +21,7 @@ type AdvanceDeviceGrantPollParams struct {
 }
 
 func (q *Queries) AdvanceDeviceGrantPoll(ctx context.Context, arg AdvanceDeviceGrantPollParams) error {
-	_, err := q.db.ExecContext(ctx, advanceDeviceGrantPoll, arg.ID, arg.NextPollAt)
+	_, err := q.db.Exec(ctx, advanceDeviceGrantPoll, arg.ID, arg.NextPollAt)
 	return err
 }
 
@@ -36,7 +36,7 @@ type ApproveDeviceGrantParams struct {
 }
 
 func (q *Queries) ApproveDeviceGrant(ctx context.Context, arg ApproveDeviceGrantParams) error {
-	_, err := q.db.ExecContext(ctx, approveDeviceGrant, arg.ID, arg.UserID, arg.ApprovedAt)
+	_, err := q.db.Exec(ctx, approveDeviceGrant, arg.ID, arg.UserID, arg.ApprovedAt)
 	return err
 }
 
@@ -64,7 +64,7 @@ type AuthenticateClientAccessTokenRow struct {
 }
 
 func (q *Queries) AuthenticateClientAccessToken(ctx context.Context, arg AuthenticateClientAccessTokenParams) (AuthenticateClientAccessTokenRow, error) {
-	row := q.db.QueryRowContext(ctx, authenticateClientAccessToken, arg.TokenHashes, arg.Now)
+	row := q.db.QueryRow(ctx, authenticateClientAccessToken, arg.TokenHashes, arg.Now)
 	var i AuthenticateClientAccessTokenRow
 	err := row.Scan(
 		&i.ID,
@@ -90,11 +90,11 @@ type ConsumeDeviceGrantParams struct {
 }
 
 func (q *Queries) ConsumeDeviceGrant(ctx context.Context, arg ConsumeDeviceGrantParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, consumeDeviceGrant, arg.ID, arg.ConsumedAt)
+	result, err := q.db.Exec(ctx, consumeDeviceGrant, arg.ID, arg.ConsumedAt)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected()
+	return result.RowsAffected(), nil
 }
 
 const countClientSessions = `-- name: CountClientSessions :one
@@ -107,7 +107,7 @@ type CountClientSessionsParams struct {
 }
 
 func (q *Queries) CountClientSessions(ctx context.Context, arg CountClientSessionsParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, countClientSessions, arg.UserID, arg.StateFilter)
+	row := q.db.QueryRow(ctx, countClientSessions, arg.UserID, arg.StateFilter)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -125,7 +125,7 @@ type CreateClientAccessTokenParams struct {
 }
 
 func (q *Queries) CreateClientAccessToken(ctx context.Context, arg CreateClientAccessTokenParams) error {
-	_, err := q.db.ExecContext(ctx, createClientAccessToken,
+	_, err := q.db.Exec(ctx, createClientAccessToken,
 		arg.TokenHash,
 		arg.CLIClientSessionID,
 		arg.ExpiresAt,
@@ -146,7 +146,7 @@ type CreateClientRefreshTokenParams struct {
 }
 
 func (q *Queries) CreateClientRefreshToken(ctx context.Context, arg CreateClientRefreshTokenParams) error {
-	_, err := q.db.ExecContext(ctx, createClientRefreshToken,
+	_, err := q.db.Exec(ctx, createClientRefreshToken,
 		arg.TokenHash,
 		arg.CLIClientSessionID,
 		arg.ExpiresAt,
@@ -173,7 +173,7 @@ type CreateClientSessionParams struct {
 }
 
 func (q *Queries) CreateClientSession(ctx context.Context, arg CreateClientSessionParams) error {
-	_, err := q.db.ExecContext(ctx, createClientSession,
+	_, err := q.db.Exec(ctx, createClientSession,
 		arg.ID,
 		arg.UserID,
 		arg.ClientID,
@@ -209,7 +209,7 @@ type CreateDeviceGrantParams struct {
 }
 
 func (q *Queries) CreateDeviceGrant(ctx context.Context, arg CreateDeviceGrantParams) error {
-	_, err := q.db.ExecContext(ctx, createDeviceGrant,
+	_, err := q.db.Exec(ctx, createDeviceGrant,
 		arg.ID,
 		arg.ClientID,
 		arg.ClientLabel,
@@ -236,7 +236,7 @@ type DenyApprovedDeviceGrantParams struct {
 }
 
 func (q *Queries) DenyApprovedDeviceGrant(ctx context.Context, arg DenyApprovedDeviceGrantParams) error {
-	_, err := q.db.ExecContext(ctx, denyApprovedDeviceGrant, arg.ID, arg.DeniedAt)
+	_, err := q.db.Exec(ctx, denyApprovedDeviceGrant, arg.ID, arg.DeniedAt)
 	return err
 }
 
@@ -251,7 +251,7 @@ type DenyDeviceGrantParams struct {
 }
 
 func (q *Queries) DenyDeviceGrant(ctx context.Context, arg DenyDeviceGrantParams) error {
-	_, err := q.db.ExecContext(ctx, denyDeviceGrant, arg.ID, arg.UserID, arg.DeniedAt)
+	_, err := q.db.Exec(ctx, denyDeviceGrant, arg.ID, arg.UserID, arg.DeniedAt)
 	return err
 }
 
@@ -260,7 +260,7 @@ UPDATE device_grants SET state='expired',version=version+1 WHERE id=$1 AND state
 `
 
 func (q *Queries) ExpireDeviceGrant(ctx context.Context, id string) error {
-	_, err := q.db.ExecContext(ctx, expireDeviceGrant, id)
+	_, err := q.db.Exec(ctx, expireDeviceGrant, id)
 	return err
 }
 
@@ -269,7 +269,7 @@ UPDATE device_grants SET state='expired' WHERE id=$1 AND state IN ('pending','ap
 `
 
 func (q *Queries) ExpireDeviceGrantWithoutVersion(ctx context.Context, id string) error {
-	_, err := q.db.ExecContext(ctx, expireDeviceGrantWithoutVersion, id)
+	_, err := q.db.Exec(ctx, expireDeviceGrantWithoutVersion, id)
 	return err
 }
 
@@ -279,7 +279,7 @@ UNION SELECT cli_client_session_id FROM cli_refresh_tokens WHERE token_hash = AN
 `
 
 func (q *Queries) FindClientSessionByToken(ctx context.Context, stringToArray string) (string, error) {
-	row := q.db.QueryRowContext(ctx, findClientSessionByToken, stringToArray)
+	row := q.db.QueryRow(ctx, findClientSessionByToken, stringToArray)
 	var cli_client_session_id string
 	err := row.Scan(&cli_client_session_id)
 	return cli_client_session_id, err
@@ -300,7 +300,7 @@ type GetClientRefreshTokenForUpdateRow struct {
 }
 
 func (q *Queries) GetClientRefreshTokenForUpdate(ctx context.Context, stringToArray string) (GetClientRefreshTokenForUpdateRow, error) {
-	row := q.db.QueryRowContext(ctx, getClientRefreshTokenForUpdate, stringToArray)
+	row := q.db.QueryRow(ctx, getClientRefreshTokenForUpdate, stringToArray)
 	var i GetClientRefreshTokenForUpdateRow
 	err := row.Scan(
 		&i.CLIClientSessionID,
@@ -322,7 +322,7 @@ type GetClientSessionIdentityRow struct {
 }
 
 func (q *Queries) GetClientSessionIdentity(ctx context.Context, id string) (GetClientSessionIdentityRow, error) {
-	row := q.db.QueryRowContext(ctx, getClientSessionIdentity, id)
+	row := q.db.QueryRow(ctx, getClientSessionIdentity, id)
 	var i GetClientSessionIdentityRow
 	err := row.Scan(&i.UserID, &i.ClientID)
 	return i, err
@@ -333,7 +333,7 @@ SELECT user_id FROM cli_client_sessions WHERE id=$1 FOR UPDATE
 `
 
 func (q *Queries) GetClientSessionOwnerForUpdate(ctx context.Context, id string) (string, error) {
-	row := q.db.QueryRowContext(ctx, getClientSessionOwnerForUpdate, id)
+	row := q.db.QueryRow(ctx, getClientSessionOwnerForUpdate, id)
 	var user_id string
 	err := row.Scan(&user_id)
 	return user_id, err
@@ -344,7 +344,7 @@ SELECT approved_at FROM device_grants WHERE id=$1
 `
 
 func (q *Queries) GetDeviceGrantApprovedAt(ctx context.Context, id string) (sql.NullTime, error) {
-	row := q.db.QueryRowContext(ctx, getDeviceGrantApprovedAt, id)
+	row := q.db.QueryRow(ctx, getDeviceGrantApprovedAt, id)
 	var approved_at sql.NullTime
 	err := row.Scan(&approved_at)
 	return approved_at, err
@@ -365,7 +365,7 @@ type GetDeviceGrantForDecisionRow struct {
 }
 
 func (q *Queries) GetDeviceGrantForDecision(ctx context.Context, stringToArray string) (GetDeviceGrantForDecisionRow, error) {
-	row := q.db.QueryRowContext(ctx, getDeviceGrantForDecision, stringToArray)
+	row := q.db.QueryRow(ctx, getDeviceGrantForDecision, stringToArray)
 	var i GetDeviceGrantForDecisionRow
 	err := row.Scan(
 		&i.ID,
@@ -400,7 +400,7 @@ type GetDeviceGrantForPollRow struct {
 }
 
 func (q *Queries) GetDeviceGrantForPoll(ctx context.Context, stringToArray string) (GetDeviceGrantForPollRow, error) {
-	row := q.db.QueryRowContext(ctx, getDeviceGrantForPoll, stringToArray)
+	row := q.db.QueryRow(ctx, getDeviceGrantForPoll, stringToArray)
 	var i GetDeviceGrantForPollRow
 	err := row.Scan(
 		&i.ID,
@@ -437,7 +437,7 @@ type GetDeviceGrantRequestRow struct {
 }
 
 func (q *Queries) GetDeviceGrantRequest(ctx context.Context, stringToArray string) (GetDeviceGrantRequestRow, error) {
-	row := q.db.QueryRowContext(ctx, getDeviceGrantRequest, stringToArray)
+	row := q.db.QueryRow(ctx, getDeviceGrantRequest, stringToArray)
 	var i GetDeviceGrantRequestRow
 	err := row.Scan(
 		&i.ClientLabel,
@@ -457,7 +457,7 @@ SELECT status FROM users WHERE id=$1
 `
 
 func (q *Queries) GetUserStatus(ctx context.Context, id string) (string, error) {
-	row := q.db.QueryRowContext(ctx, getUserStatus, id)
+	row := q.db.QueryRow(ctx, getUserStatus, id)
 	var status string
 	err := row.Scan(&status)
 	return status, err
@@ -491,7 +491,7 @@ type ListClientSessionsRow struct {
 }
 
 func (q *Queries) ListClientSessions(ctx context.Context, arg ListClientSessionsParams) ([]ListClientSessionsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listClientSessions,
+	rows, err := q.db.Query(ctx, listClientSessions,
 		arg.UserID,
 		arg.StateFilter,
 		arg.RowOffset,
@@ -522,9 +522,6 @@ func (q *Queries) ListClientSessions(ctx context.Context, arg ListClientSessions
 		}
 		items = append(items, i)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -541,7 +538,7 @@ type MarkClientRefreshTokenRotatedParams struct {
 }
 
 func (q *Queries) MarkClientRefreshTokenRotated(ctx context.Context, arg MarkClientRefreshTokenRotatedParams) error {
-	_, err := q.db.ExecContext(ctx, markClientRefreshTokenRotated, arg.TokenHash, arg.RotatedAt)
+	_, err := q.db.Exec(ctx, markClientRefreshTokenRotated, arg.TokenHash, arg.RotatedAt)
 	return err
 }
 
@@ -555,7 +552,7 @@ type RevokeClientAccessTokensParams struct {
 }
 
 func (q *Queries) RevokeClientAccessTokens(ctx context.Context, arg RevokeClientAccessTokensParams) error {
-	_, err := q.db.ExecContext(ctx, revokeClientAccessTokens, arg.CLIClientSessionID, arg.RevokedAt)
+	_, err := q.db.Exec(ctx, revokeClientAccessTokens, arg.CLIClientSessionID, arg.RevokedAt)
 	return err
 }
 
@@ -569,7 +566,7 @@ type RevokeClientRefreshTokensParams struct {
 }
 
 func (q *Queries) RevokeClientRefreshTokens(ctx context.Context, arg RevokeClientRefreshTokensParams) error {
-	_, err := q.db.ExecContext(ctx, revokeClientRefreshTokens, arg.CLIClientSessionID, arg.RevokedAt)
+	_, err := q.db.Exec(ctx, revokeClientRefreshTokens, arg.CLIClientSessionID, arg.RevokedAt)
 	return err
 }
 
@@ -584,7 +581,7 @@ type RevokeClientSessionParams struct {
 }
 
 func (q *Queries) RevokeClientSession(ctx context.Context, arg RevokeClientSessionParams) error {
-	_, err := q.db.ExecContext(ctx, revokeClientSession, arg.ID, arg.RevokedAt, arg.RevocationReason)
+	_, err := q.db.Exec(ctx, revokeClientSession, arg.ID, arg.RevokedAt, arg.RevocationReason)
 	return err
 }
 
@@ -599,7 +596,7 @@ type SlowDeviceGrantPollParams struct {
 }
 
 func (q *Queries) SlowDeviceGrantPoll(ctx context.Context, arg SlowDeviceGrantPollParams) error {
-	_, err := q.db.ExecContext(ctx, slowDeviceGrantPoll, arg.ID, arg.PollIntervalSeconds, arg.NextPollAt)
+	_, err := q.db.Exec(ctx, slowDeviceGrantPoll, arg.ID, arg.PollIntervalSeconds, arg.NextPollAt)
 	return err
 }
 
@@ -616,7 +613,7 @@ type TakeAuthRateLimitParams struct {
 }
 
 func (q *Queries) TakeAuthRateLimit(ctx context.Context, arg TakeAuthRateLimitParams) (int32, error) {
-	row := q.db.QueryRowContext(ctx, takeAuthRateLimit, arg.BucketKey, arg.RateWindow, arg.Cutoff)
+	row := q.db.QueryRow(ctx, takeAuthRateLimit, arg.BucketKey, arg.RateWindow, arg.Cutoff)
 	var request_count int32
 	err := row.Scan(&request_count)
 	return request_count, err
@@ -632,6 +629,6 @@ type TouchClientSessionParams struct {
 }
 
 func (q *Queries) TouchClientSession(ctx context.Context, arg TouchClientSessionParams) error {
-	_, err := q.db.ExecContext(ctx, touchClientSession, arg.ID, arg.LastUsedAt)
+	_, err := q.db.Exec(ctx, touchClientSession, arg.ID, arg.LastUsedAt)
 	return err
 }
