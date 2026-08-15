@@ -433,9 +433,9 @@ func TestAvailabilityPolicyLifecycle(t *testing.T) {
 		t.Fatalf("same-policy health update: %v", err)
 	}
 	for name, candidate := range map[string]AvailabilityObservation{
-		"stale":          {Schema: AvailabilityPolicySchemaV1, Mode: "keep_awake", Version: 1, Status: "applied", ObservedAt: observedAt, HostServiceVersion: "1.2.3", HostServiceScope: "system"},
-		"future":         {Schema: AvailabilityPolicySchemaV1, Mode: "allow_sleep", Version: 3, Status: "applied", ObservedAt: observedAt, HostServiceVersion: "1.2.3", HostServiceScope: "system"},
-		"same-older":     {Schema: AvailabilityPolicySchemaV1, Mode: "allow_sleep", Version: 2, Status: "error", ErrorCode: "apply_failed", ObservedAt: observedAt, HostServiceVersion: "1.2.3", HostServiceScope: "system", UpdateRollbacks: 3, UpdateHealth: "recovery_required"},
+		"stale":      {Schema: AvailabilityPolicySchemaV1, Mode: "keep_awake", Version: 1, Status: "applied", ObservedAt: observedAt, HostServiceVersion: "1.2.3", HostServiceScope: "system"},
+		"future":     {Schema: AvailabilityPolicySchemaV1, Mode: "allow_sleep", Version: 3, Status: "applied", ObservedAt: observedAt, HostServiceVersion: "1.2.3", HostServiceScope: "system"},
+		"same-older": {Schema: AvailabilityPolicySchemaV1, Mode: "allow_sleep", Version: 2, Status: "error", ErrorCode: "apply_failed", ObservedAt: observedAt, HostServiceVersion: "1.2.3", HostServiceScope: "system", UpdateRollbacks: 3, UpdateHealth: "recovery_required"},
 	} {
 		if err := service.RecordAvailabilityObservation(ctx, environmentID, machineID, candidate); !errors.Is(err, ErrAvailabilityObservationStale) {
 			t.Errorf("%s observation error = %v", name, err)

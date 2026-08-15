@@ -415,8 +415,10 @@ SELECT e.id AS environment_id, e.owner_user_id AS user_id, m.id AS machine_id,
        m.configured_capabilities, m.observed_capabilities
 FROM control_environments e
 JOIN user_machines m ON m.environment_id=e.id AND m.revoked_at IS NULL AND m.deleted_at IS NULL
-JOIN control_connector_generations c ON c.environment_id=e.id AND c.state IN ('pending','admitted') AND c.revoked_at IS NULL
-JOIN control_routes r ON r.environment_id=e.id AND r.kind='runtime_https_wss' AND r.desired_state IN ('attached','replacing')
+JOIN control_connector_generations c ON c.environment_id=e.id AND c.machine_id=m.id
+  AND c.connector_id='runtime' AND c.state='admitted' AND c.revoked_at IS NULL
+JOIN control_routes r ON r.environment_id=e.id AND r.connector_id=c.connector_id
+  AND r.kind='runtime_https_wss' AND r.desired_state IN ('attached','replacing')
 WHERE e.id=$1 AND e.owner_user_id=$2
   AND e.desired_state='active' AND e.revoked_at IS NULL
 `
