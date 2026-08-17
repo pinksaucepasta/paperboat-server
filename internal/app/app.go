@@ -130,12 +130,16 @@ func New(opts Options) (*App, error) {
 	userMachineService.ConfigureTerminalSessions(opts.Config.TerminalSessions.MaxActivePerProject, mintKeys, &http.Client{Timeout: opts.Config.TerminalSessions.OperationTimeout})
 	userMachineService.ConfigureMachineControl(mintKeys, normalizeHelperIssuer(opts.Config.HTTP.PublicBaseURL))
 	publicBaseURL := strings.TrimRight(config.NormalizeIssuer(opts.Config.HTTP.PublicBaseURL), "/")
-	userMachineService.ConfigureBootstrapCommand("curl -fsSL " + publicBaseURL + "/install | bash -s -- --pair")
+	releaseBaseURL := strings.TrimRight(config.NormalizeIssuer(opts.Config.ReleaseBaseURL), "/")
+	if releaseBaseURL == "" {
+		releaseBaseURL = publicBaseURL
+	}
+	userMachineService.ConfigureBootstrapCommand("curl -fsSL " + releaseBaseURL + "/install | bash -s -- --pair")
 	if err := userMachineService.ConfigureRuntimeRoute(opts.Config.RuntimeBaseDomain, opts.Config.UserMachines.RuntimeListenPort); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(opts.Config.ReleaseDirectory) != "" {
-		if err := userMachineService.ConfigureMachineArtifacts(publicBaseURL+"/tuf", "bootstrap"); err != nil {
+		if err := userMachineService.ConfigureMachineArtifacts(releaseBaseURL+"/tuf", "bootstrap"); err != nil {
 			return nil, err
 		}
 		userMachineService.ConfigureMachineArtifactVersionResolver(func() string {

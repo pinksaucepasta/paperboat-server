@@ -43,6 +43,7 @@ type Config struct {
 	Providers         Providers        `json:"providers"`
 	Secrets           Secrets          `json:"secrets"`
 	ReleaseDirectory  string           `json:"release_directory"`
+	ReleaseBaseURL    string           `json:"release_base_url"`
 }
 
 type HTTPConfig struct {
@@ -455,6 +456,12 @@ func (c Config) Validate() error {
 			errs = append(errs, fmt.Errorf("preview base domain and identity key are required in production"))
 		}
 	}
+	if strings.TrimSpace(c.ReleaseBaseURL) != "" {
+		releaseURL, releaseURLErr := url.Parse(c.ReleaseBaseURL)
+		if releaseURLErr != nil || releaseURL.Scheme != "https" || releaseURL.User != nil || releaseURL.Hostname() == "" || (releaseURL.Path != "" && releaseURL.Path != "/") || releaseURL.RawQuery != "" || releaseURL.Fragment != "" {
+			errs = append(errs, fmt.Errorf("release_base_url must be an HTTPS origin"))
+		}
+	}
 	if c.TerminalSessions.MaxActivePerProject <= 0 || c.TerminalSessions.MaxActivePerProject > 20 || c.TerminalSessions.OperationTimeout <= 0 || c.TerminalSessions.RetryBackoff <= 0 || c.TerminalSessions.WorkerInterval <= 0 || c.TerminalSessions.MaxAttemptsBeforeAlert <= 0 {
 		errs = append(errs, fmt.Errorf("terminal_sessions limits and timings must be positive"))
 	}
@@ -694,6 +701,7 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_DIAGNOSTICS_OBJECT_REGION", &c.Diagnostics.ObjectRegion)
 	setString("PAPERBOAT_DIAGNOSTICS_OBJECT_BUCKET", &c.Diagnostics.ObjectBucket)
 	setString("PAPERBOAT_RELEASE_DIRECTORY", &c.ReleaseDirectory)
+	setString("PAPERBOAT_RELEASE_BASE_URL", &c.ReleaseBaseURL)
 	if value, ok := lookup("PAPERBOAT_USER_MACHINES_OFFLINE_AFTER_SECONDS"); ok {
 		parsed, err := strconv.ParseInt(value, 10, 64)
 		if err != nil {

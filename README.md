@@ -50,7 +50,7 @@ that exact tag without a `v` prefix, and push it.
 
 The server image contains only `paperboat-server`. Mount the exported, public release bundle at
 `PAPERBOAT_RELEASE_DIRECTORY`. The server exposes `/install` and the read-only `/tuf/`
-repository from its configured public base URL. Atomic `current.json` promotion selects the
+repository from `PAPERBOAT_RELEASE_BASE_URL` (or the public base URL when omitted). Atomic `current.json` promotion selects the
 release for new machine installations without a server restart. The server never receives TUF
 signing keys or signing state.
 
@@ -118,6 +118,7 @@ Common environment overrides:
 - `PAPERBOAT_FLY_HOSTED_SSH_PORT`
 - `PAPERBOAT_FLY_OPERATION_TIMEOUT`
 - `PAPERBOAT_RELEASE_DIRECTORY`
+- `PAPERBOAT_RELEASE_BASE_URL`
 - `PAPERBOAT_PREVIEW_BASE_DOMAIN`
 - `PAPERBOAT_PREVIEW_IDENTITY_KEY` or `PAPERBOAT_PREVIEW_IDENTITY_KEY_FILE`
 - `PAPERBOAT_DIAGNOSTICS_OBJECT_ENDPOINT`
