@@ -30,22 +30,36 @@ var (
 // affect an update decision is inside this document so the client never
 // combines signed release data with mutable server state.
 type ReleaseIndex struct {
-	Schema             string        `json:"schema"`
-	Version            string        `json:"version"`
-	Channel            string        `json:"channel"`
-	PublishedAt        time.Time     `json:"published_at"`
-	TargetPath         string        `json:"target_path"`
-	TargetSHA256       string        `json:"target_sha256"`
-	TargetLength       int64         `json:"target_length"`
-	Platform           string        `json:"platform"`
-	Architecture       string        `json:"architecture"`
-	MinimumVersion     string        `json:"minimum_version,omitempty"`
-	WorkerProtocolMin  string        `json:"worker_protocol_min"`
-	WorkerProtocolMax  string        `json:"worker_protocol_max"`
-	SupervisorProtoMin string        `json:"supervisor_protocol_min"`
-	SupervisorProtoMax string        `json:"supervisor_protocol_max"`
-	Rollout            RolloutPolicy `json:"rollout"`
-	Revoked            bool          `json:"revoked,omitempty"`
+	Schema                string            `json:"schema"`
+	ReleaseID             string            `json:"release_id"`
+	Version               string            `json:"version"`
+	Channel               string            `json:"channel"`
+	Severity              string            `json:"severity"`
+	CreatedAt             time.Time         `json:"created_at"`
+	Platform              string            `json:"platform"`
+	Architecture          string            `json:"architecture"`
+	BinaryFormat          string            `json:"binary_format"`
+	Targets               []ComponentTarget `json:"targets"`
+	HostdAPIMin           uint16            `json:"hostd_api_min"`
+	HostdAPIMax           uint16            `json:"hostd_api_max"`
+	RuntimeAPIMin         uint16            `json:"runtime_api_min"`
+	RuntimeAPIMax         uint16            `json:"runtime_api_max"`
+	MinimumVersion        string            `json:"minimum_permitted_version,omitempty"`
+	RevokedVersions       []string          `json:"revoked_versions,omitempty"`
+	RolloutPolicyRevision uint64            `json:"rollout_policy_revision"`
+	SupervisorMaintenance bool              `json:"supervisor_maintenance_required"`
+	Rollout               RolloutPolicy     `json:"rollout"`
+	Revoked               bool              `json:"revoked,omitempty"`
+}
+
+type ComponentTarget struct {
+	Component    string `json:"component"`
+	TargetPath   string `json:"target_path"`
+	SHA256       string `json:"sha256"`
+	Length       int64  `json:"length"`
+	Platform     string `json:"platform"`
+	Architecture string `json:"architecture"`
+	BinaryFormat string `json:"binary_format"`
 }
 
 // RolloutPolicy is signed with the release index. CohortSeed must be stable
@@ -72,25 +86,67 @@ const (
 )
 
 func (i ReleaseIndex) Validate(now time.Time) error {
-	if i.Schema != ReleaseIndexSchemaV1 || !validVersion(i.Version) || !indexChannelPattern.MatchString(i.Channel) || i.PublishedAt.IsZero() {
+	if i.Schema != ReleaseIndexSchemaV1 || !indexValuePattern.MatchString(i.ReleaseID) || !validVersion(i.Version) || !indexChannelPattern.MatchString(i.Channel) || i.CreatedAt.IsZero() {
 		return indexErrorInvalid
 	}
-	if i.Platform != "darwin" && i.Platform != "linux" || i.Architecture != "amd64" && i.Architecture != "arm64" {
+	if i.Platform != "darwin" && i.Platform != "linux" && i.Platform != "windows" || i.Architecture != "amd64" && i.Architecture != "arm64" || !validBinaryFormat(i.Platform, i.BinaryFormat) {
 		return indexErrorInvalid
 	}
-	if i.TargetPath != "pb-"+i.Platform+"-"+i.Architecture || len(i.TargetSHA256) != sha256.Size*2 || !isLowerHex(i.TargetSHA256) || i.TargetLength < 1 || i.TargetLength > 512<<20 {
+	if i.Severity != "routine" && i.Severity != "security" && i.Severity != "critical" || i.HostdAPIMin == 0 || i.HostdAPIMin > i.HostdAPIMax || i.RuntimeAPIMin == 0 || i.RuntimeAPIMin > i.RuntimeAPIMax || i.RolloutPolicyRevision == 0 {
 		return indexErrorInvalid
 	}
 	if i.MinimumVersion != "" && !validVersion(i.MinimumVersion) {
 		return indexErrorInvalid
 	}
-	if !indexValuePattern.MatchString(i.WorkerProtocolMin) || !indexValuePattern.MatchString(i.WorkerProtocolMax) || !indexValuePattern.MatchString(i.SupervisorProtoMin) || !indexValuePattern.MatchString(i.SupervisorProtoMax) {
+	if err := i.validateTargets(); err != nil {
 		return indexErrorInvalid
+	}
+	seenRevoked := map[string]bool{}
+	for _, version := range i.RevokedVersions {
+		if !validVersion(version) || seenRevoked[version] {
+			return indexErrorInvalid
+		}
+		seenRevoked[version] = true
 	}
 	if err := i.Rollout.validate(now); err != nil {
 		return err
 	}
 	return nil
+}
+
+func (i ReleaseIndex) validateTargets() error {
+	required := map[string]bool{"cli": false, "runtime": false, "hostd": false, "updater": false, "launcher": false}
+	if len(i.Targets) != len(required) {
+		return indexErrorInvalid
+	}
+	for _, target := range i.Targets {
+		if _, ok := required[target.Component]; !ok || required[target.Component] {
+			return indexErrorInvalid
+		}
+		if target.Platform != i.Platform || target.Architecture != i.Architecture || target.BinaryFormat != i.BinaryFormat ||
+			len(target.SHA256) != sha256.Size*2 || !isLowerHex(target.SHA256) || target.Length < 1 || target.Length > 512<<20 ||
+			!indexValuePattern.MatchString(target.TargetPath) || strings.Contains(target.TargetPath, "..") || strings.ContainsAny(target.TargetPath, "\\?#") {
+			return indexErrorInvalid
+		}
+		want := target.Component + "-" + i.Platform + "-" + i.Architecture
+		if target.TargetPath != want {
+			return indexErrorInvalid
+		}
+		required[target.Component] = true
+	}
+	return nil
+}
+
+func validBinaryFormat(platform, format string) bool {
+	switch platform {
+	case "linux":
+		return format == "elf"
+	case "darwin":
+		return format == "mach-o"
+	case "windows":
+		return format == "pe"
+	}
+	return false
 }
 
 func (p RolloutPolicy) validate(now time.Time) error {
@@ -172,7 +228,7 @@ func isLowerHex(value string) bool {
 }
 
 func (i ReleaseIndex) String() string {
-	return fmt.Sprintf("%s/%s/%s", i.Channel, i.Version, i.TargetPath)
+	return fmt.Sprintf("%s/%s/%s/%s", i.Channel, i.Version, i.Platform, i.Architecture)
 }
 
 // ValidVersion accepts the release identifier grammar used by the static

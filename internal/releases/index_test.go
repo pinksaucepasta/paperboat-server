@@ -1,6 +1,7 @@
 package releases
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -8,19 +9,11 @@ import (
 
 func validIndex() ReleaseIndex {
 	return ReleaseIndex{
-		Schema:             ReleaseIndexSchemaV1,
-		Version:            "2026.08.18.1",
-		Channel:            "stable",
-		PublishedAt:        time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC),
-		TargetPath:         "pb-linux-amd64",
-		TargetSHA256:       strings.Repeat("a", 64),
-		TargetLength:       1024,
-		Platform:           "linux",
-		Architecture:       "amd64",
-		WorkerProtocolMin:  "1",
-		WorkerProtocolMax:  "2",
-		SupervisorProtoMin: "1",
-		SupervisorProtoMax: "2",
+		Schema: ReleaseIndexSchemaV1, ReleaseID: "rel_2026.08.18.1", Version: "2026.08.18.1",
+		Channel: "stable", Severity: "routine", CreatedAt: time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC),
+		Platform: "linux", Architecture: "amd64", BinaryFormat: "elf",
+		Targets:     componentTargets("linux", "amd64", "elf"),
+		HostdAPIMin: 1, HostdAPIMax: 2, RuntimeAPIMin: 1, RuntimeAPIMax: 2, RolloutPolicyRevision: 1,
 		Rollout: RolloutPolicy{
 			Schema:     ReleaseRolloutSchemaV1,
 			CohortSeed: "release-seed-1",
@@ -29,9 +22,22 @@ func validIndex() ReleaseIndex {
 	}
 }
 
+func componentTargets(platform, architecture, format string) []ComponentTarget {
+	result := make([]ComponentTarget, 0, 5)
+	for _, component := range []string{"cli", "runtime", "hostd", "updater", "launcher"} {
+		result = append(result, ComponentTarget{Component: component, TargetPath: component + "-" + platform + "-" + architecture,
+			SHA256: strings.Repeat("a", 64), Length: 1024, Platform: platform, Architecture: architecture, BinaryFormat: format})
+	}
+	return result
+}
+
 func TestReleaseIndexDecodeStrictlyValidatesSignedPayload(t *testing.T) {
 	index := validIndex()
-	body := `{"schema":"paperboat.release-index/v1","version":"2026.08.18.1","channel":"stable","published_at":"2026-08-18T10:00:00Z","target_path":"pb-linux-amd64","target_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","target_length":1024,"platform":"linux","architecture":"amd64","worker_protocol_min":"1","worker_protocol_max":"2","supervisor_protocol_min":"1","supervisor_protocol_max":"2","rollout":{"schema":"paperboat.release-rollout/v1","cohort_seed":"release-seed-1","percentage":100}}`
+	encoded, err := json.Marshal(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(encoded)
 	decoded, err := DecodeIndex(strings.NewReader(body), time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC))
 	if err != nil || decoded.String() != index.String() {
 		t.Fatalf("decoded=%#v err=%v", decoded, err)
@@ -60,12 +66,12 @@ func TestReleaseIndexEligibilityIsStableAndBounded(t *testing.T) {
 
 func TestReleaseIndexRejectsInvalidDigestAndWindow(t *testing.T) {
 	index := validIndex()
-	index.TargetSHA256 = strings.Repeat("A", 64)
+	index.Targets[0].SHA256 = strings.Repeat("A", 64)
 	if err := index.Validate(time.Now().UTC()); err == nil {
 		t.Fatal("expected uppercase digest to be rejected")
 	}
 	index = validIndex()
-	expires := index.PublishedAt
+	expires := index.CreatedAt
 	index.Rollout.NotBefore = &expires
 	index.Rollout.ExpiresAt = &expires
 	if err := index.Validate(time.Now().UTC()); err == nil {
