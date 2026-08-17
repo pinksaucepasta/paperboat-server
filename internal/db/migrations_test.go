@@ -2,13 +2,16 @@ package db_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
+	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
 )
 
 func TestMigrateRequiresPostgresIntegrationDSN(t *testing.T) {
@@ -440,5 +443,66 @@ ON CONFLICT (id) DO UPDATE SET primary_email = EXCLUDED.primary_email`); err != 
 	}
 	if exists {
 		t.Fatal("rolled back transaction still inserted user")
+	}
+}
+
+func TestTouchClientSessionThrottlesAndTouchesNullLastUsed(t *testing.T) {
+	dsn := os.Getenv("PAPERBOAT_TEST_DATABASE_DSN")
+	if dsn == "" {
+		t.Skip("set PAPERBOAT_TEST_DATABASE_DSN to run Postgres transaction integration tests")
+	}
+	ctx := context.Background()
+	store, err := db.Open(config.Database{Driver: "postgres", DSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := db.Migrate(ctx, store); err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "cli_session_touch_test"
+	if _, err := store.SQL().Exec(`
+INSERT INTO paperboat.users (id, workos_subject, primary_email, status)
+VALUES ('user_touch_test', 'workos_touch_test', 'touch@example.com', 'active')
+ON CONFLICT (id) DO UPDATE SET primary_email = EXCLUDED.primary_email`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().Exec(`
+INSERT INTO paperboat.cli_client_sessions (id, user_id, client_id, client_label, device_type, os, scopes, state, created_at, approved_at, last_used_at)
+VALUES ($1, 'user_touch_test', 'paperboat', 'test', 'desktop', 'darwin', ARRAY['projects:read'], 'active', now(), now(), NULL)
+ON CONFLICT (id) DO UPDATE SET last_used_at = NULL`, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	queries := store.Queries()
+	first := time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC)
+	if err := queries.TouchClientSession(ctx, dbsqlc.TouchClientSessionParams{ID: sessionID, LastUsedAt: sql.NullTime{Time: first, Valid: true}, TouchIntervalSeconds: 60}); err != nil {
+		t.Fatal(err)
+	}
+	var lastUsed *time.Time
+	if err := store.SQL().QueryRowContext(ctx, `SELECT last_used_at FROM paperboat.cli_client_sessions WHERE id = $1`, sessionID).Scan(&lastUsed); err != nil {
+		t.Fatal(err)
+	}
+	if lastUsed == nil || !lastUsed.Equal(first) {
+		t.Fatalf("first touch did not set last_used_at: %v", lastUsed)
+	}
+	second := first.Add(10 * time.Second)
+	if err := queries.TouchClientSession(ctx, dbsqlc.TouchClientSessionParams{ID: sessionID, LastUsedAt: sql.NullTime{Time: second, Valid: true}, TouchIntervalSeconds: 60}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SQL().QueryRowContext(ctx, `SELECT last_used_at FROM paperboat.cli_client_sessions WHERE id = $1`, sessionID).Scan(&lastUsed); err != nil {
+		t.Fatal(err)
+	}
+	if lastUsed == nil || !lastUsed.Equal(first) {
+		t.Fatalf("touch within the throttle interval rewrote last_used_at: %v", lastUsed)
+	}
+	third := first.Add(2 * time.Minute)
+	if err := queries.TouchClientSession(ctx, dbsqlc.TouchClientSessionParams{ID: sessionID, LastUsedAt: sql.NullTime{Time: third, Valid: true}, TouchIntervalSeconds: 60}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SQL().QueryRowContext(ctx, `SELECT last_used_at FROM paperboat.cli_client_sessions WHERE id = $1`, sessionID).Scan(&lastUsed); err != nil {
+		t.Fatal(err)
+	}
+	if lastUsed == nil || !lastUsed.Equal(third) {
+		t.Fatalf("touch after the throttle interval did not rewrite last_used_at: %v", lastUsed)
 	}
 }

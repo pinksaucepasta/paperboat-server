@@ -960,6 +960,70 @@ func TestConnectIssuesEnvironmentBoundDescriptor(t *testing.T) {
 	}
 }
 
+func TestCreateAndConnectTerminalSessionCompositionIsIdempotent(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID, userMachineID, environmentID := "usr_um_mc_"+suffix, "um_mc_"+suffix, "env_mc_"+suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_"+suffix, "mc-"+suffix+"@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,'Studio Mac','darwin','arm64','/Users/paperboat','online','occupied',true)`, userMachineID, userID, environmentID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machines SET observed_capabilities=configured_capabilities WHERE id=$1`, userMachineID); err != nil {
+		t.Fatal(err)
+	}
+	sourceMachineID := "um_mc_source_" + suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online) VALUES ($1,$2,$3,'Source Mac','darwin','arm64','/Users/source','online','occupied',true)`, sourceMachineID, userID, "env_mc_source_"+suffix); err != nil {
+		t.Fatal(err)
+	}
+	helperID := "helper_mc_" + suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id,desired_state) VALUES ($1,$2,$3,'active')`, environmentID, userMachineID, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_helpers (id,environment_id,state) VALUES ($1,$2,'active')`, helperID, environmentID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_helper_enrollments (id,environment_id,helper_id,jti_hash,operation_key,request_hash,grant_ciphertext,state,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',now()+interval '10 minutes')`, "enroll_mc_"+suffix, environmentID, helperID, []byte("jti_mc_"+suffix), "operation_mc_"+suffix, []byte("request_mc_"+suffix), []byte("grant_mc_"+suffix)); err != nil {
+		t.Fatal(err)
+	}
+	edgeNodeID := "edge_mc_" + suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_tunnel_nodes (id,edge_pool,protocol_version,process_epoch,state,ready,last_heartbeat_at) VALUES ($1,'development','1.0',$2,'ready',true,now())`, edgeNodeID, "epoch_mc_"+suffix); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_connector_generations (environment_id,machine_id,generation,edge_pool,edge_node_id,state) VALUES ($1,$2,1,'development',$3,'admitted')`, environmentID, userMachineID, edgeNodeID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_routes (id,environment_id,kind,public_host,target_host,target_port,desired_revision,applied_revision,applied_node_id,applied_generation) VALUES ($1,$2,'runtime_https_wss',$3,'127.0.0.1',8080,1,1,$4,1)`, "route_mc_"+suffix, environmentID, "machine-mc-"+suffix+".example.test", edgeNodeID); err != nil {
+		t.Fatal(err)
+	}
+	service := New(store, audit.NewWriter(store), Policy{}, nil)
+	service.ConfigureProvisioning(access.FakeClient{}, "test-key")
+	service.ConfigureAccess(access.FakeCredentialIssuer{}, "https://api.paperboat.test", 15*time.Minute)
+	signer, err := mint.NewEphemeral(5 * time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.ConfigureTerminalSessions(4, signer, nil)
+
+	created, err := service.CreateConfiguredTerminalSession(ctx, userID, userMachineID, "bench-run", "pb-mc-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := service.ConnectTerminalSession(ctx, userID, sourceMachineID, userMachineID, "cls_mc_1", created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !descriptor.Connectable || descriptor.Terminal["session_id"] != created.ID {
+		t.Fatalf("descriptor = %#v", descriptor)
+	}
+	replay, err := service.CreateConfiguredTerminalSession(ctx, userID, userMachineID, "bench-run", "pb-mc-key")
+	if err != nil || replay.ID != created.ID {
+		t.Fatalf("idempotent replay = %+v, %v", replay, err)
+	}
+}
+
 func TestExecDescriptorPersistsExactRevocableCredential(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()

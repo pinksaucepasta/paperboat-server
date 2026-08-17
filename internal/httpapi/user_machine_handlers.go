@@ -408,12 +408,33 @@ func userMachineConnectionDescriptor(service *usermachines.Service) http.Handler
 		var body struct {
 			TerminalSessionID string `json:"terminal_session_id"`
 			SourceMachineID   string `json:"source_machine_id"`
+			CreateSession     *struct {
+				Name           string `json:"name"`
+				IdempotencyKey string `json:"idempotency_key"`
+			} `json:"create_session"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON.")
 			return
 		}
-		response, err := service.ConnectTerminalSession(r.Context(), p.User.ID, body.SourceMachineID, r.PathValue("machine_id"), p.Client.SessionID, body.TerminalSessionID)
+		terminalSessionID := body.TerminalSessionID
+		var created *usermachines.TerminalSession
+		if body.CreateSession != nil {
+			// create-and-connect collapses session creation and descriptor
+			// issuance into one round trip. The idempotency key makes retried
+			// requests resolve the same durable session.
+			if terminalSessionID != "" || strings.TrimSpace(body.CreateSession.IdempotencyKey) == "" {
+				writeError(w, r, http.StatusBadRequest, "invalid_request", "Request body must not mix terminal_session_id with create_session.")
+				return
+			}
+			item, err := service.CreateConfiguredTerminalSession(r.Context(), p.User.ID, r.PathValue("machine_id"), body.CreateSession.Name, body.CreateSession.IdempotencyKey)
+			if userMachineTerminalSessionError(w, r, err) {
+				return
+			}
+			terminalSessionID = item.ID
+			created = &item
+		}
+		response, err := service.ConnectTerminalSession(r.Context(), p.User.ID, body.SourceMachineID, r.PathValue("machine_id"), p.Client.SessionID, terminalSessionID)
 		if errors.Is(err, usermachines.ErrNotFound) {
 			writeError(w, r, http.StatusNotFound, "user_machine_not_found", "Machine was not found.")
 			return
@@ -424,6 +445,10 @@ func userMachineConnectionDescriptor(service *usermachines.Service) http.Handler
 		}
 		if err != nil {
 			writeError(w, r, http.StatusServiceUnavailable, "connector_unavailable", "Machine credentials are unavailable.")
+			return
+		}
+		if created != nil {
+			writeJSON(w, http.StatusCreated, SuccessResponse{Data: map[string]any{"descriptor": response, "terminal_session": created}})
 			return
 		}
 		writeJSON(w, http.StatusOK, SuccessResponse{Data: response})

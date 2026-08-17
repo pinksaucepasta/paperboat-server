@@ -166,6 +166,11 @@ type CLIAuth struct {
 	MintActiveKeyID          string        `json:"mint_active_key_id"`
 	MintJWKSMaxAge           time.Duration `json:"mint_jwks_max_age"`
 	MintProofLifetime        time.Duration `json:"mint_proof_lifetime"`
+	// ClientSessionTouchInterval throttles last_used_at writes for CLI client
+	// sessions. Authenticated requests only rewrite the touch timestamp when
+	// it is older than this interval, so hot request bursts do not pay a
+	// write per request.
+	ClientSessionTouchInterval time.Duration `json:"client_session_touch_interval"`
 }
 
 type GitHub struct {
@@ -326,20 +331,21 @@ func Default() Config {
 			StaleHeartbeatAfter: 2 * time.Minute, SummaryLimit: 50, PolicyRevision: "1", WarningRevision: "config-sync-warning-v1",
 		},
 		CLIAuth: CLIAuth{
-			VerificationURL:          "http://localhost:3000/cli/authorize",
-			MachinesURL:              "http://localhost:3000/dashboard/machines",
-			ClientID:                 "paperboat",
-			AllowedScopes:            []string{"account:read", "clients:revoke", "projects:read", "projects:connect", "session:refresh", "diagnostics:upload"},
-			DeviceGrantLifetime:      10 * time.Minute,
-			AccessTokenLifetime:      15 * time.Minute,
-			RefreshTokenLifetime:     30 * 24 * time.Hour,
-			PollInterval:             5 * time.Second,
-			MaxClientLabelLength:     120,
-			NetworkRequestsPerMinute: 30,
-			GrantPollsPerMinute:      30,
-			AccountActionsPerMinute:  30,
-			MintJWKSMaxAge:           5 * time.Minute,
-			MintProofLifetime:        2 * time.Minute,
+			VerificationURL:            "http://localhost:3000/cli/authorize",
+			MachinesURL:                "http://localhost:3000/dashboard/machines",
+			ClientID:                   "paperboat",
+			AllowedScopes:              []string{"account:read", "clients:revoke", "projects:read", "projects:connect", "session:refresh", "diagnostics:upload"},
+			DeviceGrantLifetime:        10 * time.Minute,
+			AccessTokenLifetime:        15 * time.Minute,
+			RefreshTokenLifetime:       30 * 24 * time.Hour,
+			PollInterval:               5 * time.Second,
+			MaxClientLabelLength:       120,
+			NetworkRequestsPerMinute:   30,
+			GrantPollsPerMinute:        30,
+			AccountActionsPerMinute:    30,
+			MintJWKSMaxAge:             5 * time.Minute,
+			MintProofLifetime:          2 * time.Minute,
+			ClientSessionTouchInterval: time.Minute,
 		},
 		Access: Access{
 			RouteSubdomainPrefix: "pb",
@@ -489,7 +495,7 @@ func (c Config) Validate() error {
 	if machinesURL, err := url.Parse(c.CLIAuth.MachinesURL); err != nil || (machinesURL.Scheme != "http" && machinesURL.Scheme != "https") || machinesURL.Host == "" {
 		errs = append(errs, fmt.Errorf("cli_auth.machines_url must be an absolute http or https URL"))
 	}
-	if c.CLIAuth.DeviceGrantLifetime <= 0 || c.CLIAuth.AccessTokenLifetime <= 0 || c.CLIAuth.RefreshTokenLifetime <= 0 || c.CLIAuth.PollInterval <= 0 {
+	if c.CLIAuth.DeviceGrantLifetime <= 0 || c.CLIAuth.AccessTokenLifetime <= 0 || c.CLIAuth.RefreshTokenLifetime <= 0 || c.CLIAuth.PollInterval <= 0 || c.CLIAuth.ClientSessionTouchInterval <= 0 {
 		errs = append(errs, fmt.Errorf("cli_auth lifetimes and poll_interval must be positive"))
 	}
 	if c.CLIAuth.MaxClientLabelLength <= 0 || c.CLIAuth.NetworkRequestsPerMinute <= 0 || c.CLIAuth.GrantPollsPerMinute <= 0 || c.CLIAuth.AccountActionsPerMinute <= 0 {
@@ -816,6 +822,7 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 		"PAPERBOAT_CLI_ACCESS_TOKEN_LIFETIME":  &c.CLIAuth.AccessTokenLifetime,
 		"PAPERBOAT_CLI_REFRESH_TOKEN_LIFETIME": &c.CLIAuth.RefreshTokenLifetime,
 		"PAPERBOAT_CLI_POLL_INTERVAL":          &c.CLIAuth.PollInterval,
+		"PAPERBOAT_CLI_SESSION_TOUCH_INTERVAL": &c.CLIAuth.ClientSessionTouchInterval,
 		"PAPERBOAT_MINT_JWKS_MAX_AGE":          &c.CLIAuth.MintJWKSMaxAge,
 		"PAPERBOAT_MINT_PROOF_LIFETIME":        &c.CLIAuth.MintProofLifetime,
 	} {

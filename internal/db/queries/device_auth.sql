@@ -61,7 +61,7 @@ FROM cli_access_tokens t JOIN cli_client_sessions cs ON cs.id=t.cli_client_sessi
 WHERE t.token_hash = ANY(string_to_array(sqlc.arg(token_hashes),' ')) AND t.revoked_at IS NULL AND t.expires_at>sqlc.arg(now) AND cs.state='active' AND u.status='active';
 
 -- name: TouchClientSession :exec
-UPDATE cli_client_sessions SET last_used_at=$2 WHERE id=$1;
+UPDATE cli_client_sessions SET last_used_at=$2 WHERE id=$1 AND (last_used_at IS NULL OR last_used_at <= $2::timestamptz - make_interval(secs => sqlc.arg(touch_interval_seconds)::int));
 
 -- name: GetClientRefreshTokenForUpdate :one
 SELECT rt.cli_client_session_id,rt.state,rt.expires_at,array_to_string(cs.scopes,' ') AS scopes,rt.token_hash

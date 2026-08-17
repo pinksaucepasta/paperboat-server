@@ -360,7 +360,11 @@ func (s *DeviceService) Authenticate(ctx context.Context, token string) (ClientP
 		return ClientPrincipal{}, ErrUnauthenticated
 	}
 	p := ClientPrincipal{SessionID: row.ID, Scopes: strings.Fields(row.Scopes), User: User{ID: row.UserID, WorkOSSubject: row.WorkosSubject, PrimaryEmail: row.PrimaryEmail, DisplayName: row.DisplayName, Status: row.Status, Role: Role(row.Role), CreatedAt: row.CreatedAt}}
-	_ = s.db.Queries().TouchClientSession(ctx, dbsqlc.TouchClientSessionParams{ID: p.SessionID, LastUsedAt: sql.NullTime{Time: s.now(), Valid: true}})
+	touchInterval := int32(s.cfg.ClientSessionTouchInterval / time.Second)
+	if touchInterval < 1 {
+		touchInterval = 1
+	}
+	_ = s.db.Queries().TouchClientSession(ctx, dbsqlc.TouchClientSessionParams{ID: p.SessionID, LastUsedAt: sql.NullTime{Time: s.now(), Valid: true}, TouchIntervalSeconds: touchInterval})
 	return p, nil
 }
 

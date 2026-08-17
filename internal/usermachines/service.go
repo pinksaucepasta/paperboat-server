@@ -1855,19 +1855,9 @@ func (s *Service) CreateTerminalSession(ctx context.Context, userID, userMachine
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return TerminalSession{}, err
 	}
-	machine, err := s.db.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: userMachineID, UserID: userID})
-	if errors.Is(err, sql.ErrNoRows) {
-		return TerminalSession{}, ErrNotFound
-	}
-	if err != nil {
-		return TerminalSession{}, err
-	}
-	if err := terminalHostAvailability(machine); err != nil {
-		return TerminalSession{}, err
-	}
 	id, terminalID := newID("umts"), newID("term")
 	var evictedSession *TerminalSession
-	err = s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+	err := s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		_, err := tx.Queries().LockUserMachineTerminalSessions(ctx, dbsqlc.LockUserMachineTerminalSessionsParams{UserMachineID: userMachineID, UserID: userID})
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -1877,6 +1867,9 @@ func (s *Service) CreateTerminalSession(ctx context.Context, userID, userMachine
 		}
 		lockedMachine, err := tx.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: userMachineID, UserID: userID})
 		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
 			return err
 		}
 		if err := terminalHostAvailability(lockedMachine); err != nil {
@@ -1921,7 +1914,7 @@ func (s *Service) CreateTerminalSession(ctx context.Context, userID, userMachine
 			if requestedName == "" {
 				sessionName = naming.Session(ordinal)
 			}
-			created, createErr := tx.Queries().CreateUserMachineTerminalSession(ctx, dbsqlc.CreateUserMachineTerminalSessionParams{ID: id, UserMachineID: userMachineID, TerminalID: terminalID, Name: sessionName, AutoNameOrdinal: ordinal, IdempotencyKey: sql.NullString{String: idempotencyKey, Valid: true}, LaunchCwd: machine.WorkspaceRoot})
+			created, createErr := tx.Queries().CreateUserMachineTerminalSession(ctx, dbsqlc.CreateUserMachineTerminalSessionParams{ID: id, UserMachineID: userMachineID, TerminalID: terminalID, Name: sessionName, AutoNameOrdinal: ordinal, IdempotencyKey: sql.NullString{String: idempotencyKey, Valid: true}, LaunchCwd: lockedMachine.WorkspaceRoot})
 			if createErr != nil {
 				return createErr
 			}

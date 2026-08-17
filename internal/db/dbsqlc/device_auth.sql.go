@@ -620,15 +620,16 @@ func (q *Queries) TakeAuthRateLimit(ctx context.Context, arg TakeAuthRateLimitPa
 }
 
 const touchClientSession = `-- name: TouchClientSession :exec
-UPDATE cli_client_sessions SET last_used_at=$2 WHERE id=$1
+UPDATE cli_client_sessions SET last_used_at=$2 WHERE id=$1 AND (last_used_at IS NULL OR last_used_at <= $2::timestamptz - make_interval(secs => $3::int))
 `
 
 type TouchClientSessionParams struct {
-	ID         string
-	LastUsedAt sql.NullTime
+	ID                   string
+	LastUsedAt           sql.NullTime
+	TouchIntervalSeconds int32
 }
 
 func (q *Queries) TouchClientSession(ctx context.Context, arg TouchClientSessionParams) error {
-	_, err := q.db.Exec(ctx, touchClientSession, arg.ID, arg.LastUsedAt)
+	_, err := q.db.Exec(ctx, touchClientSession, arg.ID, arg.LastUsedAt, arg.TouchIntervalSeconds)
 	return err
 }
