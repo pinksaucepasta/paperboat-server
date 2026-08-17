@@ -18,7 +18,7 @@ func TestReleaseDownloadsAreNotCutOffByAPIRequestTimeout(t *testing.T) {
 		_, _ = w.Write([]byte("complete"))
 	}))
 
-	for _, path := range []string{"/install", "/tuf/targets/hash.pb-linux-amd64", "/helper-releases/tuf/targets/hash.pb-linux-amd64"} {
+	for _, path := range []string{"/install", "/current.json", "/tuf/targets/hash.pb-linux-amd64", "/helper-releases/tuf/targets/hash.pb-linux-amd64"} {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
 		if recorder.Code != http.StatusOK || recorder.Body.String() != "complete" {
@@ -30,6 +30,9 @@ func TestReleaseDownloadsAreNotCutOffByAPIRequestTimeout(t *testing.T) {
 func TestReleaseEndpointsServeInstallAndTUF(t *testing.T) {
 	directory := t.TempDir()
 	if err := os.WriteFile(filepath.Join(directory, "install"), []byte("#!/bin/sh\necho paperboat\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "current.json"), []byte(`{"schema":"paperboat.release-current/v1","version":"2026.08.18.1"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(directory, "tuf", "metadata"), 0o755); err != nil {
@@ -51,6 +54,11 @@ func TestReleaseEndpointsServeInstallAndTUF(t *testing.T) {
 	}
 	if got := install.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
 		t.Fatalf("install content type = %q", got)
+	}
+	current := httptest.NewRecorder()
+	router.ServeHTTP(current, httptest.NewRequest(http.MethodGet, "/current.json", nil))
+	if current.Code != http.StatusOK || !strings.Contains(current.Body.String(), `"version":"2026.08.18.1"`) || current.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("current response = %d %q headers=%v", current.Code, current.Body.String(), current.Header())
 	}
 
 	timestamp := httptest.NewRecorder()

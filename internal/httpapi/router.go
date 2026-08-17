@@ -102,6 +102,7 @@ func NewRouter(opts Options) http.Handler {
 		mux.HandleFunc("GET /healthz", health)
 		if opts.ReleaseFiles != nil {
 			mux.Handle("GET /install", installScript(opts.ReleaseFiles))
+			mux.Handle("GET /current.json", currentRelease(opts.ReleaseFiles))
 			mux.Handle("GET /tuf/{path...}", tufRepository("/tuf", opts.ReleaseFiles))
 			mux.Handle("GET /helper-releases/tuf/{path...}", tufRepository("/helper-releases/tuf", opts.ReleaseFiles))
 		}
@@ -305,7 +306,7 @@ func NewRouter(opts Options) http.Handler {
 			mux.Handle("POST /v1/machines/{machine_id}/terminal-sessions/{session_id}/close", userMachineAuth("projects:connect", userMachineTerminalSessionsClose(opts.Machines)))
 			mux.Handle("DELETE /v1/machines/{machine_id}/terminal-sessions/{session_id}", userMachineAuth("projects:connect", userMachineTerminalSessionsDelete(opts.Machines)))
 			mux.HandleFunc("POST /v1/machines/pairings/installation", userMachineInstallationConsume(opts.Machines))
-			mux.Handle("POST /v1/machines/pairings/{user_code}/approve", requireAuth(opts.Auth, requireCSRF(opts.Auth, userMachinePairingApprove(opts.Machines))))
+			mux.Handle("POST /v1/machines/pairings/{user_code}/approve", requireAuth(opts.Auth, requireCSRF(opts.Auth, userMachinePairingApprove(opts.Machines, opts.Logger))))
 			mux.Handle("POST /v1/machines/pairings/{user_code}/deny", requireAuth(opts.Auth, requireCSRF(opts.Auth, userMachinePairingDeny(opts.Machines))))
 			mux.Handle("POST /v1/machines/{machine_id}/disconnect", userMachineAuth("projects:connect", requireCSRF(opts.Auth, userMachineDisconnect(opts.Machines))))
 			mux.Handle("DELETE /v1/machines/{machine_id}", userMachineAuth("projects:connect", requireCSRF(opts.Auth, userMachineDelete(opts.Machines))))
@@ -648,7 +649,7 @@ func isReleaseDownload(r *http.Request) bool {
 	if r.Method != http.MethodGet {
 		return false
 	}
-	return r.URL.Path == "/install" || strings.HasPrefix(r.URL.Path, "/tuf/") || strings.HasPrefix(r.URL.Path, "/helper-releases/tuf/")
+	return r.URL.Path == "/install" || r.URL.Path == "/current.json" || strings.HasPrefix(r.URL.Path, "/tuf/") || strings.HasPrefix(r.URL.Path, "/helper-releases/tuf/")
 }
 
 func isStreamingRequest(r *http.Request) bool {

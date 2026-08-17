@@ -2234,6 +2234,24 @@
         "operationId": "get_install"
       }
     },
+    "/current.json": {
+      "get": {
+        "summary": "Discover the current Paperboat release",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Current release descriptor. The referenced artifact remains authenticated by TUF.",
+            "content": {
+              "application/json": {}
+            }
+          },
+          "404": {
+            "description": "No current release has been published."
+          }
+        },
+        "operationId": "get_current_release"
+      }
+    },
     "/tuf/{path...}": {
       "get": {
         "summary": "Download signed Paperboat TUF repository content",

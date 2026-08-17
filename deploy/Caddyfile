@@ -22,7 +22,7 @@
 {$PAPERBOAT_RELEASE_BASE_URL} {
 	@release {
 		method GET HEAD
-		path /install /tuf/* /helper-releases/tuf/*
+		path /install /current.json /tuf/* /helper-releases/tuf/*
 	}
 
 	handle @release {

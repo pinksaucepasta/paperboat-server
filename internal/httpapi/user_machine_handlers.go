@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/access"
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
+	"github.com/pinksaucepasta/paperboat-server/internal/observability"
 	"github.com/pinksaucepasta/paperboat-server/internal/usermachines"
 )
 
@@ -764,7 +766,7 @@ func userMachineTerminalSessionError(w http.ResponseWriter, r *http.Request, err
 	return true
 }
 
-func userMachinePairingApprove(service *usermachines.Service) http.HandlerFunc {
+func userMachinePairingApprove(service *usermachines.Service, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := principalFromContext(r.Context())
 		if !ok {
@@ -773,6 +775,7 @@ func userMachinePairingApprove(service *usermachines.Service) http.HandlerFunc {
 		}
 		machine, err := service.Approve(r.Context(), p.User.ID, r.PathValue("user_code"))
 		if err != nil {
+			observability.LoggerWithRequest(r.Context(), logger).Error("user-machine pairing approval failed", "error", err)
 			switch {
 			case errors.Is(err, usermachines.ErrSeatUnavailable), errors.Is(err, billing.ErrUserMachineSeatUnavailable):
 				writeError(w, r, http.StatusConflict, "user_machine_seat_unavailable", "An active machine subscription with an available seat is required.")
@@ -785,7 +788,7 @@ func userMachinePairingApprove(service *usermachines.Service) http.HandlerFunc {
 			case errors.Is(err, usermachines.ErrMachineIdentityConflict):
 				writeError(w, r, http.StatusConflict, "machine_identity_conflict", "This machine identity belongs to another account.")
 			default:
-				writeError(w, r, http.StatusNotFound, "user_machine_pairing_not_found", "Pairing request was not found.")
+				writeError(w, r, http.StatusInternalServerError, "machine_provisioning_failed", "The machine was approved, but its installation material could not be prepared. Retry setup on the machine.")
 			}
 			return
 		}

@@ -20,7 +20,7 @@ func NewReleaseFiles(directory string) (http.Handler, error) {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		relative := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(r.URL.Path)), "/")
-		if relative != "install" && !strings.HasPrefix(relative, "tuf/") {
+		if relative != "install" && relative != "current.json" && !strings.HasPrefix(relative, "tuf/") {
 			http.NotFound(w, r)
 			return
 		}
@@ -32,6 +32,17 @@ func NewReleaseFiles(directory string) (http.Handler, error) {
 		defer file.Close()
 		http.ServeContent(w, r, filepath.Base(relative), info.ModTime(), file)
 	}), nil
+}
+
+func currentRelease(files http.Handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		clone := r.Clone(r.Context())
+		clone.URL.Path = "/current.json"
+		files.ServeHTTP(w, clone)
+	}
 }
 
 func openRegularFile(root, relative string) (*os.File, os.FileInfo, error) {

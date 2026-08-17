@@ -49,7 +49,7 @@ Release container tags use `YYYY.MM.DD.X`. Run `tools/release-version.sh next`, 
 that exact tag without a `v` prefix, and push it.
 
 The server image contains only `paperboat-server`. Mount the exported, public release bundle at
-`PAPERBOAT_RELEASE_DIRECTORY`. The server exposes `/install` and the read-only `/tuf/`
+`PAPERBOAT_RELEASE_DIRECTORY`. The server exposes `/install`, `/current.json`, and the read-only `/tuf/`
 repository from `PAPERBOAT_RELEASE_BASE_URL` (or the public base URL when omitted). Atomic `current.json` promotion selects the
 release for new machine installations without a server restart. The server never receives TUF
 signing keys or signing state.
