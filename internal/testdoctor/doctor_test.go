@@ -19,7 +19,7 @@ func TestRunnerProducesStableSafeTypedChecks(t *testing.T) {
 		commands = append(commands, name+" "+strings.Join(args, " "))
 		switch name + " " + strings.Join(args, " ") {
 		case "go env GOVERSION":
-			return []byte("go1.26.5\n"), nil
+			return []byte("go1.26.6\n"), nil
 		case "docker context show":
 			return []byte("test\n"), nil
 		case "docker context inspect --format {{.Endpoints.docker.Host}}":
