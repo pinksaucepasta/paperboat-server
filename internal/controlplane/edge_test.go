@@ -116,8 +116,8 @@ func TestListProbeRegionsSelectsFreshReadyNodePerRegion(t *testing.T) {
 		})
 	}
 	insert := `INSERT INTO paperboat.control_tunnel_nodes
-		(id,edge_pool,protocol_version,process_epoch,state,ready,last_heartbeat_at,signaling_host,stun_host,stun_port)
-		VALUES ($1,$2,'1.0',$1,$3,$4,$5,$6,$7,$8)`
+		(id,edge_pool,relay_id,relay_region,relay_name,protocol_version,process_epoch,state,ready,last_heartbeat_at,signaling_host,stun_host,stun_port)
+		VALUES ($1,'default',$1,$2,$2,'1.0',$1,$3,$4,$5,$6,$7,$8)`
 	rows := []struct {
 		id, region, state, signal, stun string
 		ready                           bool
@@ -142,8 +142,8 @@ func TestListProbeRegionsSelectsFreshReadyNodePerRegion(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []ProbeRegion{
-		{Region: "fsn1", STUNURL: "stun:fsn-stun.example.test:3478", HTTPSURL: "https://fsn.example.test/network-check/v1"},
-		{Region: "hel1", STUNURL: "stun:hel-stun.example.test:5349", HTTPSURL: "https://hel.example.test/network-check/v1"},
+		{RelayID: nodes[1], Region: "fsn1", Name: "fsn1", STUNURL: "stun:fsn-stun.example.test:3478", HTTPSURL: "https://fsn.example.test/network-check/v1"},
+		{RelayID: nodes[2], Region: "hel1", Name: "hel1", STUNURL: "stun:hel-stun.example.test:5349", HTTPSURL: "https://hel.example.test/network-check/v1"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("regions = %#v, want %#v", got, want)

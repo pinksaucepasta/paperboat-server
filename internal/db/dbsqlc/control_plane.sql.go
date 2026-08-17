@@ -1339,7 +1339,7 @@ UPDATE control_tunnel_nodes
 SET state = 'draining', ready = false, drain_deadline = $1,
     version = version + 1, updated_at = $2
 WHERE id = $3 AND version = $4 AND state IN ('registered','ready')
-RETURNING id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port
+RETURNING id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port, relay_id, relay_region, relay_name
 `
 
 type DrainControlTunnelNodeParams struct {
@@ -1377,6 +1377,9 @@ func (q *Queries) DrainControlTunnelNode(ctx context.Context, arg DrainControlTu
 		&i.SignalingHost,
 		&i.StunHost,
 		&i.StunPort,
+		&i.RelayID,
+		&i.RelayRegion,
+		&i.RelayName,
 	)
 	return i, err
 }
@@ -2952,7 +2955,7 @@ SET state = CASE WHEN $1::boolean THEN 'draining' WHEN state = 'registered' AND 
     observation = coalesce($3::jsonb, '{}'::jsonb),
     last_heartbeat_at = $4, version = version + 1, updated_at = $4
 WHERE id = $5 AND process_epoch = $6 AND state NOT IN ('offline','retired')
-RETURNING id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port
+RETURNING id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port, relay_id, relay_region, relay_name
 `
 
 type HeartbeatControlTunnelNodeParams struct {
@@ -2994,6 +2997,9 @@ func (q *Queries) HeartbeatControlTunnelNode(ctx context.Context, arg HeartbeatC
 		&i.SignalingHost,
 		&i.StunHost,
 		&i.StunPort,
+		&i.RelayID,
+		&i.RelayRegion,
+		&i.RelayName,
 	)
 	return i, err
 }
@@ -3809,19 +3815,24 @@ func (q *Queries) ListPendingControlConfigConflictResolutions(ctx context.Contex
 }
 
 const listReadyControlTunnelProbeRegions = `-- name: ListReadyControlTunnelProbeRegions :many
-SELECT DISTINCT ON (edge_pool) edge_pool, signaling_host, stun_host, stun_port
+SELECT DISTINCT ON (relay_region) relay_id, relay_region, relay_name, signaling_host, stun_host, stun_port
 FROM control_tunnel_nodes
 WHERE state = 'ready' AND ready = true
   AND last_heartbeat_at > $1
+  AND relay_id IS NOT NULL AND trim(relay_id) <> ''
+  AND relay_region IS NOT NULL AND trim(relay_region) <> ''
+  AND relay_name IS NOT NULL AND trim(relay_name) <> ''
   AND signaling_host IS NOT NULL AND trim(signaling_host) <> ''
   AND stun_host IS NOT NULL AND trim(stun_host) <> ''
   AND stun_port BETWEEN 1 AND 65535
-ORDER BY edge_pool, last_heartbeat_at DESC, id
+ORDER BY relay_region, last_heartbeat_at DESC, id
 LIMIT 32
 `
 
 type ListReadyControlTunnelProbeRegionsRow struct {
-	EdgePool      string
+	RelayID       sql.NullString
+	RelayRegion   sql.NullString
+	RelayName     sql.NullString
 	SignalingHost sql.NullString
 	StunHost      sql.NullString
 	StunPort      sql.NullInt32
@@ -3837,7 +3848,9 @@ func (q *Queries) ListReadyControlTunnelProbeRegions(ctx context.Context, staleA
 	for rows.Next() {
 		var i ListReadyControlTunnelProbeRegionsRow
 		if err := rows.Scan(
-			&i.EdgePool,
+			&i.RelayID,
+			&i.RelayRegion,
+			&i.RelayName,
 			&i.SignalingHost,
 			&i.StunHost,
 			&i.StunPort,
@@ -4006,7 +4019,7 @@ func (q *Queries) ListRevokedControlSigningKeyIDs(ctx context.Context, rowLimit 
 }
 
 const listStaleControlTunnelNodesForUpdate = `-- name: ListStaleControlTunnelNodesForUpdate :many
-SELECT id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port FROM control_tunnel_nodes
+SELECT id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port, relay_id, relay_region, relay_name FROM control_tunnel_nodes
 WHERE state IN ('registered','ready') AND (last_heartbeat_at IS NULL OR last_heartbeat_at <= $1)
 ORDER BY coalesce(last_heartbeat_at, created_at), id
 FOR UPDATE SKIP LOCKED LIMIT $2
@@ -4046,6 +4059,9 @@ func (q *Queries) ListStaleControlTunnelNodesForUpdate(ctx context.Context, arg 
 			&i.SignalingHost,
 			&i.StunHost,
 			&i.StunPort,
+			&i.RelayID,
+			&i.RelayRegion,
+			&i.RelayName,
 		); err != nil {
 			return nil, err
 		}
@@ -4508,22 +4524,27 @@ func (q *Queries) RefreshControlPreviewEdgeReadiness(ctx context.Context, now ti
 }
 
 const registerControlTunnelNode = `-- name: RegisterControlTunnelNode :one
-INSERT INTO control_tunnel_nodes (id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, signaling_host, stun_host, stun_port, state, ready, capacity, last_heartbeat_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'registered', false,
-        coalesce($11::jsonb, '{}'::jsonb), $12)
+INSERT INTO control_tunnel_nodes (id, edge_pool, relay_id, relay_region, relay_name, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, signaling_host, stun_host, stun_port, state, ready, capacity, last_heartbeat_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'registered', false,
+        coalesce($14::jsonb, '{}'::jsonb), $15)
 ON CONFLICT (id) DO UPDATE
-SET protocol_version = EXCLUDED.protocol_version, process_epoch = EXCLUDED.process_epoch,
+SET edge_pool = EXCLUDED.edge_pool, relay_id = EXCLUDED.relay_id,
+    relay_region = EXCLUDED.relay_region, relay_name = EXCLUDED.relay_name,
+    protocol_version = EXCLUDED.protocol_version, process_epoch = EXCLUDED.process_epoch,
     endpoint_host = EXCLUDED.endpoint_host, endpoint_tcp_port = EXCLUDED.endpoint_tcp_port, endpoint_quic_port = EXCLUDED.endpoint_quic_port,
     signaling_host = EXCLUDED.signaling_host, stun_host = EXCLUDED.stun_host, stun_port = EXCLUDED.stun_port,
     state = 'registered', ready = false, capacity = EXCLUDED.capacity,
     observation = '{}'::jsonb, last_heartbeat_at = EXCLUDED.last_heartbeat_at,
     drain_deadline = NULL, version = control_tunnel_nodes.version + 1, updated_at = EXCLUDED.last_heartbeat_at
-RETURNING id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port
+RETURNING id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port, relay_id, relay_region, relay_name
 `
 
 type RegisterControlTunnelNodeParams struct {
 	ID               string
 	EdgePool         string
+	RelayID          sql.NullString
+	RelayRegion      sql.NullString
+	RelayName        sql.NullString
 	ProtocolVersion  string
 	ProcessEpoch     string
 	EndpointHost     sql.NullString
@@ -4540,6 +4561,9 @@ func (q *Queries) RegisterControlTunnelNode(ctx context.Context, arg RegisterCon
 	row := q.db.QueryRow(ctx, registerControlTunnelNode,
 		arg.ID,
 		arg.EdgePool,
+		arg.RelayID,
+		arg.RelayRegion,
+		arg.RelayName,
 		arg.ProtocolVersion,
 		arg.ProcessEpoch,
 		arg.EndpointHost,
@@ -4572,6 +4596,9 @@ func (q *Queries) RegisterControlTunnelNode(ctx context.Context, arg RegisterCon
 		&i.SignalingHost,
 		&i.StunHost,
 		&i.StunPort,
+		&i.RelayID,
+		&i.RelayRegion,
+		&i.RelayName,
 	)
 	return i, err
 }
@@ -5420,7 +5447,7 @@ func (q *Queries) SelectControlPreviewForEviction(ctx context.Context, arg Selec
 }
 
 const selectReadyControlTunnelNode = `-- name: SelectReadyControlTunnelNode :one
-SELECT id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port FROM control_tunnel_nodes
+SELECT id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port, relay_id, relay_region, relay_name FROM control_tunnel_nodes
 WHERE edge_pool = $1 AND state = 'ready' AND ready = true
   AND last_heartbeat_at > $2
 ORDER BY last_heartbeat_at DESC, id
@@ -5455,6 +5482,9 @@ func (q *Queries) SelectReadyControlTunnelNode(ctx context.Context, arg SelectRe
 		&i.SignalingHost,
 		&i.StunHost,
 		&i.StunPort,
+		&i.RelayID,
+		&i.RelayRegion,
+		&i.RelayName,
 	)
 	return i, err
 }

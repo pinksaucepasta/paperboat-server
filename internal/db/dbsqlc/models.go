@@ -573,6 +573,9 @@ type ControlTunnelNode struct {
 	SignalingHost    sql.NullString
 	StunHost         sql.NullString
 	StunPort         sql.NullInt32
+	RelayID          sql.NullString
+	RelayRegion      sql.NullString
+	RelayName        sql.NullString
 }
 
 type ControlUsageCounter struct {
