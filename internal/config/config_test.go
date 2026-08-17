@@ -207,6 +207,7 @@ func validProductionConfig() Config {
 	cfg.Secrets.EdgeControlCredential = "edge-control-credential-0123456789"
 	cfg.Fly.ImageRef = "registry.example.test/paperboat/project-vm@sha256:" + strings.Repeat("a", 64)
 	cfg.ReleaseDirectory = "/srv/paperboat-releases"
+	cfg.ReleaseBaseURL = "https://get.example.test"
 	cfg.Preview.BaseDomain = "preview.example.test"
 	cfg.Secrets.PreviewIdentityKey = "preview-identity-key-012345678901234567890123456789"
 	cfg.CLIAuth.MintActiveKeyID = "current"

@@ -18,3 +18,21 @@
 		X-Content-Type-Options nosniff
 	}
 }
+
+{$PAPERBOAT_RELEASE_BASE_URL} {
+	@release {
+		method GET HEAD
+		path /install /tuf/* /helper-releases/tuf/*
+	}
+
+	handle @release {
+		reverse_proxy server:8080
+	}
+
+	respond 404
+
+	header {
+		Referrer-Policy no-referrer
+		X-Content-Type-Options nosniff
+	}
+}

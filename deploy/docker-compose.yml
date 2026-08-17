@@ -38,6 +38,7 @@ services:
     restart: unless-stopped
     environment:
       PAPERBOAT_PUBLIC_BASE_URL: ${PAPERBOAT_PUBLIC_BASE_URL:?set PAPERBOAT_PUBLIC_BASE_URL}
+      PAPERBOAT_RELEASE_BASE_URL: ${PAPERBOAT_RELEASE_BASE_URL:?set PAPERBOAT_RELEASE_BASE_URL}
       ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL}
     depends_on:
       server:

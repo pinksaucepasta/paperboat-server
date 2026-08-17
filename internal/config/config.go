@@ -452,6 +452,9 @@ func (c Config) Validate() error {
 		if strings.TrimSpace(c.ReleaseDirectory) == "" || !filepath.IsAbs(c.ReleaseDirectory) || strings.TrimSpace(c.RuntimeBaseDomain) == "" || c.UserMachines.RuntimeListenPort < 1024 {
 			errs = append(errs, fmt.Errorf("release directory and user-machine runtime route are required in production"))
 		}
+		if strings.TrimSpace(c.ReleaseBaseURL) == "" {
+			errs = append(errs, fmt.Errorf("release_base_url is required in production"))
+		}
 		if strings.TrimSpace(c.Preview.BaseDomain) == "" || strings.TrimSpace(c.Secrets.PreviewIdentityKey) == "" {
 			errs = append(errs, fmt.Errorf("preview base domain and identity key are required in production"))
 		}
