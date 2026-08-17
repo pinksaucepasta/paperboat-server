@@ -29,10 +29,20 @@ type availabilityObservationRepository interface {
 	RecordAvailabilityObservation(context.Context, string, string, usermachines.AvailabilityObservation) error
 }
 
-func runtimeObservation(repo runtimeObservationRepository, identities runtimeIdentityVerifier, _ int, availabilityObservers ...availabilityObservationRepository) http.HandlerFunc {
+type updateObservationRepository interface {
+	RecordUpdateObservation(context.Context, string, string, usermachines.UpdateObservation) error
+}
+
+func runtimeObservation(repo runtimeObservationRepository, identities runtimeIdentityVerifier, _ int, observationSinks ...any) http.HandlerFunc {
 	var availability availabilityObservationRepository
-	if len(availabilityObservers) > 0 {
-		availability = availabilityObservers[0]
+	var updates updateObservationRepository
+	for _, sink := range observationSinks {
+		if candidate, ok := sink.(availabilityObservationRepository); ok {
+			availability = candidate
+		}
+		if candidate, ok := sink.(updateObservationRepository); ok {
+			updates = candidate
+		}
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -50,7 +60,8 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 				ConnectorGeneration uint64    `json:"connector_generation"`
 				ObservedAt          time.Time `json:"observed_at"`
 			} `json:"runtime_diagnostics"`
-			RelayLatency *metering.RelayLatencyVector `json:"relay_latency,omitempty"`
+			RelayLatency *metering.RelayLatencyVector    `json:"relay_latency,omitempty"`
+			Update       *usermachines.UpdateObservation `json:"update,omitempty"`
 		}
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20+1))
 		decoder := json.NewDecoder(bytes.NewReader(body))
@@ -70,6 +81,16 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 		if req.RelayLatency != nil && (req.RuntimeDiagnostics == nil || !req.RelayLatency.Valid(req.SampledAt)) {
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "Relay latency observation is invalid.")
 			return
+		}
+		if req.Update != nil {
+			if req.Update.Validate(time.Now().UTC()) != nil {
+				writeError(w, r, http.StatusBadRequest, "invalid_request", "Update observation is invalid.")
+				return
+			}
+			if updates == nil {
+				writeError(w, r, http.StatusServiceUnavailable, "update_observation_unavailable", "Update observation storage is temporarily unavailable.")
+				return
+			}
 		}
 		got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 		authErr := metering.ErrInvalidHeartbeatCredential
@@ -111,6 +132,28 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 				return
 			}
 		}
+		updateRecorded := false
+		if req.Update != nil {
+			if err := updates.RecordUpdateObservation(r.Context(), req.EnvironmentID, req.ResourceID, *req.Update); err != nil {
+				switch {
+				case errors.Is(err, usermachines.ErrUpdateObservationStale):
+					// A late update packet must not make the machine heartbeat fail.
+					// The durable status remains fenced by installation and worker
+					// generations; the next heartbeat will carry current state.
+				case errors.Is(err, usermachines.ErrUpdateObservationInvalid), errors.Is(err, usermachines.ErrUpdateObservationConflict):
+					writeError(w, r, http.StatusConflict, "update_observation_rejected", "Update observation was rejected as stale or conflicting.")
+					return
+				case errors.Is(err, usermachines.ErrNotFound):
+					writeError(w, r, http.StatusNotFound, "machine_not_found", "Machine was not found.")
+					return
+				default:
+					writeError(w, r, http.StatusInternalServerError, "internal_error", "Unable to record update observation.")
+					return
+				}
+			} else {
+				updateRecorded = true
+			}
+		}
 		observation := metering.RuntimeObservation{
 			ProjectID:       req.EnvironmentID,
 			MachineID:       req.ResourceID,
@@ -135,7 +178,7 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
 			return
 		}
-		writeJSON(w, http.StatusAccepted, SuccessResponse{Data: map[string]any{"accepted": true}})
+		writeJSON(w, http.StatusAccepted, SuccessResponse{Data: map[string]any{"accepted": true, "update_observation_recorded": updateRecorded}})
 	}
 }
 

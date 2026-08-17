@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
+	"github.com/pinksaucepasta/paperboat-server/internal/usermachines"
 )
 
 type fakeRuntimeObservationRepository struct {
@@ -22,6 +23,16 @@ type fakeRuntimeIdentity struct {
 	token, projectID, machineID string
 	proof, body                 []byte
 	err                         error
+}
+
+type fakeUpdateObservationRepository struct {
+	recorded *usermachines.UpdateObservation
+	err      error
+}
+
+func (f *fakeUpdateObservationRepository) RecordUpdateObservation(_ context.Context, _, _ string, observation usermachines.UpdateObservation) error {
+	f.recorded = &observation
+	return f.err
 }
 
 func (f *fakeRuntimeIdentity) VerifyRuntimeObservation(_ context.Context, token string, proof, body []byte, projectID, machineID string) error {
@@ -84,6 +95,33 @@ func TestRuntimeObservationAcceptsFreshRelayLatencyVector(t *testing.T) {
 	runtimeObservation(repository, nil, 10).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusAccepted || repository.recorded == nil || repository.recorded.RelayLatency == nil || repository.recorded.RelayLatency.Generation != 7 {
 		t.Fatalf("status=%d observation=%#v body=%s", recorder.Code, repository.recorded, recorder.Body.String())
+	}
+}
+
+func TestRuntimeObservationRecordsSignedUpdateObservation(t *testing.T) {
+	repository := &fakeRuntimeObservationRepository{}
+	updates := &fakeUpdateObservationRepository{}
+	now := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
+	body := `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-08-06T12:00:01Z","update":{"schema":"paperboat.update-observation/v1","state":"healthy","current_version":"2026.08.18.1","channel":"stable","operation_id":"update-op-0001","installation_generation":2,"worker_generation":4,"os_boot_id":"boot-1","rollback_count":0,"observed_at":"` + now.Format(time.RFC3339) + `"}}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer machine-token")
+	recorder := httptest.NewRecorder()
+	runtimeObservation(repository, nil, 10, updates).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted || updates.recorded == nil || !strings.Contains(recorder.Body.String(), `"update_observation_recorded":true`) {
+		t.Fatalf("status=%d update=%#v body=%s", recorder.Code, updates.recorded, recorder.Body.String())
+	}
+}
+
+func TestRuntimeObservationIgnoresStaleUpdateObservation(t *testing.T) {
+	repository := &fakeRuntimeObservationRepository{}
+	updates := &fakeUpdateObservationRepository{err: usermachines.ErrUpdateObservationStale}
+	body := `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-08-06T12:00:01Z","update":{"schema":"paperboat.update-observation/v1","state":"healthy","current_version":"2026.08.18.1","channel":"stable","operation_id":"update-op-0001","installation_generation":2,"worker_generation":4,"os_boot_id":"boot-1","rollback_count":0,"observed_at":"2026-08-06T12:00:00Z"}}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer machine-token")
+	recorder := httptest.NewRecorder()
+	runtimeObservation(repository, nil, 10, updates).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted || !strings.Contains(recorder.Body.String(), `"update_observation_recorded":false`) {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 

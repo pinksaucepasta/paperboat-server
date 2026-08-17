@@ -135,6 +135,27 @@ CLI project reads and connects use scoped Paperboat bearer access tokens.
   allowing later clock-corrected status to replace it. Paths and errors are sanitized and bounded;
   file contents, credentials, and raw command output are never accepted or persisted.
 
+### Signed Updates and Maintenance
+
+- The release origin's `current.json` is discovery-only. Update decisions use a TUF-verified
+  `paperboat.release-index/v1` target. The signed index carries the artifact digest and length,
+  platform and architecture, worker/supervisor compatibility bounds, minimum version, revocation,
+  and a deterministic rollout policy.
+- Cohort eligibility is stable for `(cohort_seed, machine_id)`, is evaluated locally from the
+  signed policy, and fails closed for revoked releases, unsupported targets, invalid windows, and
+  machines outside the signed percentage. The control plane does not accept a mutable cohort
+  override from a client.
+- `POST /v1/runtime-observations` accepts an optional `update` object with schema
+  `paperboat.update-observation/v1`. The server authenticates it with the machine proof and
+  fences late or replayed state using installation generation, worker generation, operation ID,
+  boot ID, timestamp, and a payload hash. Stale observations never replace newer status.
+- `GET /v1/machines/{machine_id}/update-status` returns the latest durable update observation.
+- `GET|POST /v1/machines/{machine_id}/maintenance-approvals` lists or requests an explicit,
+  owner-scoped approval. Requests require `Idempotency-Key`, bind to one target version and
+  action, and expire within 24 hours. `POST .../{approval_id}/approve` and `/reject` are
+  optimistic, audited state transitions. Approval never bypasses TUF verification or local
+  compatibility checks.
+
 ### Catalogs
 
 - `GET /v1/catalog/plans`

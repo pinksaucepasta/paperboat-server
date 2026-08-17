@@ -1554,6 +1554,25 @@ type UserMachineEntitlement struct {
 	CreatedAt              time.Time
 }
 
+type UserMachineMaintenanceApproval struct {
+	ID              string
+	UserMachineID   string
+	UserID          string
+	Schema          string
+	Action          string
+	TargetVersion   string
+	Reason          string
+	Status          string
+	IdempotencyKey  string
+	RequestHash     []byte
+	ExpiresAt       time.Time
+	DecidedAt       sql.NullTime
+	DecidedByUserID sql.NullString
+	Version         int64
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
 type UserMachinePairing struct {
 	ID                           string
 	VerifierHash                 []byte
@@ -1611,6 +1630,26 @@ type UserMachineTerminalSessionOperation struct {
 	CompletedAt       sql.NullTime
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+}
+
+type UserMachineUpdateObservation struct {
+	UserMachineID          string
+	EnvironmentID          string
+	Schema                 string
+	CurrentVersion         string
+	TargetVersion          sql.NullString
+	Channel                string
+	State                  string
+	ErrorCode              sql.NullString
+	OperationID            string
+	InstallationGeneration int64
+	WorkerGeneration       int64
+	OsBootID               string
+	RollbackCount          int64
+	ObservedAt             time.Time
+	PayloadHash            []byte
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
 }
 
 type UserTransferDestinationDefault struct {

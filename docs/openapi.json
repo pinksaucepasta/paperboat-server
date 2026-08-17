@@ -2026,12 +2026,65 @@
           "relay_latency": {
             "$ref": "#/components/schemas/RelayLatencyVector"
           },
+          "update": {
+            "$ref": "#/components/schemas/UpdateObservation"
+          },
           "environment_id": {
             "type": "string"
           },
           "resource_id": {
             "type": "string"
           }
+        }
+      },
+      "UpdateObservation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "state",
+          "current_version",
+          "channel",
+          "operation_id",
+          "installation_generation",
+          "worker_generation",
+          "os_boot_id",
+          "rollback_count",
+          "observed_at"
+        ],
+        "properties": {
+          "schema": { "const": "paperboat.update-observation/v1" },
+          "state": { "type": "string", "enum": ["idle", "checking", "downloading", "staged", "activating", "deferred", "healthy", "failed", "rolled_back"] },
+          "current_version": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "target_version": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "channel": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,31}$" },
+          "operation_id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{8,128}$" },
+          "installation_generation": { "type": "integer", "format": "int64", "minimum": 1 },
+          "worker_generation": { "type": "integer", "format": "int64", "minimum": 1 },
+          "os_boot_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "rollback_count": { "type": "integer", "format": "int64", "minimum": 0 },
+          "error_code": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+          "observed_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "MaintenanceApproval": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schema", "id", "machine_id", "action", "target_version", "status", "expires_at", "version", "created_at", "updated_at"],
+        "properties": {
+          "schema": { "const": "paperboat.maintenance-approval/v1" },
+          "id": { "type": "string" },
+          "machine_id": { "type": "string" },
+          "action": { "type": "string", "enum": ["update", "restart", "migration"] },
+          "target_version": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "reason": { "type": "string", "maxLength": 512 },
+          "status": { "type": "string", "enum": ["pending", "approved", "rejected", "expired", "consumed"] },
+          "expires_at": { "type": "string", "format": "date-time" },
+          "decided_at": { "type": "string", "format": "date-time" },
+          "decided_by_user_id": { "type": "string" },
+          "version": { "type": "integer", "format": "int64", "minimum": 1 },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
         }
       },
       "RelayLatencyVector": {
@@ -6445,6 +6498,69 @@
           }
         },
         "operationId": "delete_v1_user_machines_machine_id"
+      }
+    },
+    "/v1/machines/{machine_id}/update-status": {
+      "parameters": [{"name": "machine_id", "in": "path", "required": true, "schema": {"type": "string"}}],
+      "get": {
+        "summary": "Read the machine update supervisor status",
+        "security": [{"cookieSession": []}, {"bearerAccess": []}],
+        "x-required-bearer-scopes": ["projects:read"],
+        "responses": {
+          "200": {"description": "Current machine update observation.", "content": {"application/json": {"schema": {"allOf": [{"$ref": "#/components/schemas/SuccessResponse"}], "properties": {"data": {"$ref": "#/components/schemas/UpdateObservation"}}}}}},
+          "401": {"$ref": "#/components/responses/Error"},
+          "404": {"$ref": "#/components/responses/Error"}
+        },
+        "operationId": "get_v1_user_machines_machine_id_update_status"
+      }
+    },
+    "/v1/machines/{machine_id}/maintenance-approvals": {
+      "parameters": [{"name": "machine_id", "in": "path", "required": true, "schema": {"type": "string"}}],
+      "get": {
+        "summary": "List machine maintenance approvals",
+        "security": [{"cookieSession": []}, {"bearerAccess": []}],
+        "x-required-bearer-scopes": ["projects:read"],
+        "responses": {
+          "200": {"description": "Machine maintenance approvals.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SuccessResponse"}}}},
+          "401": {"$ref": "#/components/responses/Error"},
+          "404": {"$ref": "#/components/responses/Error"}
+        },
+        "operationId": "get_v1_user_machines_machine_id_maintenance_approvals"
+      },
+      "post": {
+        "summary": "Request machine maintenance approval",
+        "security": [{"cookieSession": [], "csrfHeader": []}, {"bearerAccess": []}],
+        "x-required-bearer-scopes": ["projects:connect"],
+        "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["action", "target_version"], "properties": {"action": {"type": "string", "enum": ["update", "restart", "migration"]}, "target_version": {"type": "string", "minLength": 1, "maxLength": 64}, "reason": {"type": "string", "maxLength": 512}, "expires_in_seconds": {"type": "integer", "format": "int64", "minimum": 60, "maximum": 86400}}}}}},
+        "responses": {
+          "201": {"description": "Maintenance approval requested.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SuccessResponse"}}}},
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"},
+          "404": {"$ref": "#/components/responses/Error"},
+          "409": {"$ref": "#/components/responses/Error"}
+        },
+        "operationId": "post_v1_user_machines_machine_id_maintenance_approvals"
+      }
+    },
+    "/v1/machines/{machine_id}/maintenance-approvals/{approval_id}/approve": {
+      "parameters": [{"name": "machine_id", "in": "path", "required": true, "schema": {"type": "string"}}, {"name": "approval_id", "in": "path", "required": true, "schema": {"type": "string"}}],
+      "post": {
+        "summary": "Approve machine maintenance",
+        "security": [{"cookieSession": [], "csrfHeader": []}, {"bearerAccess": []}],
+        "x-required-bearer-scopes": ["projects:connect"],
+        "responses": {"200": {"description": "Maintenance approved.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SuccessResponse"}}}}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}},
+        "operationId": "post_v1_user_machines_machine_id_maintenance_approvals_approval_id_approve"
+      }
+    },
+    "/v1/machines/{machine_id}/maintenance-approvals/{approval_id}/reject": {
+      "parameters": [{"name": "machine_id", "in": "path", "required": true, "schema": {"type": "string"}}, {"name": "approval_id", "in": "path", "required": true, "schema": {"type": "string"}}],
+      "post": {
+        "summary": "Reject machine maintenance",
+        "security": [{"cookieSession": [], "csrfHeader": []}, {"bearerAccess": []}],
+        "x-required-bearer-scopes": ["projects:connect"],
+        "responses": {"200": {"description": "Maintenance rejected.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SuccessResponse"}}}}, "401": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}},
+        "operationId": "post_v1_user_machines_machine_id_maintenance_approvals_approval_id_reject"
       }
     },
     "/v1/machines/{machine_id}/disconnect": {

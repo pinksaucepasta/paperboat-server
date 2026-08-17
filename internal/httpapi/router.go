@@ -290,6 +290,11 @@ func NewRouter(opts Options) http.Handler {
 			mux.Handle("PUT /v1/terminal-sessions/{session_id}/transfer-destination", userMachineAuth("projects:connect", terminalSessionTransferDestination(opts.Machines)))
 			mux.Handle("DELETE /v1/terminal-sessions/{session_id}/transfer-destination", userMachineAuth("projects:connect", terminalSessionTransferDestination(opts.Machines)))
 			mux.Handle("GET /v1/machines/{machine_id}", requireAuth(opts.Auth, userMachineGet(opts.Machines)))
+			mux.Handle("GET /v1/machines/{machine_id}/update-status", userMachineAuth("projects:read", userMachineUpdateStatus(opts.Machines)))
+			mux.Handle("GET /v1/machines/{machine_id}/maintenance-approvals", userMachineAuth("projects:read", userMachineMaintenanceApprovalsList(opts.Machines)))
+			mux.Handle("POST /v1/machines/{machine_id}/maintenance-approvals", userMachineAuth("projects:connect", requireCSRF(opts.Auth, userMachineMaintenanceApprovalRequest(opts.Machines))))
+			mux.Handle("POST /v1/machines/{machine_id}/maintenance-approvals/{approval_id}/approve", userMachineAuth("projects:connect", requireCSRF(opts.Auth, userMachineMaintenanceApprovalDecision(opts.Machines, "approved"))))
+			mux.Handle("POST /v1/machines/{machine_id}/maintenance-approvals/{approval_id}/reject", userMachineAuth("projects:connect", requireCSRF(opts.Auth, userMachineMaintenanceApprovalDecision(opts.Machines, "rejected"))))
 			mux.Handle("PUT /v1/machines/{machine_id}/availability-policy", userMachineAuth("projects:connect", requireCSRF(opts.Auth, userMachineAvailabilityPolicy(opts.Machines))))
 			if opts.DeviceAuth != nil {
 				mux.Handle("POST /v1/machines/{machine_id}/connection-descriptor", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", userMachineConnectionDescriptor(opts.Machines))))
