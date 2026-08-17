@@ -7,7 +7,7 @@
 
 CONFIG ?=
 ENV_FILE ?= .env.local
-GO_VERSION := 1.26.5
+GO_VERSION := 1.26.6
 SQLC_VERSION := v1.30.0
 GO := GOTOOLCHAIN=local go
 GOFMT := $(shell GOTOOLCHAIN=local go env GOROOT 2>/dev/null)/bin/gofmt

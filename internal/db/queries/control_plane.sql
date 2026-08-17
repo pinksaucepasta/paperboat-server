@@ -1023,11 +1023,13 @@ SET state = 'pending', attempts = 0, last_error = NULL, next_attempt_at = NULL,
 WHERE id = sqlc.arg(id) AND state = 'dead_letter';
 
 -- name: RegisterControlTunnelNode :one
-INSERT INTO control_tunnel_nodes (id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, signaling_host, stun_host, stun_port, state, ready, capacity, last_heartbeat_at)
-VALUES (sqlc.arg(id), sqlc.arg(edge_pool), sqlc.arg(protocol_version), sqlc.arg(process_epoch), sqlc.arg(endpoint_host), sqlc.arg(endpoint_tcp_port), sqlc.arg(endpoint_quic_port), sqlc.arg(signaling_host), sqlc.arg(stun_host), sqlc.arg(stun_port), 'registered', false,
+INSERT INTO control_tunnel_nodes (id, edge_pool, relay_id, relay_region, relay_name, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, signaling_host, stun_host, stun_port, state, ready, capacity, last_heartbeat_at)
+VALUES (sqlc.arg(id), sqlc.arg(edge_pool), sqlc.arg(relay_id), sqlc.arg(relay_region), sqlc.arg(relay_name), sqlc.arg(protocol_version), sqlc.arg(process_epoch), sqlc.arg(endpoint_host), sqlc.arg(endpoint_tcp_port), sqlc.arg(endpoint_quic_port), sqlc.arg(signaling_host), sqlc.arg(stun_host), sqlc.arg(stun_port), 'registered', false,
         coalesce(sqlc.arg(capacity)::jsonb, '{}'::jsonb), sqlc.arg(now))
 ON CONFLICT (id) DO UPDATE
-SET protocol_version = EXCLUDED.protocol_version, process_epoch = EXCLUDED.process_epoch,
+SET edge_pool = EXCLUDED.edge_pool, relay_id = EXCLUDED.relay_id,
+    relay_region = EXCLUDED.relay_region, relay_name = EXCLUDED.relay_name,
+    protocol_version = EXCLUDED.protocol_version, process_epoch = EXCLUDED.process_epoch,
     endpoint_host = EXCLUDED.endpoint_host, endpoint_tcp_port = EXCLUDED.endpoint_tcp_port, endpoint_quic_port = EXCLUDED.endpoint_quic_port,
     signaling_host = EXCLUDED.signaling_host, stun_host = EXCLUDED.stun_host, stun_port = EXCLUDED.stun_port,
     state = 'registered', ready = false, capacity = EXCLUDED.capacity,
@@ -1057,14 +1059,17 @@ ORDER BY last_heartbeat_at DESC, id
 LIMIT 1;
 
 -- name: ListReadyControlTunnelProbeRegions :many
-SELECT DISTINCT ON (edge_pool) edge_pool, signaling_host, stun_host, stun_port
+SELECT DISTINCT ON (relay_region) relay_id, relay_region, relay_name, signaling_host, stun_host, stun_port
 FROM control_tunnel_nodes
 WHERE state = 'ready' AND ready = true
   AND last_heartbeat_at > sqlc.arg(stale_after)
+  AND relay_id IS NOT NULL AND trim(relay_id) <> ''
+  AND relay_region IS NOT NULL AND trim(relay_region) <> ''
+  AND relay_name IS NOT NULL AND trim(relay_name) <> ''
   AND signaling_host IS NOT NULL AND trim(signaling_host) <> ''
   AND stun_host IS NOT NULL AND trim(stun_host) <> ''
   AND stun_port BETWEEN 1 AND 65535
-ORDER BY edge_pool, last_heartbeat_at DESC, id
+ORDER BY relay_region, last_heartbeat_at DESC, id
 LIMIT 32;
 
 -- name: SetControlConnectorAdmission :one

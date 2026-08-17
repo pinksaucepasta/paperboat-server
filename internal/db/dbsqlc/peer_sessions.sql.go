@@ -519,24 +519,28 @@ func (q *Queries) ListPeerSignalingGrantsForIntent(ctx context.Context, intentID
 }
 
 const listReadyPeerRelayNodes = `-- name: ListReadyPeerRelayNodes :many
-SELECT DISTINCT ON (edge_pool)
-  id, edge_pool, signaling_host, stun_host, stun_port
+SELECT DISTINCT ON (relay_region)
+  id, edge_pool, relay_id, relay_region, relay_name, signaling_host, stun_host, stun_port
 FROM control_tunnel_nodes
 WHERE state = 'ready' AND ready = true
   AND last_heartbeat_at > $1::timestamptz
+  AND relay_region IS NOT NULL AND trim(relay_region) <> ''
   AND signaling_host IS NOT NULL AND stun_host IS NOT NULL
   AND stun_port BETWEEN 1 AND 65535
   AND CASE WHEN jsonb_typeof(capacity->'connectors') = 'number'
       THEN (capacity->>'connectors')::bigint ELSE 0 END
     > CASE WHEN jsonb_typeof(observation->'active_streams') = 'number'
       THEN (observation->>'active_streams')::bigint ELSE 0 END
-ORDER BY edge_pool, last_heartbeat_at DESC, id
+ORDER BY relay_region, last_heartbeat_at DESC, id
 LIMIT 32
 `
 
 type ListReadyPeerRelayNodesRow struct {
 	ID            string
 	EdgePool      string
+	RelayID       sql.NullString
+	RelayRegion   sql.NullString
+	RelayName     sql.NullString
 	SignalingHost sql.NullString
 	StunHost      sql.NullString
 	StunPort      sql.NullInt32
@@ -554,6 +558,9 @@ func (q *Queries) ListReadyPeerRelayNodes(ctx context.Context, nodeStaleAfter ti
 		if err := rows.Scan(
 			&i.ID,
 			&i.EdgePool,
+			&i.RelayID,
+			&i.RelayRegion,
+			&i.RelayName,
 			&i.SignalingHost,
 			&i.StunHost,
 			&i.StunPort,

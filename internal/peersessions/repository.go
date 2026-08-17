@@ -164,7 +164,7 @@ func (r *SQLRepository) selectRelayNode(ctx context.Context, tx *db.Tx, request 
 	}
 	choices := make([]relayselection.Node, 0, len(nodes))
 	for index := range nodes {
-		choices = append(choices, relayselection.Node{Region: nodes[index].EdgePool, Value: index})
+		choices = append(choices, relayselection.Node{Region: nodes[index].RelayRegion.String, Value: index})
 	}
 	client := relayVector(request.RelayLatency.Generation, request.RelayLatency.ObservedAt, request.RelayLatency.Samples)
 	client.RelaySuccessRegion, client.RelaySuccessAt = request.RelayLatency.RelaySuccessRegion, request.RelayLatency.RelaySuccessAt

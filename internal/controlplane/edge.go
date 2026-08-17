@@ -369,6 +369,9 @@ func (s *EdgeService) SetClock(clock func() time.Time) {
 type edgeNodeRegistration struct {
 	NodeID       string `json:"edge_node_id"`
 	EdgePool     string `json:"edge_pool"`
+	RelayID      string `json:"relay_id"`
+	RelayRegion  string `json:"relay_region"`
+	RelayName    string `json:"relay_name"`
 	Artifact     string `json:"artifact"`
 	Protocol     string `json:"protocol"`
 	ProcessEpoch string `json:"process_epoch"`
@@ -413,7 +416,9 @@ const controlTunnelNodeStaleAfter = 2 * time.Minute
 const maxProbeRegions = 32
 
 type ProbeRegion struct {
+	RelayID  string `json:"relay_id"`
 	Region   string `json:"region"`
+	Name     string `json:"name"`
 	STUNURL  string `json:"stun_url"`
 	HTTPSURL string `json:"https_url"`
 }
@@ -428,14 +433,18 @@ func (s *EdgeService) ListProbeRegions(ctx context.Context) ([]ProbeRegion, erro
 	}
 	regions := make([]ProbeRegion, 0, min(len(rows), maxProbeRegions))
 	for _, row := range rows {
-		region := strings.TrimSpace(row.EdgePool)
+		region := strings.TrimSpace(row.RelayRegion.String)
+		relayID := strings.TrimSpace(row.RelayID.String)
+		name := strings.TrimSpace(row.RelayName.String)
 		signalingHost := strings.TrimSpace(row.SignalingHost.String)
 		stunHost := strings.TrimSpace(row.StunHost.String)
-		if !validProbeRegion(region) || !validRouteHost(signalingHost) || !validRouteHost(stunHost) || !row.StunPort.Valid || row.StunPort.Int32 < 1 || row.StunPort.Int32 > 65535 {
+		if !validProbeRegion(relayID) || !validProbeRegion(region) || name == "" || len(name) > 80 || !validRouteHost(signalingHost) || !validRouteHost(stunHost) || !row.StunPort.Valid || row.StunPort.Int32 < 1 || row.StunPort.Int32 > 65535 {
 			continue
 		}
 		regions = append(regions, ProbeRegion{
+			RelayID:  relayID,
 			Region:   region,
+			Name:     name,
 			STUNURL:  "stun:" + net.JoinHostPort(stunHost, strconv.Itoa(int(row.StunPort.Int32))),
 			HTTPSURL: (&url.URL{Scheme: "https", Host: signalingHost, Path: "/network-check/v1"}).String(),
 		})
@@ -456,11 +465,20 @@ func validProbeRegion(value string) bool {
 }
 
 func (s *EdgeService) RegisterNode(ctx context.Context, r edgeNodeRegistration) error {
-	if r.NodeID == "" || r.EdgePool == "" || r.Protocol == "" || r.ProcessEpoch == "" || r.Capacity == 0 || r.Endpoint.Host == "" || r.Endpoint.TCPPort == 0 || r.Endpoint.QUICPort == 0 || r.SignalingHost == "" || r.STUNEndpoint.Host == "" || r.STUNEndpoint.Port == 0 {
+	if r.RelayRegion == "" {
+		r.RelayRegion = r.EdgePool
+	}
+	if r.RelayID == "" {
+		r.RelayID = r.NodeID
+	}
+	if r.RelayName == "" {
+		r.RelayName = r.RelayRegion
+	}
+	if r.NodeID == "" || r.EdgePool == "" || !validProbeRegion(r.RelayID) || !validProbeRegion(r.RelayRegion) || strings.TrimSpace(r.RelayName) == "" || len(r.RelayName) > 80 || r.Protocol == "" || r.ProcessEpoch == "" || r.Capacity == 0 || r.Endpoint.Host == "" || r.Endpoint.TCPPort == 0 || r.Endpoint.QUICPort == 0 || r.SignalingHost == "" || r.STUNEndpoint.Host == "" || r.STUNEndpoint.Port == 0 {
 		return ErrInvalidUsageReport
 	}
 	capacity, _ := json.Marshal(map[string]any{"connectors": r.Capacity, "artifact": r.Artifact})
-	_, err := s.store.Queries().RegisterControlTunnelNode(ctx, dbsqlc.RegisterControlTunnelNodeParams{ID: r.NodeID, EdgePool: r.EdgePool, ProtocolVersion: r.Protocol, ProcessEpoch: r.ProcessEpoch, EndpointHost: sql.NullString{String: r.Endpoint.Host, Valid: true}, EndpointTcpPort: sql.NullInt32{Int32: int32(r.Endpoint.TCPPort), Valid: true}, EndpointQuicPort: sql.NullInt32{Int32: int32(r.Endpoint.QUICPort), Valid: true}, SignalingHost: sql.NullString{String: r.SignalingHost, Valid: true}, StunHost: sql.NullString{String: r.STUNEndpoint.Host, Valid: true}, StunPort: sql.NullInt32{Int32: int32(r.STUNEndpoint.Port), Valid: true}, Capacity: capacity, Now: sql.NullTime{Time: s.clock(), Valid: true}})
+	_, err := s.store.Queries().RegisterControlTunnelNode(ctx, dbsqlc.RegisterControlTunnelNodeParams{ID: r.NodeID, EdgePool: r.EdgePool, RelayID: sql.NullString{String: r.RelayID, Valid: true}, RelayRegion: sql.NullString{String: r.RelayRegion, Valid: true}, RelayName: sql.NullString{String: r.RelayName, Valid: true}, ProtocolVersion: r.Protocol, ProcessEpoch: r.ProcessEpoch, EndpointHost: sql.NullString{String: r.Endpoint.Host, Valid: true}, EndpointTcpPort: sql.NullInt32{Int32: int32(r.Endpoint.TCPPort), Valid: true}, EndpointQuicPort: sql.NullInt32{Int32: int32(r.Endpoint.QUICPort), Valid: true}, SignalingHost: sql.NullString{String: r.SignalingHost, Valid: true}, StunHost: sql.NullString{String: r.STUNEndpoint.Host, Valid: true}, StunPort: sql.NullInt32{Int32: int32(r.STUNEndpoint.Port), Valid: true}, Capacity: capacity, Now: sql.NullTime{Time: s.clock(), Valid: true}})
 	return err
 }
 

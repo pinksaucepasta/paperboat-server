@@ -83,15 +83,27 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
+          "relay_id",
           "region",
+          "name",
           "stun_url",
           "https_url"
         ],
         "properties": {
+          "relay_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "region": {
             "type": "string",
             "minLength": 1,
             "maxLength": 63
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
           },
           "stun_url": {
             "type": "string",

@@ -19,13 +19,13 @@ import (
 
 const (
 	ProtocolVersion = "paperboat.test-doctor/v1"
-	requiredGo      = "go1.26.5"
+	requiredGo      = "go1.26.6"
 	minimumDisk     = uint64(10 << 30)
 	minimumMemory   = uint64(4 << 30)
 )
 
 var requiredImages = []string{
-	"golang:1.26.5-bookworm@sha256:8d36439c36258ba98de1bf2b316eda72905f9d743117119f6db9705c49245644",
+	"golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36",
 	"postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4",
 }
 
@@ -94,12 +94,12 @@ func checkGo(ctx context.Context, command commandRunner, timeout time.Duration) 
 	output, err := boundedCommand(ctx, command, timeout, "go", "env", "GOVERSION")
 	version := strings.TrimSpace(string(output))
 	if err != nil {
-		return failed("go_version", "Go is unavailable", "Install Go 1.26.5 and ensure go is on PATH.")
+		return failed("go_version", "Go is unavailable", "Install Go 1.26.6 and ensure go is on PATH.")
 	}
 	if version != requiredGo {
-		return failed("go_version", "Go version does not match the pinned toolchain", "Install and select Go 1.26.5; then rerun paperboat-test doctor.")
+		return failed("go_version", "Go version does not match the pinned toolchain", "Install and select Go 1.26.6; then rerun paperboat-test doctor.")
 	}
-	return passed("go_version", "Go 1.26.5 is selected")
+	return passed("go_version", "Go 1.26.6 is selected")
 }
 
 func checkRequiredFiles(root string) Check {

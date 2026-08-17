@@ -69,7 +69,7 @@ func (f probeRegionReaderFunc) ListProbeRegions(ctx context.Context) ([]controlp
 }
 
 func TestNetworkCheckRegionsReturnsOnlyReaderDocumentWithoutCaching(t *testing.T) {
-	want := controlplane.ProbeRegion{Region: "fsn1", STUNURL: "stun:stun.example.test:3478", HTTPSURL: "https://signal.example.test/network-check/v1"}
+	want := controlplane.ProbeRegion{RelayID: "pprbt-helsinki", Region: "helsinki", Name: "Helsinki", STUNURL: "stun:stun.example.test:3478", HTTPSURL: "https://relay.example.test/network-check/v1"}
 	router := NewRouter(Options{
 		Config: config.Default(),
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
