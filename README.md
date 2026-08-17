@@ -48,10 +48,11 @@ external: set `PAPERBOAT_DATABASE_DSN` to its connection string. Start from
 Release container tags use `YYYY.MM.DD.X`. Run `tools/release-version.sh next`, create
 that exact tag without a `v` prefix, and push it.
 
-The server image contains only `paperboat-server`. The unified `pb` release is built and
-published independently through its TUF repository. Configure the public repository base URL
-and selected release with `PAPERBOAT_USER_MACHINES_ARTIFACT_REPOSITORY_URL` and
-`PAPERBOAT_USER_MACHINES_ARTIFACT_VERSION`; the server never receives signing keys.
+The server image contains only `paperboat-server`. Mount the exported, public release bundle at
+`PAPERBOAT_RELEASE_DIRECTORY`. The server exposes `/install` and the read-only `/tuf/`
+repository from its configured public base URL. Atomic `current.json` promotion selects the
+release for new machine installations without a server restart. The server never receives TUF
+signing keys or signing state.
 
 The server exposes health/readiness, authentication, billing, usage, project, environment,
 and config-repository APIs. See [docs/api.md](docs/api.md) and
@@ -116,9 +117,7 @@ Common environment overrides:
 - `PAPERBOAT_FLY_HOSTED_SSH_USER`
 - `PAPERBOAT_FLY_HOSTED_SSH_PORT`
 - `PAPERBOAT_FLY_OPERATION_TIMEOUT`
-- `PAPERBOAT_USER_MACHINES_BOOTSTRAP_COMMAND`
-- `PAPERBOAT_USER_MACHINES_ARTIFACT_REPOSITORY_URL`
-- `PAPERBOAT_USER_MACHINES_ARTIFACT_VERSION`
+- `PAPERBOAT_RELEASE_DIRECTORY`
 - `PAPERBOAT_PREVIEW_BASE_DOMAIN`
 - `PAPERBOAT_PREVIEW_IDENTITY_KEY` or `PAPERBOAT_PREVIEW_IDENTITY_KEY_FILE`
 - `PAPERBOAT_DIAGNOSTICS_OBJECT_ENDPOINT`

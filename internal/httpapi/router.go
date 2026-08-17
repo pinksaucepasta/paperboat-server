@@ -87,6 +87,7 @@ type Options struct {
 	DiagnosticUploads      *diagnosticuploads.Service
 	HostedProviderRecovery *controlplane.HostedProviderRecoveryService
 	OverrideHandler        http.Handler
+	ReleaseFiles           http.Handler
 }
 
 func NewRouter(opts Options) http.Handler {
@@ -99,6 +100,11 @@ func NewRouter(opts Options) http.Handler {
 	} else {
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /healthz", health)
+		if opts.ReleaseFiles != nil {
+			mux.Handle("GET /install", installScript(opts.ReleaseFiles))
+			mux.Handle("GET /tuf/{path...}", tufRepository("/tuf", opts.ReleaseFiles))
+			mux.Handle("GET /helper-releases/tuf/{path...}", tufRepository("/helper-releases/tuf", opts.ReleaseFiles))
+		}
 		mux.HandleFunc("GET /network-check/v1", networkCheck)
 		if opts.ProbeRegions != nil {
 			mux.HandleFunc("GET /network-check/regions/v1", networkCheckRegions(opts.ProbeRegions))

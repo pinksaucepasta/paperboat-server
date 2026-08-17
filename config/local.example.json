@@ -36,10 +36,7 @@
       "darwin",
       "linux"
     ],
-    "runtime_listen_port": 38080,
-    "bootstrap_command": "",
-    "artifact_repository_url": "",
-    "artifact_version": ""
+    "runtime_listen_port": 38080
   },
   "terminal_sessions": {
     "max_active_per_project": 32,

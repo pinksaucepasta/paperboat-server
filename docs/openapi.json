@@ -2204,6 +2204,62 @@
         "operationId": "get_v1_client_configuration"
       }
     },
+    "/install": {
+      "get": {
+        "summary": "Download the Paperboat bootstrap installer",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Version-pinning Paperboat shell bootstrap.",
+            "content": {
+              "text/plain": {}
+            }
+          },
+          "404": {
+            "description": "No installer has been published."
+          }
+        },
+        "operationId": "get_install"
+      }
+    },
+    "/tuf/{path...}": {
+      "get": {
+        "summary": "Download signed Paperboat TUF repository content",
+        "security": [],
+        "parameters": [
+          {
+            "name": "path...",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string"}
+          }
+        ],
+        "responses": {
+          "200": {"description": "Signed metadata or content-addressed target."},
+          "404": {"description": "Repository object not found."}
+        },
+        "operationId": "get_tuf_repository_object"
+      }
+    },
+    "/helper-releases/tuf/{path...}": {
+      "get": {
+        "summary": "Download signed Paperboat TUF repository content through the compatibility path",
+        "security": [],
+        "parameters": [
+          {
+            "name": "path...",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string"}
+          }
+        ],
+        "responses": {
+          "200": {"description": "Signed metadata or content-addressed target."},
+          "404": {"description": "Repository object not found."}
+        },
+        "operationId": "get_legacy_tuf_repository_object"
+      }
+    },
     "/healthz": {
       "get": {
         "summary": "Health check",

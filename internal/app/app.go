@@ -34,6 +34,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/peeridentity"
 	"github.com/pinksaucepasta/paperboat-server/internal/peersessions"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
+	"github.com/pinksaucepasta/paperboat-server/internal/releases"
 	"github.com/pinksaucepasta/paperboat-server/internal/terminalsessions"
 	"github.com/pinksaucepasta/paperboat-server/internal/usermachines"
 	"github.com/pinksaucepasta/paperboat-server/internal/workers"
@@ -128,12 +129,29 @@ func New(opts Options) (*App, error) {
 	})
 	userMachineService.ConfigureTerminalSessions(opts.Config.TerminalSessions.MaxActivePerProject, mintKeys, &http.Client{Timeout: opts.Config.TerminalSessions.OperationTimeout})
 	userMachineService.ConfigureMachineControl(mintKeys, normalizeHelperIssuer(opts.Config.HTTP.PublicBaseURL))
-	userMachineService.ConfigureBootstrapCommand(opts.Config.UserMachines.BootstrapCommand)
+	publicBaseURL := strings.TrimRight(config.NormalizeIssuer(opts.Config.HTTP.PublicBaseURL), "/")
+	userMachineService.ConfigureBootstrapCommand("curl -fsSL " + publicBaseURL + "/install | bash -s -- --pair")
 	if err := userMachineService.ConfigureRuntimeRoute(opts.Config.RuntimeBaseDomain, opts.Config.UserMachines.RuntimeListenPort); err != nil {
 		return nil, err
 	}
-	if err := userMachineService.ConfigureMachineArtifacts(opts.Config.UserMachines.ArtifactRepositoryURL, opts.Config.UserMachines.ArtifactVersion); err != nil {
-		return nil, err
+	if strings.TrimSpace(opts.Config.ReleaseDirectory) != "" {
+		if err := userMachineService.ConfigureMachineArtifacts(publicBaseURL+"/tuf", "bootstrap"); err != nil {
+			return nil, err
+		}
+		userMachineService.ConfigureMachineArtifactVersionResolver(func() string {
+			current, currentErr := releases.ReadCurrent(opts.Config.ReleaseDirectory)
+			if currentErr != nil {
+				return ""
+			}
+			return current.Version
+		})
+	}
+	var releaseFileHandler http.Handler
+	if strings.TrimSpace(opts.Config.ReleaseDirectory) != "" {
+		releaseFileHandler, err = httpapi.NewReleaseFiles(opts.Config.ReleaseDirectory)
+		if err != nil {
+			return nil, fmt.Errorf("configure release directory: %w", err)
+		}
 	}
 	billingService.SetUserMachineSessionRevoker(userMachineService)
 	enrollmentService := controlplane.NewEnrollmentService(store, mintKeys, auditWriter, config.NormalizeIssuer(opts.Config.HTTP.PublicBaseURL), opts.Config.Secrets.EncryptionKey)
@@ -375,6 +393,7 @@ func New(opts Options) (*App, error) {
 		ManagedSSH:             managedSSHService,
 		DiagnosticUploads:      diagnosticUploadService,
 		HostedProviderRecovery: hostedProviderRecovery,
+		ReleaseFiles:           releaseFileHandler,
 	})
 	serverWorkers := []workers.Worker{
 		peerSessionService.ExpiryWorker(opts.Config.TerminalSessions.WorkerInterval),
@@ -519,6 +538,11 @@ type readinessChecker struct {
 func (r readinessChecker) Ready(ctx context.Context) error {
 	if err := r.db.Ping(ctx); err != nil {
 		return fmt.Errorf("database is not ready: %w", err)
+	}
+	if r.cfg.Environment == config.EnvironmentProduction {
+		if err := releases.Ready(r.cfg.ReleaseDirectory); err != nil {
+			return fmt.Errorf("release distribution is not ready: %w", err)
+		}
 	}
 	if r.cfg.Providers.FakeMode {
 		return nil

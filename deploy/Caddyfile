@@ -2,7 +2,7 @@
 	email {$ACME_EMAIL}
 }
 
-{$PAPERBOAT_CONTROL_DOMAIN} {
+{$PAPERBOAT_PUBLIC_BASE_URL} {
 	encode zstd gzip
 
 	reverse_proxy server:8080 {

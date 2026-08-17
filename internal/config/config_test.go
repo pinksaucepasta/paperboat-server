@@ -174,6 +174,7 @@ func TestValidationRejectsRelativeConfigHomeOverride(t *testing.T) {
 func TestProductionValidationRejectsFakeProvidersAndWeakSecrets(t *testing.T) {
 	cfg := Default()
 	cfg.Environment = EnvironmentProduction
+	cfg.HTTP.PublicBaseURL = "https://pb.example.test"
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("expected production validation error")
@@ -189,6 +190,7 @@ func TestProductionValidationRejectsFakeProvidersAndWeakSecrets(t *testing.T) {
 func validProductionConfig() Config {
 	cfg := Default()
 	cfg.Environment = EnvironmentProduction
+	cfg.HTTP.PublicBaseURL = "https://pb.example.test"
 	cfg.Providers.FakeMode = false
 	cfg.Secrets.SessionKeys = []string{"0123456789abcdef0123456789abcdef"}
 	cfg.Secrets.EncryptionKey = "abcdef0123456789abcdef0123456789"
@@ -204,9 +206,7 @@ func validProductionConfig() Config {
 	cfg.Secrets.FlyAPIToken = "fly-api-token"
 	cfg.Secrets.EdgeControlCredential = "edge-control-credential-0123456789"
 	cfg.Fly.ImageRef = "registry.example.test/paperboat/project-vm@sha256:" + strings.Repeat("a", 64)
-	cfg.UserMachines.BootstrapCommand = "pb pair --server https://pb.example.test"
-	cfg.UserMachines.ArtifactRepositoryURL = "https://updates.example.test/paperboat"
-	cfg.UserMachines.ArtifactVersion = "2026.08.07"
+	cfg.ReleaseDirectory = "/srv/paperboat-releases"
 	cfg.Preview.BaseDomain = "preview.example.test"
 	cfg.Secrets.PreviewIdentityKey = "preview-identity-key-012345678901234567890123456789"
 	cfg.CLIAuth.MintActiveKeyID = "current"

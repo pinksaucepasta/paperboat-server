@@ -50,6 +50,18 @@ func TestConfigureMachineArtifactsBuildsTUFDescriptor(t *testing.T) {
 	}
 }
 
+func TestMachineArtifactUsesCurrentReleaseResolver(t *testing.T) {
+	service := New(nil, nil, Policy{}, nil)
+	if err := service.ConfigureMachineArtifacts("https://pprbt.dev/tuf", "bootstrap"); err != nil {
+		t.Fatal(err)
+	}
+	service.ConfigureMachineArtifactVersionResolver(func() string { return "2026.08.17.1" })
+	artifact, ok := service.machineArtifact("linux", "arm64")
+	if !ok || artifact.Version != "2026.08.17.1" || artifact.RepositoryURL != "https://pprbt.dev/tuf" {
+		t.Fatalf("artifact = %#v, %v", artifact, ok)
+	}
+}
+
 func TestConnectionDescriptorSerializesCanonicalPayload(t *testing.T) {
 	expires := time.Now().UTC().Add(time.Minute)
 	response := ConnectionDescriptor{

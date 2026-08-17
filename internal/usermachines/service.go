@@ -141,6 +141,7 @@ type Service struct {
 	helperGrant        func(context.Context, string, string, string, time.Duration) (HelperEnrollmentGrant, error)
 	artifactRepository string
 	artifactVersion    string
+	artifactVersionFn  func() string
 	helperBaseDomain   string
 	helperListenPort   int32
 }
@@ -258,11 +259,19 @@ func (s *Service) ConfigureMachineArtifacts(repositoryURL, version string) error
 	return nil
 }
 
+func (s *Service) ConfigureMachineArtifactVersionResolver(resolve func() string) {
+	s.artifactVersionFn = resolve
+}
+
 func (s *Service) machineArtifact(platform, architecture string) (MachineArtifact, bool) {
-	if s.artifactRepository == "" || s.artifactVersion == "" || !slices.Contains([]string{"darwin", "linux"}, platform) || !slices.Contains([]string{"amd64", "arm64"}, architecture) {
+	version := s.artifactVersion
+	if s.artifactVersionFn != nil {
+		version = strings.TrimSpace(s.artifactVersionFn())
+	}
+	if s.artifactRepository == "" || version == "" || len(version) > 64 || strings.ContainsAny(version, "\x00\r\n/\\") || !slices.Contains([]string{"darwin", "linux"}, platform) || !slices.Contains([]string{"amd64", "arm64"}, architecture) {
 		return MachineArtifact{}, false
 	}
-	return MachineArtifact{Schema: "paperboat.tuf-target/v1", Kind: "pb", Version: s.artifactVersion, Platform: platform, Architecture: architecture, RepositoryURL: s.artifactRepository, TargetPath: "pb-" + platform + "-" + architecture}, true
+	return MachineArtifact{Schema: "paperboat.tuf-target/v1", Kind: "pb", Version: version, Platform: platform, Architecture: architecture, RepositoryURL: s.artifactRepository, TargetPath: "pb-" + platform + "-" + architecture}, true
 }
 
 func New(store *db.DB, auditWriter *audit.Writer, policy Policy, seats SeatAuthorizer) *Service {

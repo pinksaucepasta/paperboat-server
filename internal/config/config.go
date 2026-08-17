@@ -42,6 +42,7 @@ type Config struct {
 	Diagnostics       Diagnostics      `json:"diagnostics"`
 	Providers         Providers        `json:"providers"`
 	Secrets           Secrets          `json:"secrets"`
+	ReleaseDirectory  string           `json:"release_directory"`
 }
 
 type HTTPConfig struct {
@@ -104,13 +105,10 @@ type Metering struct {
 }
 
 type UserMachines struct {
-	PairingLifetime       time.Duration `json:"pairing_lifetime"`
-	OfflineAfter          time.Duration `json:"offline_after"`
-	AllowedPlatforms      []string      `json:"allowed_platforms"`
-	RuntimeListenPort     int32         `json:"runtime_listen_port"`
-	BootstrapCommand      string        `json:"bootstrap_command"`
-	ArtifactRepositoryURL string        `json:"artifact_repository_url"`
-	ArtifactVersion       string        `json:"artifact_version"`
+	PairingLifetime   time.Duration `json:"pairing_lifetime"`
+	OfflineAfter      time.Duration `json:"offline_after"`
+	AllowedPlatforms  []string      `json:"allowed_platforms"`
+	RuntimeListenPort int32         `json:"runtime_listen_port"`
 }
 
 type TerminalSessions struct {
@@ -446,8 +444,12 @@ func (c Config) Validate() error {
 		}
 	}
 	if c.Environment == EnvironmentProduction {
-		if strings.TrimSpace(c.UserMachines.BootstrapCommand) == "" || strings.TrimSpace(c.UserMachines.ArtifactRepositoryURL) == "" || strings.TrimSpace(c.UserMachines.ArtifactVersion) == "" || strings.TrimSpace(c.RuntimeBaseDomain) == "" || c.UserMachines.RuntimeListenPort < 1024 {
-			errs = append(errs, fmt.Errorf("user_machines pairing command and TUF artifact repository are required in production"))
+		publicURL, publicURLErr := url.Parse(c.HTTP.PublicBaseURL)
+		if publicURLErr != nil || publicURL.Scheme != "https" || publicURL.User != nil || publicURL.Hostname() == "" || (publicURL.Path != "" && publicURL.Path != "/") || publicURL.RawQuery != "" || publicURL.Fragment != "" {
+			errs = append(errs, fmt.Errorf("http.public_base_url must be an HTTPS origin in production"))
+		}
+		if strings.TrimSpace(c.ReleaseDirectory) == "" || !filepath.IsAbs(c.ReleaseDirectory) || strings.TrimSpace(c.RuntimeBaseDomain) == "" || c.UserMachines.RuntimeListenPort < 1024 {
+			errs = append(errs, fmt.Errorf("release directory and user-machine runtime route are required in production"))
 		}
 		if strings.TrimSpace(c.Preview.BaseDomain) == "" || strings.TrimSpace(c.Secrets.PreviewIdentityKey) == "" {
 			errs = append(errs, fmt.Errorf("preview base domain and identity key are required in production"))
@@ -691,9 +693,7 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_DIAGNOSTICS_OBJECT_ENDPOINT", &c.Diagnostics.ObjectEndpoint)
 	setString("PAPERBOAT_DIAGNOSTICS_OBJECT_REGION", &c.Diagnostics.ObjectRegion)
 	setString("PAPERBOAT_DIAGNOSTICS_OBJECT_BUCKET", &c.Diagnostics.ObjectBucket)
-	setString("PAPERBOAT_USER_MACHINES_BOOTSTRAP_COMMAND", &c.UserMachines.BootstrapCommand)
-	setString("PAPERBOAT_USER_MACHINES_ARTIFACT_REPOSITORY_URL", &c.UserMachines.ArtifactRepositoryURL)
-	setString("PAPERBOAT_USER_MACHINES_ARTIFACT_VERSION", &c.UserMachines.ArtifactVersion)
+	setString("PAPERBOAT_RELEASE_DIRECTORY", &c.ReleaseDirectory)
 	if value, ok := lookup("PAPERBOAT_USER_MACHINES_OFFLINE_AFTER_SECONDS"); ok {
 		parsed, err := strconv.ParseInt(value, 10, 64)
 		if err != nil {

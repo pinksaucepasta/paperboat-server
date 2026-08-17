@@ -1,0 +1,31 @@
+#!/bin/sh
+set -eu
+
+repository=${PAPERBOAT_GITHUB_REPOSITORY:-pinksaucepasta/paperboat-cli}
+latest_url="https://github.com/${repository}/releases/latest"
+tag_url=$(curl -fLsS --proto '=https' --tlsv1.2 -o /dev/null -w '%{url_effective}' "$latest_url")
+version=${tag_url##*/}
+case "$version" in
+  ""|*/*|*[!0-9A-Za-z._-]*) echo "pb bootstrap: invalid latest release tag" >&2; exit 1 ;;
+esac
+
+release_base="https://github.com/${repository}/releases/download/${version}"
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/paperboat-bootstrap.XXXXXX")
+trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
+
+curl -fL --proto '=https' --tlsv1.2 "$release_base/install.sh" -o "$tmp_dir/install.sh"
+curl -fL --proto '=https' --tlsv1.2 "$release_base/SHA256SUMS" -o "$tmp_dir/SHA256SUMS"
+expected=$(awk '$2 == "install.sh" || $2 == "*install.sh" { print $1; exit }' "$tmp_dir/SHA256SUMS")
+[ -n "$expected" ] || { echo "pb bootstrap: installer checksum is missing" >&2; exit 1; }
+
+if command -v shasum >/dev/null 2>&1; then
+  actual=$(shasum -a 256 "$tmp_dir/install.sh" | awk '{print $1}')
+elif command -v sha256sum >/dev/null 2>&1; then
+  actual=$(sha256sum "$tmp_dir/install.sh" | awk '{print $1}')
+else
+  echo "pb bootstrap: shasum or sha256sum is required" >&2
+  exit 1
+fi
+
+[ "$actual" = "$expected" ] || { echo "pb bootstrap: installer checksum verification failed" >&2; exit 1; }
+exec sh "$tmp_dir/install.sh" --version "$version" "$@"

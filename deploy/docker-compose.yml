@@ -4,6 +4,7 @@ x-server: &server
   volumes:
     - ../config/catalogs.example.json:/app/config/catalogs.json:ro
     - ./secrets:/run/secrets:ro
+    - ${PAPERBOAT_RELEASES_PATH:-./releases}:/srv/paperboat-releases:ro
 
 services:
   migrate:
@@ -36,7 +37,7 @@ services:
     image: caddy:2.11.4
     restart: unless-stopped
     environment:
-      PAPERBOAT_CONTROL_DOMAIN: ${PAPERBOAT_CONTROL_DOMAIN:?set PAPERBOAT_CONTROL_DOMAIN}
+      PAPERBOAT_PUBLIC_BASE_URL: ${PAPERBOAT_PUBLIC_BASE_URL:?set PAPERBOAT_PUBLIC_BASE_URL}
       ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL}
     depends_on:
       server:
