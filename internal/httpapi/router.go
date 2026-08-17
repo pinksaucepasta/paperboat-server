@@ -608,7 +608,7 @@ func timeout(duration time.Duration, logger *slog.Logger, next http.Handler) htt
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isStreamingRequest(r) {
+		if isStreamingRequest(r) || isReleaseDownload(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -642,6 +642,13 @@ func timeout(duration time.Duration, logger *slog.Logger, next http.Handler) htt
 			writeError(w, r, http.StatusServiceUnavailable, "provider_unavailable", "Request timed out.")
 		}
 	})
+}
+
+func isReleaseDownload(r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		return false
+	}
+	return r.URL.Path == "/install" || strings.HasPrefix(r.URL.Path, "/tuf/") || strings.HasPrefix(r.URL.Path, "/helper-releases/tuf/")
 }
 
 func isStreamingRequest(r *http.Request) bool {

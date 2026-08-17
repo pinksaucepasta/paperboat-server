@@ -1,13 +1,31 @@
 package httpapi
 
 import (
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestReleaseDownloadsAreNotCutOffByAPIRequestTimeout(t *testing.T) {
+	handler := timeout(time.Millisecond, slog.New(slog.NewTextHandler(io.Discard, nil)), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(5 * time.Millisecond)
+		_, _ = w.Write([]byte("complete"))
+	}))
+
+	for _, path := range []string{"/install", "/tuf/targets/hash.pb-linux-amd64", "/helper-releases/tuf/targets/hash.pb-linux-amd64"} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if recorder.Code != http.StatusOK || recorder.Body.String() != "complete" {
+			t.Fatalf("%s response = %d %q", path, recorder.Code, recorder.Body.String())
+		}
+	}
+}
 
 func TestReleaseEndpointsServeInstallAndTUF(t *testing.T) {
 	directory := t.TempDir()
