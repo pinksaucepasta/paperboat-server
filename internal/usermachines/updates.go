@@ -77,6 +77,25 @@ type MaintenanceApproval struct {
 	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
+// FleetUpdateMachine is one machine's redacted update state in the account
+// dashboard. It intentionally excludes local paths, commands, payload names,
+// credentials, and hostd fencing data.
+type FleetUpdateMachine struct {
+	MachineID   string             `json:"machine_id"`
+	DisplayName string             `json:"display_name"`
+	Online      bool               `json:"online"`
+	State       string             `json:"state"`
+	Observation *UpdateObservation `json:"observation,omitempty"`
+}
+
+// FleetUpdateSummary is user-scoped. Release authority dashboards use a
+// separate administrative surface because account owners must not be able to
+// alter a signed release policy.
+type FleetUpdateSummary struct {
+	Items  []FleetUpdateMachine `json:"items"`
+	Counts map[string]uint64    `json:"counts"`
+}
+
 func (o UpdateObservation) Validate(now time.Time) error {
 	validStates := map[string]bool{
 		"idle": true, "checking": true, "downloading": true, "staged": true,
@@ -175,6 +194,37 @@ func (s *Service) GetUpdateObservation(ctx context.Context, userID, userMachineI
 		return UpdateObservation{}, err
 	}
 	return mapUpdateObservation(status), nil
+}
+
+// FleetUpdateSummary returns the latest durable update state for every machine
+// owned by the requesting user. Missing observations are explicitly reported
+// as not_reporting instead of being treated as healthy.
+func (s *Service) FleetUpdateSummary(ctx context.Context, userID string) (FleetUpdateSummary, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return FleetUpdateSummary{}, ErrUpdateObservationInvalid
+	}
+	machines, _, err := s.List(ctx, userID, 500, 0)
+	if err != nil {
+		return FleetUpdateSummary{}, err
+	}
+	result := FleetUpdateSummary{Items: make([]FleetUpdateMachine, 0, len(machines)), Counts: map[string]uint64{}}
+	for _, machine := range machines {
+		item := FleetUpdateMachine{MachineID: machine.ID, DisplayName: machine.DisplayName, Online: machine.Online, State: "not_reporting"}
+		observation, observationErr := s.GetUpdateObservation(ctx, userID, machine.ID)
+		switch {
+		case observationErr == nil:
+			item.State = observation.State
+			item.Observation = &observation
+		case errors.Is(observationErr, ErrNotFound):
+			// A host without an update report has an explicit non-success state.
+		default:
+			return FleetUpdateSummary{}, observationErr
+		}
+		result.Counts[item.State]++
+		result.Items = append(result.Items, item)
+	}
+	return result, nil
 }
 
 func (s *Service) RequestMaintenanceApproval(ctx context.Context, userID, userMachineID, idempotencyKey, action, targetVersion, reason string, ttl time.Duration) (MaintenanceApproval, error) {

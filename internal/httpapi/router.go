@@ -283,6 +283,7 @@ func NewRouter(opts Options) http.Handler {
 			mux.Handle("POST /v1/machine-enrollments/{enrollment_id}/cancel", requireAuth(opts.Auth, requireCSRF(opts.Auth, userMachineEnrollmentCancel(opts.Machines))))
 			mux.Handle("POST /v1/machine-enrollments/{enrollment_id}/retry", requireAuth(opts.Auth, requireCSRF(opts.Auth, userMachineEnrollmentRetry(opts.Machines))))
 			mux.Handle("GET /v1/machines/overview", userMachineAuth("projects:read", userMachineOverview(opts.Machines)))
+			mux.Handle("GET /v1/machines/update-summary", userMachineAuth("projects:read", userMachineUpdateSummary(opts.Machines)))
 			mux.Handle("GET /v1/transfer-destination-default", userMachineAuth("projects:read", transferDestinationDefault(opts.Machines)))
 			mux.Handle("PUT /v1/transfer-destination-default", userMachineAuth("projects:connect", transferDestinationDefault(opts.Machines)))
 			mux.Handle("DELETE /v1/transfer-destination-default", userMachineAuth("projects:connect", transferDestinationDefault(opts.Machines)))

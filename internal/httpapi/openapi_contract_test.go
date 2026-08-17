@@ -216,6 +216,7 @@ func TestOpenAPIDocumentCoversPublicAndFrozenTargetPaths(t *testing.T) {
 		"/v1/machine-enrollments/{enrollment_id}/cancel":                        {"post"},
 		"/v1/machine-enrollments/{enrollment_id}/retry":                         {"post"},
 		"/v1/machines/overview":                                                 {"get"},
+		"/v1/machines/update-summary":                                           {"get"},
 		"/v1/machines/{machine_id}":                                             {"get", "delete"},
 		"/v1/machines/{machine_id}/update-status":                               {"get"},
 		"/v1/machines/{machine_id}/maintenance-approvals":                       {"get", "post"},

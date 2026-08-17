@@ -30,6 +30,22 @@ func userMachineUpdateStatus(service *usermachines.Service) http.HandlerFunc {
 	}
 }
 
+func userMachineUpdateSummary(service *usermachines.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		result, err := service.FleetUpdateSummary(r.Context(), principal.User.ID)
+		if err != nil {
+			writeError(w, r, http.StatusInternalServerError, "internal_error", "Unable to read machine update status.")
+			return
+		}
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: result})
+	}
+}
+
 func userMachineMaintenanceApprovalsList(service *usermachines.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := principalFromContext(r.Context())

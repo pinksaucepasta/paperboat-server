@@ -2087,6 +2087,27 @@
           "updated_at": { "type": "string", "format": "date-time" }
         }
       },
+      "FleetUpdateMachine": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["machine_id", "display_name", "online", "state"],
+        "properties": {
+          "machine_id": { "type": "string" },
+          "display_name": { "type": "string" },
+          "online": { "type": "boolean" },
+          "state": { "type": "string", "enum": ["not_reporting", "idle", "checking", "downloading", "staged", "activating", "deferred", "healthy", "failed", "rolled_back"] },
+          "observation": { "$ref": "#/components/schemas/UpdateObservation" }
+        }
+      },
+      "FleetUpdateSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["items", "counts"],
+        "properties": {
+          "items": { "type": "array", "items": { "$ref": "#/components/schemas/FleetUpdateMachine" } },
+          "counts": { "type": "object", "additionalProperties": { "type": "integer", "format": "int64", "minimum": 0 } }
+        }
+      },
       "RelayLatencyVector": {
         "type": "object",
         "additionalProperties": false,
@@ -6454,6 +6475,18 @@
           }
         },
         "operationId": "post_v1_user_machines_pairings_user_code_deny"
+      }
+    },
+    "/v1/machines/update-summary": {
+      "get": {
+        "summary": "Read fleet update summary",
+        "security": [{"cookieSession": []}, {"bearerAccess": []}],
+        "x-required-bearer-scopes": ["projects:read"],
+        "responses": {
+          "200": {"description": "User-scoped fleet update summary.", "content": {"application/json": {"schema": {"allOf": [{"$ref": "#/components/schemas/SuccessResponse"}], "properties": {"data": {"$ref": "#/components/schemas/FleetUpdateSummary"}}}}}},
+          "401": {"$ref": "#/components/responses/Error"}
+        },
+        "operationId": "get_v1_user_machines_update_summary"
       }
     },
     "/v1/machines/{machine_id}": {
