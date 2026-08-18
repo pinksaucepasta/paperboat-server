@@ -34,6 +34,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/peeridentity"
 	"github.com/pinksaucepasta/paperboat-server/internal/peersessions"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
+	"github.com/pinksaucepasta/paperboat-server/internal/releaseauthority"
 	"github.com/pinksaucepasta/paperboat-server/internal/releases"
 	"github.com/pinksaucepasta/paperboat-server/internal/terminalsessions"
 	"github.com/pinksaucepasta/paperboat-server/internal/usermachines"
@@ -149,6 +150,19 @@ func New(opts Options) (*App, error) {
 			}
 			return current.Version
 		})
+	}
+	var releaseAuthorityService *releaseauthority.Service
+	if len(opts.Config.ReleaseAuthority.PublicKeys) > 0 {
+		authorityKeys, authorityErr := releaseauthority.ParseKeys(opts.Config.ReleaseAuthority.PublicKeys)
+		if authorityErr != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("configure release authority keys: %w", authorityErr)
+		}
+		releaseAuthorityService, authorityErr = releaseauthority.New(store, auditWriter, releaseauthority.Config{Keys: authorityKeys, Threshold: opts.Config.ReleaseAuthority.Threshold})
+		if authorityErr != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("configure release authority: %w", authorityErr)
+		}
 	}
 	var releaseFileHandler http.Handler
 	if strings.TrimSpace(opts.Config.ReleaseDirectory) != "" {
@@ -398,6 +412,7 @@ func New(opts Options) (*App, error) {
 		DiagnosticUploads:      diagnosticUploadService,
 		HostedProviderRecovery: hostedProviderRecovery,
 		ReleaseFiles:           releaseFileHandler,
+		ReleaseAuthority:       releaseAuthorityService,
 	})
 	serverWorkers := []workers.Worker{
 		peerSessionService.ExpiryWorker(opts.Config.TerminalSessions.WorkerInterval),

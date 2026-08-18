@@ -32,6 +32,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/peeridentity"
 	"github.com/pinksaucepasta/paperboat-server/internal/peersessions"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
+	"github.com/pinksaucepasta/paperboat-server/internal/releaseauthority"
 	"github.com/pinksaucepasta/paperboat-server/internal/terminalsessions"
 	"github.com/pinksaucepasta/paperboat-server/internal/usermachines"
 )
@@ -88,6 +89,7 @@ type Options struct {
 	HostedProviderRecovery *controlplane.HostedProviderRecoveryService
 	OverrideHandler        http.Handler
 	ReleaseFiles           http.Handler
+	ReleaseAuthority       *releaseauthority.Service
 }
 
 func NewRouter(opts Options) http.Handler {
@@ -150,6 +152,12 @@ func NewRouter(opts Options) http.Handler {
 				mux.Handle("POST /v1/environments/{environment_id}/helper-enrollments", requireAuth(opts.Auth, requireCSRF(opts.Auth, helperEnrollmentIssue(opts.Enrollment))))
 				mux.Handle("POST /v1/environments/{environment_id}/helpers/{helper_id}/replace", requireAuth(opts.Auth, requireCSRF(opts.Auth, helperReplacement(opts.Enrollment))))
 			}
+		}
+		if opts.ReleaseAuthority != nil {
+			mux.Handle("GET /v1/admin/release-authority/bundles", requireAuth(opts.Auth, requireAdmin(releaseAuthorityBundles(opts.ReleaseAuthority))))
+			mux.Handle("POST /v1/admin/release-authority/bundles", requireAuth(opts.Auth, requireCSRF(opts.Auth, requireAdmin(releaseAuthorityBundleImport(opts.ReleaseAuthority)))))
+			mux.Handle("GET /v1/admin/release-authority/requests", requireAuth(opts.Auth, requireAdmin(releaseAuthorityRequests(opts.ReleaseAuthority))))
+			mux.Handle("POST /v1/admin/release-authority/requests", requireAuth(opts.Auth, requireCSRF(opts.Auth, requireAdmin(releaseAuthorityRequestCreate(opts.ReleaseAuthority)))))
 		}
 		if opts.HostedBootstrap != nil {
 			mux.HandleFunc("POST /v1/hosted-helper-bootstrap", hostedBootstrapGet(opts.HostedBootstrap))

@@ -3842,6 +3842,26 @@
         "operationId": "post_v1_admin_mint_signing_keys_key_id_revoke"
       }
     },
+    "/v1/admin/release-authority/bundles": {
+      "get": {
+        "summary": "List imported threshold-signed release authority bundles",
+        "security": [{"cookieSession": []}],
+        "responses": {"200": {"description": "Imported release authority bundles."}},
+        "operationId": "get_v1_admin_release_authority_bundles"
+      },
+      "post": {
+        "summary": "Import a threshold-signed release authority bundle",
+        "security": [{"cookieSession": []}, {"csrfHeader": []}],
+        "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object"}}}},
+        "responses": {"201": {"description": "Signed authority bundle imported."}, "400": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}},
+        "operationId": "post_v1_admin_release_authority_bundles"
+      }
+    },
+    "/v1/admin/release-authority/requests": {
+      "get": {"summary": "List pending release authority requests", "security": [{"cookieSession": []}], "responses": {"200": {"description": "Release authority requests."}}, "operationId": "get_v1_admin_release_authority_requests"},
+      "post": {"summary": "Request an external threshold-signed release policy change", "security": [{"cookieSession": []}, {"csrfHeader": []}], "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object"}}}}, "responses": {"201": {"description": "Release authority request created."}, "400": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}, "operationId": "post_v1_admin_release_authority_requests"}
+    },
     "/v1/admin/control-operations/{operation_id}/recover": {
       "post": {
         "summary": "Recover dead-lettered control operation",

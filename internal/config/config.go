@@ -44,6 +44,7 @@ type Config struct {
 	Secrets           Secrets          `json:"secrets"`
 	ReleaseDirectory  string           `json:"release_directory"`
 	ReleaseBaseURL    string           `json:"release_base_url"`
+	ReleaseAuthority  ReleaseAuthority `json:"release_authority"`
 }
 
 type HTTPConfig struct {
@@ -234,6 +235,14 @@ type Diagnostics struct {
 	ObjectBucket   string        `json:"object_bucket"`
 	ForcePathStyle bool          `json:"force_path_style"`
 	Retention      time.Duration `json:"retention"`
+}
+
+// ReleaseAuthority holds only public verification material. The independent
+// release authority keeps the threshold private signing keys outside this
+// service and submits already signed policy bundles for audit and visibility.
+type ReleaseAuthority struct {
+	PublicKeys []string `json:"public_keys"`
+	Threshold  int      `json:"threshold"`
 }
 
 type Secrets struct {
@@ -464,6 +473,13 @@ func (c Config) Validate() error {
 		if releaseURLErr != nil || releaseURL.Scheme != "https" || releaseURL.User != nil || releaseURL.Hostname() == "" || (releaseURL.Path != "" && releaseURL.Path != "/") || releaseURL.RawQuery != "" || releaseURL.Fragment != "" {
 			errs = append(errs, fmt.Errorf("release_base_url must be an HTTPS origin"))
 		}
+	}
+	if len(c.ReleaseAuthority.PublicKeys) == 0 {
+		if c.ReleaseAuthority.Threshold != 0 {
+			errs = append(errs, fmt.Errorf("release_authority.threshold requires public keys"))
+		}
+	} else if c.ReleaseAuthority.Threshold < 2 || c.ReleaseAuthority.Threshold > len(c.ReleaseAuthority.PublicKeys) || len(c.ReleaseAuthority.PublicKeys) > 16 {
+		errs = append(errs, fmt.Errorf("release_authority.threshold must be between 2 and the number of public keys"))
 	}
 	if c.TerminalSessions.MaxActivePerProject <= 0 || c.TerminalSessions.MaxActivePerProject > 20 || c.TerminalSessions.OperationTimeout <= 0 || c.TerminalSessions.RetryBackoff <= 0 || c.TerminalSessions.WorkerInterval <= 0 || c.TerminalSessions.MaxAttemptsBeforeAlert <= 0 {
 		errs = append(errs, fmt.Errorf("terminal_sessions limits and timings must be positive"))
@@ -705,6 +721,16 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_DIAGNOSTICS_OBJECT_BUCKET", &c.Diagnostics.ObjectBucket)
 	setString("PAPERBOAT_RELEASE_DIRECTORY", &c.ReleaseDirectory)
 	setString("PAPERBOAT_RELEASE_BASE_URL", &c.ReleaseBaseURL)
+	if v, ok := lookup("PAPERBOAT_RELEASE_AUTHORITY_PUBLIC_KEYS"); ok {
+		c.ReleaseAuthority.PublicKeys = splitCSV(v)
+	}
+	if v, ok := lookup("PAPERBOAT_RELEASE_AUTHORITY_THRESHOLD"); ok {
+		parsed, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("parse PAPERBOAT_RELEASE_AUTHORITY_THRESHOLD: %w", err)
+		}
+		c.ReleaseAuthority.Threshold = parsed
+	}
 	if value, ok := lookup("PAPERBOAT_USER_MACHINES_OFFLINE_AFTER_SECONDS"); ok {
 		parsed, err := strconv.ParseInt(value, 10, 64)
 		if err != nil {

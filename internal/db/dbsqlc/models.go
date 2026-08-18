@@ -1312,6 +1312,50 @@ type Region struct {
 	UpdatedAt       time.Time
 }
 
+type ReleaseAuthorityBundle struct {
+	ID                 string
+	ReleaseID          string
+	Version            string
+	Platform           string
+	Architecture       string
+	Action             string
+	PolicyRevision     int64
+	Payload            []byte
+	PayloadHash        []byte
+	Signatures         []byte
+	IssuedAt           time.Time
+	ExpiresAt          time.Time
+	AuthorityRequestID string
+	ImportedByUserID   string
+	ImportedAt         time.Time
+}
+
+type ReleaseAuthorityImportOperation struct {
+	ActorUserID    string
+	IdempotencyKey string
+	RequestHash    []byte
+	BundleID       string
+	CreatedAt      time.Time
+}
+
+type ReleaseAuthorityRequest struct {
+	ID                string
+	Action            string
+	ReleaseID         string
+	Version           string
+	Platform          string
+	Architecture      string
+	PolicyRevision    int64
+	RolloutPercentage int32
+	Status            string
+	RequestedByUserID string
+	IdempotencyKey    string
+	RequestHash       []byte
+	FulfilledBundleID sql.NullString
+	CreatedAt         time.Time
+	FulfilledAt       sql.NullTime
+}
+
 type Session struct {
 	ID          string
 	UserID      string
