@@ -920,12 +920,13 @@ func (q *Queries) CreateUserMachineEnrollment(ctx context.Context, arg CreateUse
 const createUserMachinePairing = `-- name: CreateUserMachinePairing :one
 INSERT INTO user_machine_pairings (
   id, verifier_hash, user_code, requested_display_name, platform, architecture,
-  workspace_root, runtime_versions, public_identity_key, expires_at
+  workspace_root, runtime_versions, public_identity_key, ssh_user, ssh_port, expires_at
 ) VALUES (
   $1, $2, $3, $4,
   $5, $6, $7, $8, $9,
-  $10
-) RETURNING id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key
+  $10, $11,
+  $12
+) RETURNING id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port
 `
 
 type CreateUserMachinePairingParams struct {
@@ -938,6 +939,8 @@ type CreateUserMachinePairingParams struct {
 	WorkspaceRoot        string
 	RuntimeVersions      []byte
 	PublicIdentityKey    string
+	SshUser              sql.NullString
+	SshPort              sql.NullInt32
 	ExpiresAt            time.Time
 }
 
@@ -952,6 +955,8 @@ func (q *Queries) CreateUserMachinePairing(ctx context.Context, arg CreateUserMa
 		arg.WorkspaceRoot,
 		arg.RuntimeVersions,
 		arg.PublicIdentityKey,
+		arg.SshUser,
+		arg.SshPort,
 		arg.ExpiresAt,
 	)
 	var i UserMachinePairing
@@ -976,6 +981,8 @@ func (q *Queries) CreateUserMachinePairing(ctx context.Context, arg CreateUserMa
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PublicIdentityKey,
+		&i.SshUser,
+		&i.SshPort,
 	)
 	return i, err
 }
@@ -2167,7 +2174,7 @@ func (q *Queries) GetUserMachineIDForRoute(ctx context.Context, providerRouteRou
 }
 
 const getUserMachinePairingByID = `-- name: GetUserMachinePairingByID :one
-SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key FROM user_machine_pairings WHERE id = $1
+SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port FROM user_machine_pairings WHERE id = $1
 `
 
 func (q *Queries) GetUserMachinePairingByID(ctx context.Context, id string) (UserMachinePairing, error) {
@@ -2194,12 +2201,14 @@ func (q *Queries) GetUserMachinePairingByID(ctx context.Context, id string) (Use
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PublicIdentityKey,
+		&i.SshUser,
+		&i.SshPort,
 	)
 	return i, err
 }
 
 const getUserMachinePairingForCode = `-- name: GetUserMachinePairingForCode :one
-SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key FROM user_machine_pairings
+SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port FROM user_machine_pairings
 WHERE user_code = $1 FOR UPDATE
 `
 
@@ -2227,12 +2236,14 @@ func (q *Queries) GetUserMachinePairingForCode(ctx context.Context, userCode str
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PublicIdentityKey,
+		&i.SshUser,
+		&i.SshPort,
 	)
 	return i, err
 }
 
 const getUserMachinePairingForVerifier = `-- name: GetUserMachinePairingForVerifier :one
-SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key FROM user_machine_pairings
+SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port FROM user_machine_pairings
 WHERE verifier_hash = $1 FOR UPDATE
 `
 
@@ -2260,12 +2271,14 @@ func (q *Queries) GetUserMachinePairingForVerifier(ctx context.Context, verifier
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PublicIdentityKey,
+		&i.SshUser,
+		&i.SshPort,
 	)
 	return i, err
 }
 
 const getUserMachineRuntimeInstanceForUpdate = `-- name: GetUserMachineRuntimeInstanceForUpdate :one
-SELECT online, last_seen_at, os_boot_id
+SELECT online, last_seen_at, os_boot_id, worker_generation
 FROM user_machines
 WHERE id = $1 AND environment_id = $2
   AND seat_state = 'occupied' AND deleted_at IS NULL
@@ -2278,15 +2291,21 @@ type GetUserMachineRuntimeInstanceForUpdateParams struct {
 }
 
 type GetUserMachineRuntimeInstanceForUpdateRow struct {
-	Online     bool
-	LastSeenAt sql.NullTime
-	OsBootID   sql.NullString
+	Online           bool
+	LastSeenAt       sql.NullTime
+	OsBootID         sql.NullString
+	WorkerGeneration int64
 }
 
 func (q *Queries) GetUserMachineRuntimeInstanceForUpdate(ctx context.Context, arg GetUserMachineRuntimeInstanceForUpdateParams) (GetUserMachineRuntimeInstanceForUpdateRow, error) {
 	row := q.db.QueryRow(ctx, getUserMachineRuntimeInstanceForUpdate, arg.ID, arg.EnvironmentID)
 	var i GetUserMachineRuntimeInstanceForUpdateRow
-	err := row.Scan(&i.Online, &i.LastSeenAt, &i.OsBootID)
+	err := row.Scan(
+		&i.Online,
+		&i.LastSeenAt,
+		&i.OsBootID,
+		&i.WorkerGeneration,
+	)
 	return i, err
 }
 
@@ -3376,6 +3395,79 @@ func (q *Queries) RemoveUserMachineHostRole(ctx context.Context, arg RemoveUserM
 	return i, err
 }
 
+const renameUserMachine = `-- name: RenameUserMachine :one
+UPDATE user_machines
+SET display_name = $1, updated_at = now(), version = version + 1
+WHERE id = $2 AND user_id = $3 AND deleted_at IS NULL
+RETURNING id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state, online, provider_route_route_id, provider_route_client_id, provider_route_http_base_url, provider_route_websocket_base_url, runtime_versions, enrolled_at, last_seen_at, revoked_at, disconnected_at, deleted_at, version, created_at, updated_at, availability_mode, availability_desired_version, availability_observed_mode, availability_observed_version, availability_observed_at, availability_status, availability_error_code, host_service_version, host_service_scope, worker_generation, os_boot_id, worker_service_scope, connector_state, connector_generation, host_update_rollbacks, runtime_diagnostics_observed_at, setup_roles, public_identity_key, installation_generation, machine_kind, setup_mode, configured_capabilities, observed_capabilities, alias, update_health, relay_latency_worker_generation, relay_latency_generation, relay_latency_observed_at, relay_latency_vector
+`
+
+type RenameUserMachineParams struct {
+	DisplayName string
+	ID          string
+	UserID      string
+}
+
+func (q *Queries) RenameUserMachine(ctx context.Context, arg RenameUserMachineParams) (UserMachine, error) {
+	row := q.db.QueryRow(ctx, renameUserMachine, arg.DisplayName, arg.ID, arg.UserID)
+	var i UserMachine
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.EnvironmentID,
+		&i.DisplayName,
+		&i.Platform,
+		&i.Architecture,
+		&i.WorkspaceRoot,
+		&i.State,
+		&i.SeatState,
+		&i.Online,
+		&i.ProviderRouteRouteID,
+		&i.ProviderRouteClientID,
+		&i.ProviderRouteHttpBaseUrl,
+		&i.ProviderRouteWebsocketBaseUrl,
+		&i.RuntimeVersions,
+		&i.EnrolledAt,
+		&i.LastSeenAt,
+		&i.RevokedAt,
+		&i.DisconnectedAt,
+		&i.DeletedAt,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AvailabilityMode,
+		&i.AvailabilityDesiredVersion,
+		&i.AvailabilityObservedMode,
+		&i.AvailabilityObservedVersion,
+		&i.AvailabilityObservedAt,
+		&i.AvailabilityStatus,
+		&i.AvailabilityErrorCode,
+		&i.HostServiceVersion,
+		&i.HostServiceScope,
+		&i.WorkerGeneration,
+		&i.OsBootID,
+		&i.WorkerServiceScope,
+		&i.ConnectorState,
+		&i.ConnectorGeneration,
+		&i.HostUpdateRollbacks,
+		&i.RuntimeDiagnosticsObservedAt,
+		&i.SetupRoles,
+		&i.PublicIdentityKey,
+		&i.InstallationGeneration,
+		&i.MachineKind,
+		&i.SetupMode,
+		&i.ConfiguredCapabilities,
+		&i.ObservedCapabilities,
+		&i.Alias,
+		&i.UpdateHealth,
+		&i.RelayLatencyWorkerGeneration,
+		&i.RelayLatencyGeneration,
+		&i.RelayLatencyObservedAt,
+		&i.RelayLatencyVector,
+	)
+	return i, err
+}
+
 const renameUserMachineTerminalSession = `-- name: RenameUserMachineTerminalSession :execrows
 UPDATE user_machine_terminal_sessions SET name=$1,version=version+1,updated_at=now()
 WHERE user_machine_id=$2 AND id=$3
@@ -3974,6 +4066,42 @@ func (q *Queries) UpdateUserMachineStatus(ctx context.Context, arg UpdateUserMac
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const upsertPairingMachineSSHTarget = `-- name: UpsertPairingMachineSSHTarget :exec
+INSERT INTO machine_ssh_targets
+  (user_machine_id, machine_generation, os_user, target_port, created_at, updated_at)
+VALUES
+  ($1, $2, $3, $4, now(), now())
+ON CONFLICT (user_machine_id) DO UPDATE SET
+  machine_generation = excluded.machine_generation,
+  os_user = excluded.os_user,
+  target_port = excluded.target_port,
+  reconciliation_version = machine_ssh_targets.reconciliation_version +
+    CASE WHEN machine_ssh_targets.machine_generation IS DISTINCT FROM excluded.machine_generation
+           OR machine_ssh_targets.os_user IS DISTINCT FROM excluded.os_user
+           OR machine_ssh_targets.target_port IS DISTINCT FROM excluded.target_port THEN 1 ELSE 0 END,
+  updated_at = CASE WHEN machine_ssh_targets.machine_generation IS DISTINCT FROM excluded.machine_generation
+                      OR machine_ssh_targets.os_user IS DISTINCT FROM excluded.os_user
+                      OR machine_ssh_targets.target_port IS DISTINCT FROM excluded.target_port
+                    THEN now() ELSE machine_ssh_targets.updated_at END
+`
+
+type UpsertPairingMachineSSHTargetParams struct {
+	UserMachineID     string
+	MachineGeneration int64
+	OsUser            string
+	TargetPort        int32
+}
+
+func (q *Queries) UpsertPairingMachineSSHTarget(ctx context.Context, arg UpsertPairingMachineSSHTargetParams) error {
+	_, err := q.db.Exec(ctx, upsertPairingMachineSSHTarget,
+		arg.UserMachineID,
+		arg.MachineGeneration,
+		arg.OsUser,
+		arg.TargetPort,
+	)
+	return err
 }
 
 const upsertUserMachineBandwidthPeriod = `-- name: UpsertUserMachineBandwidthPeriod :one

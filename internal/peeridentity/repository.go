@@ -93,7 +93,25 @@ func (r *SQLRepository) RequestMachineEndpoint(ctx context.Context, request Mach
 		}
 		existing, err := q.GetPeerEndpointEnrollmentRequestByOperation(ctx, request.OperationID)
 		if err == nil {
-			if !bytes.Equal(existing.RequestHash, hash[:]) || existing.UserID != request.UserID || existing.EndpointID != request.EndpointID || existing.Generation != int64(request.Generation) || existing.State != "pending" || !existing.ExpiresAt.After(request.Now) {
+			matches := bytes.Equal(existing.RequestHash, hash[:]) && existing.UserID == request.UserID && existing.EndpointID == request.EndpointID && existing.Generation == int64(request.Generation)
+			if matches && existing.State == "expired" {
+				renewed, renewErr := q.RenewExpiredPeerEndpointEnrollmentRequest(ctx, dbsqlc.RenewExpiredPeerEndpointEnrollmentRequestParams{
+					CreatedAt: request.Now.UTC(), ExpiresAt: expiresAt.UTC(), OperationKey: request.OperationID,
+					RequestHash: hash[:], UserID: request.UserID, EndpointID: request.EndpointID, Generation: int64(request.Generation),
+				})
+				if errors.Is(renewErr, sql.ErrNoRows) {
+					return ErrUnavailable
+				}
+				if renewErr != nil {
+					return renewErr
+				}
+				result, renewErr = endpointRequestFromRow(renewed)
+				if renewErr != nil {
+					return renewErr
+				}
+				return r.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: request.UserID, ActorType: audit.ActorSystem, EventType: "peer_endpoint.enrollment_renewed", ResourceType: "peer_endpoint_enrollment", ResourceID: renewed.ID, IdempotencyKey: request.OperationID + ":renew:" + request.Now.UTC().Format(time.RFC3339Nano), Metadata: map[string]any{"endpoint_id": request.EndpointID, "generation": request.Generation}})
+			}
+			if !matches || existing.State != "pending" || !existing.ExpiresAt.After(request.Now) {
 				return ErrConflict
 			}
 			result, err = endpointRequestFromRow(existing)

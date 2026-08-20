@@ -2308,6 +2308,20 @@
         "operationId": "get_install"
       }
     },
+    "/windows": {
+      "get": {
+        "summary": "Download the native Windows one-shot bootstrap installer",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "PowerShell bootstrap that detects Windows architecture and completes enrollment.",
+            "content": { "text/plain": {} }
+          },
+          "404": { "description": "No Windows bootstrap has been published." }
+        },
+        "operationId": "get_windows_install"
+      }
+    },
     "/current.json": {
       "get": {
         "summary": "Discover the current Paperboat release",
@@ -6281,6 +6295,42 @@
         "operationId": "get_v1_user_machine_enrollments_enrollment_id"
       }
     },
+    "/v1/machine-enrollments/{enrollment_id}/bootstrap-token": {
+      "parameters": [
+        {
+          "name": "enrollment_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "summary": "Download the pending machine enrollment token",
+        "security": [
+          {
+            "cookieSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Short-lived token file. Responses are never cacheable.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "get_v1_user_machine_enrollments_enrollment_id_bootstrap_token"
+      }
+    },
     "/v1/machine-enrollments/{enrollment_id}/cancel": {
       "parameters": [
         {
@@ -6427,76 +6477,6 @@
         "operationId": "post_v1_user_machines_pairings_installation"
       }
     },
-    "/v1/machines/pairings/{user_code}/approve": {
-      "parameters": [
-        {
-          "name": "user_code",
-          "in": "path",
-          "required": true,
-          "schema": {
-            "type": "string"
-          }
-        }
-      ],
-      "post": {
-        "summary": "Approve machine pairing",
-        "security": [
-          {
-            "cookieSession": []
-          },
-          {
-            "csrfHeader": []
-          }
-        ],
-        "responses": {
-          "201": {
-            "description": "Machine approved."
-          },
-          "409": {
-            "$ref": "#/components/responses/Error"
-          }
-        },
-        "operationId": "post_v1_user_machines_pairings_user_code_approve"
-      }
-    },
-    "/v1/machines/pairings/{user_code}/deny": {
-      "parameters": [
-        {
-          "name": "user_code",
-          "in": "path",
-          "required": true,
-          "schema": {
-            "type": "string"
-          }
-        }
-      ],
-      "post": {
-        "summary": "Deny machine pairing",
-        "security": [
-          {
-            "cookieSession": []
-          },
-          {
-            "csrfHeader": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Pairing denied."
-          },
-          "404": {
-            "$ref": "#/components/responses/Error"
-          },
-          "409": {
-            "$ref": "#/components/responses/Error"
-          },
-          "410": {
-            "$ref": "#/components/responses/Error"
-          }
-        },
-        "operationId": "post_v1_user_machines_pairings_user_code_deny"
-      }
-    },
     "/v1/machines/update-summary": {
       "get": {
         "summary": "Read fleet update summary",
@@ -6531,6 +6511,22 @@
           }
         },
         "operationId": "get_v1_user_machines_machine_id"
+      },
+      "patch": {
+        "summary": "Rename machine",
+        "security": [{"cookieSession": []}, {"bearerAccess": []}],
+        "x-required-bearer-scopes": ["projects:connect"],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"type": "object", "required": ["display_name"], "additionalProperties": false, "properties": {"display_name": {"type": "string", "minLength": 1, "maxLength": 128}}}}}
+        },
+        "responses": {
+          "200": {"description": "Machine renamed."},
+          "400": {"$ref": "#/components/responses/Error"},
+          "404": {"$ref": "#/components/responses/Error"},
+          "409": {"$ref": "#/components/responses/Error"}
+        },
+        "operationId": "patch_v1_user_machines_machine_id"
       },
       "delete": {
         "summary": "Delete machine",

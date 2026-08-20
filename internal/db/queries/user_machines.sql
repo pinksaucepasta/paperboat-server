@@ -1,12 +1,31 @@
 -- name: CreateUserMachinePairing :one
 INSERT INTO user_machine_pairings (
   id, verifier_hash, user_code, requested_display_name, platform, architecture,
-  workspace_root, runtime_versions, public_identity_key, expires_at
+  workspace_root, runtime_versions, public_identity_key, ssh_user, ssh_port, expires_at
 ) VALUES (
   sqlc.arg(id), sqlc.arg(verifier_hash), sqlc.arg(user_code), sqlc.arg(requested_display_name),
   sqlc.arg(platform), sqlc.arg(architecture), sqlc.arg(workspace_root), sqlc.arg(runtime_versions), sqlc.arg(public_identity_key),
+  sqlc.narg(ssh_user), sqlc.narg(ssh_port),
   sqlc.arg(expires_at)
 ) RETURNING *;
+
+-- name: UpsertPairingMachineSSHTarget :exec
+INSERT INTO machine_ssh_targets
+  (user_machine_id, machine_generation, os_user, target_port, created_at, updated_at)
+VALUES
+  (sqlc.arg(user_machine_id), sqlc.arg(machine_generation), sqlc.arg(os_user), sqlc.arg(target_port), now(), now())
+ON CONFLICT (user_machine_id) DO UPDATE SET
+  machine_generation = excluded.machine_generation,
+  os_user = excluded.os_user,
+  target_port = excluded.target_port,
+  reconciliation_version = machine_ssh_targets.reconciliation_version +
+    CASE WHEN machine_ssh_targets.machine_generation IS DISTINCT FROM excluded.machine_generation
+           OR machine_ssh_targets.os_user IS DISTINCT FROM excluded.os_user
+           OR machine_ssh_targets.target_port IS DISTINCT FROM excluded.target_port THEN 1 ELSE 0 END,
+  updated_at = CASE WHEN machine_ssh_targets.machine_generation IS DISTINCT FROM excluded.machine_generation
+                      OR machine_ssh_targets.os_user IS DISTINCT FROM excluded.os_user
+                      OR machine_ssh_targets.target_port IS DISTINCT FROM excluded.target_port
+                    THEN now() ELSE machine_ssh_targets.updated_at END;
 
 -- name: CreateUserMachineEnrollment :one
 INSERT INTO user_machine_enrollments (
@@ -366,6 +385,12 @@ WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND deleted_at IS NULL;
 SELECT * FROM user_machines
 WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND deleted_at IS NULL FOR UPDATE;
 
+-- name: RenameUserMachine :one
+UPDATE user_machines
+SET display_name = sqlc.arg(display_name), updated_at = now(), version = version + 1
+WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND deleted_at IS NULL
+RETURNING *;
+
 -- name: GetUserMachineAvailabilityOperation :one
 SELECT * FROM user_machine_availability_operations
 WHERE user_id = sqlc.arg(user_id) AND user_machine_id = sqlc.arg(user_machine_id)
@@ -438,7 +463,7 @@ WHERE id = sqlc.arg(id) AND environment_id = sqlc.arg(environment_id)
   AND (seat_state = 'occupied' OR setup_mode = 'receive') AND deleted_at IS NULL AND state IN ('pending','offline','online');
 
 -- name: GetUserMachineRuntimeInstanceForUpdate :one
-SELECT online, last_seen_at, os_boot_id
+SELECT online, last_seen_at, os_boot_id, worker_generation
 FROM user_machines
 WHERE id = sqlc.arg(id) AND environment_id = sqlc.arg(environment_id)
   AND seat_state = 'occupied' AND deleted_at IS NULL

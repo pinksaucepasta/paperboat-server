@@ -19,6 +19,106 @@ func TestProvisionApprovedMachineRequiresCanonicalHelperGrant(t *testing.T) {
 	}
 }
 
+func TestEnrollmentStartJSONIncludesBootstrapTokenForOneShotSetup(t *testing.T) {
+	value := EnrollmentStart{
+		Enrollment:        Enrollment{ID: "ume_1"},
+		BootstrapToken:    "super-secret-bootstrap-token",
+		BootstrapCommand:  "install-paperboat",
+		TokenDownloadPath: "/v1/machine-enrollments/ume_1/bootstrap-token",
+	}
+	body, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if !strings.Contains(text, value.BootstrapToken) {
+		t.Fatalf("enrollment response omitted one-shot bootstrap token: %s", text)
+	}
+	if !strings.Contains(text, value.TokenDownloadPath) {
+		t.Fatalf("enrollment response omitted token download path: %s", text)
+	}
+}
+
+func TestRandomEnrollmentTokenMatchesInstallerContract(t *testing.T) {
+	token, err := randomEnrollmentToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(token) != enrollmentTokenLength {
+		t.Fatalf("token length = %d, want %d", len(token), enrollmentTokenLength)
+	}
+}
+
+func TestEnrollmentTokenMetadataParityAndLength(t *testing.T) {
+	tests := []struct {
+		role, shell         string
+		roleEven, shellEven bool
+	}{
+		{role: "host", shell: "posix", roleEven: true, shellEven: true},
+		{role: "host", shell: "powershell", roleEven: true, shellEven: false},
+		{role: "client", shell: "posix", roleEven: false, shellEven: true},
+		{role: "client", shell: "powershell", roleEven: false, shellEven: false},
+	}
+	for _, test := range tests {
+		token, err := randomEnrollmentTokenFor(test.role, test.shell)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(token) != 26 {
+			t.Fatalf("%s/%s token length = %d, want 26", test.role, test.shell, len(token))
+		}
+		if enrollmentCharacterEven(token[0]) != test.roleEven || enrollmentCharacterEven(token[1]) != test.shellEven {
+			t.Fatalf("%s/%s token metadata = %q, wrong parity", test.role, test.shell, token[:2])
+		}
+	}
+}
+
+func TestEnrollmentTokenMetadataDoesNotChangeCredential(t *testing.T) {
+	token, err := randomEnrollmentTokenFor("host", "posix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	variant := "11" + token[2:]
+	if enrollmentTokenHash(token) != enrollmentTokenHash(variant) {
+		t.Fatal("metadata-only token variant changed the credential hash")
+	}
+	changedSecret := variant[:2] + variant[2:len(variant)-1] + "0"
+	if changedSecret == variant {
+		changedSecret = variant[:len(variant)-1] + "1"
+	}
+	if enrollmentTokenHash(token) == enrollmentTokenHash(changedSecret) {
+		t.Fatal("secret change did not change the credential hash")
+	}
+}
+
+func enrollmentCharacterEven(character byte) bool {
+	if character >= '0' && character <= '9' {
+		return (character-'0')%2 == 0
+	}
+	return (character-'A'+1)%2 == 0
+}
+
+func TestCanonicalWorkspaceRootIsPlatformAware(t *testing.T) {
+	tests := []struct {
+		platform string
+		root     string
+		want     string
+		valid    bool
+	}{
+		{platform: "linux", root: "/home/sailor", want: "/home/sailor", valid: true},
+		{platform: "windows", root: `C:\Users\pujan`, want: `C:\Users\pujan`, valid: true},
+		{platform: "windows", root: `\\server\share\workspace`, want: `\\server\share\workspace`, valid: true},
+		{platform: "windows", root: `C:\Users\..\Windows`, valid: false},
+		{platform: "windows", root: `\Users\pujan`, valid: false},
+	}
+	for _, test := range tests {
+		got, valid := canonicalWorkspaceRoot(test.platform, test.root)
+		if got != test.want || valid != test.valid {
+			t.Errorf("canonicalWorkspaceRoot(%q, %q) = %q, %v; want %q, %v", test.platform, test.root, got, valid, test.want, test.valid)
+		}
+	}
+}
+
 func TestEntitlementActiveRejectsExpiredPeriod(t *testing.T) {
 	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
 	if entitlementActive("active", now, now) {
@@ -33,6 +133,35 @@ func TestNewDefaultsUserMachineOfflineTimeout(t *testing.T) {
 	service := New(nil, nil, Policy{}, nil)
 	if service.policy.OfflineAfter != 2*time.Minute {
 		t.Fatalf("offline timeout = %s", service.policy.OfflineAfter)
+	}
+}
+
+func TestWindowsARM64RequiresExplicitBetaAcceptance(t *testing.T) {
+	if !isUnacceptedBetaPlatform("windows", "arm64", false) {
+		t.Fatal("Windows arm64 enrollment was accepted without beta consent")
+	}
+	for _, value := range []struct {
+		platform, architecture string
+		accepted               bool
+	}{
+		{"windows", "arm64", true}, {"windows", "amd64", false}, {"linux", "arm64", false}, {"darwin", "arm64", false},
+	} {
+		if isUnacceptedBetaPlatform(value.platform, value.architecture, value.accepted) {
+			t.Fatalf("unexpected beta rejection: %+v", value)
+		}
+	}
+}
+
+func TestMachineArchitectureIsExactAndPortable(t *testing.T) {
+	for _, value := range []string{"amd64", "AMD64", " arm64 "} {
+		if !validMachineArchitecture(value) {
+			t.Fatalf("architecture %q was rejected", value)
+		}
+	}
+	for _, value := range []string{"", "x86", "aarch64", "armv7", "amd64/x"} {
+		if validMachineArchitecture(value) {
+			t.Fatalf("architecture %q was accepted", value)
+		}
 	}
 }
 

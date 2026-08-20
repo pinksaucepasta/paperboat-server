@@ -32,6 +32,9 @@ func TestReleaseEndpointsServeInstallAndTUF(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(directory, "install"), []byte("#!/bin/sh\necho paperboat\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(directory, "windows"), []byte("Write-Output paperboat-windows\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(directory, "current.json"), []byte(`{"schema":"paperboat.release-current/v1","version":"2026.08.18.1"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -48,12 +51,24 @@ func TestReleaseEndpointsServeInstallAndTUF(t *testing.T) {
 	router := NewRouter(Options{OverrideHandler: nil, ReleaseFiles: files})
 
 	install := httptest.NewRecorder()
-	router.ServeHTTP(install, httptest.NewRequest(http.MethodGet, "/install", nil))
-	if install.Code != http.StatusOK || !strings.Contains(install.Body.String(), "echo paperboat") {
+	router.ServeHTTP(install, httptest.NewRequest(http.MethodGet, "/install?p=4K7M9Q2V8X4N6P5R1T0W8Y2ZAB", nil))
+	if install.Code != http.StatusOK || !strings.Contains(install.Body.String(), "echo paperboat") || !strings.Contains(install.Body.String(), "PAPERBOAT_ENROLLMENT_TOKEN") {
 		t.Fatalf("install response = %d %q", install.Code, install.Body.String())
 	}
 	if got := install.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
 		t.Fatalf("install content type = %q", got)
+	}
+	windows := httptest.NewRecorder()
+	windowsRequest := httptest.NewRequest(http.MethodGet, "/install?p=4K7M9Q2V8X4N6P5R1T0W8Y2ZAB", nil)
+	windowsRequest.Header.Set("User-Agent", "Mozilla/5.0 PowerShell/7.5")
+	router.ServeHTTP(windows, windowsRequest)
+	if windows.Code != http.StatusOK || !strings.Contains(windows.Body.String(), "PAPERBOAT_ENROLLMENT_TOKEN") {
+		t.Fatalf("windows response = %d %q", windows.Code, windows.Body.String())
+	}
+	removed := httptest.NewRecorder()
+	router.ServeHTTP(removed, httptest.NewRequest(http.MethodGet, "/windows?p=4K7M9Q2V8X4N6P5R1T0W8Y2ZAB", nil))
+	if removed.Code != http.StatusNotFound {
+		t.Fatalf("legacy /windows endpoint status = %d", removed.Code)
 	}
 	current := httptest.NewRecorder()
 	router.ServeHTTP(current, httptest.NewRequest(http.MethodGet, "/current.json", nil))

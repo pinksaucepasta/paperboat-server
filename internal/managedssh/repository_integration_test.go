@@ -200,3 +200,78 @@ func TestSQLRepositoryManagedSSHAuthorityLifecycle(t *testing.T) {
 		t.Fatalf("forbidden managed SSH columns=%d error=%v", forbiddenColumns, err)
 	}
 }
+
+func TestSQLRepositoryManagedSSHKeyRevokesWithClientSessionAndAccount(t *testing.T) {
+	dsn := os.Getenv("PAPERBOAT_TEST_DATABASE_DSN")
+	if dsn == "" {
+		t.Skip("set PAPERBOAT_TEST_DATABASE_DSN to run managed SSH repository integration tests")
+	}
+	store, err := db.Open(config.Database{Driver: "postgres", DSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := db.Migrate(ctx, store); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	suffix := strings.ToLower(strings.ReplaceAll(t.Name(), "/", "_")) + strings.ReplaceAll(now.Format("150405.000000000"), ".", "")
+	type authority struct{ userID, clientID, machineID string }
+	authorities := []authority{
+		{userID: "ssh_session_revoke_user_" + suffix, clientID: "ssh_session_revoke_client_" + suffix, machineID: "ssh_session_revoke_machine_" + suffix},
+		{userID: "ssh_account_revoke_user_" + suffix, clientID: "ssh_account_revoke_client_" + suffix, machineID: "ssh_account_revoke_machine_" + suffix},
+	}
+	for _, value := range authorities {
+		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, value.userID, "workos_"+value.userID, value.userID+"@example.test"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.cli_client_sessions (id,user_id,client_id,client_label,device_type,os,scopes,state,created_at,approved_at) VALUES ($1,$2,$3,'SSH revocation test','desktop','test',ARRAY['projects:connect'],'active',$4,$4)`, value.clientID, value.userID, "client_"+value.clientID, now); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online,installation_generation) VALUES ($1,$2,$3,$4,'linux','amd64','/workspace','online','occupied',true,1)`, value.machineID, value.userID, "env_"+value.machineID, value.machineID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	repository, err := NewSQLRepository(store, audit.NewWriter(store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewService(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := make([]ClientKey, len(authorities))
+	for index, value := range authorities {
+		key, err := service.RegisterClient(ctx, RegisterClientRequest{OperationID: "operation_register_" + value.clientID, UserID: value.userID, CLIClientSessionID: value.clientID, PublicKey: publicLine(t, "ed25519"), Now: now})
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys[index] = key
+	}
+
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.cli_client_sessions SET state='revoked', revoked_at=$2, revocation_reason='client_logout' WHERE id=$1`, authorities[0].clientID, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.users SET status='suspended' WHERE id=$1`, authorities[1].userID); err != nil {
+		t.Fatal(err)
+	}
+	for index, wantReason := range []string{"client_logout", "account_revoked"} {
+		var state, reason string
+		var revokedAt time.Time
+		var version int64
+		if err := store.SQL().QueryRowContext(ctx, `SELECT state,revocation_reason,revoked_at,reconciliation_version FROM paperboat.managed_ssh_client_keys WHERE fingerprint=$1`, keys[index].Fingerprint[:]).Scan(&state, &reason, &revokedAt, &version); err != nil {
+			t.Fatal(err)
+		}
+		if state != "revoked" || reason != wantReason || revokedAt.IsZero() || version != 2 {
+			t.Fatalf("managed key %d state=%q reason=%q revoked_at=%s version=%d", index, state, reason, revokedAt, version)
+		}
+		set, err := service.ListClientKeys(ctx, ListClientKeysRequest{ActorUserID: authorities[index].userID, UserMachineID: authorities[index].machineID, MachineGeneration: 1})
+		if index == 0 && (err != nil || len(set.Keys) != 0) {
+			t.Fatalf("revoked session keys=%+v error=%v", set, err)
+		}
+		if index == 1 && !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("suspended account managed authority error=%v", err)
+		}
+	}
+}

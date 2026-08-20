@@ -30,26 +30,31 @@ var (
 // affect an update decision is inside this document so the client never
 // combines signed release data with mutable server state.
 type ReleaseIndex struct {
-	Schema                string            `json:"schema"`
-	ReleaseID             string            `json:"release_id"`
-	Version               string            `json:"version"`
-	Channel               string            `json:"channel"`
-	Severity              string            `json:"severity"`
-	CreatedAt             time.Time         `json:"created_at"`
-	Platform              string            `json:"platform"`
-	Architecture          string            `json:"architecture"`
-	BinaryFormat          string            `json:"binary_format"`
-	Targets               []ComponentTarget `json:"targets"`
-	HostdAPIMin           uint16            `json:"hostd_api_min"`
-	HostdAPIMax           uint16            `json:"hostd_api_max"`
-	RuntimeAPIMin         uint16            `json:"runtime_api_min"`
-	RuntimeAPIMax         uint16            `json:"runtime_api_max"`
-	MinimumVersion        string            `json:"minimum_permitted_version,omitempty"`
-	RevokedVersions       []string          `json:"revoked_versions,omitempty"`
-	RolloutPolicyRevision uint64            `json:"rollout_policy_revision"`
-	SupervisorMaintenance bool              `json:"supervisor_maintenance_required"`
-	Rollout               RolloutPolicy     `json:"rollout"`
-	Revoked               bool              `json:"revoked,omitempty"`
+	Schema                 string            `json:"schema"`
+	ReleaseID              string            `json:"release_id"`
+	Version                string            `json:"version"`
+	Channel                string            `json:"channel"`
+	Severity               string            `json:"severity"`
+	CreatedAt              time.Time         `json:"created_at"`
+	Platform               string            `json:"platform"`
+	Architecture           string            `json:"architecture"`
+	BinaryFormat           string            `json:"binary_format"`
+	Targets                []ComponentTarget `json:"targets"`
+	HostdAPIMin            uint16            `json:"hostd_api_min"`
+	HostdAPIMax            uint16            `json:"hostd_api_max"`
+	RuntimeAPIMin          uint16            `json:"runtime_api_min"`
+	RuntimeAPIMax          uint16            `json:"runtime_api_max"`
+	MinimumVersion         string            `json:"minimum_permitted_version,omitempty"`
+	RevokedVersions        []string          `json:"revoked_versions,omitempty"`
+	RolloutPolicyRevision  uint64            `json:"rollout_policy_revision"`
+	SupervisorMaintenance  bool              `json:"supervisor_maintenance_required"`
+	Rollout                RolloutPolicy     `json:"rollout"`
+	Revoked                bool              `json:"revoked,omitempty"`
+	Stability              string            `json:"stability,omitempty"`
+	NativeTested           bool              `json:"native_tested,omitempty"`
+	TestedWindowsBuilds    []string          `json:"tested_windows_builds,omitempty"`
+	OpenSSHPackageID       string            `json:"openssh_package_id,omitempty"`
+	OpenSSHApprovedVersion string            `json:"openssh_approved_version,omitempty"`
 }
 
 type ComponentTarget struct {
@@ -90,6 +95,24 @@ func (i ReleaseIndex) Validate(now time.Time) error {
 		return indexErrorInvalid
 	}
 	if i.Platform != "darwin" && i.Platform != "linux" && i.Platform != "windows" || i.Architecture != "amd64" && i.Architecture != "arm64" || !validBinaryFormat(i.Platform, i.BinaryFormat) {
+		return indexErrorInvalid
+	}
+	if i.Platform == "windows" {
+		if i.OpenSSHPackageID != "Microsoft.OpenSSH.Preview" || !validVersion(i.OpenSSHApprovedVersion) || len(i.TestedWindowsBuilds) == 0 || len(i.TestedWindowsBuilds) > 16 {
+			return indexErrorInvalid
+		}
+		for _, build := range i.TestedWindowsBuilds {
+			if !indexValuePattern.MatchString(build) {
+				return indexErrorInvalid
+			}
+		}
+		if i.Architecture == "amd64" && (i.Stability != "stable" || !i.NativeTested) || i.Architecture == "arm64" && (i.Stability != "beta" || i.NativeTested) {
+			return indexErrorInvalid
+		}
+		if i.Architecture == "amd64" && i.Channel != "stable" || i.Architecture == "arm64" && i.Channel != "beta" {
+			return indexErrorInvalid
+		}
+	} else if i.Stability != "" || i.NativeTested || len(i.TestedWindowsBuilds) != 0 || i.OpenSSHPackageID != "" || i.OpenSSHApprovedVersion != "" {
 		return indexErrorInvalid
 	}
 	if i.Severity != "routine" && i.Severity != "security" && i.Severity != "critical" || i.HostdAPIMin == 0 || i.HostdAPIMin > i.HostdAPIMax || i.RuntimeAPIMin == 0 || i.RuntimeAPIMin > i.RuntimeAPIMax || i.RolloutPolicyRevision == 0 {

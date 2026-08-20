@@ -66,7 +66,7 @@ func Ready(directory string) error {
 	if json.Unmarshal(body, &metadata) != nil {
 		return errors.New("release targets metadata is invalid")
 	}
-	for _, name := range []string{"pb-darwin-amd64", "pb-darwin-arm64", "pb-linux-amd64", "pb-linux-arm64"} {
+	for _, name := range []string{"pb-darwin-amd64", "pb-darwin-arm64", "pb-linux-amd64", "pb-linux-arm64", "pb-windows-amd64", "pb-windows-arm64"} {
 		target, ok := metadata.Signed.Targets[name]
 		digest := target.Hashes["sha256"]
 		var custom struct {

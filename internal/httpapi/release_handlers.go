@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -11,6 +13,12 @@ import (
 )
 
 var tufTargetPathPattern = regexp.MustCompile(`^/targets/[a-f0-9]{64}\.[A-Za-z0-9._-]+$`)
+var enrollmentTokenPattern = regexp.MustCompile(`^[0-9A-Z]{26}$`)
+var enrollmentHostnamePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+
+var reservedEnrollmentHostnames = map[string]struct{}{
+	"add": {}, "auth": {}, "config": {}, "doctor": {}, "machine": {}, "pair": {}, "setup": {}, "ssh": {}, "version": {},
+}
 
 func NewReleaseFiles(directory string) (http.Handler, error) {
 	directory = filepath.Clean(strings.TrimSpace(directory))
@@ -20,7 +28,7 @@ func NewReleaseFiles(directory string) (http.Handler, error) {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		relative := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(r.URL.Path)), "/")
-		if relative != "install" && relative != "current.json" && !strings.HasPrefix(relative, "tuf/") {
+		if relative != "install" && relative != "windows" && relative != "current.json" && !strings.HasPrefix(relative, "tuf/") {
 			http.NotFound(w, r)
 			return
 		}
@@ -80,10 +88,70 @@ func installScript(files http.Handler) http.HandlerFunc {
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		clone := r.Clone(r.Context())
-		clone.URL.Path = "/install"
-		files.ServeHTTP(w, clone)
+		powershell := strings.Contains(strings.ToLower(r.UserAgent()), "powershell")
+		path := "/install"
+		if powershell {
+			path = "/windows"
+		}
+		serveEnrollmentScript(w, r, files, path, powershell)
 	}
+}
+
+func serveEnrollmentScript(w http.ResponseWriter, r *http.Request, files http.Handler, path string, powershell bool) {
+	p := r.URL.Query().Get("p")
+	token, hostname, ok := splitEnrollmentParameter(p)
+	if !ok {
+		http.Error(w, "invalid enrollment parameter", http.StatusBadRequest)
+		return
+	}
+	recorder := httptest.NewRecorder()
+	clone := r.Clone(r.Context())
+	clone.URL.Path = path
+	files.ServeHTTP(recorder, clone)
+	if recorder.Code != http.StatusOK {
+		http.Error(w, "installer unavailable", recorder.Code)
+		return
+	}
+	preamble := []byte("$env:PAPERBOAT_ENROLLMENT_TOKEN='" + strings.ReplaceAll(token, "'", "''") + "';")
+	if powershell {
+		if hostname != "" {
+			preamble = append(preamble, []byte("$env:PAPERBOAT_MACHINE_NAME='"+hostname+"';")...)
+		}
+	} else {
+		preamble = []byte("PAPERBOAT_ENROLLMENT_TOKEN='" + token + "' PAPERBOAT_MACHINE_NAME='" + hostname + "'\n")
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = w.Write(append(preamble, bytes.TrimPrefix(recorder.Body.Bytes(), []byte("\xef\xbb\xbf"))...))
+}
+
+func splitEnrollmentParameter(value string) (string, string, bool) {
+	value = strings.TrimSpace(value)
+	if len(value) == 26 && enrollmentTokenPattern.MatchString(value) {
+		return value, "", true
+	}
+	if len(value) <= 27 {
+		return "", "", false
+	}
+	separator := len(value) - 27
+	if value[separator] != '-' {
+		return "", "", false
+	}
+	hostname, token := value[:separator], value[separator+1:]
+	if !enrollmentHostnamePattern.MatchString(hostname) || enrollmentTokenPattern.FindString(token) == "" {
+		return "", "", false
+	}
+	if _, reserved := reservedEnrollmentHostnames[hostname]; reserved {
+		return "", "", false
+	}
+	return token, hostname, true
+}
+
+func tokenParity(value byte) int {
+	if value >= '0' && value <= '9' {
+		return int(value-'0') % 2
+	}
+	return (int(value-'A') + 1) % 2
 }
 
 func tufRepository(prefix string, files http.Handler) http.Handler {

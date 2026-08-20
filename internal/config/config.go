@@ -326,7 +326,7 @@ func Default() Config {
 			MinimumStartCreditWindow: 5 * time.Minute,
 		},
 		RuntimeBaseDomain: "localhost",
-		UserMachines:      UserMachines{PairingLifetime: 10 * time.Minute, OfflineAfter: 2 * time.Minute, AllowedPlatforms: []string{"darwin", "linux"}, RuntimeListenPort: 38080},
+		UserMachines:      UserMachines{PairingLifetime: 10 * time.Minute, OfflineAfter: 2 * time.Minute, AllowedPlatforms: []string{"darwin", "linux", "windows"}, RuntimeListenPort: 38080},
 		TerminalSessions:  TerminalSessions{MaxActivePerProject: 20, OperationTimeout: 15 * time.Second, RetryBackoff: time.Second, WorkerInterval: time.Second, MaxAttemptsBeforeAlert: 10},
 		ConfigSync: ConfigSync{
 			Mode:             "disabled",
@@ -448,7 +448,7 @@ func (c Config) Validate() error {
 		errs = append(errs, fmt.Errorf("user_machines pairing lifetime, offline timeout, and allowed platforms are required"))
 	} else {
 		for _, platform := range c.UserMachines.AllowedPlatforms {
-			if platform != "darwin" && platform != "linux" {
+			if platform != "darwin" && platform != "linux" && platform != "windows" {
 				errs = append(errs, fmt.Errorf("user_machines allowed platform %q is unsupported", platform))
 			}
 		}

@@ -570,7 +570,7 @@ func (r *RuntimeRepository) RecordRuntimeObservation(ctx context.Context, observ
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return err
 			}
-			if err == nil && instance.Online && instance.LastSeenAt.Valid && instance.LastSeenAt.Time.After(time.Now().UTC().Add(-r.identityConflictWindow)) && instance.OsBootID.Valid && instance.OsBootID.String != observation.OSBootID {
+			if err == nil && instance.Online && instance.LastSeenAt.Valid && instance.LastSeenAt.Time.After(time.Now().UTC().Add(-r.identityConflictWindow)) && instance.OsBootID.Valid && instance.OsBootID.String != observation.OSBootID && observation.WorkerGeneration <= uint64(instance.WorkerGeneration) {
 				return ErrDuplicateMachineIdentity
 			}
 		}

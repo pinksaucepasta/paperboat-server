@@ -119,6 +119,7 @@ SELECT * FROM machine_ssh_host_key_sets
 WHERE user_machine_id = sqlc.arg(user_machine_id)
   AND machine_generation = sqlc.arg(machine_generation)
   AND observation_generation = sqlc.arg(observation_generation)
+  AND state IN ('active', 'pending')
 FOR UPDATE;
 
 -- name: GetMachineSSHHostKeySetByID :one

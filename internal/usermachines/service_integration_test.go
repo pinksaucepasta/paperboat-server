@@ -33,6 +33,43 @@ func (testSeatAuthorizer) ReserveUserMachineSeat(context.Context, *db.Tx, string
 	return nil
 }
 
+func TestRenameMachineUsesOnlyActiveNames(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID := "usr_machine_rename_" + suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_rename_"+suffix, "machine-rename-"+suffix+"@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	for _, machine := range []struct{ id, environmentID, name string }{
+		{"mch_rename_active_" + suffix, "env_rename_active_" + suffix, "Active"},
+		{"mch_rename_other_" + suffix, "env_rename_other_" + suffix, "Other"},
+		{"mch_rename_deleted_" + suffix, "env_rename_deleted_" + suffix, "Reusable"},
+	} {
+		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state) VALUES ($1,$2,$3,$4,'linux','amd64','/workspace','offline','released')`, machine.id, userID, machine.environmentID, machine.name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machines SET state='deleted',deleted_at=now() WHERE id=$1`, "mch_rename_deleted_"+suffix); err != nil {
+		t.Fatal(err)
+	}
+
+	service := New(store, audit.NewWriter(store), Policy{}, testSeatAuthorizer{})
+	renamed, err := service.Rename(ctx, userID, "mch_rename_other_"+suffix, "  Reusable  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamed.DisplayName != "Reusable" {
+		t.Fatalf("display name = %q, want Reusable", renamed.DisplayName)
+	}
+	if _, err := service.Rename(ctx, userID, renamed.ID, "active"); !errors.Is(err, ErrMachineNameConflict) {
+		t.Fatalf("active-name rename error = %v, want ErrMachineNameConflict", err)
+	}
+	if _, err := service.Rename(ctx, userID, renamed.ID, " "); !errors.Is(err, ErrInvalidMachineName) {
+		t.Fatalf("blank-name rename error = %v, want ErrInvalidMachineName", err)
+	}
+}
+
 func TestSetupIsIdempotentAndUnpairPreservesInteractiveIdentity(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()

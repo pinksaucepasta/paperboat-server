@@ -586,6 +586,64 @@ func (q *Queries) ListPendingPeerEndpointEnrollmentRequests(ctx context.Context,
 	return items, nil
 }
 
+const renewExpiredPeerEndpointEnrollmentRequest = `-- name: RenewExpiredPeerEndpointEnrollmentRequest :one
+UPDATE peer_endpoint_enrollment_requests request
+SET state = 'pending', created_at = $1, expires_at = $2,
+    fulfilled_at = NULL, certificate_fingerprint = NULL
+WHERE request.operation_key = $3
+  AND request.request_hash = $4
+  AND request.user_id = $5
+  AND request.endpoint_id = $6
+  AND request.generation = $7
+  AND request.state = 'expired'
+  AND EXISTS (
+    SELECT 1 FROM user_machines machine
+    WHERE machine.id = request.endpoint_id AND machine.user_id = request.user_id
+      AND machine.installation_generation = request.generation
+      AND machine.revoked_at IS NULL AND machine.deleted_at IS NULL
+  )
+RETURNING id, operation_key, request_hash, user_id, endpoint_id, generation, noise_public_key, quic_public_key, state, certificate_fingerprint, created_at, expires_at, fulfilled_at
+`
+
+type RenewExpiredPeerEndpointEnrollmentRequestParams struct {
+	CreatedAt    time.Time
+	ExpiresAt    time.Time
+	OperationKey string
+	RequestHash  []byte
+	UserID       string
+	EndpointID   string
+	Generation   int64
+}
+
+func (q *Queries) RenewExpiredPeerEndpointEnrollmentRequest(ctx context.Context, arg RenewExpiredPeerEndpointEnrollmentRequestParams) (PeerEndpointEnrollmentRequest, error) {
+	row := q.db.QueryRow(ctx, renewExpiredPeerEndpointEnrollmentRequest,
+		arg.CreatedAt,
+		arg.ExpiresAt,
+		arg.OperationKey,
+		arg.RequestHash,
+		arg.UserID,
+		arg.EndpointID,
+		arg.Generation,
+	)
+	var i PeerEndpointEnrollmentRequest
+	err := row.Scan(
+		&i.ID,
+		&i.OperationKey,
+		&i.RequestHash,
+		&i.UserID,
+		&i.EndpointID,
+		&i.Generation,
+		&i.NoisePublicKey,
+		&i.QuicPublicKey,
+		&i.State,
+		&i.CertificateFingerprint,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.FulfilledAt,
+	)
+	return i, err
+}
+
 const revokeAccountE2EERoot = `-- name: RevokeAccountE2EERoot :one
 UPDATE account_e2ee_roots
 SET revoked_at = $1, generation = generation + 1, updated_at = $1

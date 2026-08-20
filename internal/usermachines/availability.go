@@ -189,5 +189,7 @@ func validAvailabilityStatus(value string) bool {
 	return value == "applied" || value == "unsupported" || value == "error"
 }
 func validUpdateHealth(value string) bool {
-	return value == "healthy" || value == "recovery_required"
+	// Availability and updater reporting are independent. Accept an explicit
+	// unknown updater state so a valid power-policy acknowledgment is not lost.
+	return value == "unknown" || value == "healthy" || value == "recovery_required"
 }

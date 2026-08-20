@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -40,6 +41,7 @@ var (
 	ErrInvalidSetup                 = errors.New("invalid machine setup")
 	ErrMachineIdentityConflict      = errors.New("machine identity belongs to another account")
 	ErrMachineNameConflict          = errors.New("machine name is already in use")
+	ErrInvalidMachineName           = errors.New("invalid machine name")
 	ErrPairingExpired               = errors.New("user-machine pairing expired")
 	ErrPairingUsed                  = errors.New("user-machine pairing is no longer pending")
 	ErrSeatUnavailable              = errors.New("user-machine seat unavailable")
@@ -268,7 +270,7 @@ func (s *Service) machineArtifact(platform, architecture string) (MachineArtifac
 	if s.artifactVersionFn != nil {
 		version = strings.TrimSpace(s.artifactVersionFn())
 	}
-	if s.artifactRepository == "" || version == "" || len(version) > 64 || strings.ContainsAny(version, "\x00\r\n/\\") || !slices.Contains([]string{"darwin", "linux"}, platform) || !slices.Contains([]string{"amd64", "arm64"}, architecture) {
+	if s.artifactRepository == "" || version == "" || len(version) > 64 || strings.ContainsAny(version, "\x00\r\n/\\") || !slices.Contains([]string{"darwin", "linux", "windows"}, platform) || !slices.Contains([]string{"amd64", "arm64"}, architecture) {
 		return MachineArtifact{}, false
 	}
 	return MachineArtifact{Schema: "paperboat.tuf-target/v1", Kind: "pb", Version: version, Platform: platform, Architecture: architecture, RepositoryURL: s.artifactRepository, TargetPath: "pb-" + platform + "-" + architecture}, true
@@ -283,7 +285,10 @@ func New(store *db.DB, auditWriter *audit.Writer, policy Policy, seats SeatAutho
 
 type PairingInput struct {
 	Verifier, EnrollmentToken, DisplayName, Platform, Architecture, WorkspaceRoot, PublicIdentityKey string
+	SSHUser                                                                                          string
+	SSHPort                                                                                          uint16
 	RuntimeVersions                                                                                  json.RawMessage
+	AcceptBetaPlatform                                                                               bool
 }
 
 type Enrollment struct {
@@ -306,11 +311,25 @@ type Enrollment struct {
 
 type EnrollmentStart struct {
 	Enrollment
-	BootstrapToken   string `json:"bootstrap_token"`
-	BootstrapCommand string `json:"bootstrap_command"`
+	// BootstrapToken is a short-lived, single-use credential. It is returned
+	// only when an enrollment is created so the dashboard can render one
+	// paste-once command. It is never persisted in plaintext or logged.
+	BootstrapToken    string `json:"bootstrap_token"`
+	BootstrapCommand  string `json:"bootstrap_command"`
+	TokenDownloadPath string `json:"token_download_path"`
+	ServerURL         string `json:"server_url"`
+}
+
+type EnrollmentOptions struct {
+	Role  string // host or client
+	Shell string // posix or powershell
 }
 
 func (s *Service) StartEnrollment(ctx context.Context, userID, idempotencyKey string) (EnrollmentStart, error) {
+	return s.StartEnrollmentWithOptions(ctx, userID, idempotencyKey, EnrollmentOptions{Role: "host", Shell: "posix"})
+}
+
+func (s *Service) StartEnrollmentWithOptions(ctx context.Context, userID, idempotencyKey string, options EnrollmentOptions) (EnrollmentStart, error) {
 	userID, idempotencyKey = strings.TrimSpace(userID), strings.TrimSpace(idempotencyKey)
 	if userID == "" || idempotencyKey == "" || len(idempotencyKey) > 128 {
 		return EnrollmentStart{}, ErrIdempotencyKeyRequired
@@ -318,11 +337,11 @@ func (s *Service) StartEnrollment(ctx context.Context, userID, idempotencyKey st
 	if strings.TrimSpace(s.encryptionKey) == "" {
 		return EnrollmentStart{}, errors.New("user-machine enrollment encryption is not configured")
 	}
-	token, err := randomCode(48)
+	token, err := randomEnrollmentTokenFor(options.Role, options.Shell)
 	if err != nil {
 		return EnrollmentStart{}, err
 	}
-	hash := sha256.Sum256([]byte(token))
+	hash := enrollmentTokenHash(token)
 	ciphertext, err := secrets.Encrypt(s.encryptionKey, token)
 	if err != nil {
 		return EnrollmentStart{}, err
@@ -341,7 +360,7 @@ func (s *Service) StartEnrollment(ctx context.Context, userID, idempotencyKey st
 			return EnrollmentStart{}, err
 		}
 	}
-	result := EnrollmentStart{Enrollment: mapEnrollment(row), BootstrapToken: token, BootstrapCommand: s.enrollmentCommand(token)}
+	result := s.enrollmentStart(row, token)
 	_ = s.audit.Write(ctx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "user_machine.enrollment_started", ResourceType: "user_machine_enrollment", ResourceID: row.ID, IdempotencyKey: "user_machine.enrollment_started:" + row.ID, Metadata: map[string]any{"operation_id": row.OperationID, "generation": row.Generation}})
 	return result, nil
 }
@@ -380,14 +399,18 @@ func (s *Service) CancelEnrollment(ctx context.Context, userID, enrollmentID str
 }
 
 func (s *Service) RetryEnrollment(ctx context.Context, userID, enrollmentID string) (EnrollmentStart, error) {
+	return s.RetryEnrollmentWithOptions(ctx, userID, enrollmentID, EnrollmentOptions{Role: "host", Shell: "posix"})
+}
+
+func (s *Service) RetryEnrollmentWithOptions(ctx context.Context, userID, enrollmentID string, options EnrollmentOptions) (EnrollmentStart, error) {
 	if strings.TrimSpace(s.encryptionKey) == "" {
 		return EnrollmentStart{}, errors.New("user-machine enrollment encryption is not configured")
 	}
-	token, err := randomCode(48)
+	token, err := randomEnrollmentTokenFor(options.Role, options.Shell)
 	if err != nil {
 		return EnrollmentStart{}, err
 	}
-	hash := sha256.Sum256([]byte(token))
+	hash := enrollmentTokenHash(token)
 	ciphertext, err := secrets.Encrypt(s.encryptionKey, token)
 	if err != nil {
 		return EnrollmentStart{}, err
@@ -399,15 +422,38 @@ func (s *Service) RetryEnrollment(ctx context.Context, userID, enrollmentID stri
 	if err != nil {
 		return EnrollmentStart{}, err
 	}
-	return EnrollmentStart{Enrollment: mapEnrollment(row), BootstrapToken: token, BootstrapCommand: s.enrollmentCommand(token)}, nil
+	return s.enrollmentStart(row, token), nil
 }
 
-func (s *Service) enrollmentCommand(token string) string {
-	command := strings.TrimSpace(s.bootstrapCommand)
-	if command == "" {
-		return ""
+func (s *Service) enrollmentStart(row dbsqlc.UserMachineEnrollment, token string) EnrollmentStart {
+	return EnrollmentStart{
+		Enrollment:        mapEnrollment(row),
+		BootstrapToken:    token,
+		BootstrapCommand:  strings.TrimSpace(s.bootstrapCommand),
+		TokenDownloadPath: "/v1/machine-enrollments/" + row.ID + "/bootstrap-token",
+		ServerURL:         strings.TrimRight(strings.TrimSpace(s.issuer), "/"),
 	}
-	return command + " --enrollment-token " + token
+}
+
+// EnrollmentToken returns the short-lived bootstrap bearer only to the
+// authenticated enrollment owner. It remains available for compatibility with
+// older clients; new enrollment uses the one-shot command returned at start.
+func (s *Service) EnrollmentToken(ctx context.Context, userID, enrollmentID string) (string, error) {
+	row, err := s.db.Queries().GetUserMachineEnrollmentForUser(ctx, dbsqlc.GetUserMachineEnrollmentForUserParams{ID: strings.TrimSpace(enrollmentID), UserID: strings.TrimSpace(userID)})
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrEnrollmentNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	if row.State != "awaiting_bootstrap" || !s.now().UTC().Before(row.ExpiresAt) {
+		return "", ErrEnrollmentState
+	}
+	token, err := secrets.Decrypt(s.encryptionKey, row.BootstrapTokenCiphertext)
+	if _, ok := enrollmentTokenSecret(token); err != nil || !ok {
+		return "", ErrEnrollmentState
+	}
+	return token, nil
 }
 
 func mapEnrollment(row dbsqlc.UserMachineEnrollment) Enrollment {
@@ -429,17 +475,21 @@ type SetupInput struct {
 	DisplayName, Platform, Architecture, WorkspaceRoot, PublicIdentityKey string
 	SetupMode                                                             string
 	RuntimeVersions                                                       json.RawMessage
+	AcceptBetaPlatform                                                    bool
 }
 
 func (s *Service) Setup(ctx context.Context, userID string, in SetupInput) (UserMachine, error) {
 	userID = strings.TrimSpace(userID)
+	workspaceRoot, validWorkspace := canonicalWorkspaceRoot(in.Platform, in.WorkspaceRoot)
 	publicKey, keyErr := base64.RawURLEncoding.DecodeString(strings.TrimSpace(in.PublicIdentityKey))
-	if userID == "" || !slices.Contains([]string{"host", "receive", "session"}, in.SetupMode) || strings.TrimSpace(in.DisplayName) == "" || strings.TrimSpace(in.Architecture) == "" ||
-		!filepath.IsAbs(in.WorkspaceRoot) || filepath.Clean(in.WorkspaceRoot) != in.WorkspaceRoot ||
+	if userID == "" || !slices.Contains([]string{"host", "receive", "session"}, in.SetupMode) || invalidMachineDisplayName(in.DisplayName) || !validMachineArchitecture(in.Architecture) ||
+		!validWorkspace ||
 		!slices.Contains(s.policy.AllowedPlatforms, strings.ToLower(strings.TrimSpace(in.Platform))) ||
+		isUnacceptedBetaPlatform(in.Platform, in.Architecture, in.AcceptBetaPlatform) ||
 		keyErr != nil || len(publicKey) != ed25519.PublicKeySize {
 		return UserMachine{}, ErrInvalidSetup
 	}
+	in.WorkspaceRoot = workspaceRoot
 	if len(in.RuntimeVersions) == 0 {
 		in.RuntimeVersions = json.RawMessage(`{}`)
 	}
@@ -532,6 +582,7 @@ func (s *Service) CreatePairing(ctx context.Context, in PairingInput) (Pairing, 
 	if err := s.validatePairing(in); err != nil {
 		return Pairing{}, err
 	}
+	in.WorkspaceRoot, _ = canonicalWorkspaceRoot(in.Platform, in.WorkspaceRoot)
 	verifierHash := sha256.Sum256([]byte(in.Verifier))
 	code, err := randomCode(8)
 	if err != nil {
@@ -541,16 +592,28 @@ func (s *Service) CreatePairing(ctx context.Context, in PairingInput) (Pairing, 
 		in.RuntimeVersions = json.RawMessage(`{}`)
 	}
 	expires := s.now().UTC().Add(s.policy.PairingLifetime)
-	params := dbsqlc.CreateUserMachinePairingParams{ID: newID("ump"), VerifierHash: verifierHash[:], UserCode: code, RequestedDisplayName: strings.TrimSpace(in.DisplayName), Platform: strings.ToLower(strings.TrimSpace(in.Platform)), Architecture: strings.ToLower(strings.TrimSpace(in.Architecture)), WorkspaceRoot: filepath.Clean(in.WorkspaceRoot), RuntimeVersions: in.RuntimeVersions, PublicIdentityKey: strings.TrimSpace(in.PublicIdentityKey), ExpiresAt: expires}
+	params := dbsqlc.CreateUserMachinePairingParams{ID: newID("ump"), VerifierHash: verifierHash[:], UserCode: code, RequestedDisplayName: strings.TrimSpace(in.DisplayName), Platform: strings.ToLower(strings.TrimSpace(in.Platform)), Architecture: strings.ToLower(strings.TrimSpace(in.Architecture)), WorkspaceRoot: in.WorkspaceRoot, RuntimeVersions: in.RuntimeVersions, PublicIdentityKey: strings.TrimSpace(in.PublicIdentityKey), ExpiresAt: expires}
+	if in.SSHUser != "" || in.SSHPort != 0 {
+		params.SshUser = sql.NullString{String: strings.TrimSpace(in.SSHUser), Valid: true}
+		params.SshPort = sql.NullInt32{Int32: int32(in.SSHPort), Valid: true}
+	}
 	var row dbsqlc.UserMachinePairing
+	var enrollmentUserID string
 	if strings.TrimSpace(in.EnrollmentToken) == "" {
 		row, err = s.db.Queries().CreateUserMachinePairing(ctx, params)
 	} else {
-		tokenHash := sha256.Sum256([]byte(strings.TrimSpace(in.EnrollmentToken)))
+		token := strings.TrimSpace(in.EnrollmentToken)
+		tokenHash := enrollmentTokenHash(token)
 		err = s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 			enrollment, err := tx.Queries().GetUserMachineEnrollmentForTokenUpdate(ctx, tokenHash[:])
 			if errors.Is(err, sql.ErrNoRows) {
-				return ErrEnrollmentNotFound
+				// Transitional compatibility for enrollments created before metadata
+				// was separated from the credential hash.
+				legacyHash := sha256.Sum256([]byte(token))
+				enrollment, err = tx.Queries().GetUserMachineEnrollmentForTokenUpdate(ctx, legacyHash[:])
+				if errors.Is(err, sql.ErrNoRows) {
+					return ErrEnrollmentNotFound
+				}
 			}
 			if err != nil {
 				return err
@@ -558,6 +621,7 @@ func (s *Service) CreatePairing(ctx context.Context, in PairingInput) (Pairing, 
 			if enrollment.State != "awaiting_bootstrap" || !s.now().UTC().Before(enrollment.ExpiresAt) {
 				return ErrEnrollmentState
 			}
+			enrollmentUserID = enrollment.UserID
 			if enrollment.ExpiresAt.Before(params.ExpiresAt) {
 				params.ExpiresAt = enrollment.ExpiresAt
 			}
@@ -577,6 +641,15 @@ func (s *Service) CreatePairing(ctx context.Context, in PairingInput) (Pairing, 
 	}
 	if err != nil {
 		return Pairing{}, err
+	}
+	// A dashboard-issued enrollment token is already authenticated by the
+	// account owner. Consume the approval step immediately so a pasted command
+	// is genuinely one-shot. The explicit pairing approval endpoint remains only
+	// for legacy pairing requests that did not carry an enrollment token.
+	if enrollmentUserID != "" {
+		if _, err := s.Approve(ctx, enrollmentUserID, row.UserCode); err != nil {
+			return Pairing{}, err
+		}
 	}
 	return Pairing{ID: row.ID, UserCode: row.UserCode, ExpiresAt: row.ExpiresAt}, nil
 }
@@ -1387,6 +1460,9 @@ func (s *Service) Approve(ctx context.Context, userID, userCode string) (UserMac
 			if err != nil {
 				return err
 			}
+			if err := ensurePairingSSHTarget(ctx, tx, pairing, row); err != nil {
+				return err
+			}
 			out, pairingID = mapMachine(row), pairing.ID
 			alreadyProvisioned = len(pairing.InstallationConfigCiphertext) > 0
 			return nil
@@ -1449,8 +1525,127 @@ func (s *Service) Approve(ctx context.Context, userID, userCode string) (UserMac
 			if err := s.ensureHelperRoute(ctx, tx, row.ID, row.EnvironmentID); err != nil {
 				return err
 			}
+			if err := ensurePairingSSHTarget(ctx, tx, pairing, row); err != nil {
+				return err
+			}
 			out, pairingID = mapMachine(row), pairing.ID
 			return s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "user_machine.installation_retried", ResourceType: "user_machine", ResourceID: row.ID, IdempotencyKey: "user_machine.installation_retried:" + pairing.ID, Metadata: map[string]any{"environment_id": row.EnvironmentID, "generation": enrollment.Generation}})
+		}
+		if enrollmentErr == nil {
+			existing, identityErr := tx.Queries().GetUserMachineByPublicIdentityForUpdate(ctx, sql.NullString{String: pairing.PublicIdentityKey, Valid: true})
+			if identityErr == nil {
+				if existing.UserID != userID {
+					return ErrMachineIdentityConflict
+				}
+				if existing.Platform != pairing.Platform || existing.Architecture != pairing.Architecture || existing.WorkspaceRoot != pairing.WorkspaceRoot || existing.State == "revoked" || existing.State == "deleted" {
+					return ErrEnrollmentState
+				}
+				if existing.SeatState == "released" {
+					if s.seats == nil {
+						return ErrSeatUnavailable
+					}
+					if err := s.seats.ReserveUserMachineSeat(ctx, tx, userID); err != nil {
+						return err
+					}
+					if n, err := tx.Queries().OccupyUserMachineSeat(ctx, dbsqlc.OccupyUserMachineSeatParams{ID: existing.ID, UserID: userID}); err != nil || n != 1 {
+						if err != nil {
+							return err
+						}
+						return ErrEnrollmentState
+					}
+				} else if existing.SeatState != "occupied" {
+					return ErrEnrollmentState
+				}
+				row, err := tx.Queries().AddUserMachineHostRole(ctx, dbsqlc.AddUserMachineHostRoleParams{ID: existing.ID, UserID: userID, DisplayName: pairing.RequestedDisplayName, WorkspaceRoot: pairing.WorkspaceRoot, RuntimeVersions: pairing.RuntimeVersions})
+				if err != nil {
+					return err
+				}
+				if err := s.ensureHelperRoute(ctx, tx, row.ID, row.EnvironmentID); err != nil {
+					return err
+				}
+				if _, err := s.ensureCurrentBandwidthPeriod(ctx, tx, row); err != nil {
+					return err
+				}
+				if n, err := tx.Queries().ApproveUserMachinePairing(ctx, dbsqlc.ApproveUserMachinePairingParams{UserID: sql.NullString{String: userID, Valid: true}, UserMachineID: sql.NullString{String: row.ID, Valid: true}, ID: pairing.ID}); err != nil || n != 1 {
+					if err != nil {
+						return err
+					}
+					return ErrPairingUsed
+				}
+				if n, err := tx.Queries().ApproveUserMachineEnrollment(ctx, dbsqlc.ApproveUserMachineEnrollmentParams{UserMachineID: sql.NullString{String: row.ID, Valid: true}, PairingID: sql.NullString{String: pairing.ID, Valid: true}, UserID: userID}); err != nil || n != 1 {
+					if err != nil {
+						return err
+					}
+					return ErrEnrollmentState
+				}
+				if err := ensurePairingSSHTarget(ctx, tx, pairing, row); err != nil {
+					return err
+				}
+				out, pairingID = mapMachine(row), pairing.ID
+				return s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "user_machine.enrollment_restarted", ResourceType: "user_machine", ResourceID: row.ID, IdempotencyKey: "user_machine.enrollment_restarted:" + pairing.ID, Metadata: map[string]any{"environment_id": row.EnvironmentID, "generation": enrollment.Generation}})
+			}
+			if !errors.Is(identityErr, sql.ErrNoRows) {
+				return identityErr
+			}
+			if s.seats == nil {
+				return ErrSeatUnavailable
+			}
+			if err := s.seats.ReserveUserMachineSeat(ctx, tx, userID); err != nil {
+				return err
+			}
+			environmentID := newID("env")
+			alias, err := allocateMachineAlias(ctx, tx.Queries(), userID, pairing.RequestedDisplayName)
+			if err != nil {
+				return err
+			}
+			row, err := tx.Queries().CreateInteractiveMachine(ctx, dbsqlc.CreateInteractiveMachineParams{
+				ID: newID("mch"), UserID: userID, EnvironmentID: environmentID, DisplayName: pairing.RequestedDisplayName, Alias: alias,
+				Platform: pairing.Platform, Architecture: pairing.Architecture, WorkspaceRoot: pairing.WorkspaceRoot,
+				RuntimeVersions: pairing.RuntimeVersions, SetupMode: "receive", ConfiguredCapabilities: configuredCapabilities("receive"),
+				PublicIdentityKey: sql.NullString{String: pairing.PublicIdentityKey, Valid: true},
+			})
+			if userMachineTerminalSessionUniqueViolation(err) {
+				return ErrMachineNameConflict
+			}
+			if err != nil {
+				return err
+			}
+			if _, err := tx.Queries().CreateControlEnvironment(ctx, dbsqlc.CreateControlEnvironmentParams{ID: environmentID, WorkspaceID: row.ID, OwnerUserID: sql.NullString{String: userID, Valid: true}, DesiredState: "active"}); err != nil {
+				return err
+			}
+			if n, err := tx.Queries().OccupyUserMachineSeat(ctx, dbsqlc.OccupyUserMachineSeatParams{ID: row.ID, UserID: userID}); err != nil || n != 1 {
+				if err != nil {
+					return err
+				}
+				return ErrEnrollmentState
+			}
+			row, err = tx.Queries().AddUserMachineHostRole(ctx, dbsqlc.AddUserMachineHostRoleParams{ID: row.ID, UserID: userID, DisplayName: pairing.RequestedDisplayName, WorkspaceRoot: pairing.WorkspaceRoot, RuntimeVersions: pairing.RuntimeVersions})
+			if err != nil {
+				return err
+			}
+			if err := s.ensureHelperRoute(ctx, tx, row.ID, row.EnvironmentID); err != nil {
+				return err
+			}
+			if _, err := s.ensureCurrentBandwidthPeriod(ctx, tx, row); err != nil {
+				return err
+			}
+			if n, err := tx.Queries().ApproveUserMachinePairing(ctx, dbsqlc.ApproveUserMachinePairingParams{UserID: sql.NullString{String: userID, Valid: true}, UserMachineID: sql.NullString{String: row.ID, Valid: true}, ID: pairing.ID}); err != nil || n != 1 {
+				if err != nil {
+					return err
+				}
+				return ErrPairingUsed
+			}
+			if n, err := tx.Queries().ApproveUserMachineEnrollment(ctx, dbsqlc.ApproveUserMachineEnrollmentParams{UserMachineID: sql.NullString{String: row.ID, Valid: true}, PairingID: sql.NullString{String: pairing.ID, Valid: true}, UserID: userID}); err != nil || n != 1 {
+				if err != nil {
+					return err
+				}
+				return ErrEnrollmentState
+			}
+			if err := ensurePairingSSHTarget(ctx, tx, pairing, row); err != nil {
+				return err
+			}
+			out, pairingID = mapMachine(row), pairing.ID
+			return s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "user_machine.enrollment_approved", ResourceType: "user_machine", ResourceID: row.ID, IdempotencyKey: "user_machine.enrollment_approved:" + pairing.ID, Metadata: map[string]any{"environment_id": row.EnvironmentID, "generation": enrollment.Generation}})
 		}
 		existing, identityErr := tx.Queries().GetUserMachineByPublicIdentityForUpdate(ctx, sql.NullString{String: pairing.PublicIdentityKey, Valid: true})
 		if identityErr == nil {
@@ -1503,6 +1698,9 @@ func (s *Service) Approve(ctx context.Context, userID, userCode string) (UserMac
 					return ErrEnrollmentState
 				}
 			}
+			if err := ensurePairingSSHTarget(ctx, tx, pairing, row); err != nil {
+				return err
+			}
 			out, pairingID = mapMachine(row), pairing.ID
 			return s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "machine.host_role_added", ResourceType: "machine", ResourceID: row.ID, IdempotencyKey: "machine.host_role_added:" + pairing.ID})
 		}
@@ -1524,6 +1722,19 @@ func (s *Service) Approve(ctx context.Context, userID, userCode string) (UserMac
 		return UserMachine{}, err
 	}
 	return out, nil
+}
+
+func ensurePairingSSHTarget(ctx context.Context, tx *db.Tx, pairing dbsqlc.UserMachinePairing, machine dbsqlc.UserMachine) error {
+	if !pairing.SshUser.Valid && !pairing.SshPort.Valid {
+		return nil
+	}
+	if !pairing.SshUser.Valid || !pairing.SshPort.Valid || !validPairingSSHUser(pairing.SshUser.String) || pairing.SshPort.Int32 < 1 || pairing.SshPort.Int32 > 65535 || machine.InstallationGeneration < 1 {
+		return ErrInvalidPairing
+	}
+	return tx.Queries().UpsertPairingMachineSSHTarget(ctx, dbsqlc.UpsertPairingMachineSSHTargetParams{
+		UserMachineID: machine.ID, MachineGeneration: machine.InstallationGeneration,
+		OsUser: pairing.SshUser.String, TargetPort: pairing.SshPort.Int32,
+	})
 }
 
 func (s *Service) ensureHelperRoute(ctx context.Context, tx *db.Tx, userMachineID, environmentID string) error {
@@ -1645,8 +1856,11 @@ func (s *Service) provisionApprovedUserMachine(ctx context.Context, userID, pair
 		"schema": "paperboat.byod-installation/v1", "user_machine_id": machine.ID, "user_machine_enrollment_id": installationEnrollmentID, "environment_id": machine.EnvironmentID,
 		"control_url": s.issuer, "helper_id": grant.HelperID, "enrollment_id": grant.EnrollmentID,
 		"enrollment_credential": grant.Credential, "reuse_identity": reuseIdentity, "expires_at": grant.ExpiresAt,
-		"artifact":              artifact,
-		"helper_listen_address": fmt.Sprintf("127.0.0.1:%d", s.helperListenPort),
+		"artifact":                artifact,
+		"helper_listen_address":   fmt.Sprintf("127.0.0.1:%d", s.helperListenPort),
+		"installation_generation": machine.InstallationGeneration,
+		"setup_roles":             machine.SetupRoles,
+		"setup_mode":              machine.SetupMode,
 	})
 	if err != nil {
 		return err
@@ -1831,6 +2045,29 @@ func (s *Service) Get(ctx context.Context, userID, userMachineID string) (UserMa
 		return UserMachine{}, err
 	}
 	return mapMachine(row), nil
+}
+
+func (s *Service) Rename(ctx context.Context, userID, userMachineID, displayName string) (UserMachine, error) {
+	userID, userMachineID, displayName = strings.TrimSpace(userID), strings.TrimSpace(userMachineID), strings.TrimSpace(displayName)
+	if userID == "" || userMachineID == "" || invalidMachineDisplayName(displayName) {
+		return UserMachine{}, ErrInvalidMachineName
+	}
+	var result UserMachine
+	err := s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		row, err := tx.Queries().RenameUserMachine(ctx, dbsqlc.RenameUserMachineParams{DisplayName: displayName, ID: userMachineID, UserID: userID})
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if userMachineTerminalSessionUniqueViolation(err) {
+			return ErrMachineNameConflict
+		}
+		if err != nil {
+			return err
+		}
+		result = mapMachine(row)
+		return s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "user_machine.renamed", ResourceType: "user_machine", ResourceID: userMachineID, IdempotencyKey: "user_machine.renamed:" + userMachineID + ":" + strconv.FormatInt(row.Version, 10), Metadata: map[string]any{"display_name": displayName, "version": row.Version}})
+	})
+	return result, err
 }
 
 func (s *Service) ListTerminalSessions(ctx context.Context, userID, userMachineID string) ([]TerminalSession, error) {
@@ -2470,11 +2707,104 @@ func compactSessionIDs(values ...string) []string {
 
 func (s *Service) validatePairing(in PairingInput) error {
 	token := strings.TrimSpace(in.EnrollmentToken)
+	_, validWorkspace := canonicalWorkspaceRoot(in.Platform, in.WorkspaceRoot)
 	publicKey, keyErr := base64.RawURLEncoding.DecodeString(strings.TrimSpace(in.PublicIdentityKey))
-	if s.policy.PairingLifetime <= 0 || strings.TrimSpace(in.Verifier) == "" || strings.TrimSpace(in.DisplayName) == "" || strings.TrimSpace(in.Architecture) == "" || !filepath.IsAbs(in.WorkspaceRoot) || filepath.Clean(in.WorkspaceRoot) != in.WorkspaceRoot || !slices.Contains(s.policy.AllowedPlatforms, strings.ToLower(strings.TrimSpace(in.Platform))) || token != "" && (len(token) < 32 || len(token) > 256) || keyErr != nil || len(publicKey) != ed25519.PublicKeySize {
-		return ErrInvalidPairing
+	checks := []struct {
+		invalid bool
+		reason  string
+	}{
+		{s.policy.PairingLifetime <= 0, "pairing lifetime"},
+		{strings.TrimSpace(in.Verifier) == "", "verifier"},
+		{invalidMachineDisplayName(in.DisplayName), "display name"},
+		{!validMachineArchitecture(in.Architecture), "architecture"},
+		{!validWorkspace, "workspace root"},
+		{!slices.Contains(s.policy.AllowedPlatforms, strings.ToLower(strings.TrimSpace(in.Platform))), "platform"},
+		{isUnacceptedBetaPlatform(in.Platform, in.Architecture, in.AcceptBetaPlatform), "beta acceptance"},
+		{token != "" && !validEnrollmentToken(token), "enrollment token shape"},
+		{keyErr != nil || len(publicKey) != ed25519.PublicKeySize, "public identity key"},
+		{(in.SSHUser == "") != (in.SSHPort == 0), "SSH target completeness"},
+		{in.SSHUser != "" && !validPairingSSHUser(in.SSHUser), "SSH user"},
+	}
+	for _, check := range checks {
+		if check.invalid {
+			return fmt.Errorf("%w: %s", ErrInvalidPairing, check.reason)
+		}
 	}
 	return nil
+}
+
+// Display names historically allowed spaces for friendly UI labels, but they
+// must never accept command-line fragments or path/control characters. The
+// enrollment client applies the stricter portable hostname-label contract;
+// this server-side guard protects older clients and direct API callers too.
+func invalidMachineDisplayName(value string) bool {
+	value = strings.TrimSpace(value)
+	return value == "" || utf8.RuneCountInString(value) > 128 || strings.HasPrefix(value, "-") || strings.ContainsAny(value, "=\\/\x00\r\n")
+}
+
+func validPairingSSHUser(value string) bool {
+	if value == "" || len(value) > 128 || strings.TrimSpace(value) != value || strings.ContainsAny(value, "\x00\r\n@") {
+		return false
+	}
+	for _, character := range value {
+		if character < 0x20 || character == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+func canonicalWorkspaceRoot(platform, root string) (string, bool) {
+	if strings.ContainsRune(root, '\x00') || strings.TrimSpace(root) != root || root == "" {
+		return "", false
+	}
+	if !strings.EqualFold(strings.TrimSpace(platform), "windows") {
+		return root, filepath.IsAbs(root) && filepath.Clean(root) == root
+	}
+	root = strings.ReplaceAll(root, "/", `\`)
+	prefix, remainder := "", root
+	switch {
+	case len(root) >= 3 && ((root[0] >= 'A' && root[0] <= 'Z') || (root[0] >= 'a' && root[0] <= 'z')) && root[1] == ':' && root[2] == '\\':
+		prefix, remainder = strings.ToUpper(root[:1])+root[1:3], root[3:]
+	case strings.HasPrefix(root, `\\`):
+		parts := strings.Split(root[2:], `\`)
+		if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+			return "", false
+		}
+		prefix = `\\` + parts[0] + `\` + parts[1]
+		remainder = strings.Join(parts[2:], `\`)
+	default:
+		return "", false
+	}
+	segments := strings.Split(remainder, `\`)
+	clean := make([]string, 0, len(segments))
+	for _, segment := range segments {
+		if segment == "" {
+			continue
+		}
+		if segment == "." || segment == ".." || strings.ContainsAny(segment, `<>:"|?*`) {
+			return "", false
+		}
+		clean = append(clean, segment)
+	}
+	if len(clean) == 0 {
+		return prefix, true
+	}
+	separator := `\`
+	if strings.HasSuffix(prefix, `\`) {
+		separator = ""
+	}
+	canonical := prefix + separator + strings.Join(clean, `\`)
+	return canonical, canonical == root
+}
+
+func validMachineArchitecture(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return value == "amd64" || value == "arm64"
+}
+
+func isUnacceptedBetaPlatform(platform, architecture string, accepted bool) bool {
+	return strings.EqualFold(strings.TrimSpace(platform), "windows") && strings.EqualFold(strings.TrimSpace(architecture), "arm64") && !accepted
 }
 func mapMachine(row dbsqlc.UserMachine) UserMachine {
 	diagnostics := RuntimeDiagnostics{WorkerGeneration: uint64(row.WorkerGeneration), OSBootID: row.OsBootID.String, WorkerServiceScope: row.WorkerServiceScope, ConnectorState: row.ConnectorState, ConnectorGeneration: uint64(row.ConnectorGeneration)}
@@ -2526,6 +2856,88 @@ func newID(prefix string) string {
 }
 func randomCode(length int) (string, error) {
 	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	b := make([]byte, length)
+	raw := make([]byte, length)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	for i := range b {
+		b[i] = alphabet[int(raw[i])%len(alphabet)]
+	}
+	return string(b), nil
+}
+
+const enrollmentTokenLength = 26
+
+func validEnrollmentToken(token string) bool {
+	_, ok := enrollmentTokenSecret(strings.TrimSpace(token))
+	return ok
+}
+
+func enrollmentTokenSecret(token string) (string, bool) {
+	token = strings.TrimSpace(token)
+	if len(token) != enrollmentTokenLength {
+		return "", false
+	}
+	for i := range token {
+		if !((token[i] >= '0' && token[i] <= '9') || (token[i] >= 'A' && token[i] <= 'Z')) {
+			return "", false
+		}
+	}
+	return token[2:], true
+}
+
+func enrollmentTokenHash(token string) [sha256.Size]byte {
+	secret, _ := enrollmentTokenSecret(token)
+	return sha256.Sum256([]byte(secret))
+}
+
+// randomEnrollmentToken returns one URL-safe credential. The first character
+// carries role parity, the second carries shell parity, and the remaining
+// characters carry the secret entropy.
+func randomEnrollmentToken() (string, error) {
+	const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	metadata, err := randomCodeFromAlphabet(alphabet, 2)
+	if err != nil {
+		return "", err
+	}
+	rest, err := randomCodeFromAlphabet(alphabet, enrollmentTokenLength-2)
+	if err != nil {
+		return "", err
+	}
+	return metadata + rest, nil
+}
+
+func randomEnrollmentTokenFor(role, shell string) (string, error) {
+	role = strings.ToLower(strings.TrimSpace(role))
+	shell = strings.ToLower(strings.TrimSpace(shell))
+	if role != "host" && role != "client" {
+		return "", errors.New("enrollment role must be host or client")
+	}
+	if shell != "posix" && shell != "powershell" {
+		return "", errors.New("enrollment shell is invalid")
+	}
+	roleEven, shellEven := role == "host", shell == "posix"
+	metadata := make([]byte, 2)
+	for i, even := range []bool{roleEven, shellEven} {
+		chars := "13579ACEGIKMOQSUWY"
+		if even {
+			chars = "02468BDFHJLNPRTVXZ"
+		}
+		value, err := randomCodeFromAlphabet(chars, 1)
+		if err != nil {
+			return "", err
+		}
+		metadata[i] = value[0]
+	}
+	rest, err := randomCodeFromAlphabet("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ", enrollmentTokenLength-2)
+	if err != nil {
+		return "", err
+	}
+	return string(metadata) + rest, nil
+}
+
+func randomCodeFromAlphabet(alphabet string, length int) (string, error) {
 	b := make([]byte, length)
 	raw := make([]byte, length)
 	if _, err := rand.Read(raw); err != nil {

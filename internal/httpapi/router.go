@@ -288,6 +288,7 @@ func NewRouter(opts Options) http.Handler {
 			}
 			mux.Handle("POST /v1/machine-enrollments", requireAuth(opts.Auth, requireCSRF(opts.Auth, userMachineEnrollmentStart(opts.Machines))))
 			mux.Handle("GET /v1/machine-enrollments/{enrollment_id}", requireAuth(opts.Auth, userMachineEnrollmentStatus(opts.Machines)))
+			mux.Handle("GET /v1/machine-enrollments/{enrollment_id}/bootstrap-token", requireAuth(opts.Auth, userMachineEnrollmentToken(opts.Machines)))
 			mux.Handle("POST /v1/machine-enrollments/{enrollment_id}/cancel", requireAuth(opts.Auth, requireCSRF(opts.Auth, userMachineEnrollmentCancel(opts.Machines))))
 			mux.Handle("POST /v1/machine-enrollments/{enrollment_id}/retry", requireAuth(opts.Auth, requireCSRF(opts.Auth, userMachineEnrollmentRetry(opts.Machines))))
 			mux.Handle("GET /v1/machines/overview", userMachineAuth("projects:read", userMachineOverview(opts.Machines)))
@@ -299,6 +300,7 @@ func NewRouter(opts Options) http.Handler {
 			mux.Handle("PUT /v1/terminal-sessions/{session_id}/transfer-destination", userMachineAuth("projects:connect", terminalSessionTransferDestination(opts.Machines)))
 			mux.Handle("DELETE /v1/terminal-sessions/{session_id}/transfer-destination", userMachineAuth("projects:connect", terminalSessionTransferDestination(opts.Machines)))
 			mux.Handle("GET /v1/machines/{machine_id}", requireAuth(opts.Auth, userMachineGet(opts.Machines)))
+			mux.Handle("PATCH /v1/machines/{machine_id}", userMachineAuth("projects:connect", requireCSRF(opts.Auth, userMachineRename(opts.Machines))))
 			mux.Handle("GET /v1/machines/{machine_id}/update-status", userMachineAuth("projects:read", userMachineUpdateStatus(opts.Machines)))
 			mux.Handle("GET /v1/machines/{machine_id}/maintenance-approvals", userMachineAuth("projects:read", userMachineMaintenanceApprovalsList(opts.Machines)))
 			mux.Handle("POST /v1/machines/{machine_id}/maintenance-approvals", userMachineAuth("projects:connect", requireCSRF(opts.Auth, userMachineMaintenanceApprovalRequest(opts.Machines))))
@@ -320,8 +322,6 @@ func NewRouter(opts Options) http.Handler {
 			mux.Handle("POST /v1/machines/{machine_id}/terminal-sessions/{session_id}/close", userMachineAuth("projects:connect", userMachineTerminalSessionsClose(opts.Machines)))
 			mux.Handle("DELETE /v1/machines/{machine_id}/terminal-sessions/{session_id}", userMachineAuth("projects:connect", userMachineTerminalSessionsDelete(opts.Machines)))
 			mux.HandleFunc("POST /v1/machines/pairings/installation", userMachineInstallationConsume(opts.Machines))
-			mux.Handle("POST /v1/machines/pairings/{user_code}/approve", requireAuth(opts.Auth, requireCSRF(opts.Auth, userMachinePairingApprove(opts.Machines, opts.Logger))))
-			mux.Handle("POST /v1/machines/pairings/{user_code}/deny", requireAuth(opts.Auth, requireCSRF(opts.Auth, userMachinePairingDeny(opts.Machines))))
 			mux.Handle("POST /v1/machines/{machine_id}/disconnect", userMachineAuth("projects:connect", requireCSRF(opts.Auth, userMachineDisconnect(opts.Machines))))
 			mux.Handle("DELETE /v1/machines/{machine_id}", userMachineAuth("projects:connect", requireCSRF(opts.Auth, userMachineDelete(opts.Machines))))
 			if opts.DeviceAuth != nil {

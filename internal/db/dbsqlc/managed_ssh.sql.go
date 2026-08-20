@@ -348,6 +348,7 @@ SELECT id, user_machine_id, machine_generation, observation_generation, set_fing
 WHERE user_machine_id = $1
   AND machine_generation = $2
   AND observation_generation = $3
+  AND state IN ('active', 'pending')
 FOR UPDATE
 `
 

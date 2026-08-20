@@ -64,6 +64,15 @@ func TestUserMachineRuntimeObservationRejectsConcurrentCopiedIdentity(t *testing
 	if err := repository.RecordRuntimeObservation(ctx, observation); !errors.Is(err, metering.ErrDuplicateMachineIdentity) {
 		t.Fatalf("concurrent copied identity error = %v", err)
 	}
+	observation.WorkerGeneration = 2
+	if err := repository.RecordRuntimeObservation(ctx, observation); err != nil {
+		t.Fatalf("new generation after reboot: %v", err)
+	}
+	observation.WorkerGeneration = 1
+	observation.OSBootID = "boot-c"
+	if err := repository.RecordRuntimeObservation(ctx, observation); !errors.Is(err, metering.ErrDuplicateMachineIdentity) {
+		t.Fatalf("older copied identity error = %v", err)
+	}
 	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machines SET last_seen_at=now()-interval '3 minutes' WHERE id=$1`, machineID); err != nil {
 		t.Fatal(err)
 	}

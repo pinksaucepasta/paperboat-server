@@ -17,14 +17,17 @@ import (
 
 func userMachinePairings(service *usermachines.Service) http.HandlerFunc {
 	type request struct {
-		Verifier          string          `json:"verifier"`
-		EnrollmentToken   string          `json:"enrollment_token"`
-		DisplayName       string          `json:"display_name"`
-		Platform          string          `json:"platform"`
-		Architecture      string          `json:"architecture"`
-		WorkspaceRoot     string          `json:"workspace_root"`
-		RuntimeVersions   json.RawMessage `json:"runtime_versions"`
-		PublicIdentityKey string          `json:"public_identity_key"`
+		Verifier           string          `json:"verifier"`
+		EnrollmentToken    string          `json:"enrollment_token"`
+		DisplayName        string          `json:"display_name"`
+		Platform           string          `json:"platform"`
+		Architecture       string          `json:"architecture"`
+		WorkspaceRoot      string          `json:"workspace_root"`
+		RuntimeVersions    json.RawMessage `json:"runtime_versions"`
+		PublicIdentityKey  string          `json:"public_identity_key"`
+		AcceptBetaPlatform bool            `json:"accept_beta_platform,omitempty"`
+		SSHUser            string          `json:"ssh_user,omitempty"`
+		SSHPort            uint16          `json:"ssh_port,omitempty"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body request
@@ -32,8 +35,9 @@ func userMachinePairings(service *usermachines.Service) http.HandlerFunc {
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON.")
 			return
 		}
-		pairing, err := service.CreatePairing(r.Context(), usermachines.PairingInput{Verifier: body.Verifier, EnrollmentToken: body.EnrollmentToken, DisplayName: body.DisplayName, Platform: body.Platform, Architecture: body.Architecture, WorkspaceRoot: body.WorkspaceRoot, RuntimeVersions: body.RuntimeVersions, PublicIdentityKey: body.PublicIdentityKey})
+		pairing, err := service.CreatePairing(r.Context(), usermachines.PairingInput{Verifier: body.Verifier, EnrollmentToken: body.EnrollmentToken, DisplayName: body.DisplayName, Platform: body.Platform, Architecture: body.Architecture, WorkspaceRoot: body.WorkspaceRoot, RuntimeVersions: body.RuntimeVersions, PublicIdentityKey: body.PublicIdentityKey, AcceptBetaPlatform: body.AcceptBetaPlatform, SSHUser: body.SSHUser, SSHPort: body.SSHPort})
 		if err != nil {
+			slog.Warn("invalid user-machine pairing", "error", err, "platform", body.Platform, "architecture", body.Architecture)
 			writeError(w, r, http.StatusBadRequest, "invalid_user_machine_pairing", "Pairing details are invalid or unsupported.")
 			return
 		}
@@ -43,13 +47,14 @@ func userMachinePairings(service *usermachines.Service) http.HandlerFunc {
 
 func machineSetup(service *usermachines.Service) http.HandlerFunc {
 	type request struct {
-		SetupMode         string          `json:"setup_mode"`
-		DisplayName       string          `json:"display_name"`
-		Platform          string          `json:"platform"`
-		Architecture      string          `json:"architecture"`
-		WorkspaceRoot     string          `json:"workspace_root"`
-		PublicIdentityKey string          `json:"public_identity_key"`
-		RuntimeVersions   json.RawMessage `json:"runtime_versions"`
+		SetupMode          string          `json:"setup_mode"`
+		DisplayName        string          `json:"display_name"`
+		Platform           string          `json:"platform"`
+		Architecture       string          `json:"architecture"`
+		WorkspaceRoot      string          `json:"workspace_root"`
+		PublicIdentityKey  string          `json:"public_identity_key"`
+		RuntimeVersions    json.RawMessage `json:"runtime_versions"`
+		AcceptBetaPlatform bool            `json:"accept_beta_platform,omitempty"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := principalFromContext(r.Context())
@@ -68,6 +73,7 @@ func machineSetup(service *usermachines.Service) http.HandlerFunc {
 			DisplayName: body.DisplayName, Platform: body.Platform, Architecture: body.Architecture,
 			WorkspaceRoot: body.WorkspaceRoot, PublicIdentityKey: body.PublicIdentityKey,
 			RuntimeVersions: body.RuntimeVersions, SetupMode: body.SetupMode,
+			AcceptBetaPlatform: body.AcceptBetaPlatform,
 		})
 		switch {
 		case errors.Is(err, usermachines.ErrInvalidSetup):
@@ -91,7 +97,20 @@ func userMachineEnrollmentStart(service *usermachines.Service) http.HandlerFunc 
 			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
 			return
 		}
-		result, err := service.StartEnrollment(r.Context(), p.User.ID, r.Header.Get("Idempotency-Key"))
+		var body struct {
+			Role  string `json:"role"`
+			Shell string `json:"shell"`
+		}
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&body)
+		}
+		if body.Role == "" {
+			body.Role = "host"
+		}
+		if body.Shell == "" {
+			body.Shell = "posix"
+		}
+		result, err := service.StartEnrollmentWithOptions(r.Context(), p.User.ID, r.Header.Get("Idempotency-Key"), usermachines.EnrollmentOptions{Role: body.Role, Shell: body.Shell})
 		if err != nil {
 			if errors.Is(err, usermachines.ErrIdempotencyKeyRequired) {
 				writeError(w, r, http.StatusBadRequest, "idempotency_key_required", "A valid Idempotency-Key header is required.")
@@ -120,6 +139,28 @@ func userMachineEnrollmentStatus(service *usermachines.Service) http.HandlerFunc
 	}
 }
 
+func userMachineEnrollmentToken(service *usermachines.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		token, err := service.EnrollmentToken(r.Context(), p.User.ID, r.PathValue("enrollment_id"))
+		if err != nil {
+			writeError(w, r, http.StatusGone, "user_machine_bootstrap_token_unavailable", "The enrollment token is unavailable or expired.")
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store, private")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Content-Disposition", `attachment; filename="paperboat-enrollment-token.txt"`)
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, token+"\n")
+	}
+}
+
 func userMachineEnrollmentCancel(service *usermachines.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := principalFromContext(r.Context())
@@ -142,7 +183,18 @@ func userMachineEnrollmentRetry(service *usermachines.Service) http.HandlerFunc 
 			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
 			return
 		}
-		result, err := service.RetryEnrollment(r.Context(), p.User.ID, r.PathValue("enrollment_id"))
+		var body struct {
+			Role  string `json:"role"`
+			Shell string `json:"shell"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.Role == "" {
+			body.Role = "host"
+		}
+		if body.Shell == "" {
+			body.Shell = "posix"
+		}
+		result, err := service.RetryEnrollmentWithOptions(r.Context(), p.User.ID, r.PathValue("enrollment_id"), usermachines.EnrollmentOptions{Role: body.Role, Shell: body.Shell})
 		if err != nil {
 			writeError(w, r, http.StatusConflict, "user_machine_enrollment_not_retryable", "User-machine enrollment cannot be retried in its current state.")
 			return
@@ -397,6 +449,39 @@ func userMachineGet(service *usermachines.Service) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, SuccessResponse{Data: machine})
+	}
+}
+
+func userMachineRename(service *usermachines.Service) http.HandlerFunc {
+	type request struct {
+		DisplayName string `json:"display_name"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+			return
+		}
+		var body request
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&body); err != nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON.")
+			return
+		}
+		machine, err := service.Rename(r.Context(), p.User.ID, r.PathValue("machine_id"), body.DisplayName)
+		switch {
+		case errors.Is(err, usermachines.ErrInvalidMachineName):
+			writeError(w, r, http.StatusBadRequest, "invalid_machine_name", "Machine name must be between 1 and 128 characters.")
+		case errors.Is(err, usermachines.ErrMachineNameConflict):
+			writeError(w, r, http.StatusConflict, "machine_name_conflict", "A machine with this name already exists. Choose another name.")
+		case errors.Is(err, usermachines.ErrNotFound):
+			writeError(w, r, http.StatusNotFound, "user_machine_not_found", "Machine was not found.")
+		case err != nil:
+			writeError(w, r, http.StatusInternalServerError, "machine_rename_failed", "Unable to rename this machine.")
+		default:
+			writeJSON(w, http.StatusOK, SuccessResponse{Data: machine})
+		}
 	}
 }
 

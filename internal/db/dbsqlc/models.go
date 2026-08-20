@@ -1638,6 +1638,8 @@ type UserMachinePairing struct {
 	CreatedAt                    time.Time
 	UpdatedAt                    time.Time
 	PublicIdentityKey            string
+	SshUser                      sql.NullString
+	SshPort                      sql.NullInt32
 }
 
 type UserMachineTerminalSession struct {

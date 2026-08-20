@@ -107,6 +107,24 @@ RETURNING *;
 SELECT * FROM peer_endpoint_enrollment_requests
 WHERE operation_key = sqlc.arg(operation_key);
 
+-- name: RenewExpiredPeerEndpointEnrollmentRequest :one
+UPDATE peer_endpoint_enrollment_requests request
+SET state = 'pending', created_at = sqlc.arg(created_at), expires_at = sqlc.arg(expires_at),
+    fulfilled_at = NULL, certificate_fingerprint = NULL
+WHERE request.operation_key = sqlc.arg(operation_key)
+  AND request.request_hash = sqlc.arg(request_hash)
+  AND request.user_id = sqlc.arg(user_id)
+  AND request.endpoint_id = sqlc.arg(endpoint_id)
+  AND request.generation = sqlc.arg(generation)
+  AND request.state = 'expired'
+  AND EXISTS (
+    SELECT 1 FROM user_machines machine
+    WHERE machine.id = request.endpoint_id AND machine.user_id = request.user_id
+      AND machine.installation_generation = request.generation
+      AND machine.revoked_at IS NULL AND machine.deleted_at IS NULL
+  )
+RETURNING *;
+
 -- name: ListPendingPeerEndpointEnrollmentRequests :many
 SELECT * FROM peer_endpoint_enrollment_requests
 WHERE user_id = sqlc.arg(user_id) AND state = 'pending'
