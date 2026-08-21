@@ -1903,7 +1903,7 @@ func (s *Service) provisionApprovedUserMachine(ctx context.Context, userID, pair
 		}
 	}
 	var cliSessionID, cliAccessToken, cliRefreshToken string
-	if s.cliClientID != "" && s.cliScopes != "" && len(s.cliHashKey) > 0 && s.cliAccessLifetime > 0 && s.cliRefreshLifetime > 0 {
+	if shouldIssueCLIEnrollmentSession(machine.SetupMode) && s.cliClientID != "" && s.cliScopes != "" && len(s.cliHashKey) > 0 && s.cliAccessLifetime > 0 && s.cliRefreshLifetime > 0 {
 		cliSessionID = newID("cls")
 		cliAccessToken, cliRefreshToken = oneShotToken(32), oneShotToken(32)
 	}
@@ -1962,6 +1962,10 @@ func (s *Service) provisionApprovedUserMachine(ctx context.Context, userID, pair
 		_, err = tx.Queries().MarkUserMachineEnrollmentMaterialIssued(ctx, sql.NullString{String: pairingID, Valid: true})
 		return err
 	})
+}
+
+func shouldIssueCLIEnrollmentSession(setupMode string) bool {
+	return strings.TrimSpace(setupMode) != "host"
 }
 
 func oneShotHash(key []byte, value string) string {
