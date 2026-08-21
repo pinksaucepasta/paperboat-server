@@ -35,7 +35,7 @@ func TestCLIEndpointRequestBindsAuthenticatedSessionAndKeys(t *testing.T) {
 	response := httptest.NewRecorder()
 	cliEndpointRequest(cliEndpointRequesterFunc(func(_ context.Context, value peeridentity.CLIEndpointRequest) (peeridentity.EndpointEnrollmentRequest, error) {
 		got = value
-		return peeridentity.EndpointEnrollmentRequest{ID: "per_0123456789abcdef", UserID: value.UserID, EndpointID: value.EndpointID, Generation: value.Generation, Role: peeridentity.RoleCLI, NoisePublicKey: value.NoisePublicKey, QUICPublicKey: value.QUICPublicKey, CreatedAt: value.Now, ExpiresAt: value.Now.Add(time.Minute)}, nil
+		return peeridentity.EndpointEnrollmentRequest{ID: "per_0123456789abcdef", UserID: value.UserID, EndpointID: value.EndpointID, Generation: value.Generation, Role: peeridentity.RoleCLI, State: "pending", NoisePublicKey: value.NoisePublicKey, QUICPublicKey: value.QUICPublicKey, CreatedAt: value.Now, ExpiresAt: value.Now.Add(time.Minute)}, nil
 	})).ServeHTTP(response, request)
 	if response.Code != http.StatusCreated || got.UserID != "account_01" || got.EndpointID != "cli_session_01" || got.Generation != 1 || !bytes.Equal(got.NoisePublicKey[:], noise) || !bytes.Equal(got.QUICPublicKey[:], quic) {
 		t.Fatalf("status=%d request=%+v body=%s", response.Code, got, response.Body.String())
@@ -52,6 +52,21 @@ func TestCLIEndpointRequestRejectsSessionImpersonation(t *testing.T) {
 	})).ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestCLIEndpointRequestReturnsFulfilledReplayState(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/v1/e2ee/endpoint-requests", strings.NewReader(`{"operation_id":"operation_cli_01","endpoint_id":"cli_session_01","generation":1,"noise_public_key":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE","quic_public_key":"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI"}`))
+	request = request.WithContext(context.WithValue(request.Context(), authContextKey{}, principal{User: auth.User{ID: "account_01"}, Client: &auth.ClientPrincipal{SessionID: "cli_session_01"}}))
+	response := httptest.NewRecorder()
+	cliEndpointRequest(cliEndpointRequesterFunc(func(_ context.Context, value peeridentity.CLIEndpointRequest) (peeridentity.EndpointEnrollmentRequest, error) {
+		return peeridentity.EndpointEnrollmentRequest{ID: "per_0123456789abcdef", UserID: value.UserID, EndpointID: value.EndpointID, Generation: value.Generation, Role: peeridentity.RoleCLI, State: "fulfilled", NoisePublicKey: value.NoisePublicKey, QUICPublicKey: value.QUICPublicKey, CreatedAt: value.Now.Add(-10 * time.Minute), ExpiresAt: value.Now.Add(-5 * time.Minute)}, nil
+	})).ServeHTTP(response, request)
+	var envelope struct {
+		Data endpointEnrollmentDocument `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil || response.Code != http.StatusCreated || envelope.Data.State != "fulfilled" {
+		t.Fatalf("status=%d data=%+v err=%v body=%s", response.Code, envelope.Data, err, response.Body.String())
 	}
 }
 

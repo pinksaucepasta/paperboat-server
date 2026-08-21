@@ -26,7 +26,7 @@ func (r *recordingRepository) Bootstrap(_ context.Context, operation, userID str
 
 func (r *recordingRepository) RequestMachineEndpoint(_ context.Context, request MachineEndpointRequest, id string, _ [sha256.Size]byte, expires time.Time) (EndpointEnrollmentRequest, error) {
 	r.request = request
-	return EndpointEnrollmentRequest{ID: id, UserID: request.UserID, EndpointID: request.EndpointID, Generation: request.Generation, NoisePublicKey: request.NoisePublicKey, QUICPublicKey: request.QUICPublicKey, CreatedAt: request.Now, ExpiresAt: expires}, r.err
+	return EndpointEnrollmentRequest{ID: id, UserID: request.UserID, EndpointID: request.EndpointID, Generation: request.Generation, Role: RoleMachine, State: "pending", NoisePublicKey: request.NoisePublicKey, QUICPublicKey: request.QUICPublicKey, CreatedAt: request.Now, ExpiresAt: expires}, r.err
 }
 
 func (r *recordingRepository) ListPendingEndpoints(context.Context, string, time.Time, int32) ([]EndpointEnrollmentRequest, error) {

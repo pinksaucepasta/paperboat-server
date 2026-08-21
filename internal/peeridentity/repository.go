@@ -111,6 +111,14 @@ func (r *SQLRepository) RequestMachineEndpoint(ctx context.Context, request Mach
 				}
 				return r.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: request.UserID, ActorType: audit.ActorSystem, EventType: "peer_endpoint.enrollment_renewed", ResourceType: "peer_endpoint_enrollment", ResourceID: renewed.ID, IdempotencyKey: request.OperationID + ":renew:" + request.Now.UTC().Format(time.RFC3339Nano), Metadata: map[string]any{"endpoint_id": request.EndpointID, "generation": request.Generation}})
 			}
+			if matches && existing.State == "fulfilled" {
+				// The certificate is already durably registered. Return only the
+				// same bound enrollment record so a client that failed before
+				// saving it locally can poll and recover; never create another
+				// request or certificate for this operation.
+				result, err = endpointRequestFromRow(existing)
+				return err
+			}
 			if !matches || existing.State != "pending" || !existing.ExpiresAt.After(request.Now) {
 				return ErrConflict
 			}
@@ -303,8 +311,8 @@ func endpointRequestFromRow(row dbsqlc.PeerEndpointEnrollmentRequest) (EndpointE
 	if len(row.NoisePublicKey) != 32 || len(row.QuicPublicKey) != 32 || row.Generation < 1 || !row.ExpiresAt.After(row.CreatedAt) {
 		return EndpointEnrollmentRequest{}, ErrUnavailable
 	}
-	result := EndpointEnrollmentRequest{ID: row.ID, UserID: row.UserID, EndpointID: row.EndpointID, Generation: uint64(row.Generation), Role: roleFromString(row.Role), CreatedAt: row.CreatedAt.UTC(), ExpiresAt: row.ExpiresAt.UTC()}
-	if result.Role == 0 {
+	result := EndpointEnrollmentRequest{ID: row.ID, UserID: row.UserID, EndpointID: row.EndpointID, Generation: uint64(row.Generation), Role: roleFromString(row.Role), State: row.State, CreatedAt: row.CreatedAt.UTC(), ExpiresAt: row.ExpiresAt.UTC()}
+	if result.Role == 0 || (result.State != "pending" && result.State != "fulfilled" && result.State != "expired" && result.State != "revoked") {
 		return EndpointEnrollmentRequest{}, ErrUnavailable
 	}
 	copy(result.NoisePublicKey[:], row.NoisePublicKey)

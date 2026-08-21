@@ -49,6 +49,7 @@ type EndpointEnrollmentRequest struct {
 	EndpointID     string
 	Generation     uint64
 	Role           Role
+	State          string
 	NoisePublicKey [32]byte
 	QUICPublicKey  [32]byte
 	CreatedAt      time.Time

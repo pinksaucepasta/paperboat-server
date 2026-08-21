@@ -40,6 +40,7 @@ type endpointEnrollmentDocument struct {
 	RequestID      string `json:"request_id"`
 	EndpointID     string `json:"endpoint_id"`
 	Role           string `json:"role"`
+	State          string `json:"state"`
 	Generation     uint64 `json:"generation"`
 	NoisePublicKey string `json:"noise_public_key"`
 	QUICPublicKey  string `json:"quic_public_key"`
@@ -205,5 +206,5 @@ func pendingEndpoints(service pendingEndpointReader) http.HandlerFunc {
 }
 
 func endpointEnrollmentResponse(value peeridentity.EndpointEnrollmentRequest) endpointEnrollmentDocument {
-	return endpointEnrollmentDocument{RequestID: value.ID, EndpointID: value.EndpointID, Role: value.Role.String(), Generation: value.Generation, NoisePublicKey: base64.RawURLEncoding.EncodeToString(value.NoisePublicKey[:]), QUICPublicKey: base64.RawURLEncoding.EncodeToString(value.QUICPublicKey[:]), CreatedAt: value.CreatedAt.UTC().Format(time.RFC3339), ExpiresAt: value.ExpiresAt.UTC().Format(time.RFC3339), SafetyCode: value.SafetyCode()}
+	return endpointEnrollmentDocument{RequestID: value.ID, EndpointID: value.EndpointID, Role: value.Role.String(), State: value.State, Generation: value.Generation, NoisePublicKey: base64.RawURLEncoding.EncodeToString(value.NoisePublicKey[:]), QUICPublicKey: base64.RawURLEncoding.EncodeToString(value.QUICPublicKey[:]), CreatedAt: value.CreatedAt.UTC().Format(time.RFC3339), ExpiresAt: value.ExpiresAt.UTC().Format(time.RFC3339), SafetyCode: value.SafetyCode()}
 }
