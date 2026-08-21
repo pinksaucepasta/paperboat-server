@@ -39,6 +39,64 @@ func (q *Queries) CreateAccountE2EERoot(ctx context.Context, arg CreateAccountE2
 	return i, err
 }
 
+const createCLIPeerEndpointEnrollmentRequest = `-- name: CreateCLIPeerEndpointEnrollmentRequest :one
+INSERT INTO peer_endpoint_enrollment_requests
+  (id, operation_key, request_hash, user_id, endpoint_id, generation,
+   noise_public_key, quic_public_key, role, created_at, expires_at)
+VALUES
+  ($1, $2, $3, $4,
+   $5, $6, $7,
+   $8, 'cli', $9, $10)
+ON CONFLICT DO NOTHING
+RETURNING id, operation_key, request_hash, user_id, endpoint_id, generation, role, noise_public_key, quic_public_key, state, certificate_fingerprint, created_at, expires_at, fulfilled_at
+`
+
+type CreateCLIPeerEndpointEnrollmentRequestParams struct {
+	ID             string
+	OperationKey   string
+	RequestHash    []byte
+	UserID         string
+	EndpointID     string
+	Generation     int64
+	NoisePublicKey []byte
+	QuicPublicKey  []byte
+	CreatedAt      time.Time
+	ExpiresAt      time.Time
+}
+
+func (q *Queries) CreateCLIPeerEndpointEnrollmentRequest(ctx context.Context, arg CreateCLIPeerEndpointEnrollmentRequestParams) (PeerEndpointEnrollmentRequest, error) {
+	row := q.db.QueryRow(ctx, createCLIPeerEndpointEnrollmentRequest,
+		arg.ID,
+		arg.OperationKey,
+		arg.RequestHash,
+		arg.UserID,
+		arg.EndpointID,
+		arg.Generation,
+		arg.NoisePublicKey,
+		arg.QuicPublicKey,
+		arg.CreatedAt,
+		arg.ExpiresAt,
+	)
+	var i PeerEndpointEnrollmentRequest
+	err := row.Scan(
+		&i.ID,
+		&i.OperationKey,
+		&i.RequestHash,
+		&i.UserID,
+		&i.EndpointID,
+		&i.Generation,
+		&i.Role,
+		&i.NoisePublicKey,
+		&i.QuicPublicKey,
+		&i.State,
+		&i.CertificateFingerprint,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.FulfilledAt,
+	)
+	return i, err
+}
+
 const createPeerEndpointCertificate = `-- name: CreatePeerEndpointCertificate :one
 INSERT INTO peer_endpoint_certificates
   (fingerprint, user_id, endpoint_id, role, generation, serial, certificate,
@@ -177,16 +235,16 @@ func (q *Queries) CreatePeerEndpointCertificateRevocation(ctx context.Context, a
 const createPeerEndpointEnrollmentRequest = `-- name: CreatePeerEndpointEnrollmentRequest :one
 INSERT INTO peer_endpoint_enrollment_requests
   (id, operation_key, request_hash, user_id, endpoint_id, generation,
-   noise_public_key, quic_public_key, created_at, expires_at)
+   noise_public_key, quic_public_key, role, created_at, expires_at)
 SELECT $1, $2, $3, machine.user_id,
        machine.id, $4, $5,
-       $6, $7, $8
+       $6, 'machine', $7, $8
 FROM user_machines machine
 WHERE machine.id = $9 AND machine.user_id = $10
   AND machine.installation_generation = $4
   AND machine.revoked_at IS NULL AND machine.deleted_at IS NULL
 ON CONFLICT DO NOTHING
-RETURNING id, operation_key, request_hash, user_id, endpoint_id, generation, noise_public_key, quic_public_key, state, certificate_fingerprint, created_at, expires_at, fulfilled_at
+RETURNING id, operation_key, request_hash, user_id, endpoint_id, generation, role, noise_public_key, quic_public_key, state, certificate_fingerprint, created_at, expires_at, fulfilled_at
 `
 
 type CreatePeerEndpointEnrollmentRequestParams struct {
@@ -223,6 +281,7 @@ func (q *Queries) CreatePeerEndpointEnrollmentRequest(ctx context.Context, arg C
 		&i.UserID,
 		&i.EndpointID,
 		&i.Generation,
+		&i.Role,
 		&i.NoisePublicKey,
 		&i.QuicPublicKey,
 		&i.State,
@@ -253,7 +312,7 @@ UPDATE peer_endpoint_enrollment_requests
 SET state = 'fulfilled', certificate_fingerprint = $1,
     fulfilled_at = $2
 WHERE id = $3 AND state = 'pending'
-RETURNING id, operation_key, request_hash, user_id, endpoint_id, generation, noise_public_key, quic_public_key, state, certificate_fingerprint, created_at, expires_at, fulfilled_at
+RETURNING id, operation_key, request_hash, user_id, endpoint_id, generation, role, noise_public_key, quic_public_key, state, certificate_fingerprint, created_at, expires_at, fulfilled_at
 `
 
 type FulfillPeerEndpointEnrollmentRequestParams struct {
@@ -272,6 +331,7 @@ func (q *Queries) FulfillPeerEndpointEnrollmentRequest(ctx context.Context, arg 
 		&i.UserID,
 		&i.EndpointID,
 		&i.Generation,
+		&i.Role,
 		&i.NoisePublicKey,
 		&i.QuicPublicKey,
 		&i.State,
@@ -372,7 +432,7 @@ func (q *Queries) GetActivePeerEndpointCertificateForUpdate(ctx context.Context,
 }
 
 const getMatchingPeerEndpointEnrollmentRequestForUpdate = `-- name: GetMatchingPeerEndpointEnrollmentRequestForUpdate :one
-SELECT id, operation_key, request_hash, user_id, endpoint_id, generation, noise_public_key, quic_public_key, state, certificate_fingerprint, created_at, expires_at, fulfilled_at FROM peer_endpoint_enrollment_requests
+SELECT id, operation_key, request_hash, user_id, endpoint_id, generation, role, noise_public_key, quic_public_key, state, certificate_fingerprint, created_at, expires_at, fulfilled_at FROM peer_endpoint_enrollment_requests
 WHERE user_id = $1 AND endpoint_id = $2
   AND generation = $3 AND state = 'pending'
   AND expires_at > $4
@@ -401,6 +461,7 @@ func (q *Queries) GetMatchingPeerEndpointEnrollmentRequestForUpdate(ctx context.
 		&i.UserID,
 		&i.EndpointID,
 		&i.Generation,
+		&i.Role,
 		&i.NoisePublicKey,
 		&i.QuicPublicKey,
 		&i.State,
@@ -513,7 +574,7 @@ func (q *Queries) GetPeerEndpointCertificateRevocationForUpdate(ctx context.Cont
 }
 
 const getPeerEndpointEnrollmentRequestByOperation = `-- name: GetPeerEndpointEnrollmentRequestByOperation :one
-SELECT id, operation_key, request_hash, user_id, endpoint_id, generation, noise_public_key, quic_public_key, state, certificate_fingerprint, created_at, expires_at, fulfilled_at FROM peer_endpoint_enrollment_requests
+SELECT id, operation_key, request_hash, user_id, endpoint_id, generation, role, noise_public_key, quic_public_key, state, certificate_fingerprint, created_at, expires_at, fulfilled_at FROM peer_endpoint_enrollment_requests
 WHERE operation_key = $1
 `
 
@@ -527,6 +588,7 @@ func (q *Queries) GetPeerEndpointEnrollmentRequestByOperation(ctx context.Contex
 		&i.UserID,
 		&i.EndpointID,
 		&i.Generation,
+		&i.Role,
 		&i.NoisePublicKey,
 		&i.QuicPublicKey,
 		&i.State,
@@ -539,7 +601,7 @@ func (q *Queries) GetPeerEndpointEnrollmentRequestByOperation(ctx context.Contex
 }
 
 const listPendingPeerEndpointEnrollmentRequests = `-- name: ListPendingPeerEndpointEnrollmentRequests :many
-SELECT id, operation_key, request_hash, user_id, endpoint_id, generation, noise_public_key, quic_public_key, state, certificate_fingerprint, created_at, expires_at, fulfilled_at FROM peer_endpoint_enrollment_requests
+SELECT id, operation_key, request_hash, user_id, endpoint_id, generation, role, noise_public_key, quic_public_key, state, certificate_fingerprint, created_at, expires_at, fulfilled_at FROM peer_endpoint_enrollment_requests
 WHERE user_id = $1 AND state = 'pending'
   AND expires_at > $2
 ORDER BY created_at, id
@@ -568,6 +630,7 @@ func (q *Queries) ListPendingPeerEndpointEnrollmentRequests(ctx context.Context,
 			&i.UserID,
 			&i.EndpointID,
 			&i.Generation,
+			&i.Role,
 			&i.NoisePublicKey,
 			&i.QuicPublicKey,
 			&i.State,
@@ -586,6 +649,59 @@ func (q *Queries) ListPendingPeerEndpointEnrollmentRequests(ctx context.Context,
 	return items, nil
 }
 
+const renewExpiredCLIPeerEndpointEnrollmentRequest = `-- name: RenewExpiredCLIPeerEndpointEnrollmentRequest :one
+UPDATE peer_endpoint_enrollment_requests request
+SET state = 'pending', created_at = $1, expires_at = $2,
+    fulfilled_at = NULL, certificate_fingerprint = NULL
+WHERE request.operation_key = $3
+  AND request.request_hash = $4
+  AND request.user_id = $5
+  AND request.endpoint_id = $6
+  AND request.generation = $7
+  AND request.role = 'cli' AND request.state = 'expired'
+RETURNING id, operation_key, request_hash, user_id, endpoint_id, generation, role, noise_public_key, quic_public_key, state, certificate_fingerprint, created_at, expires_at, fulfilled_at
+`
+
+type RenewExpiredCLIPeerEndpointEnrollmentRequestParams struct {
+	CreatedAt    time.Time
+	ExpiresAt    time.Time
+	OperationKey string
+	RequestHash  []byte
+	UserID       string
+	EndpointID   string
+	Generation   int64
+}
+
+func (q *Queries) RenewExpiredCLIPeerEndpointEnrollmentRequest(ctx context.Context, arg RenewExpiredCLIPeerEndpointEnrollmentRequestParams) (PeerEndpointEnrollmentRequest, error) {
+	row := q.db.QueryRow(ctx, renewExpiredCLIPeerEndpointEnrollmentRequest,
+		arg.CreatedAt,
+		arg.ExpiresAt,
+		arg.OperationKey,
+		arg.RequestHash,
+		arg.UserID,
+		arg.EndpointID,
+		arg.Generation,
+	)
+	var i PeerEndpointEnrollmentRequest
+	err := row.Scan(
+		&i.ID,
+		&i.OperationKey,
+		&i.RequestHash,
+		&i.UserID,
+		&i.EndpointID,
+		&i.Generation,
+		&i.Role,
+		&i.NoisePublicKey,
+		&i.QuicPublicKey,
+		&i.State,
+		&i.CertificateFingerprint,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.FulfilledAt,
+	)
+	return i, err
+}
+
 const renewExpiredPeerEndpointEnrollmentRequest = `-- name: RenewExpiredPeerEndpointEnrollmentRequest :one
 UPDATE peer_endpoint_enrollment_requests request
 SET state = 'pending', created_at = $1, expires_at = $2,
@@ -602,7 +718,7 @@ WHERE request.operation_key = $3
       AND machine.installation_generation = request.generation
       AND machine.revoked_at IS NULL AND machine.deleted_at IS NULL
   )
-RETURNING id, operation_key, request_hash, user_id, endpoint_id, generation, noise_public_key, quic_public_key, state, certificate_fingerprint, created_at, expires_at, fulfilled_at
+RETURNING id, operation_key, request_hash, user_id, endpoint_id, generation, role, noise_public_key, quic_public_key, state, certificate_fingerprint, created_at, expires_at, fulfilled_at
 `
 
 type RenewExpiredPeerEndpointEnrollmentRequestParams struct {
@@ -633,6 +749,7 @@ func (q *Queries) RenewExpiredPeerEndpointEnrollmentRequest(ctx context.Context,
 		&i.UserID,
 		&i.EndpointID,
 		&i.Generation,
+		&i.Role,
 		&i.NoisePublicKey,
 		&i.QuicPublicKey,
 		&i.State,

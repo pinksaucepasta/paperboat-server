@@ -13,11 +13,47 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pinksaucepasta/paperboat-server/internal/auth"
 	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
 	"github.com/pinksaucepasta/paperboat-server/internal/peeridentity"
 )
 
 type machineProofVerifierFunc func(context.Context, string, []byte, string, string, []byte) (controlplane.MachineRequestClaims, error)
+
+type cliEndpointRequesterFunc func(context.Context, peeridentity.CLIEndpointRequest) (peeridentity.EndpointEnrollmentRequest, error)
+
+func (f cliEndpointRequesterFunc) RequestCLIEndpoint(ctx context.Context, request peeridentity.CLIEndpointRequest) (peeridentity.EndpointEnrollmentRequest, error) {
+	return f(ctx, request)
+}
+
+func TestCLIEndpointRequestBindsAuthenticatedSessionAndKeys(t *testing.T) {
+	noise := bytes.Repeat([]byte{1}, 32)
+	quic := bytes.Repeat([]byte{2}, 32)
+	var got peeridentity.CLIEndpointRequest
+	request := httptest.NewRequest(http.MethodPost, "/v1/e2ee/endpoint-requests", strings.NewReader(`{"operation_id":"operation_cli_01","endpoint_id":"cli_session_01","generation":1,"noise_public_key":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE","quic_public_key":"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI"}`))
+	request = request.WithContext(context.WithValue(request.Context(), authContextKey{}, principal{User: auth.User{ID: "account_01"}, Client: &auth.ClientPrincipal{SessionID: "cli_session_01"}}))
+	response := httptest.NewRecorder()
+	cliEndpointRequest(cliEndpointRequesterFunc(func(_ context.Context, value peeridentity.CLIEndpointRequest) (peeridentity.EndpointEnrollmentRequest, error) {
+		got = value
+		return peeridentity.EndpointEnrollmentRequest{ID: "per_0123456789abcdef", UserID: value.UserID, EndpointID: value.EndpointID, Generation: value.Generation, Role: peeridentity.RoleCLI, NoisePublicKey: value.NoisePublicKey, QUICPublicKey: value.QUICPublicKey, CreatedAt: value.Now, ExpiresAt: value.Now.Add(time.Minute)}, nil
+	})).ServeHTTP(response, request)
+	if response.Code != http.StatusCreated || got.UserID != "account_01" || got.EndpointID != "cli_session_01" || got.Generation != 1 || !bytes.Equal(got.NoisePublicKey[:], noise) || !bytes.Equal(got.QUICPublicKey[:], quic) {
+		t.Fatalf("status=%d request=%+v body=%s", response.Code, got, response.Body.String())
+	}
+}
+
+func TestCLIEndpointRequestRejectsSessionImpersonation(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/v1/e2ee/endpoint-requests", strings.NewReader(`{"operation_id":"operation_cli_01","endpoint_id":"other_session","generation":1,"noise_public_key":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE","quic_public_key":"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI"}`))
+	request = request.WithContext(context.WithValue(request.Context(), authContextKey{}, principal{User: auth.User{ID: "account_01"}, Client: &auth.ClientPrincipal{SessionID: "cli_session_01"}}))
+	response := httptest.NewRecorder()
+	cliEndpointRequest(cliEndpointRequesterFunc(func(context.Context, peeridentity.CLIEndpointRequest) (peeridentity.EndpointEnrollmentRequest, error) {
+		t.Fatal("requester called")
+		return peeridentity.EndpointEnrollmentRequest{}, nil
+	})).ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
 
 func (f machineProofVerifierFunc) VerifyMachineRequest(ctx context.Context, credential string, proof []byte, method, path string, body []byte) (controlplane.MachineRequestClaims, error) {
 	return f(ctx, credential, proof, method, path, body)

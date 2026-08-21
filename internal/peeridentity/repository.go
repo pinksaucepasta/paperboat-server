@@ -42,7 +42,7 @@ func (r *SQLRepository) Bootstrap(ctx context.Context, operationID, userID strin
 		if root.RevokedAt.Valid || !bytes.Equal(root.PublicKey, rootPublic) || !bytes.Equal(root.Fingerprint, rootFingerprint[:]) || root.Generation != 1 {
 			return ErrConflict
 		}
-		result, err = r.registerTx(ctx, tx, operationID, userID, proposed, root)
+		result, err = r.registerTx(ctx, tx, operationID, userID, proposed, root, false)
 		if err != nil {
 			return err
 		}
@@ -136,6 +136,58 @@ func (r *SQLRepository) RequestMachineEndpoint(ctx context.Context, request Mach
 	return result, err
 }
 
+func (r *SQLRepository) RequestCLIEndpoint(ctx context.Context, request CLIEndpointRequest, id string, hash [sha256.Size]byte, expiresAt time.Time) (EndpointEnrollmentRequest, error) {
+	if r == nil || ctx == nil || !identifierExpr.MatchString(id) || !expiresAt.After(request.Now) {
+		return EndpointEnrollmentRequest{}, ErrInvalid
+	}
+	var result EndpointEnrollmentRequest
+	err := r.store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		q := tx.Queries()
+		if _, err := q.ExpirePeerEndpointEnrollmentRequests(ctx, request.Now.UTC()); err != nil {
+			return err
+		}
+		existing, err := q.GetPeerEndpointEnrollmentRequestByOperation(ctx, request.OperationID)
+		if err == nil {
+			matches := bytes.Equal(existing.RequestHash, hash[:]) && existing.UserID == request.UserID && existing.EndpointID == request.EndpointID && existing.Generation == int64(request.Generation) && existing.Role == "cli"
+			if matches && existing.State == "expired" {
+				renewed, renewErr := q.RenewExpiredCLIPeerEndpointEnrollmentRequest(ctx, dbsqlc.RenewExpiredCLIPeerEndpointEnrollmentRequestParams{CreatedAt: request.Now.UTC(), ExpiresAt: expiresAt.UTC(), OperationKey: request.OperationID, RequestHash: hash[:], UserID: request.UserID, EndpointID: request.EndpointID, Generation: int64(request.Generation)})
+				if errors.Is(renewErr, sql.ErrNoRows) {
+					return ErrUnavailable
+				}
+				if renewErr != nil {
+					return renewErr
+				}
+				result, renewErr = endpointRequestFromRow(renewed)
+				if renewErr != nil {
+					return renewErr
+				}
+				return r.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: request.UserID, ActorType: audit.ActorSystem, EventType: "peer_endpoint.cli_enrollment_renewed", ResourceType: "peer_endpoint_enrollment", ResourceID: renewed.ID, IdempotencyKey: request.OperationID + ":renew", Metadata: map[string]any{"endpoint_id": request.EndpointID, "generation": request.Generation, "role": "cli"}})
+			}
+			if !matches || existing.State != "pending" || !existing.ExpiresAt.After(request.Now) {
+				return ErrConflict
+			}
+			result, err = endpointRequestFromRow(existing)
+			return err
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		row, err := q.CreateCLIPeerEndpointEnrollmentRequest(ctx, dbsqlc.CreateCLIPeerEndpointEnrollmentRequestParams{ID: id, OperationKey: request.OperationID, RequestHash: hash[:], UserID: request.UserID, EndpointID: request.EndpointID, Generation: int64(request.Generation), NoisePublicKey: request.NoisePublicKey[:], QuicPublicKey: request.QUICPublicKey[:], CreatedAt: request.Now.UTC(), ExpiresAt: expiresAt.UTC()})
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrUnavailable
+		}
+		if err != nil {
+			return err
+		}
+		result, err = endpointRequestFromRow(row)
+		if err != nil {
+			return err
+		}
+		return r.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: request.UserID, ActorType: audit.ActorSystem, EventType: "peer_endpoint.cli_enrollment_requested", ResourceType: "peer_endpoint_enrollment", ResourceID: row.ID, IdempotencyKey: request.OperationID, Metadata: map[string]any{"endpoint_id": request.EndpointID, "generation": request.Generation, "role": "cli"}})
+	})
+	return result, err
+}
+
 func (r *SQLRepository) ListPendingEndpoints(ctx context.Context, userID string, now time.Time, limit int32) ([]EndpointEnrollmentRequest, error) {
 	if r == nil || ctx == nil || !identifierExpr.MatchString(userID) || now.IsZero() || limit < 1 || limit > 100 {
 		return nil, ErrInvalid
@@ -173,13 +225,13 @@ func (r *SQLRepository) Register(ctx context.Context, operationID, userID string
 		if !bytes.Equal(root.Fingerprint, proposed.RootFingerprint[:]) || len(root.PublicKey) != ed25519.PublicKeySize {
 			return ErrConflict
 		}
-		result, err = r.registerTx(ctx, tx, operationID, userID, proposed, root)
+		result, err = r.registerTx(ctx, tx, operationID, userID, proposed, root, true)
 		return err
 	})
 	return result, err
 }
 
-func (r *SQLRepository) registerTx(ctx context.Context, tx *db.Tx, operationID, userID string, proposed Certificate, root dbsqlc.AccountE2eeRoot) (Certificate, error) {
+func (r *SQLRepository) registerTx(ctx context.Context, tx *db.Tx, operationID, userID string, proposed Certificate, root dbsqlc.AccountE2eeRoot, requireEnrollment bool) (Certificate, error) {
 	q := tx.Queries()
 	requestHash := sha256.Sum256(proposed.Raw)
 	var result Certificate
@@ -198,7 +250,7 @@ func (r *SQLRepository) registerTx(ctx context.Context, tx *db.Tx, operationID, 
 		return Certificate{}, err
 	}
 	var enrollment dbsqlc.PeerEndpointEnrollmentRequest
-	if proposed.Role == RoleMachine {
+	if requireEnrollment && (proposed.Role == RoleMachine || proposed.Role == RoleCLI) {
 		enrollment, err = q.GetMatchingPeerEndpointEnrollmentRequestForUpdate(ctx, dbsqlc.GetMatchingPeerEndpointEnrollmentRequestForUpdateParams{UserID: userID, EndpointID: proposed.EndpointID, Generation: int64(proposed.Generation), Now: proposed.IssuedAt})
 		if errors.Is(err, sql.ErrNoRows) {
 			return Certificate{}, ErrUnavailable
@@ -206,7 +258,7 @@ func (r *SQLRepository) registerTx(ctx context.Context, tx *db.Tx, operationID, 
 		if err != nil {
 			return Certificate{}, err
 		}
-		if !bytes.Equal(enrollment.NoisePublicKey, proposed.NoisePublicKey[:]) || !bytes.Equal(enrollment.QuicPublicKey, proposed.QUICPublicKey[:]) || proposed.IssuedAt.Before(enrollment.CreatedAt) {
+		if roleFromString(enrollment.Role) != proposed.Role || !bytes.Equal(enrollment.NoisePublicKey, proposed.NoisePublicKey[:]) || !bytes.Equal(enrollment.QuicPublicKey, proposed.QUICPublicKey[:]) || proposed.IssuedAt.Before(enrollment.CreatedAt) {
 			return Certificate{}, ErrConflict
 		}
 	}
@@ -228,7 +280,7 @@ func (r *SQLRepository) registerTx(ctx context.Context, tx *db.Tx, operationID, 
 	if _, err := q.CreatePeerEndpointCertificateOperation(ctx, dbsqlc.CreatePeerEndpointCertificateOperationParams{OperationID: operationID, UserID: userID, RequestHash: requestHash[:], CertificateFingerprint: proposed.Fingerprint[:], CreatedAt: proposed.IssuedAt}); err != nil {
 		return Certificate{}, err
 	}
-	if proposed.Role == RoleMachine {
+	if requireEnrollment && (proposed.Role == RoleMachine || proposed.Role == RoleCLI) {
 		if _, err := q.FulfillPeerEndpointEnrollmentRequest(ctx, dbsqlc.FulfillPeerEndpointEnrollmentRequestParams{CertificateFingerprint: proposed.Fingerprint[:], Now: sql.NullTime{Time: proposed.IssuedAt, Valid: true}, ID: enrollment.ID}); err != nil {
 			return Certificate{}, err
 		}
@@ -251,7 +303,10 @@ func endpointRequestFromRow(row dbsqlc.PeerEndpointEnrollmentRequest) (EndpointE
 	if len(row.NoisePublicKey) != 32 || len(row.QuicPublicKey) != 32 || row.Generation < 1 || !row.ExpiresAt.After(row.CreatedAt) {
 		return EndpointEnrollmentRequest{}, ErrUnavailable
 	}
-	result := EndpointEnrollmentRequest{ID: row.ID, UserID: row.UserID, EndpointID: row.EndpointID, Generation: uint64(row.Generation), CreatedAt: row.CreatedAt.UTC(), ExpiresAt: row.ExpiresAt.UTC()}
+	result := EndpointEnrollmentRequest{ID: row.ID, UserID: row.UserID, EndpointID: row.EndpointID, Generation: uint64(row.Generation), Role: roleFromString(row.Role), CreatedAt: row.CreatedAt.UTC(), ExpiresAt: row.ExpiresAt.UTC()}
+	if result.Role == 0 {
+		return EndpointEnrollmentRequest{}, ErrUnavailable
+	}
 	copy(result.NoisePublicKey[:], row.NoisePublicKey)
 	copy(result.QUICPublicKey[:], row.QuicPublicKey)
 	return result, nil

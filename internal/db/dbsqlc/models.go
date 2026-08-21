@@ -1032,6 +1032,7 @@ type PeerEndpointEnrollmentRequest struct {
 	UserID                 string
 	EndpointID             string
 	Generation             int64
+	Role                   string
 	NoisePublicKey         []byte
 	QuicPublicKey          []byte
 	State                  string

@@ -92,14 +92,25 @@ RETURNING *;
 -- name: CreatePeerEndpointEnrollmentRequest :one
 INSERT INTO peer_endpoint_enrollment_requests
   (id, operation_key, request_hash, user_id, endpoint_id, generation,
-   noise_public_key, quic_public_key, created_at, expires_at)
+   noise_public_key, quic_public_key, role, created_at, expires_at)
 SELECT sqlc.arg(id), sqlc.arg(operation_key), sqlc.arg(request_hash), machine.user_id,
        machine.id, sqlc.arg(generation), sqlc.arg(noise_public_key),
-       sqlc.arg(quic_public_key), sqlc.arg(created_at), sqlc.arg(expires_at)
+       sqlc.arg(quic_public_key), 'machine', sqlc.arg(created_at), sqlc.arg(expires_at)
 FROM user_machines machine
 WHERE machine.id = sqlc.arg(endpoint_id) AND machine.user_id = sqlc.arg(user_id)
   AND machine.installation_generation = sqlc.arg(generation)
   AND machine.revoked_at IS NULL AND machine.deleted_at IS NULL
+ON CONFLICT DO NOTHING
+RETURNING *;
+
+-- name: CreateCLIPeerEndpointEnrollmentRequest :one
+INSERT INTO peer_endpoint_enrollment_requests
+  (id, operation_key, request_hash, user_id, endpoint_id, generation,
+   noise_public_key, quic_public_key, role, created_at, expires_at)
+VALUES
+  (sqlc.arg(id), sqlc.arg(operation_key), sqlc.arg(request_hash), sqlc.arg(user_id),
+   sqlc.arg(endpoint_id), sqlc.arg(generation), sqlc.arg(noise_public_key),
+   sqlc.arg(quic_public_key), 'cli', sqlc.arg(created_at), sqlc.arg(expires_at))
 ON CONFLICT DO NOTHING
 RETURNING *;
 
@@ -123,6 +134,18 @@ WHERE request.operation_key = sqlc.arg(operation_key)
       AND machine.installation_generation = request.generation
       AND machine.revoked_at IS NULL AND machine.deleted_at IS NULL
   )
+RETURNING *;
+
+-- name: RenewExpiredCLIPeerEndpointEnrollmentRequest :one
+UPDATE peer_endpoint_enrollment_requests request
+SET state = 'pending', created_at = sqlc.arg(created_at), expires_at = sqlc.arg(expires_at),
+    fulfilled_at = NULL, certificate_fingerprint = NULL
+WHERE request.operation_key = sqlc.arg(operation_key)
+  AND request.request_hash = sqlc.arg(request_hash)
+  AND request.user_id = sqlc.arg(user_id)
+  AND request.endpoint_id = sqlc.arg(endpoint_id)
+  AND request.generation = sqlc.arg(generation)
+  AND request.role = 'cli' AND request.state = 'expired'
 RETURNING *;
 
 -- name: ListPendingPeerEndpointEnrollmentRequests :many

@@ -23,6 +23,10 @@ type machineEndpointRequester interface {
 	RequestMachineEndpoint(context.Context, peeridentity.MachineEndpointRequest) (peeridentity.EndpointEnrollmentRequest, error)
 }
 
+type cliEndpointRequester interface {
+	RequestCLIEndpoint(context.Context, peeridentity.CLIEndpointRequest) (peeridentity.EndpointEnrollmentRequest, error)
+}
+
 type pendingEndpointReader interface {
 	PendingEndpoints(context.Context, string, time.Time) ([]peeridentity.EndpointEnrollmentRequest, error)
 }
@@ -35,6 +39,7 @@ type machineEndpointStatusReader interface {
 type endpointEnrollmentDocument struct {
 	RequestID      string `json:"request_id"`
 	EndpointID     string `json:"endpoint_id"`
+	Role           string `json:"role"`
 	Generation     uint64 `json:"generation"`
 	NoisePublicKey string `json:"noise_public_key"`
 	QUICPublicKey  string `json:"quic_public_key"`
@@ -88,6 +93,48 @@ func machineEndpointRequest(service machineEndpointRequester, verifier machineEn
 				status, code = http.StatusServiceUnavailable, "temporarily_unavailable"
 			}
 			writeError(w, r, status, code, "Machine endpoint request could not be created.")
+			return
+		}
+		writeJSON(w, http.StatusCreated, SuccessResponse{Data: endpointEnrollmentResponse(value)})
+	}
+}
+
+func cliEndpointRequest(service cliEndpointRequester) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := principalFromContext(r.Context())
+		if !ok || principal.Client == nil {
+			writeError(w, r, http.StatusUnauthorized, "authentication_required", "CLI authentication is required.")
+			return
+		}
+		var document struct {
+			OperationID    string `json:"operation_id"`
+			EndpointID     string `json:"endpoint_id"`
+			Generation     uint64 `json:"generation"`
+			NoisePublicKey string `json:"noise_public_key"`
+			QUICPublicKey  string `json:"quic_public_key"`
+		}
+		if !decodeStrictJSON(w, r, &document) {
+			return
+		}
+		noise, noiseErr := decodeCanonicalBase64URL(document.NoisePublicKey)
+		quic, quicErr := decodeCanonicalBase64URL(document.QUICPublicKey)
+		if len(document.OperationID) < 8 || len(document.OperationID) > 128 || document.EndpointID != principal.Client.SessionID || document.Generation != 1 || noiseErr != nil || quicErr != nil || len(noise) != 32 || len(quic) != 32 {
+			writeError(w, r, http.StatusBadRequest, "invalid_request", "CLI endpoint enrollment request is invalid.")
+			return
+		}
+		var noiseKey, quicKey [32]byte
+		copy(noiseKey[:], noise)
+		copy(quicKey[:], quic)
+		value, err := service.RequestCLIEndpoint(r.Context(), peeridentity.CLIEndpointRequest{OperationID: document.OperationID, UserID: principal.User.ID, EndpointID: document.EndpointID, Generation: document.Generation, NoisePublicKey: noiseKey, QUICPublicKey: quicKey, Now: time.Now().UTC()})
+		if err != nil {
+			status, code := http.StatusBadRequest, "invalid_request"
+			if errors.Is(err, peeridentity.ErrConflict) {
+				status, code = http.StatusConflict, "operation_conflict"
+			}
+			if errors.Is(err, peeridentity.ErrUnavailable) {
+				status, code = http.StatusServiceUnavailable, "temporarily_unavailable"
+			}
+			writeError(w, r, status, code, "CLI endpoint enrollment request could not be created.")
 			return
 		}
 		writeJSON(w, http.StatusCreated, SuccessResponse{Data: endpointEnrollmentResponse(value)})
@@ -158,5 +205,5 @@ func pendingEndpoints(service pendingEndpointReader) http.HandlerFunc {
 }
 
 func endpointEnrollmentResponse(value peeridentity.EndpointEnrollmentRequest) endpointEnrollmentDocument {
-	return endpointEnrollmentDocument{RequestID: value.ID, EndpointID: value.EndpointID, Generation: value.Generation, NoisePublicKey: base64.RawURLEncoding.EncodeToString(value.NoisePublicKey[:]), QUICPublicKey: base64.RawURLEncoding.EncodeToString(value.QUICPublicKey[:]), CreatedAt: value.CreatedAt.UTC().Format(time.RFC3339), ExpiresAt: value.ExpiresAt.UTC().Format(time.RFC3339), SafetyCode: value.SafetyCode()}
+	return endpointEnrollmentDocument{RequestID: value.ID, EndpointID: value.EndpointID, Role: value.Role.String(), Generation: value.Generation, NoisePublicKey: base64.RawURLEncoding.EncodeToString(value.NoisePublicKey[:]), QUICPublicKey: base64.RawURLEncoding.EncodeToString(value.QUICPublicKey[:]), CreatedAt: value.CreatedAt.UTC().Format(time.RFC3339), ExpiresAt: value.ExpiresAt.UTC().Format(time.RFC3339), SafetyCode: value.SafetyCode()}
 }

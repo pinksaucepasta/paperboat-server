@@ -48,6 +48,7 @@ type EndpointEnrollmentRequest struct {
 	UserID         string
 	EndpointID     string
 	Generation     uint64
+	Role           Role
 	NoisePublicKey [32]byte
 	QUICPublicKey  [32]byte
 	CreatedAt      time.Time
@@ -56,7 +57,11 @@ type EndpointEnrollmentRequest struct {
 
 func (r EndpointEnrollmentRequest) SafetyCode() string {
 	buffer := make([]byte, 0, 64+len(r.EndpointID))
-	buffer = append(buffer, "paperboat-machine-endpoint-v1"...)
+	domain := "paperboat-machine-endpoint-v1"
+	if r.Role == RoleCLI {
+		domain = "paperboat-cli-endpoint-v1"
+	}
+	buffer = append(buffer, domain...)
 	buffer = append(buffer, 0)
 	buffer = append(buffer, r.EndpointID...)
 	buffer = append(buffer, 0)
@@ -71,6 +76,16 @@ func (r EndpointEnrollmentRequest) SafetyCode() string {
 }
 
 type MachineEndpointRequest struct {
+	OperationID    string
+	UserID         string
+	EndpointID     string
+	Generation     uint64
+	NoisePublicKey [32]byte
+	QUICPublicKey  [32]byte
+	Now            time.Time
+}
+
+type CLIEndpointRequest struct {
 	OperationID    string
 	UserID         string
 	EndpointID     string
@@ -107,6 +122,24 @@ func (s *Service) RequestMachineEndpoint(ctx context.Context, request MachineEnd
 	}
 	hash := sha256.Sum256(append(append(append([]byte(request.UserID+"\x00"+request.EndpointID+"\x00"+request.OperationID+"\x00"), request.NoisePublicKey[:]...), request.QUICPublicKey[:]...), byte(request.Generation>>56), byte(request.Generation>>48), byte(request.Generation>>40), byte(request.Generation>>32), byte(request.Generation>>24), byte(request.Generation>>16), byte(request.Generation>>8), byte(request.Generation)))
 	return s.repository.RequestMachineEndpoint(ctx, request, id, hash, request.Now.UTC().Add(5*time.Minute))
+}
+
+func (s *Service) RequestCLIEndpoint(ctx context.Context, request CLIEndpointRequest) (EndpointEnrollmentRequest, error) {
+	if s == nil || ctx == nil || len(request.OperationID) < 8 || len(request.OperationID) > 128 || !identifierExpr.MatchString(request.UserID) || !identifierExpr.MatchString(request.EndpointID) || request.Generation != 1 || request.Now.IsZero() || zeroKey(request.NoisePublicKey) || zeroKey(request.QUICPublicKey) {
+		return EndpointEnrollmentRequest{}, ErrInvalid
+	}
+	id, err := randomEndpointRequestID()
+	if err != nil {
+		return EndpointEnrollmentRequest{}, err
+	}
+	hash := sha256.Sum256(append(append(append([]byte(request.UserID+"\x00"+request.EndpointID+"\x00"+request.OperationID+"\x00cli\x00"), request.NoisePublicKey[:]...), request.QUICPublicKey[:]...), 0, 0, 0, 0, 0, 0, 0, 1))
+	repository, ok := s.repository.(interface {
+		RequestCLIEndpoint(context.Context, CLIEndpointRequest, string, [sha256.Size]byte, time.Time) (EndpointEnrollmentRequest, error)
+	})
+	if !ok {
+		return EndpointEnrollmentRequest{}, ErrUnavailable
+	}
+	return repository.RequestCLIEndpoint(ctx, request, id, hash, request.Now.UTC().Add(5*time.Minute))
 }
 
 func (s *Service) PendingEndpoints(ctx context.Context, userID string, now time.Time) ([]EndpointEnrollmentRequest, error) {

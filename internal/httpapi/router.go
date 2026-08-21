@@ -203,6 +203,7 @@ func NewRouter(opts Options) http.Handler {
 				}
 				mux.Handle("GET /v1/e2ee/root", peerRead(e2eeRootGet(opts.PeerIdentity)))
 				mux.Handle("GET /v1/e2ee/pending-endpoints", peerRead(pendingEndpoints(opts.PeerIdentity)))
+				mux.Handle("POST /v1/e2ee/endpoint-requests", peerWrite(cliEndpointRequest(opts.PeerIdentity)))
 				mux.Handle("POST /v1/e2ee/bootstrap", peerWrite(e2eeBootstrap(opts.PeerIdentity)))
 				mux.Handle("GET /v1/endpoints/{endpoint_id}/certificates/{generation}", peerRead(endpointCertificateGet(opts.PeerIdentity)))
 				mux.Handle("PUT /v1/endpoints/{endpoint_id}/certificates/{generation}", peerWrite(endpointCertificateRegister(opts.PeerIdentity)))

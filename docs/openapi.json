@@ -7280,6 +7280,33 @@
         }
       }
     },
+    "/v1/e2ee/endpoint-requests": {
+      "post": {
+        "summary": "Request a CLI endpoint certificate for paired-device approval",
+        "operationId": "post_v1_e2ee_endpoint_requests",
+        "security": [{ "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["projects:connect"],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object", "additionalProperties": false,
+            "required": ["operation_id", "endpoint_id", "generation", "noise_public_key", "quic_public_key"],
+            "properties": {
+              "operation_id": { "type": "string", "minLength": 8, "maxLength": 128 },
+              "endpoint_id": { "type": "string", "maxLength": 128 },
+              "generation": { "const": 1 },
+              "noise_public_key": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" },
+              "quic_public_key": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" }
+            }
+          } } }
+        },
+        "responses": {
+          "201": { "description": "Pending CLI endpoint request.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" }, "403": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" }, "503": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
     "/v1/e2ee/bootstrap": {
       "post": {
         "summary": "Create the immutable account E2EE root and first CLI endpoint certificate",
