@@ -147,13 +147,6 @@ func splitEnrollmentParameter(value string) (string, string, bool) {
 	return token, hostname, true
 }
 
-func tokenParity(value byte) int {
-	if value >= '0' && value <= '9' {
-		return int(value-'0') % 2
-	}
-	return (int(value-'A') + 1) % 2
-}
-
 func tufRepository(prefix string, files http.Handler) http.Handler {
 	return http.StripPrefix(prefix, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		metadata := strings.HasPrefix(r.URL.Path, "/metadata/") && strings.HasSuffix(r.URL.Path, ".json") && !strings.HasSuffix(r.URL.Path, "/")

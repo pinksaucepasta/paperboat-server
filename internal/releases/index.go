@@ -23,7 +23,7 @@ const ReleaseRolloutSchemaV1 = "paperboat.release-rollout/v1"
 var (
 	indexChannelPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 	indexValuePattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:+/-]{0,127}$`)
-	indexErrorInvalid   = errors.New("release index is invalid")
+	errIndexInvalid     = errors.New("release index is invalid")
 )
 
 // ReleaseIndex is the payload signed as a TUF target. Every field that can
@@ -92,42 +92,42 @@ const (
 
 func (i ReleaseIndex) Validate(now time.Time) error {
 	if i.Schema != ReleaseIndexSchemaV1 || !indexValuePattern.MatchString(i.ReleaseID) || !validVersion(i.Version) || !indexChannelPattern.MatchString(i.Channel) || i.CreatedAt.IsZero() {
-		return indexErrorInvalid
+		return errIndexInvalid
 	}
 	if i.Platform != "darwin" && i.Platform != "linux" && i.Platform != "windows" || i.Architecture != "amd64" && i.Architecture != "arm64" || !validBinaryFormat(i.Platform, i.BinaryFormat) {
-		return indexErrorInvalid
+		return errIndexInvalid
 	}
 	if i.Platform == "windows" {
 		if i.OpenSSHPackageID != "Microsoft.OpenSSH.Preview" || !validVersion(i.OpenSSHApprovedVersion) || len(i.TestedWindowsBuilds) == 0 || len(i.TestedWindowsBuilds) > 16 {
-			return indexErrorInvalid
+			return errIndexInvalid
 		}
 		for _, build := range i.TestedWindowsBuilds {
 			if !indexValuePattern.MatchString(build) {
-				return indexErrorInvalid
+				return errIndexInvalid
 			}
 		}
 		if i.Architecture == "amd64" && (i.Stability != "stable" || !i.NativeTested) || i.Architecture == "arm64" && (i.Stability != "beta" || i.NativeTested) {
-			return indexErrorInvalid
+			return errIndexInvalid
 		}
 		if i.Architecture == "amd64" && i.Channel != "stable" || i.Architecture == "arm64" && i.Channel != "beta" {
-			return indexErrorInvalid
+			return errIndexInvalid
 		}
 	} else if i.Stability != "" || i.NativeTested || len(i.TestedWindowsBuilds) != 0 || i.OpenSSHPackageID != "" || i.OpenSSHApprovedVersion != "" {
-		return indexErrorInvalid
+		return errIndexInvalid
 	}
 	if i.Severity != "routine" && i.Severity != "security" && i.Severity != "critical" || i.HostdAPIMin == 0 || i.HostdAPIMin > i.HostdAPIMax || i.RuntimeAPIMin == 0 || i.RuntimeAPIMin > i.RuntimeAPIMax || i.RolloutPolicyRevision == 0 {
-		return indexErrorInvalid
+		return errIndexInvalid
 	}
 	if i.MinimumVersion != "" && !validVersion(i.MinimumVersion) {
-		return indexErrorInvalid
+		return errIndexInvalid
 	}
 	if err := i.validateTargets(); err != nil {
-		return indexErrorInvalid
+		return errIndexInvalid
 	}
 	seenRevoked := map[string]bool{}
 	for _, version := range i.RevokedVersions {
 		if !validVersion(version) || seenRevoked[version] {
-			return indexErrorInvalid
+			return errIndexInvalid
 		}
 		seenRevoked[version] = true
 	}
@@ -140,20 +140,20 @@ func (i ReleaseIndex) Validate(now time.Time) error {
 func (i ReleaseIndex) validateTargets() error {
 	required := map[string]bool{"cli": false, "runtime": false, "hostd": false, "updater": false, "launcher": false}
 	if len(i.Targets) != len(required) {
-		return indexErrorInvalid
+		return errIndexInvalid
 	}
 	for _, target := range i.Targets {
 		if _, ok := required[target.Component]; !ok || required[target.Component] {
-			return indexErrorInvalid
+			return errIndexInvalid
 		}
 		if target.Platform != i.Platform || target.Architecture != i.Architecture || target.BinaryFormat != i.BinaryFormat ||
 			len(target.SHA256) != sha256.Size*2 || !isLowerHex(target.SHA256) || target.Length < 1 || target.Length > 512<<20 ||
 			!indexValuePattern.MatchString(target.TargetPath) || strings.Contains(target.TargetPath, "..") || strings.ContainsAny(target.TargetPath, "\\?#") {
-			return indexErrorInvalid
+			return errIndexInvalid
 		}
 		want := target.Component + "-" + i.Platform + "-" + i.Architecture
 		if target.TargetPath != want {
-			return indexErrorInvalid
+			return errIndexInvalid
 		}
 		required[target.Component] = true
 	}
@@ -174,16 +174,16 @@ func validBinaryFormat(platform, format string) bool {
 
 func (p RolloutPolicy) validate(now time.Time) error {
 	if p.Schema != ReleaseRolloutSchemaV1 || p.CohortSeed == "" || len(p.CohortSeed) > 128 || strings.ContainsAny(p.CohortSeed, "\x00\r\n") || p.Percentage > 100 {
-		return indexErrorInvalid
+		return errIndexInvalid
 	}
 	if p.NotBefore != nil && p.ExpiresAt != nil && !p.ExpiresAt.After(*p.NotBefore) {
-		return indexErrorInvalid
+		return errIndexInvalid
 	}
 	if !now.IsZero() {
 		// Validate timestamps even when the index is evaluated outside its
 		// window. The caller receives a stable eligibility reason below.
 		if p.NotBefore != nil && p.NotBefore.IsZero() || p.ExpiresAt != nil && p.ExpiresAt.IsZero() {
-			return indexErrorInvalid
+			return errIndexInvalid
 		}
 	}
 	return nil
@@ -226,14 +226,14 @@ func (i ReleaseIndex) Eligible(machineID, platform, architecture string, now tim
 // authenticity and this function provides schema and size validation.
 func DecodeIndex(r io.Reader, now time.Time) (ReleaseIndex, error) {
 	if r == nil {
-		return ReleaseIndex{}, indexErrorInvalid
+		return ReleaseIndex{}, errIndexInvalid
 	}
 	decoder := json.NewDecoder(io.LimitReader(r, 64<<10+1))
 	decoder.DisallowUnknownFields()
 	var index ReleaseIndex
 	var extra any
 	if err := decoder.Decode(&index); err != nil || decoder.Decode(&extra) != io.EOF {
-		return ReleaseIndex{}, indexErrorInvalid
+		return ReleaseIndex{}, errIndexInvalid
 	}
 	if err := index.Validate(now); err != nil {
 		return ReleaseIndex{}, err
@@ -241,7 +241,7 @@ func DecodeIndex(r io.Reader, now time.Time) (ReleaseIndex, error) {
 	return index, nil
 }
 
-func IsInvalidIndex(err error) bool { return errors.Is(err, indexErrorInvalid) }
+func IsInvalidIndex(err error) bool { return errors.Is(err, errIndexInvalid) }
 
 func isLowerHex(value string) bool {
 	if _, err := hex.DecodeString(value); err != nil {
