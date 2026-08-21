@@ -121,6 +121,9 @@ func New(opts Options) (*App, error) {
 	checker := readinessChecker{cfg: opts.Config, db: store}
 	userMachineService := usermachines.New(store, auditWriter, usermachines.Policy{PairingLifetime: opts.Config.UserMachines.PairingLifetime, OfflineAfter: opts.Config.UserMachines.OfflineAfter, AllowedPlatforms: opts.Config.UserMachines.AllowedPlatforms}, billingService)
 	userMachineService.ConfigureProvisioning(accessProvider, opts.Config.Secrets.EncryptionKey)
+	if len(opts.Config.Secrets.SessionKeys) > 0 {
+		userMachineService.ConfigureOneShotCLIAuth(opts.Config.CLIAuth.ClientID, opts.Config.CLIAuth.AllowedScopes, opts.Config.CLIAuth.AccessTokenLifetime, opts.Config.CLIAuth.RefreshTokenLifetime, opts.Config.Secrets.SessionKeys[0])
+	}
 	userMachineService.ConfigureAccess(credentialIssuer, normalizeHelperIssuer(opts.Config.HTTP.PublicBaseURL), opts.Config.CLIAuth.AccessTokenLifetime)
 	userMachineService.ConfigureFileTransfer(accessdescriptor.FileTransferPolicy{
 		Revision: opts.Config.Access.FileTransfer.Revision, MaxFileBytes: opts.Config.Access.FileTransfer.MaxFileBytes,

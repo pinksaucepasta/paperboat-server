@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
@@ -147,6 +148,11 @@ type Service struct {
 	artifactVersionFn  func() string
 	helperBaseDomain   string
 	helperListenPort   int32
+	cliClientID        string
+	cliScopes          string
+	cliAccessLifetime  time.Duration
+	cliRefreshLifetime time.Duration
+	cliHashKey         []byte
 }
 
 type userMachineHelperRuntime interface {
@@ -215,6 +221,17 @@ func (s *Service) ConfigureProvisioning(provider access.Client, encryptionKey st
 
 func (s *Service) ConfigureAccess(credentials access.CredentialIssuer, issuer string, ttl time.Duration) {
 	s.credentials, s.issuer, s.ttl = credentials, strings.TrimRight(issuer, "/"), ttl
+}
+
+// ConfigureOneShotCLIAuth enables the session issued by an approved machine
+// enrollment. It is deliberately separate from the machine credential: the
+// material contains ordinary CLI tokens, while host credentials remain scoped
+// to the enrolled runtime.
+func (s *Service) ConfigureOneShotCLIAuth(clientID string, scopes []string, accessLifetime, refreshLifetime time.Duration, hashKey string) {
+	s.cliClientID = strings.TrimSpace(clientID)
+	s.cliScopes = strings.Join(slices.Compact(slices.Clone(scopes)), " ")
+	s.cliAccessLifetime, s.cliRefreshLifetime = accessLifetime, refreshLifetime
+	s.cliHashKey = []byte(hashKey)
 }
 
 func (s *Service) ConfigureFileTransfer(policy accessdescriptor.FileTransferPolicy) {
@@ -1885,6 +1902,11 @@ func (s *Service) provisionApprovedUserMachine(ctx context.Context, userID, pair
 			return err
 		}
 	}
+	var cliSessionID, cliAccessToken, cliRefreshToken string
+	if s.cliClientID != "" && s.cliScopes != "" && len(s.cliHashKey) > 0 && s.cliAccessLifetime > 0 && s.cliRefreshLifetime > 0 {
+		cliSessionID = newID("cls")
+		cliAccessToken, cliRefreshToken = oneShotToken(32), oneShotToken(32)
+	}
 	material, err := json.Marshal(map[string]any{
 		"schema": "paperboat.byod-installation/v1", "user_machine_id": machine.ID, "user_machine_enrollment_id": installationEnrollmentID, "environment_id": machine.EnvironmentID,
 		"control_url": s.issuer, "helper_id": grant.HelperID, "enrollment_id": grant.EnrollmentID,
@@ -1895,6 +1917,18 @@ func (s *Service) provisionApprovedUserMachine(ctx context.Context, userID, pair
 		"setup_roles":             machine.SetupRoles,
 		"setup_mode":              machine.SetupMode,
 	})
+	if cliSessionID != "" {
+		var materialMap map[string]any
+		if err := json.Unmarshal(material, &materialMap); err != nil {
+			return err
+		}
+		materialMap["client_session"] = map[string]any{
+			"schema": "paperboat.cli-session/v1", "session_id": cliSessionID,
+			"access_token": cliAccessToken, "refresh_token": cliRefreshToken,
+			"token_type": "Bearer", "expires_in": int(s.cliAccessLifetime / time.Second), "scope": s.cliScopes,
+		}
+		material, err = json.Marshal(materialMap)
+	}
 	if err != nil {
 		return err
 	}
@@ -1903,6 +1937,18 @@ func (s *Service) provisionApprovedUserMachine(ctx context.Context, userID, pair
 		return err
 	}
 	return s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if cliSessionID != "" {
+			now := s.now().UTC()
+			if err := tx.Queries().CreateClientSession(ctx, dbsqlc.CreateClientSessionParams{ID: cliSessionID, UserID: userID, ClientID: s.cliClientID, ClientLabel: "Paperboat enrollment: " + machine.DisplayName, DeviceType: "desktop", Os: machine.Platform, Scopes: s.cliScopes, CreatedAt: now, ApprovedAt: now}); err != nil {
+				return err
+			}
+			if err := tx.Queries().CreateClientAccessToken(ctx, dbsqlc.CreateClientAccessTokenParams{TokenHash: oneShotHash(s.cliHashKey, cliAccessToken), CLIClientSessionID: cliSessionID, ExpiresAt: now.Add(s.cliAccessLifetime), CreatedAt: now}); err != nil {
+				return err
+			}
+			if err := tx.Queries().CreateClientRefreshToken(ctx, dbsqlc.CreateClientRefreshTokenParams{TokenHash: oneShotHash(s.cliHashKey, cliRefreshToken), CLIClientSessionID: cliSessionID, ExpiresAt: now.Add(s.cliRefreshLifetime), CreatedAt: now}); err != nil {
+				return err
+			}
+		}
 		n, err := tx.Queries().SetUserMachineInstallationConfig(ctx, dbsqlc.SetUserMachineInstallationConfigParams{ID: pairingID, Ciphertext: ciphertext})
 		if err != nil {
 			return err
@@ -1916,6 +1962,20 @@ func (s *Service) provisionApprovedUserMachine(ctx context.Context, userID, pair
 		_, err = tx.Queries().MarkUserMachineEnrollmentMaterialIssued(ctx, sql.NullString{String: pairingID, Valid: true})
 		return err
 	})
+}
+
+func oneShotHash(key []byte, value string) string {
+	m := hmac.New(sha256.New, key)
+	_, _ = m.Write([]byte(value))
+	return hex.EncodeToString(m.Sum(nil))
+}
+
+func oneShotToken(size int) string {
+	b := make([]byte, size)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b)
 }
 
 // ReserveBandwidth atomically grants capacity from the machine's included
