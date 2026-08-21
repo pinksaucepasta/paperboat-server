@@ -141,6 +141,7 @@ type Service struct {
 	controlRuntime     userMachineHelperRuntime
 	bootstrapCommand   string
 	helperGrant        func(context.Context, string, string, string, time.Duration) (HelperEnrollmentGrant, error)
+	helperRecovery     func(context.Context, string, string, string, string, time.Duration) (HelperEnrollmentGrant, error)
 	artifactRepository string
 	artifactVersion    string
 	artifactVersionFn  func() string
@@ -248,6 +249,10 @@ func (s *Service) ConfigureHelperEnrollment(issuer func(context.Context, string,
 	s.helperGrant = issuer
 }
 
+func (s *Service) ConfigureHelperRecovery(recover func(context.Context, string, string, string, string, time.Duration) (HelperEnrollmentGrant, error)) {
+	s.helperRecovery = recover
+}
+
 func (s *Service) ConfigureMachineArtifacts(repositoryURL, version string) error {
 	repositoryURL, version = strings.TrimRight(strings.TrimSpace(repositoryURL), "/"), strings.TrimSpace(version)
 	if repositoryURL == "" && version == "" {
@@ -289,6 +294,7 @@ type PairingInput struct {
 	SSHPort                                                                                          uint16
 	RuntimeVersions                                                                                  json.RawMessage
 	AcceptBetaPlatform                                                                               bool
+	CanReuseRuntimeIdentity                                                                          bool
 }
 
 type Enrollment struct {
@@ -592,7 +598,7 @@ func (s *Service) CreatePairing(ctx context.Context, in PairingInput) (Pairing, 
 		in.RuntimeVersions = json.RawMessage(`{}`)
 	}
 	expires := s.now().UTC().Add(s.policy.PairingLifetime)
-	params := dbsqlc.CreateUserMachinePairingParams{ID: newID("ump"), VerifierHash: verifierHash[:], UserCode: code, RequestedDisplayName: strings.TrimSpace(in.DisplayName), Platform: strings.ToLower(strings.TrimSpace(in.Platform)), Architecture: strings.ToLower(strings.TrimSpace(in.Architecture)), WorkspaceRoot: in.WorkspaceRoot, RuntimeVersions: in.RuntimeVersions, PublicIdentityKey: strings.TrimSpace(in.PublicIdentityKey), ExpiresAt: expires}
+	params := dbsqlc.CreateUserMachinePairingParams{ID: newID("ump"), VerifierHash: verifierHash[:], UserCode: code, RequestedDisplayName: strings.TrimSpace(in.DisplayName), Platform: strings.ToLower(strings.TrimSpace(in.Platform)), Architecture: strings.ToLower(strings.TrimSpace(in.Architecture)), WorkspaceRoot: in.WorkspaceRoot, RuntimeVersions: in.RuntimeVersions, PublicIdentityKey: strings.TrimSpace(in.PublicIdentityKey), CanReuseRuntimeIdentity: in.CanReuseRuntimeIdentity, ExpiresAt: expires}
 	if in.SSHUser != "" || in.SSHPort != 0 {
 		params.SshUser = sql.NullString{String: strings.TrimSpace(in.SSHUser), Valid: true}
 		params.SshPort = sql.NullInt32{Int32: int32(in.SSHPort), Valid: true}
@@ -1494,22 +1500,35 @@ func (s *Service) Approve(ctx context.Context, userID, userCode string) (UserMac
 		}
 		if enrollmentErr == nil && enrollment.UserMachineID.Valid {
 			row, err := tx.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: enrollment.UserMachineID.String, UserID: userID})
-			if err != nil || row.State == "revoked" || row.State == "deleted" || row.SeatState != "released" || row.Platform != pairing.Platform || row.Architecture != pairing.Architecture || row.WorkspaceRoot != pairing.WorkspaceRoot || row.DisplayName != pairing.RequestedDisplayName {
+			if err != nil || row.State == "revoked" || row.State == "deleted" || row.SeatState != "released" && row.SeatState != "occupied" || row.Platform != pairing.Platform || row.Architecture != pairing.Architecture || row.WorkspaceRoot != pairing.WorkspaceRoot || row.DisplayName != pairing.RequestedDisplayName {
 				return ErrEnrollmentState
 			}
-			if s.seats == nil {
-				return ErrSeatUnavailable
-			}
-			if err := s.seats.ReserveUserMachineSeat(ctx, tx, userID); err != nil {
-				return err
-			}
-			if n, err := tx.Queries().OccupyUserMachineSeat(ctx, dbsqlc.OccupyUserMachineSeatParams{ID: row.ID, UserID: userID}); err != nil || n != 1 {
-				if err != nil {
+			if row.SeatState == "released" {
+				if s.seats == nil {
+					return ErrSeatUnavailable
+				}
+				if err := s.seats.ReserveUserMachineSeat(ctx, tx, userID); err != nil {
 					return err
 				}
-				return ErrEnrollmentState
+				if n, err := tx.Queries().OccupyUserMachineSeat(ctx, dbsqlc.OccupyUserMachineSeatParams{ID: row.ID, UserID: userID}); err != nil || n != 1 {
+					if err != nil {
+						return err
+					}
+					return ErrEnrollmentState
+				}
+				row.SeatState = "occupied"
 			}
-			row.SeatState = "occupied"
+			// A retry may come from a preserved machine record after local runtime
+			// identity loss. Bind the pairing's authenticated key before issuing
+			// material so the returned installation generation is authoritative.
+			row, err = tx.Queries().BindCanonicalMachineIdentity(ctx, dbsqlc.BindCanonicalMachineIdentityParams{
+				EnvironmentID:     row.EnvironmentID,
+				PublicIdentityKey: sql.NullString{String: pairing.PublicIdentityKey, Valid: true},
+				Now:               s.now().UTC(),
+			})
+			if err != nil {
+				return err
+			}
 			if n, err := tx.Queries().ApproveUserMachinePairing(ctx, dbsqlc.ApproveUserMachinePairingParams{UserID: sql.NullString{String: userID, Valid: true}, UserMachineID: sql.NullString{String: row.ID, Valid: true}, ID: pairing.ID}); err != nil || n != 1 {
 				if err != nil {
 					return err
@@ -1828,6 +1847,10 @@ func (s *Service) provisionApprovedUserMachine(ctx context.Context, userID, pair
 	if !ok {
 		return errors.New("user-machine artifact is unavailable")
 	}
+	pairing, err := s.db.Queries().GetUserMachinePairingByID(ctx, pairingID)
+	if err != nil {
+		return err
+	}
 	enrollment, err := s.db.Queries().GetUserMachineEnrollmentForPairingUpdate(ctx, sql.NullString{String: pairingID, Valid: true})
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
@@ -1842,9 +1865,19 @@ func (s *Service) provisionApprovedUserMachine(ctx context.Context, userID, pair
 	var grant HelperEnrollmentGrant
 	reuseIdentity := false
 	if existing, existingErr := s.db.Queries().GetActiveControlHelperForEnvironment(ctx, machine.EnvironmentID); existingErr == nil {
-		grant = HelperEnrollmentGrant{HelperID: existing.ID, ExpiresAt: s.now().UTC().Add(10 * time.Minute)}
-		reuseIdentity = true
-	} else if !errors.Is(existingErr, sql.ErrNoRows) {
+		if pairing.CanReuseRuntimeIdentity {
+			grant = HelperEnrollmentGrant{HelperID: existing.ID, ExpiresAt: s.now().UTC().Add(10 * time.Minute)}
+			reuseIdentity = true
+		} else {
+			if s.helperRecovery == nil {
+				return ErrProvisioningUnavailable
+			}
+			grant, err = s.helperRecovery(ctx, userID, "byod-recovery:"+pairingID, machine.EnvironmentID, existing.ID, 10*time.Minute)
+			if err != nil {
+				return err
+			}
+		}
+	} else if existingErr != nil && !errors.Is(existingErr, sql.ErrNoRows) {
 		return existingErr
 	} else {
 		grant, err = s.helperGrant(ctx, userID, "byod-enrollment:"+pairingID, machine.EnvironmentID, 10*time.Minute)

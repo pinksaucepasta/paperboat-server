@@ -222,6 +222,10 @@ func New(opts Options) (*App, error) {
 		grant, err := enrollmentService.Issue(ctx, actorID, operationKey, environmentID, lifetime)
 		return usermachines.HelperEnrollmentGrant{EnrollmentID: grant.EnrollmentID, HelperID: grant.HelperID, Credential: grant.Credential, ExpiresAt: grant.ExpiresAt}, err
 	})
+	userMachineService.ConfigureHelperRecovery(func(ctx context.Context, actorID, operationKey, environmentID, helperID string, lifetime time.Duration) (usermachines.HelperEnrollmentGrant, error) {
+		grant, err := enrollmentService.RecoverHelper(ctx, actorID, operationKey, environmentID, helperID, lifetime)
+		return usermachines.HelperEnrollmentGrant{EnrollmentID: grant.EnrollmentID, HelperID: grant.HelperID, Credential: grant.Credential, ExpiresAt: grant.ExpiresAt}, err
+	})
 	configAssignmentService := controlplane.NewConfigAssignmentService(store, auditWriter, opts.Config.ConfigSync.WarningRevision)
 	configAssignmentService.SetRepositoryResolver(controlplane.ConfigRepositoryResolverFunc(func(ctx context.Context, userID, provider, externalID string) (controlplane.ConfigRepositoryConnection, error) {
 		if provider != "github" || githubService == nil {

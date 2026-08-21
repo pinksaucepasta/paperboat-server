@@ -1640,6 +1640,7 @@ type UserMachinePairing struct {
 	PublicIdentityKey            string
 	SshUser                      sql.NullString
 	SshPort                      sql.NullInt32
+	CanReuseRuntimeIdentity      bool
 }
 
 type UserMachineTerminalSession struct {

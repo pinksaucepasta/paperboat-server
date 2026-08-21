@@ -561,6 +561,20 @@ func (s *EnrollmentService) ReplaceHelper(ctx context.Context, actorID, operatio
 	return result, err
 }
 
+// RecoverHelper replaces an active helper whose local credential was lost and
+// issues a fresh one-time enrollment grant. Both operations are idempotent for
+// the pairing-scoped operation key.
+func (s *EnrollmentService) RecoverHelper(ctx context.Context, actorID, operationKey, environmentID, helperID string, lifetime time.Duration) (EnrollmentGrant, error) {
+	connector, err := s.store.Queries().GetControlConnectorGenerationForUpdate(ctx, dbsqlc.GetControlConnectorGenerationForUpdateParams{EnvironmentID: environmentID, ConnectorID: "runtime"})
+	if err != nil || connector.EdgePool == "" {
+		return EnrollmentGrant{}, errors.Join(ErrEnrollmentInvalid, err)
+	}
+	if _, err := s.ReplaceHelper(ctx, actorID, operationKey, environmentID, helperID, connector.EdgePool); err != nil {
+		return EnrollmentGrant{}, err
+	}
+	return s.Issue(ctx, actorID, operationKey, environmentID, lifetime)
+}
+
 func randomEnrollmentValues() (string, string, string, error) {
 	helper, err := randomHex("hlp_", 12)
 	if err != nil {

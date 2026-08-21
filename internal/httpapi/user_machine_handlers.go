@@ -17,17 +17,18 @@ import (
 
 func userMachinePairings(service *usermachines.Service) http.HandlerFunc {
 	type request struct {
-		Verifier           string          `json:"verifier"`
-		EnrollmentToken    string          `json:"enrollment_token"`
-		DisplayName        string          `json:"display_name"`
-		Platform           string          `json:"platform"`
-		Architecture       string          `json:"architecture"`
-		WorkspaceRoot      string          `json:"workspace_root"`
-		RuntimeVersions    json.RawMessage `json:"runtime_versions"`
-		PublicIdentityKey  string          `json:"public_identity_key"`
-		AcceptBetaPlatform bool            `json:"accept_beta_platform,omitempty"`
-		SSHUser            string          `json:"ssh_user,omitempty"`
-		SSHPort            uint16          `json:"ssh_port,omitempty"`
+		Verifier                string          `json:"verifier"`
+		EnrollmentToken         string          `json:"enrollment_token"`
+		DisplayName             string          `json:"display_name"`
+		Platform                string          `json:"platform"`
+		Architecture            string          `json:"architecture"`
+		WorkspaceRoot           string          `json:"workspace_root"`
+		RuntimeVersions         json.RawMessage `json:"runtime_versions"`
+		PublicIdentityKey       string          `json:"public_identity_key"`
+		AcceptBetaPlatform      bool            `json:"accept_beta_platform,omitempty"`
+		SSHUser                 string          `json:"ssh_user,omitempty"`
+		SSHPort                 uint16          `json:"ssh_port,omitempty"`
+		CanReuseRuntimeIdentity bool            `json:"can_reuse_runtime_identity,omitempty"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body request
@@ -35,7 +36,7 @@ func userMachinePairings(service *usermachines.Service) http.HandlerFunc {
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON.")
 			return
 		}
-		pairing, err := service.CreatePairing(r.Context(), usermachines.PairingInput{Verifier: body.Verifier, EnrollmentToken: body.EnrollmentToken, DisplayName: body.DisplayName, Platform: body.Platform, Architecture: body.Architecture, WorkspaceRoot: body.WorkspaceRoot, RuntimeVersions: body.RuntimeVersions, PublicIdentityKey: body.PublicIdentityKey, AcceptBetaPlatform: body.AcceptBetaPlatform, SSHUser: body.SSHUser, SSHPort: body.SSHPort})
+		pairing, err := service.CreatePairing(r.Context(), usermachines.PairingInput{Verifier: body.Verifier, EnrollmentToken: body.EnrollmentToken, DisplayName: body.DisplayName, Platform: body.Platform, Architecture: body.Architecture, WorkspaceRoot: body.WorkspaceRoot, RuntimeVersions: body.RuntimeVersions, PublicIdentityKey: body.PublicIdentityKey, AcceptBetaPlatform: body.AcceptBetaPlatform, SSHUser: body.SSHUser, SSHPort: body.SSHPort, CanReuseRuntimeIdentity: body.CanReuseRuntimeIdentity})
 		if err != nil {
 			slog.Warn("invalid user-machine pairing", "error", err, "platform", body.Platform, "architecture", body.Architecture)
 			writeError(w, r, http.StatusBadRequest, "invalid_user_machine_pairing", "Pairing details are invalid or unsupported.")

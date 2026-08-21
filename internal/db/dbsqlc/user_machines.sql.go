@@ -920,28 +920,30 @@ func (q *Queries) CreateUserMachineEnrollment(ctx context.Context, arg CreateUse
 const createUserMachinePairing = `-- name: CreateUserMachinePairing :one
 INSERT INTO user_machine_pairings (
   id, verifier_hash, user_code, requested_display_name, platform, architecture,
-  workspace_root, runtime_versions, public_identity_key, ssh_user, ssh_port, expires_at
+  workspace_root, runtime_versions, public_identity_key, ssh_user, ssh_port,
+  can_reuse_runtime_identity, expires_at
 ) VALUES (
   $1, $2, $3, $4,
   $5, $6, $7, $8, $9,
-  $10, $11,
-  $12
-) RETURNING id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port
+  $10, $11, $12,
+  $13
+) RETURNING id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port, can_reuse_runtime_identity
 `
 
 type CreateUserMachinePairingParams struct {
-	ID                   string
-	VerifierHash         []byte
-	UserCode             string
-	RequestedDisplayName string
-	Platform             string
-	Architecture         string
-	WorkspaceRoot        string
-	RuntimeVersions      []byte
-	PublicIdentityKey    string
-	SshUser              sql.NullString
-	SshPort              sql.NullInt32
-	ExpiresAt            time.Time
+	ID                      string
+	VerifierHash            []byte
+	UserCode                string
+	RequestedDisplayName    string
+	Platform                string
+	Architecture            string
+	WorkspaceRoot           string
+	RuntimeVersions         []byte
+	PublicIdentityKey       string
+	SshUser                 sql.NullString
+	SshPort                 sql.NullInt32
+	CanReuseRuntimeIdentity bool
+	ExpiresAt               time.Time
 }
 
 func (q *Queries) CreateUserMachinePairing(ctx context.Context, arg CreateUserMachinePairingParams) (UserMachinePairing, error) {
@@ -957,6 +959,7 @@ func (q *Queries) CreateUserMachinePairing(ctx context.Context, arg CreateUserMa
 		arg.PublicIdentityKey,
 		arg.SshUser,
 		arg.SshPort,
+		arg.CanReuseRuntimeIdentity,
 		arg.ExpiresAt,
 	)
 	var i UserMachinePairing
@@ -983,6 +986,7 @@ func (q *Queries) CreateUserMachinePairing(ctx context.Context, arg CreateUserMa
 		&i.PublicIdentityKey,
 		&i.SshUser,
 		&i.SshPort,
+		&i.CanReuseRuntimeIdentity,
 	)
 	return i, err
 }
@@ -2174,7 +2178,7 @@ func (q *Queries) GetUserMachineIDForRoute(ctx context.Context, providerRouteRou
 }
 
 const getUserMachinePairingByID = `-- name: GetUserMachinePairingByID :one
-SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port FROM user_machine_pairings WHERE id = $1
+SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port, can_reuse_runtime_identity FROM user_machine_pairings WHERE id = $1
 `
 
 func (q *Queries) GetUserMachinePairingByID(ctx context.Context, id string) (UserMachinePairing, error) {
@@ -2203,12 +2207,13 @@ func (q *Queries) GetUserMachinePairingByID(ctx context.Context, id string) (Use
 		&i.PublicIdentityKey,
 		&i.SshUser,
 		&i.SshPort,
+		&i.CanReuseRuntimeIdentity,
 	)
 	return i, err
 }
 
 const getUserMachinePairingForCode = `-- name: GetUserMachinePairingForCode :one
-SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port FROM user_machine_pairings
+SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port, can_reuse_runtime_identity FROM user_machine_pairings
 WHERE user_code = $1 FOR UPDATE
 `
 
@@ -2238,12 +2243,13 @@ func (q *Queries) GetUserMachinePairingForCode(ctx context.Context, userCode str
 		&i.PublicIdentityKey,
 		&i.SshUser,
 		&i.SshPort,
+		&i.CanReuseRuntimeIdentity,
 	)
 	return i, err
 }
 
 const getUserMachinePairingForVerifier = `-- name: GetUserMachinePairingForVerifier :one
-SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port FROM user_machine_pairings
+SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port, can_reuse_runtime_identity FROM user_machine_pairings
 WHERE verifier_hash = $1 FOR UPDATE
 `
 
@@ -2273,6 +2279,7 @@ func (q *Queries) GetUserMachinePairingForVerifier(ctx context.Context, verifier
 		&i.PublicIdentityKey,
 		&i.SshUser,
 		&i.SshPort,
+		&i.CanReuseRuntimeIdentity,
 	)
 	return i, err
 }

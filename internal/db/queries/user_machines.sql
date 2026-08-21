@@ -1,11 +1,12 @@
 -- name: CreateUserMachinePairing :one
 INSERT INTO user_machine_pairings (
   id, verifier_hash, user_code, requested_display_name, platform, architecture,
-  workspace_root, runtime_versions, public_identity_key, ssh_user, ssh_port, expires_at
+  workspace_root, runtime_versions, public_identity_key, ssh_user, ssh_port,
+  can_reuse_runtime_identity, expires_at
 ) VALUES (
   sqlc.arg(id), sqlc.arg(verifier_hash), sqlc.arg(user_code), sqlc.arg(requested_display_name),
   sqlc.arg(platform), sqlc.arg(architecture), sqlc.arg(workspace_root), sqlc.arg(runtime_versions), sqlc.arg(public_identity_key),
-  sqlc.narg(ssh_user), sqlc.narg(ssh_port),
+  sqlc.narg(ssh_user), sqlc.narg(ssh_port), sqlc.arg(can_reuse_runtime_identity),
   sqlc.arg(expires_at)
 ) RETURNING *;
 
