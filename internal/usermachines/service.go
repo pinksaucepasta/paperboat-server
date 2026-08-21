@@ -622,10 +622,14 @@ func (s *Service) CreatePairing(ctx context.Context, in PairingInput) (Pairing, 
 	}
 	var row dbsqlc.UserMachinePairing
 	var enrollmentUserID string
+	setupMode := "host"
 	if strings.TrimSpace(in.EnrollmentToken) == "" {
 		row, err = s.db.Queries().CreateUserMachinePairing(ctx, params)
 	} else {
 		token := strings.TrimSpace(in.EnrollmentToken)
+		if len(token) == enrollmentTokenLength && !strings.Contains("02468BDFHJLNPRTVXZ", token[:1]) {
+			setupMode = "receive"
+		}
 		tokenHash := enrollmentTokenHash(token)
 		err = s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 			enrollment, err := tx.Queries().GetUserMachineEnrollmentForTokenUpdate(ctx, tokenHash[:])
@@ -670,7 +674,7 @@ func (s *Service) CreatePairing(ctx context.Context, in PairingInput) (Pairing, 
 	// is genuinely one-shot. The explicit pairing approval endpoint remains only
 	// for legacy pairing requests that did not carry an enrollment token.
 	if enrollmentUserID != "" {
-		if _, err := s.Approve(ctx, enrollmentUserID, row.UserCode); err != nil {
+		if _, err := s.approve(ctx, enrollmentUserID, row.UserCode, setupMode); err != nil {
 			return Pairing{}, err
 		}
 	}
@@ -1466,6 +1470,13 @@ func (s *Service) terminalSession(ctx context.Context, userID, userMachineID, se
 }
 
 func (s *Service) Approve(ctx context.Context, userID, userCode string) (UserMachine, error) {
+	return s.approve(ctx, userID, userCode, "host")
+}
+
+func (s *Service) approve(ctx context.Context, userID, userCode, setupMode string) (UserMachine, error) {
+	if setupMode != "host" && setupMode != "receive" {
+		return UserMachine{}, ErrInvalidPairing
+	}
 	var out UserMachine
 	var pairingID string
 	var alreadyProvisioned bool
@@ -1596,6 +1607,12 @@ func (s *Service) Approve(ctx context.Context, userID, userCode string) (UserMac
 				if err != nil {
 					return err
 				}
+				if setupMode == "receive" {
+					row, err = tx.Queries().AddUserMachineInteractiveRole(ctx, dbsqlc.AddUserMachineInteractiveRoleParams{ID: existing.ID, UserID: userID, DisplayName: pairing.RequestedDisplayName, RuntimeVersions: pairing.RuntimeVersions, SetupMode: "receive", ConfiguredCapabilities: configuredCapabilities("receive")})
+					if err != nil {
+						return err
+					}
+				}
 				if err := s.ensureHelperRoute(ctx, tx, row.ID, row.EnvironmentID); err != nil {
 					return err
 				}
@@ -1659,6 +1676,12 @@ func (s *Service) Approve(ctx context.Context, userID, userCode string) (UserMac
 			if err != nil {
 				return err
 			}
+			if setupMode == "receive" {
+				row, err = tx.Queries().AddUserMachineInteractiveRole(ctx, dbsqlc.AddUserMachineInteractiveRoleParams{ID: row.ID, UserID: userID, DisplayName: pairing.RequestedDisplayName, RuntimeVersions: pairing.RuntimeVersions, SetupMode: "receive", ConfiguredCapabilities: configuredCapabilities("receive")})
+				if err != nil {
+					return err
+				}
+			}
 			if err := s.ensureHelperRoute(ctx, tx, row.ID, row.EnvironmentID); err != nil {
 				return err
 			}
@@ -1713,6 +1736,12 @@ func (s *Service) Approve(ctx context.Context, userID, userCode string) (UserMac
 			})
 			if err != nil {
 				return err
+			}
+			if setupMode == "receive" {
+				row, err = tx.Queries().AddUserMachineInteractiveRole(ctx, dbsqlc.AddUserMachineInteractiveRoleParams{ID: existing.ID, UserID: userID, DisplayName: pairing.RequestedDisplayName, RuntimeVersions: pairing.RuntimeVersions, SetupMode: "receive", ConfiguredCapabilities: configuredCapabilities("receive")})
+				if err != nil {
+					return err
+				}
 			}
 			if err := s.ensureHelperRoute(ctx, tx, row.ID, row.EnvironmentID); err != nil {
 				return err
