@@ -46,3 +46,16 @@ func TestDecodeRejectsDuplicateAndUnknownFields(t *testing.T) {
 		t.Fatalf("unknown error=%v", err)
 	}
 }
+
+func TestReleaseAuthorityRejectsDarwinAMD64(t *testing.T) {
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	service := &Service{now: func() time.Time { return now }}
+	bundle := Bundle{Schema: SchemaV1, ReleaseID: "rel_2026.08.18.1", Version: "2026.08.18.1", Platform: "darwin", Architecture: "amd64", Action: "promote", PolicyRevision: 2, RolloutPercentage: 5, TUFIndexTarget: "release-index-stable-darwin-amd64.json", TUFIndexSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", AuthorityRequestID: "rar_0123456789abcdef", IssuedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour)}
+	if err := service.Verify(bundle); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("darwin amd64 bundle error = %v", err)
+	}
+	request := Request{Action: "promote", ReleaseID: bundle.ReleaseID, Version: bundle.Version, Platform: bundle.Platform, Architecture: bundle.Architecture, PolicyRevision: 2, RolloutPercentage: 5}
+	if _, err := service.Request(t.Context(), "admin", "request-1", request); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("darwin amd64 request error = %v", err)
+	}
+}

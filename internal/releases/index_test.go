@@ -79,6 +79,23 @@ func TestReleaseIndexRejectsInvalidDigestAndWindow(t *testing.T) {
 	}
 }
 
+func TestReleaseIndexRejectsDarwinAMD64(t *testing.T) {
+	index := validIndex()
+	index.Platform = "darwin"
+	index.Architecture = "amd64"
+	index.BinaryFormat = "mach-o"
+	index.Targets = componentTargets("darwin", "amd64", "mach-o")
+	if err := index.Validate(time.Now().UTC()); err == nil {
+		t.Fatal("darwin amd64 release index was accepted")
+	}
+
+	index.Architecture = "arm64"
+	index.Targets = componentTargets("darwin", "arm64", "mach-o")
+	if err := index.Validate(time.Now().UTC()); err != nil {
+		t.Fatalf("darwin arm64 release index was rejected: %v", err)
+	}
+}
+
 func TestWindowsReleaseIndexRequiresStableNativeQualificationForEveryArchitecture(t *testing.T) {
 	for _, architecture := range []string{"amd64", "arm64"} {
 		index := validIndex()

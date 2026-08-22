@@ -138,6 +138,26 @@ func TestMachineSetupOpenAPIOnlyExposesHostAndClientModes(t *testing.T) {
 	if got := stringSet(t, setupMode["enum"], "machine setup mode enum"); !reflect.DeepEqual(got, map[string]bool{"client": true, "host": true}) {
 		t.Fatalf("machine setup mode enum = %#v, want client and host", got)
 	}
+	architecture, ok := properties["architecture"].(map[string]any)
+	if !ok {
+		t.Fatal("machine setup architecture schema is missing")
+	}
+	if got := stringSet(t, architecture["enum"], "machine setup architecture enum"); !reflect.DeepEqual(got, map[string]bool{"amd64": true, "arm64": true}) {
+		t.Fatalf("machine setup architecture enum = %#v, want amd64 and arm64", got)
+	}
+	constraints, ok := schema["allOf"].([]any)
+	if !ok || len(constraints) != 1 {
+		t.Fatalf("machine setup platform matrix constraints = %#v", schema["allOf"])
+	}
+	encodedConstraint, err := json.Marshal(constraints[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{`"platform":{"const":"darwin"}`, `"architecture":{"const":"arm64"}`} {
+		if !strings.Contains(string(encodedConstraint), required) {
+			t.Fatalf("machine setup platform matrix constraint %s is missing %s", encodedConstraint, required)
+		}
+	}
 }
 
 func TestOpenAPIDocumentCoversPublicAndFrozenTargetPaths(t *testing.T) {

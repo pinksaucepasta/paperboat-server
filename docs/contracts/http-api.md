@@ -137,6 +137,10 @@ CLI project reads and connects use scoped Paperboat bearer access tokens.
 
 ### Signed Updates and Maintenance
 
+- The native installation and signed-release matrix is exactly macOS (`darwin`) ARM64,
+  Linux AMD64 and ARM64, and Windows AMD64 and ARM64. Darwin AMD64 descriptors,
+  release indexes, and release-authority requests are rejected. Machine setup has only
+  `host` and `client` modes; `client` is the receive-side runtime.
 - The release origin's `current.json` is discovery-only. Update decisions use a TUF-verified
   `paperboat.release-index/v1` target. The signed index carries the artifact digest and length,
   platform and architecture, worker/supervisor compatibility bounds, minimum version, revocation,

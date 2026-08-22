@@ -6158,11 +6158,17 @@
                   "setup_mode": {"type": "string", "enum": ["client", "host"]},
                   "display_name": {"type": "string", "minLength": 1, "maxLength": 128},
                   "platform": {"type": "string", "enum": ["darwin", "linux", "windows"]},
-                  "architecture": {"type": "string", "minLength": 1},
+                  "architecture": {"type": "string", "enum": ["amd64", "arm64"]},
                   "workspace_root": {"type": "string", "minLength": 1},
                   "public_identity_key": {"type": "string", "minLength": 40, "maxLength": 256},
                   "runtime_versions": {"type": "object", "additionalProperties": {"type": "string"}}
-                }
+                },
+                "allOf": [
+                  {
+                    "if": {"properties": {"platform": {"const": "darwin"}}, "required": ["platform"]},
+                    "then": {"properties": {"architecture": {"const": "arm64"}}}
+                  }
+                ]
               }
             }
           }

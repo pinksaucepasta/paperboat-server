@@ -94,7 +94,7 @@ func (i ReleaseIndex) Validate(now time.Time) error {
 	if i.Schema != ReleaseIndexSchemaV1 || !indexValuePattern.MatchString(i.ReleaseID) || !validVersion(i.Version) || !indexChannelPattern.MatchString(i.Channel) || i.CreatedAt.IsZero() {
 		return errIndexInvalid
 	}
-	if i.Platform != "darwin" && i.Platform != "linux" && i.Platform != "windows" || i.Architecture != "amd64" && i.Architecture != "arm64" || !validBinaryFormat(i.Platform, i.BinaryFormat) {
+	if !SupportedPlatformArchitecture(i.Platform, i.Architecture) || !validBinaryFormat(i.Platform, i.BinaryFormat) {
 		return errIndexInvalid
 	}
 	if i.Platform == "windows" {

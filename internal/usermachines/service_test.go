@@ -2,6 +2,7 @@ package usermachines
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -149,6 +150,19 @@ func TestMachineArchitectureIsExactAndPortable(t *testing.T) {
 	}
 }
 
+func TestSetupAndPairingRejectDarwinAMD64BeforePersistence(t *testing.T) {
+	publicIdentityKey := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	service := New(nil, nil, Policy{AllowedPlatforms: []string{"darwin"}, PairingLifetime: time.Minute}, nil)
+	setup := SetupInput{SetupMode: "host", DisplayName: "Intel Mac", Platform: "darwin", Architecture: "amd64", WorkspaceRoot: "/Users/paperboat", PublicIdentityKey: publicIdentityKey}
+	if _, err := service.Setup(t.Context(), "usr_1", setup); !errors.Is(err, ErrInvalidSetup) {
+		t.Fatalf("darwin amd64 setup error = %v", err)
+	}
+	pairing := PairingInput{Verifier: "verifier", DisplayName: "Intel Mac", Platform: "darwin", Architecture: "amd64", WorkspaceRoot: "/Users/paperboat", PublicIdentityKey: publicIdentityKey}
+	if err := service.validatePairing(pairing); !errors.Is(err, ErrInvalidPairing) {
+		t.Fatalf("darwin amd64 pairing error = %v", err)
+	}
+}
+
 func TestConfigureMachineArtifactsBuildsTUFDescriptor(t *testing.T) {
 	service := &Service{}
 	if err := service.ConfigureMachineArtifacts("https://updates.example.test/paperboat/", "2026.08.07"); err != nil {
@@ -160,6 +174,23 @@ func TestConfigureMachineArtifactsBuildsTUFDescriptor(t *testing.T) {
 	}
 	if err := service.ConfigureMachineArtifacts("http://updates.example.test", "2026.08.07"); err == nil {
 		t.Fatal("insecure artifact repository was accepted")
+	}
+	for _, target := range []struct {
+		platform     string
+		architecture string
+	}{
+		{platform: "darwin", architecture: "arm64"},
+		{platform: "linux", architecture: "amd64"},
+		{platform: "linux", architecture: "arm64"},
+		{platform: "windows", architecture: "amd64"},
+		{platform: "windows", architecture: "arm64"},
+	} {
+		if _, ok := service.machineArtifact(target.platform, target.architecture); !ok {
+			t.Fatalf("supported artifact %s/%s was rejected", target.platform, target.architecture)
+		}
+	}
+	if artifact, ok := service.machineArtifact("darwin", "amd64"); ok || artifact != (MachineArtifact{}) {
+		t.Fatalf("darwin amd64 artifact = %+v, ok=%v", artifact, ok)
 	}
 }
 

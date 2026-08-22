@@ -34,6 +34,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/machinealias"
 	"github.com/pinksaucepasta/paperboat-server/internal/mint"
 	"github.com/pinksaucepasta/paperboat-server/internal/naming"
+	"github.com/pinksaucepasta/paperboat-server/internal/releases"
 	"github.com/pinksaucepasta/paperboat-server/internal/secrets"
 )
 
@@ -292,7 +293,7 @@ func (s *Service) machineArtifact(platform, architecture string) (MachineArtifac
 	if s.artifactVersionFn != nil {
 		version = strings.TrimSpace(s.artifactVersionFn())
 	}
-	if s.artifactRepository == "" || version == "" || len(version) > 64 || strings.ContainsAny(version, "\x00\r\n/\\") || !slices.Contains([]string{"darwin", "linux", "windows"}, platform) || !slices.Contains([]string{"amd64", "arm64"}, architecture) {
+	if s.artifactRepository == "" || version == "" || len(version) > 64 || strings.ContainsAny(version, "\x00\r\n/\\") || !releases.SupportedPlatformArchitecture(platform, architecture) {
 		return MachineArtifact{}, false
 	}
 	return MachineArtifact{Schema: "paperboat.tuf-target/v1", Kind: "pb", Version: version, Platform: platform, Architecture: architecture, RepositoryURL: s.artifactRepository, TargetPath: "pb-" + platform + "-" + architecture}, true
@@ -506,6 +507,7 @@ func (s *Service) Setup(ctx context.Context, userID string, in SetupInput) (User
 	workspaceRoot, validWorkspace := canonicalWorkspaceRoot(in.Platform, in.WorkspaceRoot)
 	publicKey, keyErr := base64.RawURLEncoding.DecodeString(strings.TrimSpace(in.PublicIdentityKey))
 	if userID == "" || !slices.Contains([]string{"host", "client"}, in.SetupMode) || invalidMachineDisplayName(in.DisplayName) || !validMachineArchitecture(in.Architecture) ||
+		!releases.SupportedPlatformArchitecture(strings.ToLower(strings.TrimSpace(in.Platform)), strings.ToLower(strings.TrimSpace(in.Architecture))) ||
 		!validWorkspace ||
 		!slices.Contains(s.policy.AllowedPlatforms, strings.ToLower(strings.TrimSpace(in.Platform))) ||
 		keyErr != nil || len(publicKey) != ed25519.PublicKeySize {
@@ -2837,6 +2839,7 @@ func (s *Service) validatePairing(in PairingInput) error {
 		{strings.TrimSpace(in.Verifier) == "", "verifier"},
 		{invalidMachineDisplayName(in.DisplayName), "display name"},
 		{!validMachineArchitecture(in.Architecture), "architecture"},
+		{!releases.SupportedPlatformArchitecture(strings.ToLower(strings.TrimSpace(in.Platform)), strings.ToLower(strings.TrimSpace(in.Architecture))), "platform architecture"},
 		{!validWorkspace, "workspace root"},
 		{!slices.Contains(s.policy.AllowedPlatforms, strings.ToLower(strings.TrimSpace(in.Platform))), "platform"},
 		{token != "" && !validEnrollmentToken(token), "enrollment token shape"},

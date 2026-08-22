@@ -13,6 +13,17 @@ import (
 
 const CurrentSchemaV1 = "paperboat.release-current/v1"
 
+var supportedPlatformArchitectures = [...]struct {
+	platform     string
+	architecture string
+}{
+	{platform: "darwin", architecture: "arm64"},
+	{platform: "linux", architecture: "amd64"},
+	{platform: "linux", architecture: "arm64"},
+	{platform: "windows", architecture: "amd64"},
+	{platform: "windows", architecture: "arm64"},
+}
+
 type Current struct {
 	Schema  string `json:"schema"`
 	Version string `json:"version"`
@@ -44,7 +55,7 @@ func Ready(directory string) error {
 	if err != nil {
 		return err
 	}
-	for _, relative := range []string{"install", "tuf/metadata/root.json", "tuf/metadata/timestamp.json", "tuf/metadata/snapshot.json", "tuf/metadata/targets.json"} {
+	for _, relative := range []string{"install", "windows", "tuf/metadata/root.json", "tuf/metadata/timestamp.json", "tuf/metadata/snapshot.json", "tuf/metadata/targets.json"} {
 		info, err := os.Lstat(filepath.Join(directory, filepath.FromSlash(relative)))
 		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() < 1 {
 			return errors.New("release bundle is incomplete")
@@ -66,7 +77,11 @@ func Ready(directory string) error {
 	if json.Unmarshal(body, &metadata) != nil {
 		return errors.New("release targets metadata is invalid")
 	}
-	for _, name := range []string{"pb-darwin-arm64", "pb-linux-amd64", "pb-linux-arm64", "pb-windows-amd64", "pb-windows-arm64"} {
+	if _, unsupported := metadata.Signed.Targets["pb-darwin-amd64"]; unsupported {
+		return errors.New("release targets metadata contains an unsupported target")
+	}
+	for _, targetPlatform := range supportedPlatformArchitectures {
+		name := "pb-" + targetPlatform.platform + "-" + targetPlatform.architecture
 		target, ok := metadata.Signed.Targets[name]
 		digest := target.Hashes["sha256"]
 		var custom struct {
@@ -87,6 +102,17 @@ func Ready(directory string) error {
 		}
 	}
 	return nil
+}
+
+// SupportedPlatformArchitecture reports whether the public release pipeline
+// publishes native bytes for the exact platform and architecture pair.
+func SupportedPlatformArchitecture(platform, architecture string) bool {
+	for _, target := range supportedPlatformArchitectures {
+		if platform == target.platform && architecture == target.architecture {
+			return true
+		}
+	}
+	return false
 }
 
 func validVersion(version string) bool {

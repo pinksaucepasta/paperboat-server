@@ -86,6 +86,24 @@ func TestReleaseEndpointsServeInstallAndTUF(t *testing.T) {
 	}
 }
 
+func TestWindowsReleaseTemplateUsesCanonicalModes(t *testing.T) {
+	body, err := os.ReadFile("../../deploy/releases/windows")
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := strings.ToLower(string(body))
+	for _, required := range []string{"'host'", "'client'", "--setup-mode=$setupmode"} {
+		if !strings.Contains(template, required) {
+			t.Fatalf("Windows release template is missing canonical mode contract %q", required)
+		}
+	}
+	for _, removed := range []string{"receive", "session"} {
+		if strings.Contains(template, removed) {
+			t.Fatalf("Windows release template contains removed mode %q", removed)
+		}
+	}
+}
+
 func TestNewReleaseFilesRejectsRelativeAndSymlinkDirectories(t *testing.T) {
 	if _, err := NewReleaseFiles("relative"); err == nil {
 		t.Fatal("expected relative directory rejection")

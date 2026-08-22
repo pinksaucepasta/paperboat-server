@@ -20,6 +20,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/canonicaljson"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
+	"github.com/pinksaucepasta/paperboat-server/internal/releases"
 )
 
 const SchemaV1 = "paperboat.release-authority-bundle/v1"
@@ -129,7 +130,7 @@ func Decode(raw []byte) (Bundle, error) {
 	return value, nil
 }
 func (s *Service) Verify(bundle Bundle) error {
-	if bundle.Schema != SchemaV1 || !validValue(bundle.ReleaseID, 128) || !validVersion(bundle.Version) || (bundle.Platform != "darwin" && bundle.Platform != "linux" && bundle.Platform != "windows") || (bundle.Architecture != "amd64" && bundle.Architecture != "arm64") || !validAction(bundle.Action) || bundle.PolicyRevision == 0 || !validValue(bundle.TUFIndexTarget, 256) || !validValue(bundle.AuthorityRequestID, 128) || len(bundle.TUFIndexSHA256) != 64 || !lowerHex(bundle.TUFIndexSHA256) || bundle.IssuedAt.IsZero() || bundle.ExpiresAt.IsZero() || !bundle.ExpiresAt.After(bundle.IssuedAt) || bundle.ExpiresAt.Sub(bundle.IssuedAt) > 30*24*time.Hour || !s.now().UTC().Before(bundle.ExpiresAt.UTC()) || bundle.IssuedAt.After(s.now().UTC().Add(5*time.Minute)) {
+	if bundle.Schema != SchemaV1 || !validValue(bundle.ReleaseID, 128) || !validVersion(bundle.Version) || !releases.SupportedPlatformArchitecture(bundle.Platform, bundle.Architecture) || !validAction(bundle.Action) || bundle.PolicyRevision == 0 || !validValue(bundle.TUFIndexTarget, 256) || !validValue(bundle.AuthorityRequestID, 128) || len(bundle.TUFIndexSHA256) != 64 || !lowerHex(bundle.TUFIndexSHA256) || bundle.IssuedAt.IsZero() || bundle.ExpiresAt.IsZero() || !bundle.ExpiresAt.After(bundle.IssuedAt) || bundle.ExpiresAt.Sub(bundle.IssuedAt) > 30*24*time.Hour || !s.now().UTC().Before(bundle.ExpiresAt.UTC()) || bundle.IssuedAt.After(s.now().UTC().Add(5*time.Minute)) {
 		return ErrInvalid
 	}
 	if bundle.Action == "promote" && bundle.RolloutPercentage == 0 || bundle.Action == "pause" && bundle.RolloutPercentage != 0 || (bundle.Action == "quarantine" || bundle.Action == "revoke") && bundle.RolloutPercentage != 0 {
@@ -218,7 +219,7 @@ func (s *Service) Import(ctx context.Context, actor, idempotency string, raw []b
 	return result, err
 }
 func (s *Service) Request(ctx context.Context, actor, idempotency string, request Request) (Request, error) {
-	if !validValue(actor, 128) || !validValue(idempotency, 128) || len(idempotency) < 8 || !validAction(request.Action) || !validValue(request.ReleaseID, 128) || !validVersion(request.Version) || (request.Platform != "darwin" && request.Platform != "linux" && request.Platform != "windows") || (request.Architecture != "amd64" && request.Architecture != "arm64") || request.PolicyRevision == 0 || (request.Action == "promote" && request.RolloutPercentage == 0) || (request.Action != "promote" && request.RolloutPercentage != 0) {
+	if !validValue(actor, 128) || !validValue(idempotency, 128) || len(idempotency) < 8 || !validAction(request.Action) || !validValue(request.ReleaseID, 128) || !validVersion(request.Version) || !releases.SupportedPlatformArchitecture(request.Platform, request.Architecture) || request.PolicyRevision == 0 || (request.Action == "promote" && request.RolloutPercentage == 0) || (request.Action != "promote" && request.RolloutPercentage != 0) {
 		return Request{}, ErrInvalid
 	}
 	payload, _ := json.Marshal(struct {
