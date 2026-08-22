@@ -99,8 +99,8 @@ func TestSetupIsIdempotentAndUnpairPreservesInteractiveIdentity(t *testing.T) {
 	if first.Alias != "studio" {
 		t.Fatalf("first alias=%q", first.Alias)
 	}
-	if _, err := service.CreateConfiguredTerminalSession(ctx, userID, first.ID, "forbidden", "receive-terminal"); !errors.Is(err, ErrMachineCapabilityUnavailable) {
-		t.Fatalf("receive terminal session error = %v, want ErrMachineCapabilityUnavailable", err)
+	if _, err := service.CreateConfiguredTerminalSession(ctx, userID, first.ID, "forbidden", "client-terminal"); !errors.Is(err, ErrMachineCapabilityUnavailable) {
+		t.Fatalf("client terminal session error = %v, want ErrMachineCapabilityUnavailable", err)
 	}
 	var firstVersion int64
 	if err := store.SQL().QueryRowContext(ctx, `SELECT version FROM paperboat.user_machines WHERE id=$1`, first.ID).Scan(&firstVersion); err != nil {
@@ -163,37 +163,28 @@ func TestSetupIsIdempotentAndUnpairPreservesInteractiveIdentity(t *testing.T) {
 	if environmentState != "active" || routeState != "attached" {
 		t.Fatalf("downgrade environment=%q route=%q", environmentState, routeState)
 	}
-	sessionInput := input
-	sessionInput.SetupMode = "session"
-	if _, err := service.Setup(ctx, userID, sessionInput); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SQL().QueryRowContext(ctx, `SELECT desired_state FROM paperboat.control_routes WHERE environment_id=$1 AND kind='runtime_https_wss'`, unpaired.EnvironmentID).Scan(&routeState); err != nil {
-		t.Fatal(err)
-	}
-	if routeState != "detaching" && routeState != "detached" {
-		t.Fatalf("session route=%q", routeState)
-	}
-	if _, err := service.Setup(ctx, userID, input); err != nil {
-		t.Fatal(err)
+	obsoleteMode := input
+	obsoleteMode.SetupMode = "session"
+	if _, err := service.Setup(ctx, userID, obsoleteMode); !errors.Is(err, ErrInvalidSetup) {
+		t.Fatalf("obsolete setup mode error = %v, want ErrInvalidSetup", err)
 	}
 	if err := store.SQL().QueryRowContext(ctx, `SELECT desired_state FROM paperboat.control_routes WHERE environment_id=$1 AND kind='runtime_https_wss'`, unpaired.EnvironmentID).Scan(&routeState); err != nil {
 		t.Fatal(err)
 	}
 	if routeState != "attached" {
-		t.Fatalf("receive route=%q", routeState)
+		t.Fatalf("client route=%q", routeState)
 	}
 }
 
-func TestOnlineReceiveMachineCanUpgradeToHost(t *testing.T) {
+func TestOnlineClientMachineCanUpgradeToHost(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
-	userID := "usr_receive_upgrade_" + suffix
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_"+suffix, "receive-upgrade-"+suffix+"@example.test"); err != nil {
+	userID := "usr_client_upgrade_" + suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_"+suffix, "client-upgrade-"+suffix+"@example.test"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machine_entitlements (id,user_id,provider_subscription_id,product_code,state,seat_quantity,allowance_bytes,current_period_start,current_period_end) VALUES ($1,$2,$3,'connected-test','active',1,1048576,now()-interval '1 hour',now()+interval '1 hour')`, "ume_receive_upgrade_"+suffix, userID, "sub_receive_upgrade_"+suffix); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machine_entitlements (id,user_id,provider_subscription_id,product_code,state,seat_quantity,allowance_bytes,current_period_start,current_period_end) VALUES ($1,$2,$3,'connected-test','active',1,1048576,now()-interval '1 hour',now()+interval '1 hour')`, "ume_client_upgrade_"+suffix, userID, "sub_client_upgrade_"+suffix); err != nil {
 		t.Fatal(err)
 	}
 	public, _, err := ed25519.GenerateKey(rand.Reader)
@@ -202,10 +193,10 @@ func TestOnlineReceiveMachineCanUpgradeToHost(t *testing.T) {
 	}
 	publicKey := base64.RawURLEncoding.EncodeToString(public)
 	service := New(store, audit.NewWriter(store), Policy{PairingLifetime: 10 * time.Minute, AllowedPlatforms: []string{"linux"}}, testSeatAuthorizer{})
-	service.ConfigureProvisioning(access.FakeClient{}, "receive-upgrade-key")
+	service.ConfigureProvisioning(access.FakeClient{}, "client-upgrade-key")
 	service.ConfigureAccess(nil, "https://api.paperboat.test", 5*time.Minute)
 	service.ConfigureHelperEnrollment(func(context.Context, string, string, string, time.Duration) (HelperEnrollmentGrant, error) {
-		return HelperEnrollmentGrant{EnrollmentID: "henr_receive_upgrade_" + suffix, HelperID: "helper_receive_upgrade_" + suffix, Credential: "receive-upgrade-credential", ExpiresAt: time.Now().UTC().Add(10 * time.Minute)}, nil
+		return HelperEnrollmentGrant{EnrollmentID: "henr_client_upgrade_" + suffix, HelperID: "helper_client_upgrade_" + suffix, Credential: "client-upgrade-credential", ExpiresAt: time.Now().UTC().Add(10 * time.Minute)}, nil
 	})
 	if err := service.ConfigureRuntimeRoute("runtime.example.test", 38080); err != nil {
 		t.Fatal(err)
@@ -218,7 +209,7 @@ func TestOnlineReceiveMachineCanUpgradeToHost(t *testing.T) {
 	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machines SET state='online', online=true, observed_capabilities=configured_capabilities WHERE id=$1`, machine.ID); err != nil {
 		t.Fatal(err)
 	}
-	pairing, err := service.CreatePairing(ctx, PairingInput{Verifier: "receive-upgrade-verifier-" + suffix, DisplayName: "Studio", Platform: "linux", Architecture: "amd64", WorkspaceRoot: "/home/paperboat", PublicIdentityKey: publicKey, RuntimeVersions: json.RawMessage(`{"pb":"test"}`)})
+	pairing, err := service.CreatePairing(ctx, PairingInput{Verifier: "client-upgrade-verifier-" + suffix, DisplayName: "Studio", Platform: "linux", Architecture: "amd64", WorkspaceRoot: "/home/paperboat", PublicIdentityKey: publicKey, RuntimeVersions: json.RawMessage(`{"pb":"test"}`)})
 	if err != nil {
 		t.Fatal(err)
 	}

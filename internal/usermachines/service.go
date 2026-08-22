@@ -505,7 +505,7 @@ func (s *Service) Setup(ctx context.Context, userID string, in SetupInput) (User
 	userID = strings.TrimSpace(userID)
 	workspaceRoot, validWorkspace := canonicalWorkspaceRoot(in.Platform, in.WorkspaceRoot)
 	publicKey, keyErr := base64.RawURLEncoding.DecodeString(strings.TrimSpace(in.PublicIdentityKey))
-	if userID == "" || !slices.Contains([]string{"host", "client", "session"}, in.SetupMode) || invalidMachineDisplayName(in.DisplayName) || !validMachineArchitecture(in.Architecture) ||
+	if userID == "" || !slices.Contains([]string{"host", "client"}, in.SetupMode) || invalidMachineDisplayName(in.DisplayName) || !validMachineArchitecture(in.Architecture) ||
 		!validWorkspace ||
 		!slices.Contains(s.policy.AllowedPlatforms, strings.ToLower(strings.TrimSpace(in.Platform))) ||
 		keyErr != nil || len(publicKey) != ed25519.PublicKeySize {
@@ -535,11 +535,6 @@ func (s *Service) Setup(ctx context.Context, userID string, in SetupInput) (User
 			if wasHost && in.SetupMode != "host" {
 				downgradedFromHost = true
 				if err := s.revokeHostAuthorityTx(ctx, tx, row.ID, row.EnvironmentID, s.now().UTC()); err != nil {
-					return err
-				}
-			}
-			if in.SetupMode == "session" {
-				if _, err := tx.Queries().RevokeControlRoutesForEnvironment(ctx, dbsqlc.RevokeControlRoutesForEnvironmentParams{EnvironmentID: row.EnvironmentID, Now: s.now().UTC()}); err != nil {
 					return err
 				}
 			}
@@ -595,7 +590,7 @@ func (s *Service) Setup(ctx context.Context, userID string, in SetupInput) (User
 		if !ok || s.issuer == "" || s.helperListenPort == 0 {
 			return UserMachine{}, ErrProvisioningUnavailable
 		}
-		result.Installation = &ReceiveInstallation{ControlURL: s.issuer, HelperListenAddress: fmt.Sprintf("127.0.0.1:%d", s.helperListenPort), Artifact: artifact}
+		result.Installation = &ClientInstallation{ControlURL: s.issuer, HelperListenAddress: fmt.Sprintf("127.0.0.1:%d", s.helperListenPort), Artifact: artifact}
 	}
 	return result, err
 }
@@ -681,31 +676,31 @@ func (s *Service) CreatePairing(ctx context.Context, in PairingInput) (Pairing, 
 }
 
 type UserMachine struct {
-	ID                     string               `json:"id"`
-	EnvironmentID          string               `json:"environment_id"`
-	DisplayName            string               `json:"display_name"`
-	Alias                  string               `json:"alias"`
-	Platform               string               `json:"platform"`
-	Architecture           string               `json:"architecture"`
-	WorkspaceRoot          string               `json:"workspace_root"`
-	State                  string               `json:"state"`
-	SeatState              string               `json:"seat_state"`
-	Online                 bool                 `json:"online"`
-	RuntimeVersions        json.RawMessage      `json:"runtime_versions"`
-	SetupRoles             []string             `json:"setup_roles"`
-	SetupMode              string               `json:"setup_mode"`
-	Capabilities           MachineCapabilities  `json:"capabilities"`
-	MachineKind            string               `json:"machine_kind"`
-	PublicIdentityKey      string               `json:"public_identity_key"`
-	InstallationGeneration int64                `json:"installation_generation"`
-	EnrolledAt             *time.Time           `json:"enrolled_at,omitempty"`
-	LastSeenAt             *time.Time           `json:"last_seen_at,omitempty"`
-	Availability           AvailabilityPolicy   `json:"availability"`
-	RuntimeDiagnostics     RuntimeDiagnostics   `json:"runtime_diagnostics"`
-	Installation           *ReceiveInstallation `json:"installation,omitempty"`
+	ID                     string              `json:"id"`
+	EnvironmentID          string              `json:"environment_id"`
+	DisplayName            string              `json:"display_name"`
+	Alias                  string              `json:"alias"`
+	Platform               string              `json:"platform"`
+	Architecture           string              `json:"architecture"`
+	WorkspaceRoot          string              `json:"workspace_root"`
+	State                  string              `json:"state"`
+	SeatState              string              `json:"seat_state"`
+	Online                 bool                `json:"online"`
+	RuntimeVersions        json.RawMessage     `json:"runtime_versions"`
+	SetupRoles             []string            `json:"setup_roles"`
+	SetupMode              string              `json:"setup_mode"`
+	Capabilities           MachineCapabilities `json:"capabilities"`
+	MachineKind            string              `json:"machine_kind"`
+	PublicIdentityKey      string              `json:"public_identity_key"`
+	InstallationGeneration int64               `json:"installation_generation"`
+	EnrolledAt             *time.Time          `json:"enrolled_at,omitempty"`
+	LastSeenAt             *time.Time          `json:"last_seen_at,omitempty"`
+	Availability           AvailabilityPolicy  `json:"availability"`
+	RuntimeDiagnostics     RuntimeDiagnostics  `json:"runtime_diagnostics"`
+	Installation           *ClientInstallation `json:"installation,omitempty"`
 }
 
-type ReceiveInstallation struct {
+type ClientInstallation struct {
 	ControlURL          string          `json:"control_url"`
 	HelperListenAddress string          `json:"helper_listen_address"`
 	Artifact            MachineArtifact `json:"artifact"`
@@ -1993,7 +1988,7 @@ func (s *Service) provisionApprovedUserMachine(ctx context.Context, userID, pair
 }
 
 func shouldIssueCLIEnrollmentSession(setupMode string) bool {
-	return strings.TrimSpace(setupMode) != "host"
+	return strings.TrimSpace(setupMode) == "client"
 }
 
 func oneShotHash(key []byte, value string) string {

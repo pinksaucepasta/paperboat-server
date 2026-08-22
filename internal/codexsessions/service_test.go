@@ -36,7 +36,7 @@ func TestRequireCodexCapability(t *testing.T) {
 		want       error
 	}{
 		"ready":                 {true, host, host, nil},
-		"receive":               {true, []string{"file_receive", "preview_launch"}, []string{"file_receive", "preview_launch"}, ErrCapabilityUnavailable},
+		"client":                {true, []string{"file_receive", "preview_launch"}, []string{"file_receive", "preview_launch"}, ErrCapabilityUnavailable},
 		"codex not configured":  {true, []string{"terminal_host"}, host, ErrCapabilityUnavailable},
 		"offline":               {false, host, host, ErrMachineOffline},
 		"terminal not observed": {true, host, []string{"codex_host"}, ErrMachineOffline},

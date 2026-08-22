@@ -99,10 +99,10 @@ func (q *Queries) AddUserMachineHostRole(ctx context.Context, arg AddUserMachine
 
 const addUserMachineInteractiveRole = `-- name: AddUserMachineInteractiveRole :one
 UPDATE user_machines
-SET setup_roles = CASE WHEN $1 IN ('client','session') THEN ARRAY['interactive']::text[] ELSE ARRAY(SELECT DISTINCT role FROM unnest(setup_roles || ARRAY['interactive']::text[]) role ORDER BY role) END,
+SET setup_roles = CASE WHEN $1 = 'client' THEN ARRAY['interactive']::text[] ELSE ARRAY(SELECT DISTINCT role FROM unnest(setup_roles || ARRAY['interactive']::text[]) role ORDER BY role) END,
     setup_mode = $1, configured_capabilities = $2,
     observed_capabilities = CASE WHEN setup_mode IS DISTINCT FROM $1 THEN '{}'::text[] ELSE observed_capabilities END,
-    seat_state = CASE WHEN $1 IN ('client','session') THEN 'released' ELSE seat_state END,
+    seat_state = CASE WHEN $1 = 'client' THEN 'released' ELSE seat_state END,
     state = CASE WHEN setup_mode IS DISTINCT FROM $1 THEN 'offline' ELSE state END,
     online = CASE WHEN setup_mode IS DISTINCT FROM $1 THEN false ELSE online END,
     installation_generation = installation_generation + CASE WHEN setup_mode IS DISTINCT FROM $1 THEN 1 ELSE 0 END,

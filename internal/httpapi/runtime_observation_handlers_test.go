@@ -218,7 +218,7 @@ func TestNormalizeConfigStatusTimestampPreservesAgeAcrossClockSkew(t *testing.T)
 
 func TestValidObservedCapabilitiesRejectsUnknownAndDuplicates(t *testing.T) {
 	if !validObservedCapabilities([]string{"file_receive", "preview_launch"}) {
-		t.Fatal("receive capabilities should be valid")
+		t.Fatal("client capabilities should be valid")
 	}
 	for _, capabilities := range [][]string{{"terminal"}, {"file_receive", "file_receive"}} {
 		if validObservedCapabilities(capabilities) {

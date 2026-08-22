@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -133,6 +134,25 @@ func TestMigrateRequiresPostgresIntegrationDSN(t *testing.T) {
 	}
 	if !aliasColumnRequired || !aliasIndexPresent {
 		t.Fatalf("machine alias schema column=%v index=%v", aliasColumnRequired, aliasIndexPresent)
+	}
+	var setupModeMigrationApplied bool
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (SELECT 1 FROM paperboat.goose_db_version WHERE version_id=112 AND is_applied)`).Scan(&setupModeMigrationApplied); err != nil {
+		t.Fatal(err)
+	}
+	if !setupModeMigrationApplied {
+		t.Fatal("session setup-mode removal migration was not applied")
+	}
+	var setupModeConstraint string
+	if err := store.SQL().QueryRowContext(context.Background(), `
+		SELECT pg_get_constraintdef(oid)
+		FROM pg_constraint
+		WHERE conrelid='paperboat.user_machines'::regclass
+		  AND conname='user_machines_setup_mode_check'
+	`).Scan(&setupModeConstraint); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(setupModeConstraint, "client") || !strings.Contains(setupModeConstraint, "host") || strings.Contains(setupModeConstraint, "session") {
+		t.Fatalf("machine setup-mode constraint = %q, want host/client only", setupModeConstraint)
 	}
 	for _, table := range []string{"account_e2ee_roots", "peer_endpoint_certificates", "peer_session_intents", "peer_signaling_grants", "peer_relay_allocations", "peer_endpoint_enrollment_requests", "managed_ssh_client_keys", "machine_ssh_host_key_owners", "machine_ssh_host_key_sets", "machine_ssh_host_keys"} {
 		var exists bool

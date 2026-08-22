@@ -9,4 +9,7 @@ func TestShouldIssueCLIEnrollmentSession(t *testing.T) {
 	if !shouldIssueCLIEnrollmentSession("client") {
 		t.Fatal("client enrollment must issue a CLI session")
 	}
+	if shouldIssueCLIEnrollmentSession("session") {
+		t.Fatal("obsolete session setup mode must not issue a CLI session")
+	}
 }

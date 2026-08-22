@@ -6137,7 +6137,7 @@
     "/v1/machines/setup": {
       "post": {
         "summary": "Set up this client machine",
-        "description": "Registers or transitions the authenticated CLI machine to client, session, or host mode using its stable Ed25519 identity. Client mode provisions restricted file and preview authority without reserving a host seat.",
+        "description": "Registers or transitions the authenticated CLI machine to client or host mode using its stable Ed25519 identity. Client mode provisions restricted file and preview authority without reserving a host seat.",
         "security": [
           {
             "bearerAccess": []
@@ -6155,7 +6155,7 @@
                 "additionalProperties": false,
                 "required": ["setup_mode", "display_name", "platform", "architecture", "workspace_root", "public_identity_key", "runtime_versions"],
                 "properties": {
-                  "setup_mode": {"type": "string", "enum": ["client", "session", "host"]},
+                  "setup_mode": {"type": "string", "enum": ["client", "host"]},
                   "display_name": {"type": "string", "minLength": 1, "maxLength": 128},
                   "platform": {"type": "string", "enum": ["darwin", "linux", "windows"]},
                   "architecture": {"type": "string", "minLength": 1},

@@ -47,3 +47,24 @@ func TestClientSetupModeMigrationDropsConstraintBeforeRenamingValues(t *testing.
 		}
 	}
 }
+
+func TestMachineSetupModeMigrationsOnlyPermitHostAndClient(t *testing.T) {
+	fresh, err := migrationsFS.ReadFile("migrations/077_machine_setup_modes.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(fresh, []byte("'session'")) {
+		t.Fatal("fresh machine setup schema must not contain the obsolete session mode")
+	}
+
+	forward, err := migrationsFS.ReadFile("migrations/112_remove_session_setup_mode.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drop := bytes.Index(forward, []byte("DROP CONSTRAINT user_machines_setup_mode_check"))
+	convert := bytes.Index(forward, []byte("WHERE setup_mode = 'session'"))
+	constraint := bytes.LastIndex(forward, []byte("CHECK (setup_mode IN ('client','host'))"))
+	if drop < 0 || convert < 0 || constraint < 0 || !(drop < convert && convert < constraint) {
+		t.Fatalf("forward setup-mode migration must remove the old check, convert session rows, then enforce host/client only: %s", forward)
+	}
+}

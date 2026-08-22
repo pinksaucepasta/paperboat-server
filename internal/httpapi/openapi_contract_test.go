@@ -96,6 +96,50 @@ func TestOpenAPIMatchesRegisteredRoutes(t *testing.T) {
 	}
 }
 
+func TestMachineSetupOpenAPIOnlyExposesHostAndClientModes(t *testing.T) {
+	raw, err := os.ReadFile("../../docs/openapi.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Paths map[string]map[string]any `json:"paths"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("openapi json is invalid: %v", err)
+	}
+	post, ok := doc.Paths["/v1/machines/setup"]["post"].(map[string]any)
+	if !ok {
+		t.Fatal("machine setup operation is missing")
+	}
+	requestBody, ok := post["requestBody"].(map[string]any)
+	if !ok {
+		t.Fatal("machine setup request body is missing")
+	}
+	content, ok := requestBody["content"].(map[string]any)
+	if !ok {
+		t.Fatal("machine setup request content is missing")
+	}
+	jsonContent, ok := content["application/json"].(map[string]any)
+	if !ok {
+		t.Fatal("machine setup JSON content is missing")
+	}
+	schema, ok := jsonContent["schema"].(map[string]any)
+	if !ok {
+		t.Fatal("machine setup schema is missing")
+	}
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("machine setup properties are missing")
+	}
+	setupMode, ok := properties["setup_mode"].(map[string]any)
+	if !ok {
+		t.Fatal("machine setup mode schema is missing")
+	}
+	if got := stringSet(t, setupMode["enum"], "machine setup mode enum"); !reflect.DeepEqual(got, map[string]bool{"client": true, "host": true}) {
+		t.Fatalf("machine setup mode enum = %#v, want client and host", got)
+	}
+}
+
 func TestOpenAPIDocumentCoversPublicAndFrozenTargetPaths(t *testing.T) {
 	raw, err := os.ReadFile("../../docs/openapi.json")
 	if err != nil {
