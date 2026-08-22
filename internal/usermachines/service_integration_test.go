@@ -85,7 +85,7 @@ func TestSetupIsIdempotentAndUnpairPreservesInteractiveIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	input := SetupInput{SetupMode: "receive", DisplayName: "Studio", Platform: "linux", Architecture: "amd64", WorkspaceRoot: "/home/paperboat", PublicIdentityKey: base64.RawURLEncoding.EncodeToString(public), RuntimeVersions: json.RawMessage(`{"pb":"test"}`)}
+	input := SetupInput{SetupMode: "client", DisplayName: "Studio", Platform: "linux", Architecture: "amd64", WorkspaceRoot: "/home/paperboat", PublicIdentityKey: base64.RawURLEncoding.EncodeToString(public), RuntimeVersions: json.RawMessage(`{"pb":"test"}`)}
 	service := New(store, audit.NewWriter(store), Policy{AllowedPlatforms: []string{"linux"}}, testSeatAuthorizer{})
 	service.ConfigureAccess(nil, "https://api.paperboat.test", 5*time.Minute)
 	if err := service.ConfigureRuntimeRoute("runtime.example.test", 38080); err != nil {
@@ -153,7 +153,7 @@ func TestSetupIsIdempotentAndUnpairPreservesInteractiveIdentity(t *testing.T) {
 	if !reflect.DeepEqual(unpaired.SetupRoles, []string{"interactive"}) || unpaired.PublicIdentityKey != input.PublicIdentityKey || unpaired.InstallationGeneration != 2 || unpaired.SeatState != "released" {
 		t.Fatalf("unpaired=%+v", unpaired)
 	}
-	if unpaired.SetupMode != "receive" || !unpaired.Capabilities.FileReceive.Configured || !unpaired.Capabilities.PreviewLaunch.Configured || unpaired.Capabilities.TerminalHost.Configured {
+	if unpaired.SetupMode != "client" || !unpaired.Capabilities.FileReceive.Configured || !unpaired.Capabilities.PreviewLaunch.Configured || unpaired.Capabilities.TerminalHost.Configured {
 		t.Fatalf("unpaired capabilities=%+v mode=%q", unpaired.Capabilities, unpaired.SetupMode)
 	}
 	var environmentState, routeState string
@@ -211,7 +211,7 @@ func TestOnlineReceiveMachineCanUpgradeToHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	configureSignedTestArtifact(t, service)
-	machine, err := service.Setup(ctx, userID, SetupInput{SetupMode: "receive", DisplayName: "Studio", Platform: "linux", Architecture: "amd64", WorkspaceRoot: "/home/paperboat", PublicIdentityKey: publicKey, RuntimeVersions: json.RawMessage(`{"pb":"test"}`)})
+	machine, err := service.Setup(ctx, userID, SetupInput{SetupMode: "client", DisplayName: "Studio", Platform: "linux", Architecture: "amd64", WorkspaceRoot: "/home/paperboat", PublicIdentityKey: publicKey, RuntimeVersions: json.RawMessage(`{"pb":"test"}`)})
 	if err != nil {
 		t.Fatal(err)
 	}

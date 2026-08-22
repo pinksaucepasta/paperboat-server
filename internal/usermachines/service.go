@@ -505,7 +505,7 @@ func (s *Service) Setup(ctx context.Context, userID string, in SetupInput) (User
 	userID = strings.TrimSpace(userID)
 	workspaceRoot, validWorkspace := canonicalWorkspaceRoot(in.Platform, in.WorkspaceRoot)
 	publicKey, keyErr := base64.RawURLEncoding.DecodeString(strings.TrimSpace(in.PublicIdentityKey))
-	if userID == "" || !slices.Contains([]string{"host", "receive", "session"}, in.SetupMode) || invalidMachineDisplayName(in.DisplayName) || !validMachineArchitecture(in.Architecture) ||
+	if userID == "" || !slices.Contains([]string{"host", "client", "session"}, in.SetupMode) || invalidMachineDisplayName(in.DisplayName) || !validMachineArchitecture(in.Architecture) ||
 		!validWorkspace ||
 		!slices.Contains(s.policy.AllowedPlatforms, strings.ToLower(strings.TrimSpace(in.Platform))) ||
 		isUnacceptedBetaPlatform(in.Platform, in.Architecture, in.AcceptBetaPlatform) ||
@@ -544,7 +544,7 @@ func (s *Service) Setup(ctx context.Context, userID string, in SetupInput) (User
 					return err
 				}
 			}
-			if in.SetupMode == "receive" {
+			if in.SetupMode == "client" {
 				if err := s.ensureHelperRoute(ctx, tx, row.ID, row.EnvironmentID); err != nil {
 					return err
 				}
@@ -577,7 +577,7 @@ func (s *Service) Setup(ctx context.Context, userID string, in SetupInput) (User
 		if _, err := tx.Queries().CreateControlEnvironment(ctx, dbsqlc.CreateControlEnvironmentParams{ID: environmentID, WorkspaceID: row.ID, OwnerUserID: sql.NullString{String: userID, Valid: true}, DesiredState: "active"}); err != nil {
 			return err
 		}
-		if in.SetupMode == "receive" {
+		if in.SetupMode == "client" {
 			if err := s.ensureHelperRoute(ctx, tx, row.ID, row.EnvironmentID); err != nil {
 				return err
 			}
@@ -591,7 +591,7 @@ func (s *Service) Setup(ctx context.Context, userID string, in SetupInput) (User
 	if err == nil && downgradedFromHost {
 		err = s.RevokeUserMachineSessions(ctx, result.ID, "machine_mode_downgraded")
 	}
-	if err == nil && in.SetupMode == "receive" {
+	if err == nil && in.SetupMode == "client" {
 		artifact, ok := s.machineArtifact(result.Platform, result.Architecture)
 		if !ok || s.issuer == "" || s.helperListenPort == 0 {
 			return UserMachine{}, ErrProvisioningUnavailable
@@ -628,7 +628,7 @@ func (s *Service) CreatePairing(ctx context.Context, in PairingInput) (Pairing, 
 	} else {
 		token := strings.TrimSpace(in.EnrollmentToken)
 		if len(token) == enrollmentTokenLength && !strings.Contains("02468BDFHJLNPRTVXZ", token[:1]) {
-			setupMode = "receive"
+			setupMode = "client"
 		}
 		tokenHash := enrollmentTokenHash(token)
 		err = s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
@@ -728,7 +728,7 @@ type MachineCapabilities struct {
 
 func configuredCapabilities(mode string) []string {
 	switch mode {
-	case "receive":
+	case "client":
 		return []string{"file_receive", "preview_launch"}
 	case "host":
 		return []string{"file_receive", "preview_launch", "terminal_host", "codex_host", "session_host", "keep_awake"}
@@ -1474,7 +1474,7 @@ func (s *Service) Approve(ctx context.Context, userID, userCode string) (UserMac
 }
 
 func (s *Service) approve(ctx context.Context, userID, userCode, setupMode string) (UserMachine, error) {
-	if setupMode != "host" && setupMode != "receive" {
+	if setupMode != "host" && setupMode != "client" {
 		return UserMachine{}, ErrInvalidPairing
 	}
 	var out UserMachine
@@ -1607,8 +1607,8 @@ func (s *Service) approve(ctx context.Context, userID, userCode, setupMode strin
 				if err != nil {
 					return err
 				}
-				if setupMode == "receive" {
-					row, err = tx.Queries().AddUserMachineInteractiveRole(ctx, dbsqlc.AddUserMachineInteractiveRoleParams{ID: existing.ID, UserID: userID, DisplayName: pairing.RequestedDisplayName, RuntimeVersions: pairing.RuntimeVersions, SetupMode: "receive", ConfiguredCapabilities: configuredCapabilities("receive")})
+				if setupMode == "client" {
+					row, err = tx.Queries().AddUserMachineInteractiveRole(ctx, dbsqlc.AddUserMachineInteractiveRoleParams{ID: existing.ID, UserID: userID, DisplayName: pairing.RequestedDisplayName, RuntimeVersions: pairing.RuntimeVersions, SetupMode: "client", ConfiguredCapabilities: configuredCapabilities("client")})
 					if err != nil {
 						return err
 					}
@@ -1654,7 +1654,7 @@ func (s *Service) approve(ctx context.Context, userID, userCode, setupMode strin
 			row, err := tx.Queries().CreateInteractiveMachine(ctx, dbsqlc.CreateInteractiveMachineParams{
 				ID: newID("mch"), UserID: userID, EnvironmentID: environmentID, DisplayName: pairing.RequestedDisplayName, Alias: alias,
 				Platform: pairing.Platform, Architecture: pairing.Architecture, WorkspaceRoot: pairing.WorkspaceRoot,
-				RuntimeVersions: pairing.RuntimeVersions, SetupMode: "receive", ConfiguredCapabilities: configuredCapabilities("receive"),
+				RuntimeVersions: pairing.RuntimeVersions, SetupMode: "client", ConfiguredCapabilities: configuredCapabilities("client"),
 				PublicIdentityKey: sql.NullString{String: pairing.PublicIdentityKey, Valid: true},
 			})
 			if userMachineTerminalSessionUniqueViolation(err) {
@@ -1676,8 +1676,8 @@ func (s *Service) approve(ctx context.Context, userID, userCode, setupMode strin
 			if err != nil {
 				return err
 			}
-			if setupMode == "receive" {
-				row, err = tx.Queries().AddUserMachineInteractiveRole(ctx, dbsqlc.AddUserMachineInteractiveRoleParams{ID: row.ID, UserID: userID, DisplayName: pairing.RequestedDisplayName, RuntimeVersions: pairing.RuntimeVersions, SetupMode: "receive", ConfiguredCapabilities: configuredCapabilities("receive")})
+			if setupMode == "client" {
+				row, err = tx.Queries().AddUserMachineInteractiveRole(ctx, dbsqlc.AddUserMachineInteractiveRoleParams{ID: row.ID, UserID: userID, DisplayName: pairing.RequestedDisplayName, RuntimeVersions: pairing.RuntimeVersions, SetupMode: "client", ConfiguredCapabilities: configuredCapabilities("client")})
 				if err != nil {
 					return err
 				}
@@ -1737,8 +1737,8 @@ func (s *Service) approve(ctx context.Context, userID, userCode, setupMode strin
 			if err != nil {
 				return err
 			}
-			if setupMode == "receive" {
-				row, err = tx.Queries().AddUserMachineInteractiveRole(ctx, dbsqlc.AddUserMachineInteractiveRoleParams{ID: existing.ID, UserID: userID, DisplayName: pairing.RequestedDisplayName, RuntimeVersions: pairing.RuntimeVersions, SetupMode: "receive", ConfiguredCapabilities: configuredCapabilities("receive")})
+			if setupMode == "client" {
+				row, err = tx.Queries().AddUserMachineInteractiveRole(ctx, dbsqlc.AddUserMachineInteractiveRoleParams{ID: existing.ID, UserID: userID, DisplayName: pairing.RequestedDisplayName, RuntimeVersions: pairing.RuntimeVersions, SetupMode: "client", ConfiguredCapabilities: configuredCapabilities("client")})
 				if err != nil {
 					return err
 				}

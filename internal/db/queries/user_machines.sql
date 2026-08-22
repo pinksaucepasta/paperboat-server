@@ -327,10 +327,10 @@ RETURNING *;
 
 -- name: AddUserMachineInteractiveRole :one
 UPDATE user_machines
-SET setup_roles = CASE WHEN sqlc.arg(setup_mode) IN ('receive','session') THEN ARRAY['interactive']::text[] ELSE ARRAY(SELECT DISTINCT role FROM unnest(setup_roles || ARRAY['interactive']::text[]) role ORDER BY role) END,
+SET setup_roles = CASE WHEN sqlc.arg(setup_mode) IN ('client','session') THEN ARRAY['interactive']::text[] ELSE ARRAY(SELECT DISTINCT role FROM unnest(setup_roles || ARRAY['interactive']::text[]) role ORDER BY role) END,
     setup_mode = sqlc.arg(setup_mode), configured_capabilities = sqlc.arg(configured_capabilities),
     observed_capabilities = CASE WHEN setup_mode IS DISTINCT FROM sqlc.arg(setup_mode) THEN '{}'::text[] ELSE observed_capabilities END,
-    seat_state = CASE WHEN sqlc.arg(setup_mode) IN ('receive','session') THEN 'released' ELSE seat_state END,
+    seat_state = CASE WHEN sqlc.arg(setup_mode) IN ('client','session') THEN 'released' ELSE seat_state END,
     state = CASE WHEN setup_mode IS DISTINCT FROM sqlc.arg(setup_mode) THEN 'offline' ELSE state END,
     online = CASE WHEN setup_mode IS DISTINCT FROM sqlc.arg(setup_mode) THEN false ELSE online END,
     installation_generation = installation_generation + CASE WHEN setup_mode IS DISTINCT FROM sqlc.arg(setup_mode) THEN 1 ELSE 0 END,
@@ -343,7 +343,7 @@ RETURNING *;
 -- name: RemoveUserMachineHostRole :one
 UPDATE user_machines
 SET setup_roles = array_remove(setup_roles, 'host'), state = 'offline', seat_state = 'released',
-    setup_mode = 'receive', configured_capabilities = ARRAY['file_receive','preview_launch']::text[], observed_capabilities = '{}'::text[],
+    setup_mode = 'client', configured_capabilities = ARRAY['file_receive','preview_launch']::text[], observed_capabilities = '{}'::text[],
     online = false, installation_generation = installation_generation + 1,
     updated_at = now(), version = version + 1
 WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND deleted_at IS NULL
@@ -461,7 +461,7 @@ WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND deleted_at IS NULL
 UPDATE user_machines
 SET state = 'online', online = true, observed_capabilities = COALESCE(sqlc.narg(observed_capabilities), '{}'::text[]), last_seen_at = now(), updated_at = now(), version = version + 1
 WHERE id = sqlc.arg(id) AND environment_id = sqlc.arg(environment_id)
-  AND (seat_state = 'occupied' OR setup_mode = 'receive') AND deleted_at IS NULL AND state IN ('pending','offline','online');
+  AND (seat_state = 'occupied' OR setup_mode = 'client') AND deleted_at IS NULL AND state IN ('pending','offline','online');
 
 -- name: GetUserMachineRuntimeInstanceForUpdate :one
 SELECT online, last_seen_at, os_boot_id, worker_generation

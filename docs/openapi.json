@@ -6155,7 +6155,7 @@
                 "additionalProperties": false,
                 "required": ["setup_mode", "display_name", "platform", "architecture", "workspace_root", "public_identity_key", "runtime_versions"],
                 "properties": {
-                  "setup_mode": {"type": "string", "enum": ["receive", "session", "host"]},
+                  "setup_mode": {"type": "string", "enum": ["client", "session", "host"]},
                   "display_name": {"type": "string", "minLength": 1, "maxLength": 128},
                   "platform": {"type": "string", "enum": ["darwin", "linux", "windows"]},
                   "architecture": {"type": "string", "minLength": 1},

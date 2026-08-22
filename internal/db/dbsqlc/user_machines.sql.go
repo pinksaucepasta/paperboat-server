@@ -99,10 +99,10 @@ func (q *Queries) AddUserMachineHostRole(ctx context.Context, arg AddUserMachine
 
 const addUserMachineInteractiveRole = `-- name: AddUserMachineInteractiveRole :one
 UPDATE user_machines
-SET setup_roles = CASE WHEN $1 IN ('receive','session') THEN ARRAY['interactive']::text[] ELSE ARRAY(SELECT DISTINCT role FROM unnest(setup_roles || ARRAY['interactive']::text[]) role ORDER BY role) END,
+SET setup_roles = CASE WHEN $1 IN ('client','session') THEN ARRAY['interactive']::text[] ELSE ARRAY(SELECT DISTINCT role FROM unnest(setup_roles || ARRAY['interactive']::text[]) role ORDER BY role) END,
     setup_mode = $1, configured_capabilities = $2,
     observed_capabilities = CASE WHEN setup_mode IS DISTINCT FROM $1 THEN '{}'::text[] ELSE observed_capabilities END,
-    seat_state = CASE WHEN $1 IN ('receive','session') THEN 'released' ELSE seat_state END,
+    seat_state = CASE WHEN $1 IN ('client','session') THEN 'released' ELSE seat_state END,
     state = CASE WHEN setup_mode IS DISTINCT FROM $1 THEN 'offline' ELSE state END,
     online = CASE WHEN setup_mode IS DISTINCT FROM $1 THEN false ELSE online END,
     installation_generation = installation_generation + CASE WHEN setup_mode IS DISTINCT FROM $1 THEN 1 ELSE 0 END,
@@ -3079,7 +3079,7 @@ const markUserMachineOnlineFromHelper = `-- name: MarkUserMachineOnlineFromHelpe
 UPDATE user_machines
 SET state = 'online', online = true, observed_capabilities = COALESCE($1, '{}'::text[]), last_seen_at = now(), updated_at = now(), version = version + 1
 WHERE id = $2 AND environment_id = $3
-  AND (seat_state = 'occupied' OR setup_mode = 'receive') AND deleted_at IS NULL AND state IN ('pending','offline','online')
+  AND (seat_state = 'occupied' OR setup_mode = 'client') AND deleted_at IS NULL AND state IN ('pending','offline','online')
 `
 
 type MarkUserMachineOnlineFromHelperParams struct {
@@ -3329,7 +3329,7 @@ func (q *Queries) RecordUserMachineTopupConsumption(ctx context.Context, arg Rec
 const removeUserMachineHostRole = `-- name: RemoveUserMachineHostRole :one
 UPDATE user_machines
 SET setup_roles = array_remove(setup_roles, 'host'), state = 'offline', seat_state = 'released',
-    setup_mode = 'receive', configured_capabilities = ARRAY['file_receive','preview_launch']::text[], observed_capabilities = '{}'::text[],
+    setup_mode = 'client', configured_capabilities = ARRAY['file_receive','preview_launch']::text[], observed_capabilities = '{}'::text[],
     online = false, installation_generation = installation_generation + 1,
     updated_at = now(), version = version + 1
 WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
