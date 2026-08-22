@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
+	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
 	"github.com/pinksaucepasta/paperboat-server/internal/workers"
 )
 
@@ -62,5 +63,18 @@ func TestNormalizeHelperIssuer(t *testing.T) {
 		if got := normalizeHelperIssuer(input); got != want {
 			t.Errorf("normalizeHelperIssuer(%q) = %q, want %q", input, got, want)
 		}
+	}
+}
+
+func TestGitHubClientUsesExplicitRealCredentialsInFakeProviderDevelopment(t *testing.T) {
+	cfg := config.Default()
+	if _, ok := githubClient(cfg).(*pbgithub.FakeClient); !ok {
+		t.Fatal("default development config did not use the fake GitHub client")
+	}
+
+	cfg.Secrets.GitHubClientID = "dev-github-app-client-id"
+	cfg.Secrets.GitHubClientSecret = "dev-github-app-client-secret"
+	if _, ok := githubClient(cfg).(pbgithub.HTTPClient); !ok {
+		t.Fatal("explicit development GitHub credentials did not use the real GitHub client")
 	}
 }

@@ -73,9 +73,11 @@ func New(opts Options) (*App, error) {
 	billingService.SetCheckoutReservationTTL(opts.Config.Billing.CheckoutReservationTTL)
 	billingService.SetEncryptionKey(opts.Config.Secrets.EncryptionKey)
 	githubService := pbgithub.NewService(store, auditWriter, githubClient(opts.Config), opts.Config)
-	if opts.Config.Providers.FakeMode {
-		githubService.SetRepositoryAccessBroker(pbgithub.FakeRepositoryAccessBroker{})
-	} else if opts.Config.GitHub.AppID != "" && opts.Config.Secrets.GitHubAppPrivateKey != "" {
+	// Development can keep fake WorkOS, Polar, and Fly providers while using a
+	// real, installation-scoped GitHub App for config-sync qualification.
+	// Prefer explicit App credentials over the workspace-wide fake-provider
+	// default so repository access never falls back to an unrestricted fake.
+	if opts.Config.GitHub.AppID != "" && opts.Config.Secrets.GitHubAppPrivateKey != "" {
 		githubAccessBroker, brokerErr := pbgithub.NewGitHubAppBroker(pbgithub.GitHubAppBrokerConfig{
 			BaseURL: opts.Config.Providers.GitHub.BaseURL, AppID: opts.Config.GitHub.AppID,
 			PrivateKeyPEM: opts.Config.Secrets.GitHubAppPrivateKey,
@@ -86,6 +88,8 @@ func New(opts Options) (*App, error) {
 			return nil, fmt.Errorf("configure GitHub App repository access: %w", brokerErr)
 		}
 		githubService.SetRepositoryAccessBroker(githubAccessBroker)
+	} else if opts.Config.Providers.FakeMode {
+		githubService.SetRepositoryAccessBroker(pbgithub.FakeRepositoryAccessBroker{})
 	}
 	projectService := projects.NewService(store, auditWriter, opts.Config)
 	terminalSessionService := terminalsessions.New(store, projectService, opts.Config.TerminalSessions.MaxActivePerProject, opts.Config.TerminalSessions.RetryBackoff, opts.Config.TerminalSessions.MaxAttemptsBeforeAlert)
@@ -478,7 +482,7 @@ func flyClient(cfg config.Config) fly.Client {
 }
 
 func githubClient(cfg config.Config) pbgithub.Client {
-	if cfg.Providers.FakeMode {
+	if cfg.Providers.FakeMode && !realGitHubOAuthConfigured(cfg) {
 		return &pbgithub.FakeClient{}
 	}
 	return pbgithub.HTTPClient{
@@ -486,6 +490,11 @@ func githubClient(cfg config.Config) pbgithub.Client {
 		TokenURL: cfg.GitHub.OAuthTokenURL,
 		Client:   providerHTTPClient("github", cfg.HTTP.RequestTimeout),
 	}
+}
+
+func realGitHubOAuthConfigured(cfg config.Config) bool {
+	return strings.TrimSpace(cfg.Secrets.GitHubClientID) != "" &&
+		strings.TrimSpace(cfg.Secrets.GitHubClientSecret) != ""
 }
 
 func polarClient(cfg config.Config) billing.PolarClient {
