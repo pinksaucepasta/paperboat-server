@@ -1473,6 +1473,27 @@ func (q *Queries) GetCanonicalMachineForEnvironment(ctx context.Context, environ
 	return i, err
 }
 
+const getMachineControlRenewalForUpdate = `-- name: GetMachineControlRenewalForUpdate :one
+SELECT operation_id, machine_id, installation_generation, credential_jti, issued_at, expires_at, created_at FROM machine_control_renewals
+WHERE operation_id = $1
+FOR UPDATE
+`
+
+func (q *Queries) GetMachineControlRenewalForUpdate(ctx context.Context, operationID string) (MachineControlRenewal, error) {
+	row := q.db.QueryRow(ctx, getMachineControlRenewalForUpdate, operationID)
+	var i MachineControlRenewal
+	err := row.Scan(
+		&i.OperationID,
+		&i.MachineID,
+		&i.InstallationGeneration,
+		&i.CredentialJti,
+		&i.IssuedAt,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getOwnedActiveUserMachineForControl = `-- name: GetOwnedActiveUserMachineForControl :one
 SELECT id, user_id, environment_id, display_name, platform, architecture, workspace_root, state, seat_state, online, provider_route_route_id, provider_route_client_id, provider_route_http_base_url, provider_route_websocket_base_url, runtime_versions, enrolled_at, last_seen_at, revoked_at, disconnected_at, deleted_at, version, created_at, updated_at, availability_mode, availability_desired_version, availability_observed_mode, availability_observed_version, availability_observed_at, availability_status, availability_error_code, host_service_version, host_service_scope, worker_generation, os_boot_id, worker_service_scope, connector_state, connector_generation, host_update_rollbacks, runtime_diagnostics_observed_at, setup_roles, public_identity_key, installation_generation, machine_kind, setup_mode, configured_capabilities, observed_capabilities, alias, update_health, relay_latency_worker_generation, relay_latency_generation, relay_latency_observed_at, relay_latency_vector FROM user_machines
 WHERE id = $1 AND user_id = $2
@@ -3941,6 +3962,48 @@ func (q *Queries) RevokeUserMachinesOverSeatLimit(ctx context.Context, arg Revok
 		return nil, err
 	}
 	return items, nil
+}
+
+const rotateMachineControlRenewal = `-- name: RotateMachineControlRenewal :one
+UPDATE machine_control_renewals
+SET credential_jti = $1,
+    issued_at = $2,
+    expires_at = $3
+WHERE operation_id = $4
+  AND machine_id = $5
+  AND installation_generation = $6
+RETURNING operation_id, machine_id, installation_generation, credential_jti, issued_at, expires_at, created_at
+`
+
+type RotateMachineControlRenewalParams struct {
+	CredentialJti          string
+	IssuedAt               time.Time
+	ExpiresAt              time.Time
+	OperationID            string
+	MachineID              string
+	InstallationGeneration int64
+}
+
+func (q *Queries) RotateMachineControlRenewal(ctx context.Context, arg RotateMachineControlRenewalParams) (MachineControlRenewal, error) {
+	row := q.db.QueryRow(ctx, rotateMachineControlRenewal,
+		arg.CredentialJti,
+		arg.IssuedAt,
+		arg.ExpiresAt,
+		arg.OperationID,
+		arg.MachineID,
+		arg.InstallationGeneration,
+	)
+	var i MachineControlRenewal
+	err := row.Scan(
+		&i.OperationID,
+		&i.MachineID,
+		&i.InstallationGeneration,
+		&i.CredentialJti,
+		&i.IssuedAt,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const selectUserMachineTerminalSessionForEviction = `-- name: SelectUserMachineTerminalSessionForEviction :one

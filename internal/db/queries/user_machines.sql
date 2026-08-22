@@ -300,6 +300,21 @@ INSERT INTO machine_control_renewals (
 ) ON CONFLICT (operation_id) DO UPDATE SET operation_id = EXCLUDED.operation_id
 RETURNING *;
 
+-- name: GetMachineControlRenewalForUpdate :one
+SELECT * FROM machine_control_renewals
+WHERE operation_id = sqlc.arg(operation_id)
+FOR UPDATE;
+
+-- name: RotateMachineControlRenewal :one
+UPDATE machine_control_renewals
+SET credential_jti = sqlc.arg(credential_jti),
+    issued_at = sqlc.arg(issued_at),
+    expires_at = sqlc.arg(expires_at)
+WHERE operation_id = sqlc.arg(operation_id)
+  AND machine_id = sqlc.arg(machine_id)
+  AND installation_generation = sqlc.arg(installation_generation)
+RETURNING *;
+
 -- name: DeleteExpiredMachineControlRenewals :execrows
 DELETE FROM machine_control_renewals
 WHERE expires_at < sqlc.arg(cutoff);

@@ -2,16 +2,26 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
 
+	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
 	"github.com/pinksaucepasta/paperboat-server/internal/usermachines"
 )
 
 const maxMachineControlRequest = 16 << 10
+
+type machineControlInitialIssuer interface {
+	IssueInitialMachineControl(context.Context, string, string, string) (usermachines.MachineControlCredential, error)
+}
+
+type helperRequestVerifier interface {
+	VerifyHelperRequest(context.Context, string, []byte, string, string, []byte) (controlplane.HelperProofClaims, error)
+}
 
 func machineControlIssue(service *usermachines.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -49,6 +59,37 @@ func machineControlRenew(service *usermachines.Service) http.HandlerFunc {
 			writeError(w, r, http.StatusUnauthorized, "machine_control_credential_invalid", "Machine control credential or proof was rejected.")
 			return
 		}
+		writeJSON(w, http.StatusCreated, SuccessResponse{Data: result})
+	}
+}
+
+// machineControlInitial exchanges the short-lived helper identity created by
+// enrollment for a machine-control credential. It is intentionally separate
+// from the user-session endpoint: bootstrap must be restartable before the
+// local CLI session is available, while the helper identity is already bound
+// to the enrolled machine key and environment.
+func machineControlInitial(service machineControlInitialIssuer, identities helperRequestVerifier) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, operationID, proof, ok := machineControlRequest(w, r)
+		if !ok {
+			return
+		}
+		scheme, credential, found := strings.Cut(strings.TrimSpace(r.Header.Get("Authorization")), " ")
+		if !found || !strings.EqualFold(scheme, "Bearer") || strings.TrimSpace(credential) == "" {
+			writeError(w, r, http.StatusUnauthorized, "machine_control_bootstrap_invalid", "Machine bootstrap identity was rejected.")
+			return
+		}
+		claims, err := identities.VerifyHelperRequest(r.Context(), strings.TrimSpace(credential), proof, r.Method, r.URL.Path, body)
+		if err != nil {
+			writeError(w, r, http.StatusUnauthorized, "machine_control_bootstrap_invalid", "Machine bootstrap identity was rejected.")
+			return
+		}
+		result, err := service.IssueInitialMachineControl(r.Context(), claims.MachineID, claims.EnvironmentID, operationID)
+		if err != nil {
+			writeError(w, r, http.StatusUnauthorized, "machine_control_bootstrap_invalid", "Machine bootstrap identity was rejected.")
+			return
+		}
+		noStore(w)
 		writeJSON(w, http.StatusCreated, SuccessResponse{Data: result})
 	}
 }

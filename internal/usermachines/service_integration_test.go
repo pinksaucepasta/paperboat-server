@@ -1117,6 +1117,102 @@ func TestInstallationFailureRevokesIdentityReleasesSeatAndRetryIssuesNewIdentity
 	}
 }
 
+func TestMachineControlInitialReplayRotatesAfterExpiryWithoutCrossMachineCollision(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID := "usr_machine_control_" + suffix
+	machineID := "mch_machine_control_" + suffix
+	otherMachineID := "mch_machine_control_other_" + suffix
+	environmentID := "env_machine_control_" + suffix
+	otherEnvironmentID := "env_machine_control_other_" + suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_machine_control_"+suffix, "machine-control-"+suffix+"@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherPublicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertMachine := func(id, env string, key ed25519.PublicKey) {
+		t.Helper()
+		_, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,setup_mode,setup_roles,configured_capabilities,observed_capabilities,public_identity_key,installation_generation) VALUES ($1,$2,$3,$4,'windows','amd64','C:\workspace','offline','released','client',ARRAY['interactive']::text[],ARRAY['file_receive','preview_launch']::text[],ARRAY[]::text[],$5,3)`, id, userID, env, id, base64.RawURLEncoding.EncodeToString(key))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	insertMachine(machineID, environmentID, publicKey)
+	insertMachine(otherMachineID, otherEnvironmentID, otherPublicKey)
+	machine, err := store.Queries().GetActiveUserMachineForControl(ctx, machineID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := mint.NewEphemeral(time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := New(store, audit.NewWriter(store), Policy{}, nil)
+	service.ConfigureMachineControl(signer, "https://api.example.test")
+	now := time.Date(2026, 8, 23, 1, 2, 3, 0, time.UTC)
+	service.now = func() time.Time { return now }
+	operationID := "machine-control-initial-" + suffix
+	first, err := service.mintMachineControl(ctx, machine, operationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstClaims, err := signer.VerifyCredential(first.Credential, "https://api.example.test", "machine_control", now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstClaims.MachineID != machineID || firstClaims.EnvironmentID != environmentID || firstClaims.UserID != userID || firstClaims.InstallationGeneration != 3 || firstClaims.KeyThumbprint != machineKeyThumbprint(machine) {
+		t.Fatalf("first claims=%+v", firstClaims)
+	}
+
+	now = now.Add(machineControlTTL + time.Minute)
+	second, err := service.mintMachineControl(ctx, machine, operationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Credential == first.Credential || !second.ExpiresAt.After(now) {
+		t.Fatalf("expired replay did not rotate: first=%+v second=%+v", first, second)
+	}
+	secondClaims, err := signer.VerifyCredential(second.Credential, "https://api.example.test", "machine_control", now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondClaims.JTI == firstClaims.JTI || secondClaims.MachineID != machineID || secondClaims.EnvironmentID != environmentID || secondClaims.UserID != userID || secondClaims.InstallationGeneration != 3 || secondClaims.KeyThumbprint != machineKeyThumbprint(machine) {
+		t.Fatalf("rotated claims=%+v first=%+v", secondClaims, firstClaims)
+	}
+
+	now = now.Add(time.Minute)
+	replay, err := service.mintMachineControl(ctx, machine, operationID)
+	if err != nil || replay.Credential == "" {
+		t.Fatalf("valid replay credential=%+v err=%v", replay, err)
+	}
+	replayClaims, err := signer.VerifyCredential(replay.Credential, "https://api.example.test", "machine_control", now)
+	if err != nil || replayClaims.JTI != secondClaims.JTI || !replay.ExpiresAt.Equal(second.ExpiresAt) {
+		t.Fatalf("valid replay claims=%+v credential=%+v err=%v", replayClaims, replay, err)
+	}
+
+	otherMachine, err := store.Queries().GetActiveUserMachineForControl(ctx, otherMachineID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.mintMachineControl(ctx, otherMachine, operationID); !errors.Is(err, ErrMachineControlInvalid) {
+		t.Fatalf("cross-machine operation reuse error=%v, want ErrMachineControlInvalid", err)
+	}
+	var storedMachine, storedJTI string
+	if err := store.SQL().QueryRowContext(ctx, `SELECT machine_id,credential_jti FROM paperboat.machine_control_renewals WHERE operation_id=$1`, operationID).Scan(&storedMachine, &storedJTI); err != nil {
+		t.Fatal(err)
+	}
+	if storedMachine != machineID || storedJTI != secondClaims.JTI {
+		t.Fatalf("cross-machine attempt changed reservation machine=%q jti=%q", storedMachine, storedJTI)
+	}
+}
+
 func configureSignedTestArtifact(t *testing.T, service *Service) {
 	t.Helper()
 	if err := service.ConfigureMachineArtifacts("https://updates.example.test/paperboat", "test"); err != nil {

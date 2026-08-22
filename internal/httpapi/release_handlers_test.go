@@ -92,10 +92,20 @@ func TestWindowsReleaseTemplateUsesCanonicalModes(t *testing.T) {
 		t.Fatal(err)
 	}
 	template := strings.ToLower(string(body))
-	for _, required := range []string{"'host'", "'client'", "--setup-mode=$setupmode"} {
+	for _, required := range []string{
+		"'host'", "'client'", "--setup-mode=$setupmode",
+		"paperboat_${version}_windows_${arch}.msi",
+		"[environment]::getfolderpath([environment+specialfolder]::system)", "'msiexec.exe'",
+		"'/i'", "'/qn'", "'/norestart'", "'/l*v'", "waitforexit(1200000)",
+		"function assert-installedversion", "'paperboat\\bin\\pb.exe'",
+		"& $installedpb pair --server $server --enrollment-token $token --name $name \"--setup-mode=$setupmode\"",
+	} {
 		if !strings.Contains(template, required) {
 			t.Fatalf("Windows release template is missing canonical mode contract %q", required)
 		}
+	}
+	if strings.Contains(template, "pb-windows-$arch.exe") {
+		t.Fatal("Windows release template bootstraps pairing through a downloaded direct executable")
 	}
 	for _, removed := range []string{"receive", "session"} {
 		if strings.Contains(template, removed) {

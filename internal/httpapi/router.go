@@ -339,6 +339,9 @@ func NewRouter(opts Options) http.Handler {
 			mux.HandleFunc("POST /v1/machine-peer-identity", machineEndpointRequest(opts.PeerIdentity, opts.RuntimeIdentity))
 			mux.HandleFunc("POST /v1/machine-peer-identity/status", machineEndpointStatus(opts.PeerIdentity, opts.RuntimeIdentity))
 		}
+		if opts.Machines != nil && opts.RuntimeIdentity != nil {
+			mux.HandleFunc("POST /v1/machine-control-credentials", machineControlInitial(opts.Machines, opts.RuntimeIdentity))
+		}
 		if opts.PeerSessions != nil && opts.RuntimeIdentity != nil {
 			mux.HandleFunc("POST /v1/machine-peer-attempts/next", controlledPeerAttemptNext(opts.PeerSessions, opts.RuntimeIdentity))
 		}

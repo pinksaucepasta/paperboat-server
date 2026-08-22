@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -69,6 +70,27 @@ func (s *Service) IssueMachineControl(ctx context.Context, userID, machineID str
 	return s.mintMachineControl(ctx, machine, claims.OperationID)
 }
 
+// IssueInitialMachineControl exchanges an already verified helper identity for
+// the first machine-control credential. The HTTP boundary verifies that the
+// helper credential and proof are bound to this exact machine key; this method
+// then repeats the durable machine and connector binding checks before minting.
+// It intentionally does not accept a user session because one-shot bootstrap
+// may install the runtime before a local CLI session is usable.
+func (s *Service) IssueInitialMachineControl(ctx context.Context, machineID, environmentID, operationID string) (MachineControlCredential, error) {
+	if s.controlSigner == nil || strings.TrimSpace(machineID) == "" || strings.TrimSpace(environmentID) == "" || len(operationID) < 8 || len(operationID) > 128 {
+		return MachineControlCredential{}, ErrMachineControlInvalid
+	}
+	machine, err := s.db.Queries().GetActiveUserMachineForControl(ctx, machineID)
+	if err != nil || machine.EnvironmentID != environmentID || machine.SetupMode != "client" {
+		return MachineControlCredential{}, ErrMachineControlInvalid
+	}
+	connector, err := s.db.Queries().EnsureControlConnectorMachine(ctx, dbsqlc.EnsureControlConnectorMachineParams{EnvironmentID: machine.EnvironmentID, ConnectorID: "runtime", MachineID: machine.ID, EdgePool: "default"})
+	if err != nil || connector.MachineID != machine.ID {
+		return MachineControlCredential{}, ErrMachineControlInvalid
+	}
+	return s.mintMachineControl(ctx, machine, operationID)
+}
+
 func (s *Service) RenewMachineControl(ctx context.Context, credential string, proof, body []byte, method, path string) (MachineControlCredential, error) {
 	if s.controlSigner == nil {
 		return MachineControlCredential{}, ErrMachineControlInvalid
@@ -97,12 +119,25 @@ func (s *Service) mintMachineControl(ctx context.Context, machine dbsqlc.UserMac
 		if _, err := tx.Queries().DeleteExpiredMachineControlRenewals(ctx, issuedAt.Add(-time.Hour)); err != nil {
 			return err
 		}
-		var err error
-		row, err = tx.Queries().CreateMachineControlRenewal(ctx, dbsqlc.CreateMachineControlRenewalParams{
+		current, err := tx.Queries().GetMachineControlRenewalForUpdate(ctx, operationID)
+		if err == nil {
+			return s.resolveMachineControlRenewal(ctx, tx, current, machine, operationID, issuedAt, expiresAt, &row)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		// The insert is an idempotent reservation. If another request inserted
+		// the operation after the lookup, PostgreSQL returns that committed row
+		// through the conflict update; resolve it using the same binding and
+		// expiry rules below.
+		created, err := tx.Queries().CreateMachineControlRenewal(ctx, dbsqlc.CreateMachineControlRenewalParams{
 			OperationID: operationID, MachineID: machine.ID, InstallationGeneration: machine.InstallationGeneration,
 			CredentialJti: newID("mcc"), IssuedAt: issuedAt, ExpiresAt: expiresAt,
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		return s.resolveMachineControlRenewal(ctx, tx, created, machine, operationID, issuedAt, expiresAt, &row)
 	})
 	if err != nil || row.MachineID != machine.ID || row.InstallationGeneration != machine.InstallationGeneration {
 		return MachineControlCredential{}, ErrMachineControlInvalid
@@ -118,6 +153,25 @@ func (s *Service) mintMachineControl(ctx context.Context, machine dbsqlc.UserMac
 		return MachineControlCredential{}, err
 	}
 	return MachineControlCredential{Credential: token, ExpiresAt: row.ExpiresAt}, nil
+}
+
+func (s *Service) resolveMachineControlRenewal(ctx context.Context, tx *db.Tx, row dbsqlc.MachineControlRenewal, machine dbsqlc.UserMachine, operationID string, issuedAt, expiresAt time.Time, result *dbsqlc.MachineControlRenewal) error {
+	if row.OperationID != operationID || row.MachineID != machine.ID || row.InstallationGeneration != machine.InstallationGeneration {
+		return ErrMachineControlInvalid
+	}
+	if row.ExpiresAt.After(issuedAt) {
+		*result = row
+		return nil
+	}
+	rotated, err := tx.Queries().RotateMachineControlRenewal(ctx, dbsqlc.RotateMachineControlRenewalParams{
+		OperationID: operationID, MachineID: machine.ID, InstallationGeneration: machine.InstallationGeneration,
+		CredentialJti: newID("mcc"), IssuedAt: issuedAt, ExpiresAt: expiresAt,
+	})
+	if err != nil {
+		return err
+	}
+	*result = rotated
+	return nil
 }
 
 func verifyMachineProof(machine dbsqlc.UserMachine, encoded []byte, method, path string, body []byte, now time.Time) (MachineProofClaims, error) {

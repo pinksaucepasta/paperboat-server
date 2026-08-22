@@ -2762,6 +2762,26 @@
         "operationId": "post_v1_machine_control_renewals"
       }
     },
+    "/v1/machine-control-credentials": {
+      "post": {
+        "summary": "Issue the initial machine control credential",
+        "description": "Exchanges the enrolled helper identity, bound to the machine key and environment, for the first renewable machine-control credential. Repeating the same operation after a local crash returns the same server-issued credential.",
+        "security": [{"bearerHelperIdentity": []}],
+        "parameters": [
+          {"name": "X-Paperboat-Machine-Proof", "in": "header", "required": true, "schema": {"type": "string"}}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["operation_id"], "properties": {"operation_id": {"type": "string", "minLength": 8, "maxLength": 128}}}}}
+        },
+        "responses": {
+          "201": {"description": "Initial machine control credential issued."},
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"}
+        },
+        "operationId": "post_v1_machine_control_credentials"
+      }
+    },
     "/v1/helper-runtime-policies/resolve": {
       "post": {
         "summary": "Resolve the authoritative BYOD runtime availability policy",
