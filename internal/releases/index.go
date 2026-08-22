@@ -106,10 +106,10 @@ func (i ReleaseIndex) Validate(now time.Time) error {
 				return errIndexInvalid
 			}
 		}
-		if i.Architecture == "amd64" && (i.Stability != "stable" || !i.NativeTested) || i.Architecture == "arm64" && (i.Stability != "beta" || i.NativeTested) {
+		if i.Stability != "stable" || !i.NativeTested {
 			return errIndexInvalid
 		}
-		if i.Architecture == "amd64" && i.Channel != "stable" || i.Architecture == "arm64" && i.Channel != "beta" {
+		if i.Channel != "stable" {
 			return errIndexInvalid
 		}
 	} else if i.Stability != "" || i.NativeTested || len(i.TestedWindowsBuilds) != 0 || i.OpenSSHPackageID != "" || i.OpenSSHApprovedVersion != "" {

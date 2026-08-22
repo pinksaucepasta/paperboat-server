@@ -6137,7 +6137,7 @@
     "/v1/machines/setup": {
       "post": {
         "summary": "Set up this client machine",
-        "description": "Registers or transitions the authenticated CLI machine to receive, session, or host mode using its stable Ed25519 identity. Receive mode provisions restricted file and preview authority without reserving a host seat.",
+        "description": "Registers or transitions the authenticated CLI machine to client, session, or host mode using its stable Ed25519 identity. Client mode provisions restricted file and preview authority without reserving a host seat.",
         "security": [
           {
             "bearerAccess": []
@@ -6205,12 +6205,12 @@
         {"name": "machine_id", "in": "path", "required": true, "schema": {"type": "string"}}
       ],
       "post": {
-        "summary": "Downgrade this machine from host to receive mode",
+        "summary": "Downgrade this machine from host to client mode",
         "description": "Revokes terminal, Codex, session-host, and keep-awake authority and releases its host seat while preserving machine identity, Inbox, file receive, and preview launch authority.",
         "security": [{"bearerAccess": []}],
         "x-required-bearer-scopes": ["projects:connect"],
         "responses": {
-          "200": {"description": "Machine is in receive mode, or was already downgraded."},
+          "200": {"description": "Machine is in client mode, or was already downgraded."},
           "401": {"$ref": "#/components/responses/Error"},
           "404": {"$ref": "#/components/responses/Error"}
         },

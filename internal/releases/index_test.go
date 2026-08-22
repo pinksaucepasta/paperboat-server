@@ -78,3 +78,38 @@ func TestReleaseIndexRejectsInvalidDigestAndWindow(t *testing.T) {
 		t.Fatal("expected non-increasing rollout window to be rejected")
 	}
 }
+
+func TestWindowsReleaseIndexRequiresStableNativeQualificationForEveryArchitecture(t *testing.T) {
+	for _, architecture := range []string{"amd64", "arm64"} {
+		index := validIndex()
+		index.Platform = "windows"
+		index.Architecture = architecture
+		index.Channel = "stable"
+		index.BinaryFormat = "pe"
+		index.Targets = componentTargets("windows", architecture, "pe")
+		index.Stability = "stable"
+		index.NativeTested = true
+		index.TestedWindowsBuilds = []string{"windows-11-2025"}
+		index.OpenSSHPackageID = "Microsoft.OpenSSH.Preview"
+		index.OpenSSHApprovedVersion = "9.8.1.0"
+
+		if err := index.Validate(time.Now().UTC()); err != nil {
+			t.Fatalf("valid Windows %s release index rejected: %v", architecture, err)
+		}
+
+		index.Channel = "beta"
+		if err := index.Validate(time.Now().UTC()); err == nil {
+			t.Fatalf("Windows %s beta channel was accepted", architecture)
+		}
+		index.Channel = "stable"
+		index.Stability = "beta"
+		if err := index.Validate(time.Now().UTC()); err == nil {
+			t.Fatalf("Windows %s beta stability was accepted", architecture)
+		}
+		index.Stability = "stable"
+		index.NativeTested = false
+		if err := index.Validate(time.Now().UTC()); err == nil {
+			t.Fatalf("Windows %s release without native qualification was accepted", architecture)
+		}
+	}
+}

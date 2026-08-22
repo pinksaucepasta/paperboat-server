@@ -508,7 +508,6 @@ func (s *Service) Setup(ctx context.Context, userID string, in SetupInput) (User
 	if userID == "" || !slices.Contains([]string{"host", "client", "session"}, in.SetupMode) || invalidMachineDisplayName(in.DisplayName) || !validMachineArchitecture(in.Architecture) ||
 		!validWorkspace ||
 		!slices.Contains(s.policy.AllowedPlatforms, strings.ToLower(strings.TrimSpace(in.Platform))) ||
-		isUnacceptedBetaPlatform(in.Platform, in.Architecture, in.AcceptBetaPlatform) ||
 		keyErr != nil || len(publicKey) != ed25519.PublicKeySize {
 		return UserMachine{}, ErrInvalidSetup
 	}
@@ -2845,7 +2844,6 @@ func (s *Service) validatePairing(in PairingInput) error {
 		{!validMachineArchitecture(in.Architecture), "architecture"},
 		{!validWorkspace, "workspace root"},
 		{!slices.Contains(s.policy.AllowedPlatforms, strings.ToLower(strings.TrimSpace(in.Platform))), "platform"},
-		{isUnacceptedBetaPlatform(in.Platform, in.Architecture, in.AcceptBetaPlatform), "beta acceptance"},
 		{token != "" && !validEnrollmentToken(token), "enrollment token shape"},
 		{keyErr != nil || len(publicKey) != ed25519.PublicKeySize, "public identity key"},
 		{(in.SSHUser == "") != (in.SSHPort == 0), "SSH target completeness"},
@@ -2929,9 +2927,6 @@ func validMachineArchitecture(value string) bool {
 	return value == "amd64" || value == "arm64"
 }
 
-func isUnacceptedBetaPlatform(platform, architecture string, accepted bool) bool {
-	return strings.EqualFold(strings.TrimSpace(platform), "windows") && strings.EqualFold(strings.TrimSpace(architecture), "arm64") && !accepted
-}
 func mapMachine(row dbsqlc.UserMachine) UserMachine {
 	diagnostics := RuntimeDiagnostics{WorkerGeneration: uint64(row.WorkerGeneration), OSBootID: row.OsBootID.String, WorkerServiceScope: row.WorkerServiceScope, ConnectorState: row.ConnectorState, ConnectorGeneration: uint64(row.ConnectorGeneration)}
 	if row.RuntimeDiagnosticsObservedAt.Valid {

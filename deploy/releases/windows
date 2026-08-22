@@ -8,7 +8,7 @@ $role = if ('02468BDFHJLNPRTVXZ'.Contains($first)) { 'host' } else { 'client' }
 $name = $env:PAPERBOAT_MACHINE_NAME
 if ([string]::IsNullOrWhiteSpace($server) -or [string]::IsNullOrWhiteSpace($token)) { throw 'Paperboat enrollment command is missing its one-time credential.' }
 if ($role -notin @('host','client')) { throw 'Paperboat enrollment role must be host or client.' }
-$setupMode = if ($role -eq 'client') { 'receive' } else { 'host' }
+$setupMode = $role
 $arch = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'arm64' } else { 'amd64' }
 $repo = if ($env:PAPERBOAT_GITHUB_REPOSITORY) { $env:PAPERBOAT_GITHUB_REPOSITORY } else { 'pinksaucepasta/paperboat-cli' }
 $current = (Invoke-WebRequest -UseBasicParsing "$server/current.json").Content | ConvertFrom-Json
@@ -39,5 +39,5 @@ $existingHash = if (Test-Path -LiteralPath $exe -PathType Leaf) { (Get-FileHash 
 if ($existingHash -ne $expected.ToLowerInvariant()) { Download-ReleaseFile "$releaseBase/$asset" $exe }
 $actual = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLowerInvariant()
 if ($actual -ne $expected.ToLowerInvariant()) { throw "Release checksum verification failed for $asset." }
-& $exe pair --server $server --enrollment-token $token --name $name "--setup-mode=$setupMode" --accept-beta-platform
+& $exe pair --server $server --enrollment-token $token --name $name "--setup-mode=$setupMode"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

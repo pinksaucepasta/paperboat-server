@@ -136,22 +136,6 @@ func TestNewDefaultsUserMachineOfflineTimeout(t *testing.T) {
 	}
 }
 
-func TestWindowsARM64RequiresExplicitBetaAcceptance(t *testing.T) {
-	if !isUnacceptedBetaPlatform("windows", "arm64", false) {
-		t.Fatal("Windows arm64 enrollment was accepted without beta consent")
-	}
-	for _, value := range []struct {
-		platform, architecture string
-		accepted               bool
-	}{
-		{"windows", "arm64", true}, {"windows", "amd64", false}, {"linux", "arm64", false}, {"darwin", "arm64", false},
-	} {
-		if isUnacceptedBetaPlatform(value.platform, value.architecture, value.accepted) {
-			t.Fatalf("unexpected beta rejection: %+v", value)
-		}
-	}
-}
-
 func TestMachineArchitectureIsExactAndPortable(t *testing.T) {
 	for _, value := range []string{"amd64", "AMD64", " arm64 "} {
 		if !validMachineArchitecture(value) {
