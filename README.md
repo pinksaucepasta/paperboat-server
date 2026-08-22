@@ -48,11 +48,22 @@ external: set `PAPERBOAT_DATABASE_DSN` to its connection string. Start from
 Release container tags use `YYYY.MM.DD.X`. Run `tools/release-version.sh next`, create
 that exact tag without a `v` prefix, and push it.
 
-The server image contains only `paperboat-server`. Mount the exported, public release bundle at
-`PAPERBOAT_RELEASE_DIRECTORY`. The server exposes `/install`, `/current.json`, and the read-only `/tuf/`
-repository from `PAPERBOAT_RELEASE_BASE_URL` (or the public base URL when omitted). Atomic `current.json` promotion selects the
-release for new machine installations without a server restart. The server never receives TUF
-signing keys or signing state.
+The server image contains only `paperboat-server`. `PAPERBOAT_RELEASES_ROOT_PATH` is the
+host release root and defaults to `/opt/paperboat/releases`. Compose mounts that parent
+directory read-only at `/srv/paperboat-releases`; the server reads the active release from
+the fixed Compose value `PAPERBOAT_RELEASE_DIRECTORY=/srv/paperboat-releases/current`.
+Existing deployments may temporarily keep the legacy variable name
+`PAPERBOAT_RELEASES_PATH`, but its value must be changed to the parent
+`/opt/paperboat/releases`, not the old `/opt/paperboat/releases/current` child. The
+canonical variable is `PAPERBOAT_RELEASES_ROOT_PATH` and it takes precedence.
+
+The release publisher validates the parent mount and atomically exchanges the complete
+`current` directory only after staged consumer verification. Because the server resolves
+files through `current` for every request, `/install`, `/current.json`, and `/tuf/` switch
+together without restarting the container. Do not bind-mount the `current` child directly:
+Docker would keep serving its old inode after an exchange. The server never receives TUF
+signing keys or signing state. Release URLs use `PAPERBOAT_RELEASE_BASE_URL` (or the public
+base URL when omitted).
 
 The server exposes health/readiness, authentication, billing, usage, project, environment,
 and config-repository APIs. See [docs/api.md](docs/api.md) and
@@ -117,7 +128,8 @@ Common environment overrides:
 - `PAPERBOAT_FLY_HOSTED_SSH_USER`
 - `PAPERBOAT_FLY_HOSTED_SSH_PORT`
 - `PAPERBOAT_FLY_OPERATION_TIMEOUT`
-- `PAPERBOAT_RELEASE_DIRECTORY`
+- `PAPERBOAT_RELEASES_ROOT_PATH` (Compose host release root; legacy `PAPERBOAT_RELEASES_PATH` is a parent-path-only fallback)
+- `PAPERBOAT_RELEASE_DIRECTORY` (fixed to `/srv/paperboat-releases/current` by Compose; configurable only for non-Compose deployments)
 - `PAPERBOAT_RELEASE_BASE_URL`
 - `PAPERBOAT_PREVIEW_BASE_DOMAIN`
 - `PAPERBOAT_PREVIEW_IDENTITY_KEY` or `PAPERBOAT_PREVIEW_IDENTITY_KEY_FILE`

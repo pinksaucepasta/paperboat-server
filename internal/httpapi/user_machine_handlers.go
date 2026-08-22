@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -202,16 +203,22 @@ func userMachineEnrollmentRetry(service *usermachines.Service) http.HandlerFunc 
 	}
 }
 
-func userMachineInstallationConsume(service *usermachines.Service) http.HandlerFunc {
+type userMachineInstallationConsumer interface {
+	ConsumeInstallationForIdentityState(context.Context, string, string, bool) (json.RawMessage, error)
+}
+
+func userMachineInstallationConsume(service userMachineInstallationConsumer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Verifier string `json:"verifier"`
+			Verifier          string `json:"verifier"`
+			PublicIdentityKey string `json:"public_identity_key"`
+			RuntimeEnrolled   bool   `json:"runtime_enrolled"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON.")
 			return
 		}
-		material, err := service.ConsumeInstallation(r.Context(), body.Verifier)
+		material, err := service.ConsumeInstallationForIdentityState(r.Context(), body.Verifier, body.PublicIdentityKey, body.RuntimeEnrolled)
 		if err != nil {
 			switch {
 			case errors.Is(err, usermachines.ErrInstallationPending):

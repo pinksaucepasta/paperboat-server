@@ -178,8 +178,12 @@ func (s *EnrollmentService) ExchangeHostedWorkloadIdentity(ctx context.Context, 
 }
 
 func (s *EnrollmentService) issueActiveHelperIdentity(ctx context.Context, helper dbsqlc.ControlHelper) (HelperIdentity, error) {
+	return s.issueHelperIdentity(ctx, s.store.Queries(), helper)
+}
+
+func (s *EnrollmentService) issueHelperIdentity(ctx context.Context, queries *dbsqlc.Queries, helper dbsqlc.ControlHelper) (HelperIdentity, error) {
 	now := s.clock().UTC()
-	machine, err := s.store.Queries().GetCanonicalMachineForEnvironment(ctx, helper.EnvironmentID)
+	machine, err := queries.GetCanonicalMachineForEnvironment(ctx, helper.EnvironmentID)
 	if err != nil {
 		return HelperIdentity{}, err
 	}
@@ -333,7 +337,25 @@ func (s *EnrollmentService) Exchange(ctx context.Context, credential string, pub
 	err = s.store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		enrollment, err := tx.Queries().ConsumeControlHelperEnrollment(ctx, dbsqlc.ConsumeControlHelperEnrollmentParams{ID: claims.EnrollmentID, JtiHash: jtiHash[:], Now: sql.NullTime{Time: now, Valid: true}})
 		if errors.Is(err, sql.ErrNoRows) {
-			return ErrEnrollmentUsed
+			// The exchange transaction may have committed after the client sent
+			// the request but before it received or persisted the identity. A
+			// retry with the same enrollment credential is recoverable only when
+			// it presents the exact public key that activated that helper and the
+			// environment is still active. A different key remains a replay.
+			replayed, replayErr := tx.Queries().GetConsumedControlHelperEnrollmentForReplay(ctx, dbsqlc.GetConsumedControlHelperEnrollmentForReplayParams{ID: claims.EnrollmentID, JtiHash: jtiHash[:], Now: now})
+			if replayErr != nil {
+				if errors.Is(replayErr, sql.ErrNoRows) {
+					return ErrEnrollmentUsed
+				}
+				return errors.Join(replayErr, errEnrollmentConsume)
+			}
+			helper, helperErr := tx.Queries().GetActiveControlHelper(ctx, dbsqlc.GetActiveControlHelperParams{ID: replayed.HelperID, EnvironmentID: replayed.EnvironmentID})
+			if helperErr != nil || !bytes.Equal(helper.PublicKey, publicKey) || !helper.KeyThumbprint.Valid {
+				return ErrEnrollmentUsed
+			}
+			var identityErr error
+			result, identityErr = s.issueHelperIdentity(ctx, tx.Queries(), helper)
+			return identityErr
 		}
 		if err != nil {
 			return errors.Join(err, errEnrollmentConsume)

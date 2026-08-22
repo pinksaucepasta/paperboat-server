@@ -230,6 +230,68 @@ func (q *Queries) ApproveUserMachinePairing(ctx context.Context, arg ApproveUser
 	return result.RowsAffected(), nil
 }
 
+const beginUserMachineInstallationRecovery = `-- name: BeginUserMachineInstallationRecovery :one
+UPDATE user_machine_pairings
+SET installation_recovery_operation_key = coalesce(installation_recovery_operation_key, $1),
+    expires_at = CASE WHEN installation_recovery_operation_key IS NULL THEN $2 ELSE expires_at END,
+    updated_at = now()
+WHERE id = $3
+  AND verifier_hash = $4
+  AND public_identity_key = $5
+  AND state = 'consumed'
+  AND installation_config_consumed_at IS NOT NULL
+  AND installation_config_consumed_at > $6
+RETURNING id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port, can_reuse_runtime_identity, installation_recovery_operation_key
+`
+
+type BeginUserMachineInstallationRecoveryParams struct {
+	OperationKey      sql.NullString
+	ExpiresAt         time.Time
+	ID                string
+	VerifierHash      []byte
+	PublicIdentityKey string
+	RecoveryAfter     sql.NullTime
+}
+
+func (q *Queries) BeginUserMachineInstallationRecovery(ctx context.Context, arg BeginUserMachineInstallationRecoveryParams) (UserMachinePairing, error) {
+	row := q.db.QueryRow(ctx, beginUserMachineInstallationRecovery,
+		arg.OperationKey,
+		arg.ExpiresAt,
+		arg.ID,
+		arg.VerifierHash,
+		arg.PublicIdentityKey,
+		arg.RecoveryAfter,
+	)
+	var i UserMachinePairing
+	err := row.Scan(
+		&i.ID,
+		&i.VerifierHash,
+		&i.UserCode,
+		&i.RequestedDisplayName,
+		&i.Platform,
+		&i.Architecture,
+		&i.WorkspaceRoot,
+		&i.RuntimeVersions,
+		&i.State,
+		&i.ApprovedByUserID,
+		&i.UserMachineID,
+		&i.InstallationConfigCiphertext,
+		&i.InstallationConfigNonce,
+		&i.InstallationConfigConsumedAt,
+		&i.ExpiresAt,
+		&i.ApprovedAt,
+		&i.DeniedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.PublicIdentityKey,
+		&i.SshUser,
+		&i.SshPort,
+		&i.CanReuseRuntimeIdentity,
+		&i.InstallationRecoveryOperationKey,
+	)
+	return i, err
+}
+
 const bindCanonicalMachineIdentity = `-- name: BindCanonicalMachineIdentity :one
 UPDATE user_machines
 SET public_identity_key = $1,
@@ -417,6 +479,44 @@ func (q *Queries) CloseUserMachineTerminalSession(ctx context.Context, arg Close
 	return result.RowsAffected(), nil
 }
 
+const completeUserMachineInstallationRecovery = `-- name: CompleteUserMachineInstallationRecovery :execrows
+UPDATE user_machine_pairings
+SET installation_config_ciphertext = $1,
+    expires_at = $2,
+    installation_recovery_operation_key = NULL,
+    updated_at = now()
+WHERE id = $3
+  AND verifier_hash = $4
+  AND public_identity_key = $5
+  AND state = 'consumed'
+  AND installation_config_consumed_at IS NOT NULL
+  AND installation_recovery_operation_key = $6
+`
+
+type CompleteUserMachineInstallationRecoveryParams struct {
+	Ciphertext        []byte
+	ExpiresAt         time.Time
+	ID                string
+	VerifierHash      []byte
+	PublicIdentityKey string
+	OperationKey      sql.NullString
+}
+
+func (q *Queries) CompleteUserMachineInstallationRecovery(ctx context.Context, arg CompleteUserMachineInstallationRecoveryParams) (int64, error) {
+	result, err := q.db.Exec(ctx, completeUserMachineInstallationRecovery,
+		arg.Ciphertext,
+		arg.ExpiresAt,
+		arg.ID,
+		arg.VerifierHash,
+		arg.PublicIdentityKey,
+		arg.OperationKey,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const consumeUserMachineIncludedBandwidth = `-- name: ConsumeUserMachineIncludedBandwidth :execrows
 UPDATE user_machine_bandwidth_periods
 SET consumed_included_bytes = consumed_included_bytes + $1, updated_at = now()
@@ -442,6 +542,7 @@ WITH consumed AS (
   SET state = 'consumed', installation_config_consumed_at = now(), updated_at = now()
   WHERE verifier_hash = $1
     AND state = 'approved'
+    AND ($2 = '' OR public_identity_key = $2)
     AND installation_config_ciphertext IS NOT NULL
     AND installation_config_consumed_at IS NULL
     AND expires_at > now()
@@ -454,8 +555,13 @@ WITH consumed AS (
 SELECT installation_config_ciphertext FROM consumed
 `
 
-func (q *Queries) ConsumeUserMachineInstallationConfig(ctx context.Context, verifierHash []byte) ([]byte, error) {
-	row := q.db.QueryRow(ctx, consumeUserMachineInstallationConfig, verifierHash)
+type ConsumeUserMachineInstallationConfigParams struct {
+	VerifierHash      []byte
+	PublicIdentityKey interface{}
+}
+
+func (q *Queries) ConsumeUserMachineInstallationConfig(ctx context.Context, arg ConsumeUserMachineInstallationConfigParams) ([]byte, error) {
+	row := q.db.QueryRow(ctx, consumeUserMachineInstallationConfig, arg.VerifierHash, arg.PublicIdentityKey)
 	var installation_config_ciphertext []byte
 	err := row.Scan(&installation_config_ciphertext)
 	return installation_config_ciphertext, err
@@ -927,7 +1033,7 @@ INSERT INTO user_machine_pairings (
   $5, $6, $7, $8, $9,
   $10, $11, $12,
   $13
-) RETURNING id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port, can_reuse_runtime_identity
+) RETURNING id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port, can_reuse_runtime_identity, installation_recovery_operation_key
 `
 
 type CreateUserMachinePairingParams struct {
@@ -987,6 +1093,7 @@ func (q *Queries) CreateUserMachinePairing(ctx context.Context, arg CreateUserMa
 		&i.SshUser,
 		&i.SshPort,
 		&i.CanReuseRuntimeIdentity,
+		&i.InstallationRecoveryOperationKey,
 	)
 	return i, err
 }
@@ -2177,8 +2284,37 @@ func (q *Queries) GetUserMachineIDForRoute(ctx context.Context, providerRouteRou
 	return id, err
 }
 
+const getUserMachineInstallationConfigForReplay = `-- name: GetUserMachineInstallationConfigForReplay :one
+SELECT pairing.installation_config_ciphertext
+FROM user_machine_pairings AS pairing
+LEFT JOIN user_machine_enrollments AS enrollment
+  ON enrollment.pairing_id = pairing.id
+WHERE pairing.verifier_hash = $1
+  AND ($2 = '' OR pairing.public_identity_key = $2)
+  AND pairing.state = 'consumed'
+  AND pairing.installation_config_ciphertext IS NOT NULL
+  AND pairing.installation_config_consumed_at IS NOT NULL
+  AND pairing.installation_recovery_operation_key IS NULL
+  AND pairing.expires_at > $3
+  AND (enrollment.id IS NULL OR enrollment.state IN ('material_issued','installing','connecting'))
+FOR UPDATE OF pairing
+`
+
+type GetUserMachineInstallationConfigForReplayParams struct {
+	VerifierHash      []byte
+	PublicIdentityKey interface{}
+	Now               time.Time
+}
+
+func (q *Queries) GetUserMachineInstallationConfigForReplay(ctx context.Context, arg GetUserMachineInstallationConfigForReplayParams) ([]byte, error) {
+	row := q.db.QueryRow(ctx, getUserMachineInstallationConfigForReplay, arg.VerifierHash, arg.PublicIdentityKey, arg.Now)
+	var installation_config_ciphertext []byte
+	err := row.Scan(&installation_config_ciphertext)
+	return installation_config_ciphertext, err
+}
+
 const getUserMachinePairingByID = `-- name: GetUserMachinePairingByID :one
-SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port, can_reuse_runtime_identity FROM user_machine_pairings WHERE id = $1
+SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port, can_reuse_runtime_identity, installation_recovery_operation_key FROM user_machine_pairings WHERE id = $1
 `
 
 func (q *Queries) GetUserMachinePairingByID(ctx context.Context, id string) (UserMachinePairing, error) {
@@ -2208,12 +2344,13 @@ func (q *Queries) GetUserMachinePairingByID(ctx context.Context, id string) (Use
 		&i.SshUser,
 		&i.SshPort,
 		&i.CanReuseRuntimeIdentity,
+		&i.InstallationRecoveryOperationKey,
 	)
 	return i, err
 }
 
 const getUserMachinePairingForCode = `-- name: GetUserMachinePairingForCode :one
-SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port, can_reuse_runtime_identity FROM user_machine_pairings
+SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port, can_reuse_runtime_identity, installation_recovery_operation_key FROM user_machine_pairings
 WHERE user_code = $1 FOR UPDATE
 `
 
@@ -2244,12 +2381,13 @@ func (q *Queries) GetUserMachinePairingForCode(ctx context.Context, userCode str
 		&i.SshUser,
 		&i.SshPort,
 		&i.CanReuseRuntimeIdentity,
+		&i.InstallationRecoveryOperationKey,
 	)
 	return i, err
 }
 
 const getUserMachinePairingForVerifier = `-- name: GetUserMachinePairingForVerifier :one
-SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port, can_reuse_runtime_identity FROM user_machine_pairings
+SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port, can_reuse_runtime_identity, installation_recovery_operation_key FROM user_machine_pairings
 WHERE verifier_hash = $1 FOR UPDATE
 `
 
@@ -2280,6 +2418,7 @@ func (q *Queries) GetUserMachinePairingForVerifier(ctx context.Context, verifier
 		&i.SshUser,
 		&i.SshPort,
 		&i.CanReuseRuntimeIdentity,
+		&i.InstallationRecoveryOperationKey,
 	)
 	return i, err
 }
@@ -3489,6 +3628,26 @@ type RenameUserMachineTerminalSessionParams struct {
 
 func (q *Queries) RenameUserMachineTerminalSession(ctx context.Context, arg RenameUserMachineTerminalSessionParams) (int64, error) {
 	result, err := q.db.Exec(ctx, renameUserMachineTerminalSession, arg.Name, arg.UserMachineID, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const renewUserMachineEnrollmentRecovery = `-- name: RenewUserMachineEnrollmentRecovery :execrows
+UPDATE user_machine_enrollments
+SET expires_at = $1, updated_at = now()
+WHERE pairing_id = $2
+  AND state IN ('material_issued','installing','connecting')
+`
+
+type RenewUserMachineEnrollmentRecoveryParams struct {
+	ExpiresAt time.Time
+	PairingID sql.NullString
+}
+
+func (q *Queries) RenewUserMachineEnrollmentRecovery(ctx context.Context, arg RenewUserMachineEnrollmentRecoveryParams) (int64, error) {
+	result, err := q.db.Exec(ctx, renewUserMachineEnrollmentRecovery, arg.ExpiresAt, arg.PairingID)
 	if err != nil {
 		return 0, err
 	}

@@ -312,6 +312,22 @@ func (q *Queries) GetClientRefreshTokenForUpdate(ctx context.Context, stringToAr
 	return i, err
 }
 
+const getClientSessionForInstallationRecovery = `-- name: GetClientSessionForInstallationRecovery :one
+SELECT user_id,client_id FROM cli_client_sessions WHERE id=$1 AND state='active' FOR UPDATE
+`
+
+type GetClientSessionForInstallationRecoveryRow struct {
+	UserID   string
+	ClientID string
+}
+
+func (q *Queries) GetClientSessionForInstallationRecovery(ctx context.Context, id string) (GetClientSessionForInstallationRecoveryRow, error) {
+	row := q.db.QueryRow(ctx, getClientSessionForInstallationRecovery, id)
+	var i GetClientSessionForInstallationRecoveryRow
+	err := row.Scan(&i.UserID, &i.ClientID)
+	return i, err
+}
+
 const getClientSessionIdentity = `-- name: GetClientSessionIdentity :one
 SELECT user_id,client_id FROM cli_client_sessions WHERE id=$1
 `

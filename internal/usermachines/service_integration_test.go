@@ -1,16 +1,20 @@
 package usermachines
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"reflect"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -748,8 +752,12 @@ func TestInstallationMaterialIsSingleUseAndExpiryBound(t *testing.T) {
 	if err != nil || string(material) != `{"bootstrap":"ok"}` {
 		t.Fatalf("material=%s err=%v", material, err)
 	}
-	if _, err := service.ConsumeInstallation(ctx, verifier); !errors.Is(err, ErrInstallationUnavailable) {
-		t.Fatalf("replay error=%v", err)
+	replayed, err := service.ConsumeInstallation(ctx, verifier)
+	if err != nil || string(replayed) != string(material) {
+		t.Fatalf("same-verifier recovery material=%s err=%v", replayed, err)
+	}
+	if _, err := service.ConsumeInstallation(ctx, verifier+"-wrong"); !errors.Is(err, ErrInstallationUnavailable) {
+		t.Fatalf("different-verifier replay error=%v", err)
 	}
 	var enrollmentState string
 	if err := store.SQL().QueryRowContext(ctx, `SELECT state FROM paperboat.user_machine_enrollments WHERE id=$1`, start.ID).Scan(&enrollmentState); err != nil {
@@ -757,6 +765,12 @@ func TestInstallationMaterialIsSingleUseAndExpiryBound(t *testing.T) {
 	}
 	if enrollmentState != "installing" {
 		t.Fatalf("enrollment state=%q", enrollmentState)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machine_enrollments SET state='ready' WHERE id=$1`, start.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ConsumeInstallation(ctx, verifier); !errors.Is(err, ErrInstallationUnavailable) {
+		t.Fatalf("completed enrollment replay error=%v", err)
 	}
 
 	second, err := service.StartEnrollment(ctx, userID, "idem-install-expired-"+suffix)
@@ -781,6 +795,209 @@ func TestInstallationMaterialIsSingleUseAndExpiryBound(t *testing.T) {
 	}
 	if _, err := service.ConsumeInstallation(ctx, expiredVerifier); !errors.Is(err, ErrInstallationExpired) {
 		t.Fatalf("expired material error=%v", err)
+	}
+}
+
+func TestExpiredInstallationRecoveryIsCrashSafeConcurrentAndIdentityBound(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID := "usr_install_recovery_" + suffix
+	publicIdentityDigest := sha256.Sum256([]byte("install-recovery-identity-" + suffix))
+	publicIdentityKey := base64.RawURLEncoding.EncodeToString(publicIdentityDigest[:])
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_install_recovery_"+suffix, "install-recovery-"+suffix+"@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machine_entitlements (id,user_id,provider_subscription_id,product_code,state,seat_quantity,allowance_bytes,current_period_start,current_period_end) VALUES ($1,$2,$3,'connected-test','active',1,1048576,now()-interval '1 hour',now()+interval '1 hour')`, "ent_install_recovery_"+suffix, userID, "sub_install_recovery_"+suffix); err != nil {
+		t.Fatal(err)
+	}
+	service := New(store, audit.NewWriter(store), Policy{PairingLifetime: 10 * time.Minute, AllowedPlatforms: []string{"windows"}}, testSeatAuthorizer{})
+	service.ConfigureProvisioning(access.FakeClient{}, "test-install-recovery-key")
+	service.ConfigureAccess(nil, "https://api.paperboat.test", 5*time.Minute)
+	service.ConfigureOneShotCLIAuth("paperboat-cli", []string{"account:read", "projects:connect", "session:refresh"}, 5*time.Minute, 24*time.Hour, "test-cli-hash-key")
+	if err := service.ConfigureRuntimeRoute("runtime.example.test", 38080); err != nil {
+		t.Fatal(err)
+	}
+	configureSignedTestArtifact(t, service)
+	var grantMu sync.Mutex
+	grantCalls := map[string]int{}
+	service.ConfigureHelperEnrollment(func(_ context.Context, _ string, operationKey, environmentID string, _ time.Duration) (HelperEnrollmentGrant, error) {
+		grantMu.Lock()
+		grantCalls[operationKey]++
+		grantMu.Unlock()
+		kind := "initial"
+		if strings.HasPrefix(operationKey, "byod-recovery:") {
+			kind = "recovered"
+		}
+		if kind == "initial" {
+			if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_helpers (id,environment_id,state) VALUES ($1,$2,'active') ON CONFLICT (id) DO NOTHING`, "helper_initial_"+suffix, environmentID); err != nil {
+				return HelperEnrollmentGrant{}, err
+			}
+		}
+		return HelperEnrollmentGrant{EnrollmentID: "henr_" + kind + "_" + suffix, HelperID: "helper_" + kind + "_" + suffix, Credential: strings.Repeat(kind, 8), ExpiresAt: time.Now().UTC().Add(10 * time.Minute)}, nil
+	})
+	service.ConfigureHelperRecovery(func(_ context.Context, _ string, operationKey, _ string, existingHelperID string, _ time.Duration) (HelperEnrollmentGrant, error) {
+		if existingHelperID != "helper_initial_"+suffix {
+			return HelperEnrollmentGrant{}, ErrInstallationUnavailable
+		}
+		grantMu.Lock()
+		grantCalls[operationKey]++
+		grantMu.Unlock()
+		return HelperEnrollmentGrant{EnrollmentID: "henr_recovered_" + suffix, HelperID: "helper_recovered_" + suffix, Credential: strings.Repeat("recovered", 8), ExpiresAt: time.Now().UTC().Add(10 * time.Minute)}, nil
+	})
+	start, err := service.StartEnrollmentWithOptions(ctx, userID, "idem-install-recovery-"+suffix, EnrollmentOptions{Role: "client", Shell: "powershell"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier := "verifier-install-recovery-" + suffix
+	pairing, err := service.CreatePairing(ctx, PairingInput{EnrollmentToken: start.BootstrapToken, Verifier: verifier, DisplayName: "Victus recovery", Platform: "windows", Architecture: "amd64", WorkspaceRoot: `C:\Users\Pujan`, PublicIdentityKey: publicIdentityKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Approve(ctx, userID, pairing.UserCode); err != nil {
+		t.Fatal(err)
+	}
+	originalBody, err := service.ConsumeInstallationForIdentityState(ctx, verifier, publicIdentityKey, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type recoveryMaterial struct {
+		UserMachineID           string                    `json:"user_machine_id"`
+		UserMachineEnrollmentID string                    `json:"user_machine_enrollment_id"`
+		EnvironmentID           string                    `json:"environment_id"`
+		HelperID                string                    `json:"helper_id"`
+		ReuseIdentity           bool                      `json:"reuse_identity"`
+		ClientSession           installationClientSession `json:"client_session"`
+	}
+	var original recoveryMaterial
+	if err := json.Unmarshal(originalBody, &original); err != nil {
+		t.Fatal(err)
+	}
+	if original.ClientSession.SessionID == "" || original.ClientSession.RefreshToken == "" || original.ClientSession.AccessToken == "" {
+		t.Fatalf("original client session is incomplete: %+v", original.ClientSession)
+	}
+	// A journal that already persisted the runtime identity may recover only
+	// against the exact helper bound into its original signed material. This
+	// path refreshes the CLI access token without issuing a replacement helper.
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machine_pairings
+SET expires_at=now()-interval '1 minute', installation_config_consumed_at=now()-interval '1 hour'
+WHERE id=$1`, pairing.ID); err != nil {
+		t.Fatal(err)
+	}
+	reusedBody, err := service.ConsumeInstallationForIdentityState(ctx, verifier, publicIdentityKey, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reused recoveryMaterial
+	if err := json.Unmarshal(reusedBody, &reused); err != nil {
+		t.Fatal(err)
+	}
+	if reused.HelperID != original.HelperID || !reused.ReuseIdentity {
+		t.Fatalf("runtime-enrolled recovery changed helper binding: original=%+v recovered=%+v", original, reused)
+	}
+	if reused.ClientSession.SessionID != original.ClientSession.SessionID || reused.ClientSession.RefreshToken != original.ClientSession.RefreshToken || reused.ClientSession.AccessToken == original.ClientSession.AccessToken {
+		t.Fatalf("runtime-enrolled recovery client session mismatch: original=%+v recovered=%+v", original.ClientSession, reused.ClientSession)
+	}
+	grantMu.Lock()
+	for operation, calls := range grantCalls {
+		if strings.HasPrefix(operation, "byod-recovery:") && calls != 0 {
+			grantMu.Unlock()
+			t.Fatalf("runtime-enrolled recovery issued helper grant %q %d times", operation, calls)
+		}
+	}
+	grantMu.Unlock()
+	originalBody, original = reusedBody, reused
+	// Simulate a server process dying after BeginUserMachineInstallationRecovery
+	// committed but before it issued or stored replacement material. Every retry
+	// must reuse this operation key and leave old ciphertext intact until swap.
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machine_pairings
+SET expires_at=now()-interval '1 minute', installation_config_consumed_at=now()-interval '1 hour', installation_recovery_operation_key=NULL
+WHERE id=$1`, pairing.ID); err != nil {
+		t.Fatal(err)
+	}
+	storedPairing, err := store.Queries().GetUserMachinePairingByID(ctx, pairing.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveryOperation := installationRecoveryOperationKey(storedPairing.ID, storedPairing.ExpiresAt)
+	begun, err := store.Queries().BeginUserMachineInstallationRecovery(ctx, dbsqlc.BeginUserMachineInstallationRecoveryParams{
+		ID: storedPairing.ID, VerifierHash: storedPairing.VerifierHash, PublicIdentityKey: storedPairing.PublicIdentityKey,
+		OperationKey: sql.NullString{String: recoveryOperation, Valid: true}, RecoveryAfter: sql.NullTime{Time: time.Now().UTC().Add(-installationRecoveryGrace), Valid: true}, ExpiresAt: time.Now().UTC().Add(10 * time.Minute),
+	})
+	if err != nil || !begun.InstallationRecoveryOperationKey.Valid || begun.InstallationRecoveryOperationKey.String != recoveryOperation {
+		t.Fatalf("begin recovery pairing=%+v err=%v", begun, err)
+	}
+	type result struct {
+		body json.RawMessage
+		err  error
+	}
+	startGate := make(chan struct{})
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			<-startGate
+			body, recoverErr := service.ConsumeInstallationForIdentityState(ctx, verifier, publicIdentityKey, false)
+			results <- result{body: body, err: recoverErr}
+		}()
+	}
+	close(startGate)
+	first, second := <-results, <-results
+	if first.err != nil || second.err != nil {
+		t.Fatalf("concurrent recovery errors: %v / %v", first.err, second.err)
+	}
+	if !bytes.Equal(first.body, second.body) {
+		t.Fatalf("concurrent recovery returned different committed material")
+	}
+	var recovered recoveryMaterial
+	if err := json.Unmarshal(first.body, &recovered); err != nil {
+		t.Fatal(err)
+	}
+	if recovered.UserMachineID != original.UserMachineID || recovered.UserMachineEnrollmentID != original.UserMachineEnrollmentID || recovered.EnvironmentID != original.EnvironmentID {
+		t.Fatalf("recovery changed machine binding: original=%+v recovered=%+v", original, recovered)
+	}
+	if recovered.HelperID == original.HelperID {
+		t.Fatal("runtime-not-enrolled recovery did not rotate the helper enrollment")
+	}
+	if recovered.ClientSession.SessionID != original.ClientSession.SessionID || recovered.ClientSession.RefreshToken != original.ClientSession.RefreshToken || recovered.ClientSession.AccessToken == original.ClientSession.AccessToken {
+		t.Fatalf("recovery client session mismatch: original=%+v recovered=%+v", original.ClientSession, recovered.ClientSession)
+	}
+	grantMu.Lock()
+	recoveryGrantCalls := grantCalls[recoveryOperation]
+	if recoveryGrantCalls < 1 || recoveryGrantCalls > 2 {
+		t.Fatalf("recovery grant calls=%d, want one or two idempotent calls", recoveryGrantCalls)
+	}
+	for operation, calls := range grantCalls {
+		if strings.HasPrefix(operation, "byod-recovery:") && operation != recoveryOperation && calls != 0 {
+			t.Fatalf("unexpected recovery operation %q called %d times", operation, calls)
+		}
+	}
+	grantMu.Unlock()
+	var operation sql.NullString
+	var activeAccessTokens, revokedAccessTokens int
+	if err := store.SQL().QueryRowContext(ctx, `SELECT installation_recovery_operation_key FROM paperboat.user_machine_pairings WHERE id=$1`, pairing.ID).Scan(&operation); err != nil {
+		t.Fatal(err)
+	}
+	if operation.Valid {
+		t.Fatalf("recovery operation was not cleared: %q", operation.String)
+	}
+	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FILTER (WHERE revoked_at IS NULL),count(*) FILTER (WHERE revoked_at IS NOT NULL) FROM paperboat.cli_access_tokens WHERE cli_client_session_id=$1`, original.ClientSession.SessionID).Scan(&activeAccessTokens, &revokedAccessTokens); err != nil {
+		t.Fatal(err)
+	}
+	if activeAccessTokens != 1 || revokedAccessTokens < 1 {
+		t.Fatalf("access token states active=%d revoked=%d", activeAccessTokens, revokedAccessTokens)
+	}
+	replayed, err := service.ConsumeInstallationForIdentityState(ctx, verifier, publicIdentityKey, false)
+	if err != nil || !bytes.Equal(replayed, first.body) {
+		t.Fatalf("recovery replay changed material: %s err=%v", replayed, err)
+	}
+	if _, err := service.ConsumeInstallationForIdentityState(ctx, verifier, publicIdentityKey+"wrong", false); !errors.Is(err, ErrInstallationUnavailable) {
+		t.Fatalf("wrong identity recovery error=%v", err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machine_pairings SET expires_at=now()-interval '1 minute',installation_config_consumed_at=now()-interval '25 hours' WHERE id=$1`, pairing.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ConsumeInstallationForIdentityState(ctx, verifier, publicIdentityKey, false); !errors.Is(err, ErrInstallationExpired) {
+		t.Fatalf("recovery beyond fixed grace error=%v", err)
 	}
 }
 

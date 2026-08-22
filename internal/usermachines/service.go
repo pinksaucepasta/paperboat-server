@@ -74,19 +74,63 @@ var (
 var terminalSessionNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 var execOperationIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`)
 
+// A consumed pairing may be recovered only for a short, bounded period after
+// its normal expiry. The local journal and the original machine public key
+// are required for that recovery; an old verifier is never an unbounded
+// installation credential.
+const installationRecoveryGrace = 24 * time.Hour
+
+func installationRecoveryOperationKey(pairingID string, expiresAt time.Time) string {
+	return fmt.Sprintf("byod-recovery:%s:%d", pairingID, expiresAt.UTC().UnixNano())
+}
+
 type SeatAuthorizer interface {
 	ReserveUserMachineSeat(context.Context, *db.Tx, string) error
 }
 
 func (s *Service) ConsumeInstallation(ctx context.Context, verifier string) (json.RawMessage, error) {
+	return s.consumeInstallation(ctx, verifier, "", false)
+}
+
+// ConsumeInstallationForIdentity is the current bootstrap exchange. The
+// identity is checked before consuming or replaying material and is also the
+// binding used by the post-expiry recovery path.
+func (s *Service) ConsumeInstallationForIdentity(ctx context.Context, verifier, publicIdentityKey string) (json.RawMessage, error) {
+	return s.consumeInstallation(ctx, verifier, strings.TrimSpace(publicIdentityKey), false)
+}
+
+// ConsumeInstallationForIdentityState is the verifier-bound recovery exchange.
+// runtimeEnrolled is a journal assertion: only a machine that has already
+// persisted its runtime identity may reuse the active server helper.
+func (s *Service) ConsumeInstallationForIdentityState(ctx context.Context, verifier, publicIdentityKey string, runtimeEnrolled bool) (json.RawMessage, error) {
+	return s.consumeInstallation(ctx, verifier, strings.TrimSpace(publicIdentityKey), runtimeEnrolled)
+}
+
+func (s *Service) consumeInstallation(ctx context.Context, verifier, publicIdentityKey string, runtimeEnrolled bool) (json.RawMessage, error) {
 	if strings.TrimSpace(verifier) == "" || strings.TrimSpace(s.encryptionKey) == "" {
 		return nil, ErrInstallationUnavailable
 	}
 	hash := sha256.Sum256([]byte(verifier))
+	now := s.now().UTC()
 	var ciphertext []byte
+	var recoveryPairing dbsqlc.UserMachinePairing
+	var recoveryUserID string
 	err := s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		value, err := tx.Queries().ConsumeUserMachineInstallationConfig(ctx, hash[:])
+		value, err := tx.Queries().ConsumeUserMachineInstallationConfig(ctx, dbsqlc.ConsumeUserMachineInstallationConfigParams{VerifierHash: hash[:], PublicIdentityKey: publicIdentityKey})
 		if errors.Is(err, sql.ErrNoRows) {
+			// A successful response can be lost after the database transaction
+			// commits but before the installer persists its local resume state.
+			// Permit the same verifier to recover the encrypted material while
+			// its enrollment is still installing. The identity binding is
+			// optional only for legacy clients during the original expiry window.
+			value, replayErr := tx.Queries().GetUserMachineInstallationConfigForReplay(ctx, dbsqlc.GetUserMachineInstallationConfigForReplayParams{VerifierHash: hash[:], PublicIdentityKey: publicIdentityKey, Now: now})
+			if replayErr == nil {
+				ciphertext = value
+				return nil
+			}
+			if !errors.Is(replayErr, sql.ErrNoRows) {
+				return replayErr
+			}
 			pairing, lookupErr := tx.Queries().GetUserMachinePairingForVerifier(ctx, hash[:])
 			if errors.Is(lookupErr, sql.ErrNoRows) {
 				return ErrInstallationUnavailable
@@ -97,11 +141,61 @@ func (s *Service) ConsumeInstallation(ctx context.Context, verifier string) (jso
 			if pairing.State == "denied" {
 				return ErrInstallationDenied
 			}
-			if pairing.State == "expired" || !time.Now().UTC().Before(pairing.ExpiresAt) {
+			if pairing.State == "expired" {
 				return ErrInstallationExpired
 			}
 			if pairing.State == "pending" {
+				if !now.Before(pairing.ExpiresAt) {
+					return ErrInstallationExpired
+				}
 				return ErrInstallationPending
+			}
+			if pairing.State == "consumed" && publicIdentityKey != "" && pairing.PublicIdentityKey == publicIdentityKey && pairing.InstallationConfigConsumedAt.Valid && pairing.InstallationConfigConsumedAt.Time.After(now.Add(-installationRecoveryGrace)) {
+				enrollment, enrollmentErr := tx.Queries().GetUserMachineEnrollmentForPairingUpdate(ctx, sql.NullString{String: pairing.ID, Valid: true})
+				if enrollmentErr != nil && !errors.Is(enrollmentErr, sql.ErrNoRows) {
+					return enrollmentErr
+				}
+				if enrollmentErr == nil {
+					switch enrollment.State {
+					case "material_issued", "installing", "connecting":
+					default:
+						return ErrInstallationUnavailable
+					}
+					recoveryUserID = enrollment.UserID
+				} else if pairing.ApprovedByUserID.Valid {
+					recoveryUserID = pairing.ApprovedByUserID.String
+				} else {
+					return ErrInstallationUnavailable
+				}
+				recoveryOperationKey := pairing.InstallationRecoveryOperationKey.String
+				if recoveryOperationKey == "" {
+					recoveryOperationKey = installationRecoveryOperationKey(pairing.ID, pairing.ExpiresAt)
+				}
+				recoveryPairing, err = tx.Queries().BeginUserMachineInstallationRecovery(ctx, dbsqlc.BeginUserMachineInstallationRecoveryParams{
+					ID: pairing.ID, VerifierHash: hash[:], PublicIdentityKey: publicIdentityKey,
+					RecoveryAfter: sql.NullTime{Time: now.Add(-installationRecoveryGrace), Valid: true}, OperationKey: sql.NullString{String: recoveryOperationKey, Valid: true},
+					ExpiresAt: now.Add(s.policy.PairingLifetime),
+				})
+				if errors.Is(err, sql.ErrNoRows) {
+					return ErrInstallationExpired
+				}
+				if err != nil {
+					return err
+				}
+				if enrollmentErr == nil {
+					if n, err := tx.Queries().RenewUserMachineEnrollmentRecovery(ctx, dbsqlc.RenewUserMachineEnrollmentRecoveryParams{PairingID: sql.NullString{String: pairing.ID, Valid: true}, ExpiresAt: now.Add(s.policy.PairingLifetime)}); err != nil {
+						return err
+					} else if n != 1 {
+						return ErrInstallationUnavailable
+					}
+				}
+				return nil
+			}
+			if pairing.State == "consumed" && !now.Before(pairing.ExpiresAt) {
+				return ErrInstallationExpired
+			}
+			if !now.Before(pairing.ExpiresAt) {
+				return ErrInstallationExpired
 			}
 			return ErrInstallationUnavailable
 		}
@@ -113,6 +207,17 @@ func (s *Service) ConsumeInstallation(ctx context.Context, verifier string) (jso
 	})
 	if err != nil {
 		return nil, err
+	}
+	if recoveryPairing.ID != "" {
+		machineRow, machineErr := s.db.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: recoveryPairing.UserMachineID.String, UserID: recoveryUserID})
+		if machineErr != nil {
+			return nil, ErrInstallationUnavailable
+		}
+		material, err := s.provisionRecoveredUserMachine(ctx, recoveryUserID, recoveryPairing, mapMachine(machineRow), runtimeEnrolled)
+		if err != nil {
+			return nil, err
+		}
+		return material, nil
 	}
 	plaintext, err := secrets.Decrypt(s.encryptionKey, ciphertext)
 	if err != nil || !json.Valid([]byte(plaintext)) {
@@ -1879,60 +1984,93 @@ func (s *Service) Deny(ctx context.Context, userID, userCode string) error {
 }
 
 func (s *Service) provisionApprovedUserMachine(ctx context.Context, userID, pairingID string, machine UserMachine) error {
+	return s.provisionApprovedUserMachineWithOperation(ctx, userID, pairingID, machine, "")
+}
+
+type installationMaterialBuild struct {
+	plaintext, ciphertext                         []byte
+	cliSessionID, cliAccessToken, cliRefreshToken string
+	existingCLISessionID, refreshedAccessToken    string
+	hasEnrollment                                 bool
+}
+
+type installationClientSession struct {
+	Schema       string `json:"schema"`
+	SessionID    string `json:"session_id"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	TokenType    string `json:"token_type"`
+	ExpiresIn    int    `json:"expires_in"`
+	Scope        string `json:"scope"`
+}
+
+func (s *Service) buildInstallationMaterial(ctx context.Context, userID string, pairing dbsqlc.UserMachinePairing, machine UserMachine, operationKey string, existingClientSession json.RawMessage, reuseRuntimeIdentity bool, expectedHelperID string) (installationMaterialBuild, error) {
 	if strings.TrimSpace(s.encryptionKey) == "" {
-		return errors.New("user-machine provisioning encryption is not configured")
+		return installationMaterialBuild{}, errors.New("user-machine provisioning encryption is not configured")
 	}
 	if s.helperGrant == nil {
-		return ErrProvisioningUnavailable
+		return installationMaterialBuild{}, ErrProvisioningUnavailable
 	}
 	artifact, ok := s.machineArtifact(machine.Platform, machine.Architecture)
 	if !ok {
-		return errors.New("user-machine artifact is unavailable")
+		return installationMaterialBuild{}, errors.New("user-machine artifact is unavailable")
 	}
-	pairing, err := s.db.Queries().GetUserMachinePairingByID(ctx, pairingID)
-	if err != nil {
-		return err
-	}
-	enrollment, err := s.db.Queries().GetUserMachineEnrollmentForPairingUpdate(ctx, sql.NullString{String: pairingID, Valid: true})
+	enrollment, err := s.db.Queries().GetUserMachineEnrollmentForPairingUpdate(ctx, sql.NullString{String: pairing.ID, Valid: true})
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
+		return installationMaterialBuild{}, err
 	}
 	// Identity-based setup-to-pair requests do not create a legacy enrollment
 	// row. The pairing itself remains the durable installation correlation.
-	installationEnrollmentID := pairingID
+	installationEnrollmentID := pairing.ID
 	hasEnrollment := err == nil
 	if err == nil {
 		installationEnrollmentID = enrollment.ID
 	}
+	operationKeyProvided := strings.TrimSpace(operationKey) != ""
+	if !operationKeyProvided {
+		operationKey = "byod-enrollment:" + pairing.ID
+	}
 	var grant HelperEnrollmentGrant
 	reuseIdentity := false
 	if existing, existingErr := s.db.Queries().GetActiveControlHelperForEnvironment(ctx, machine.EnvironmentID); existingErr == nil {
-		if pairing.CanReuseRuntimeIdentity {
+		if reuseRuntimeIdentity {
+			if expectedHelperID != "" && existing.ID != expectedHelperID {
+				return installationMaterialBuild{}, ErrInstallationUnavailable
+			}
 			grant = HelperEnrollmentGrant{HelperID: existing.ID, ExpiresAt: s.now().UTC().Add(10 * time.Minute)}
 			reuseIdentity = true
 		} else {
 			if s.helperRecovery == nil {
-				return ErrProvisioningUnavailable
+				return installationMaterialBuild{}, ErrProvisioningUnavailable
 			}
-			grant, err = s.helperRecovery(ctx, userID, "byod-recovery:"+pairingID, machine.EnvironmentID, existing.ID, 10*time.Minute)
+			if !operationKeyProvided {
+				operationKey = "byod-recovery:" + pairing.ID
+			}
+			grant, err = s.helperRecovery(ctx, userID, operationKey, machine.EnvironmentID, existing.ID, 10*time.Minute)
 			if err != nil {
-				return err
+				return installationMaterialBuild{}, err
 			}
 		}
 	} else if existingErr != nil && !errors.Is(existingErr, sql.ErrNoRows) {
-		return existingErr
+		return installationMaterialBuild{}, existingErr
+	} else if expectedHelperID != "" {
+		// A journal that says the runtime was already enrolled must never be
+		// silently rebound to a newly issued helper. The client will continue
+		// using its persisted identity, so the original helper must still be
+		// active for this recovery generation.
+		return installationMaterialBuild{}, ErrInstallationUnavailable
 	} else {
-		grant, err = s.helperGrant(ctx, userID, "byod-enrollment:"+pairingID, machine.EnvironmentID, 10*time.Minute)
+		grant, err = s.helperGrant(ctx, userID, operationKey, machine.EnvironmentID, 10*time.Minute)
 		if err != nil {
-			return err
+			return installationMaterialBuild{}, err
 		}
 	}
 	var cliSessionID, cliAccessToken, cliRefreshToken string
-	if shouldIssueCLIEnrollmentSession(machine.SetupMode) && s.cliClientID != "" && s.cliScopes != "" && len(s.cliHashKey) > 0 && s.cliAccessLifetime > 0 && s.cliRefreshLifetime > 0 {
+	if len(existingClientSession) == 0 && shouldIssueCLIEnrollmentSession(machine.SetupMode) && s.cliClientID != "" && s.cliScopes != "" && len(s.cliHashKey) > 0 && s.cliAccessLifetime > 0 && s.cliRefreshLifetime > 0 {
 		cliSessionID = newID("cls")
 		cliAccessToken, cliRefreshToken = oneShotToken(32), oneShotToken(32)
 	}
-	material, err := json.Marshal(map[string]any{
+	materialMap := map[string]any{
 		"schema": "paperboat.byod-installation/v1", "user_machine_id": machine.ID, "user_machine_enrollment_id": installationEnrollmentID, "environment_id": machine.EnvironmentID,
 		"control_url": s.issuer, "helper_id": grant.HelperID, "enrollment_id": grant.EnrollmentID,
 		"enrollment_credential": grant.Credential, "reuse_identity": reuseIdentity, "expires_at": grant.ExpiresAt,
@@ -1941,52 +2079,221 @@ func (s *Service) provisionApprovedUserMachine(ctx context.Context, userID, pair
 		"installation_generation": machine.InstallationGeneration,
 		"setup_roles":             machine.SetupRoles,
 		"setup_mode":              machine.SetupMode,
-	})
-	if cliSessionID != "" {
-		var materialMap map[string]any
-		if err := json.Unmarshal(material, &materialMap); err != nil {
-			return err
+	}
+	if len(existingClientSession) > 0 {
+		var session any
+		if err := json.Unmarshal(existingClientSession, &session); err != nil {
+			return installationMaterialBuild{}, ErrInstallationUnavailable
 		}
+		materialMap["client_session"] = session
+	}
+	if cliSessionID != "" {
 		materialMap["client_session"] = map[string]any{
 			"schema": "paperboat.cli-session/v1", "session_id": cliSessionID,
 			"access_token": cliAccessToken, "refresh_token": cliRefreshToken,
 			"token_type": "Bearer", "expires_in": int(s.cliAccessLifetime / time.Second), "scope": s.cliScopes,
 		}
-		material, err = json.Marshal(materialMap)
 	}
+	material, err := json.Marshal(materialMap)
+	if err != nil {
+		return installationMaterialBuild{}, err
+	}
+	ciphertext, err := secrets.Encrypt(s.encryptionKey, string(material))
+	if err != nil {
+		return installationMaterialBuild{}, err
+	}
+	return installationMaterialBuild{plaintext: material, ciphertext: ciphertext, cliSessionID: cliSessionID, cliAccessToken: cliAccessToken, cliRefreshToken: cliRefreshToken, hasEnrollment: hasEnrollment}, nil
+}
+
+func (s *Service) provisionApprovedUserMachineWithOperation(ctx context.Context, userID, pairingID string, machine UserMachine, operationKey string) error {
+	if strings.TrimSpace(s.encryptionKey) == "" {
+		return errors.New("user-machine provisioning encryption is not configured")
+	}
+	if s.helperGrant == nil {
+		return ErrProvisioningUnavailable
+	}
+	pairing, err := s.db.Queries().GetUserMachinePairingByID(ctx, pairingID)
 	if err != nil {
 		return err
 	}
-	ciphertext, err := secrets.Encrypt(s.encryptionKey, string(material))
+	build, err := s.buildInstallationMaterial(ctx, userID, pairing, machine, operationKey, nil, pairing.CanReuseRuntimeIdentity, "")
 	if err != nil {
 		return err
 	}
 	return s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		if cliSessionID != "" {
+		if build.cliSessionID != "" {
 			now := s.now().UTC()
-			if err := tx.Queries().CreateClientSession(ctx, dbsqlc.CreateClientSessionParams{ID: cliSessionID, UserID: userID, ClientID: s.cliClientID, ClientLabel: "Paperboat enrollment: " + machine.DisplayName, DeviceType: "desktop", Os: machine.Platform, Scopes: s.cliScopes, CreatedAt: now, ApprovedAt: now}); err != nil {
+			if err := tx.Queries().CreateClientSession(ctx, dbsqlc.CreateClientSessionParams{ID: build.cliSessionID, UserID: userID, ClientID: s.cliClientID, ClientLabel: "Paperboat enrollment: " + machine.DisplayName, DeviceType: "desktop", Os: machine.Platform, Scopes: s.cliScopes, CreatedAt: now, ApprovedAt: now}); err != nil {
 				return err
 			}
-			if err := tx.Queries().CreateClientAccessToken(ctx, dbsqlc.CreateClientAccessTokenParams{TokenHash: oneShotHash(s.cliHashKey, cliAccessToken), CLIClientSessionID: cliSessionID, ExpiresAt: now.Add(s.cliAccessLifetime), CreatedAt: now}); err != nil {
+			if err := tx.Queries().CreateClientAccessToken(ctx, dbsqlc.CreateClientAccessTokenParams{TokenHash: oneShotHash(s.cliHashKey, build.cliAccessToken), CLIClientSessionID: build.cliSessionID, ExpiresAt: now.Add(s.cliAccessLifetime), CreatedAt: now}); err != nil {
 				return err
 			}
-			if err := tx.Queries().CreateClientRefreshToken(ctx, dbsqlc.CreateClientRefreshTokenParams{TokenHash: oneShotHash(s.cliHashKey, cliRefreshToken), CLIClientSessionID: cliSessionID, ExpiresAt: now.Add(s.cliRefreshLifetime), CreatedAt: now}); err != nil {
+			if err := tx.Queries().CreateClientRefreshToken(ctx, dbsqlc.CreateClientRefreshTokenParams{TokenHash: oneShotHash(s.cliHashKey, build.cliRefreshToken), CLIClientSessionID: build.cliSessionID, ExpiresAt: now.Add(s.cliRefreshLifetime), CreatedAt: now}); err != nil {
 				return err
 			}
 		}
-		n, err := tx.Queries().SetUserMachineInstallationConfig(ctx, dbsqlc.SetUserMachineInstallationConfigParams{ID: pairingID, Ciphertext: ciphertext})
+		n, err := tx.Queries().SetUserMachineInstallationConfig(ctx, dbsqlc.SetUserMachineInstallationConfigParams{ID: pairingID, Ciphertext: build.ciphertext})
 		if err != nil {
 			return err
 		}
 		if n != 1 {
 			return ErrPairingUsed
 		}
-		if !hasEnrollment {
+		if !build.hasEnrollment {
 			return nil
 		}
 		_, err = tx.Queries().MarkUserMachineEnrollmentMaterialIssued(ctx, sql.NullString{String: pairingID, Valid: true})
 		return err
 	})
+}
+
+func (s *Service) provisionRecoveredUserMachine(ctx context.Context, userID string, pairing dbsqlc.UserMachinePairing, machine UserMachine, runtimeEnrolled bool) (json.RawMessage, error) {
+	operationKey := pairing.InstallationRecoveryOperationKey.String
+	if operationKey == "" {
+		return nil, ErrInstallationUnavailable
+	}
+	var existingClientSession json.RawMessage
+	var expectedHelperID string
+	if len(pairing.InstallationConfigCiphertext) > 0 {
+		plaintext, err := secrets.Decrypt(s.encryptionKey, pairing.InstallationConfigCiphertext)
+		if err != nil {
+			return nil, ErrInstallationUnavailable
+		}
+		existingHelperID, err := helperIDFromInstallationMaterial([]byte(plaintext))
+		if err != nil {
+			return nil, ErrInstallationUnavailable
+		}
+		if runtimeEnrolled {
+			// Runtime-enrolled journals are allowed to reuse only the exact
+			// helper identity that was persisted with the old material.
+			// A different active helper would make the returned material fail
+			// the client's binding check and could strand the local runtime.
+			expectedHelperID = existingHelperID
+		}
+		existingClientSession, err = clientSessionFromInstallationMaterial([]byte(plaintext))
+		if err != nil {
+			return nil, ErrInstallationUnavailable
+		}
+	}
+	build, err := s.buildInstallationMaterial(ctx, userID, pairing, machine, operationKey, existingClientSession, runtimeEnrolled, expectedHelperID)
+	if err != nil {
+		return nil, err
+	}
+	if len(existingClientSession) > 0 {
+		var session installationClientSession
+		if err := json.Unmarshal(existingClientSession, &session); err != nil || session.Schema != "paperboat.cli-session/v1" || session.SessionID == "" || session.RefreshToken == "" || s.cliClientID == "" || len(s.cliHashKey) == 0 || s.cliAccessLifetime <= 0 {
+			return nil, ErrInstallationUnavailable
+		}
+		session.AccessToken = oneShotToken(32)
+		session.ExpiresIn = int(s.cliAccessLifetime / time.Second)
+		updatedMaterial, err := replaceInstallationClientSession(build.plaintext, session)
+		if err != nil {
+			return nil, ErrInstallationUnavailable
+		}
+		build.plaintext = updatedMaterial
+		build.ciphertext, err = secrets.Encrypt(s.encryptionKey, string(updatedMaterial))
+		if err != nil {
+			return nil, err
+		}
+		build.existingCLISessionID = session.SessionID
+		build.refreshedAccessToken = session.AccessToken
+	}
+	var completed int64
+	err = s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if build.existingCLISessionID != "" {
+			identity, identityErr := tx.Queries().GetClientSessionForInstallationRecovery(ctx, build.existingCLISessionID)
+			if identityErr != nil || identity.UserID != userID || identity.ClientID != s.cliClientID {
+				return ErrInstallationUnavailable
+			}
+		}
+		var completeErr error
+		completed, completeErr = tx.Queries().CompleteUserMachineInstallationRecovery(ctx, dbsqlc.CompleteUserMachineInstallationRecoveryParams{
+			Ciphertext: build.ciphertext, ExpiresAt: pairing.ExpiresAt, ID: pairing.ID, VerifierHash: pairing.VerifierHash,
+			PublicIdentityKey: pairing.PublicIdentityKey, OperationKey: sql.NullString{String: operationKey, Valid: true},
+		})
+		if completeErr != nil {
+			return completeErr
+		}
+		if completed != 1 {
+			return nil
+		}
+		if build.existingCLISessionID != "" {
+			now := s.now().UTC()
+			if err := tx.Queries().RevokeClientAccessTokens(ctx, dbsqlc.RevokeClientAccessTokensParams{CLIClientSessionID: build.existingCLISessionID, RevokedAt: sql.NullTime{Time: now, Valid: true}}); err != nil {
+				return err
+			}
+			if err := tx.Queries().CreateClientAccessToken(ctx, dbsqlc.CreateClientAccessTokenParams{TokenHash: oneShotHash(s.cliHashKey, build.refreshedAccessToken), CLIClientSessionID: build.existingCLISessionID, ExpiresAt: now.Add(s.cliAccessLifetime), CreatedAt: now}); err != nil {
+				return err
+			}
+		}
+		if build.cliSessionID != "" {
+			now := s.now().UTC()
+			if err := tx.Queries().CreateClientSession(ctx, dbsqlc.CreateClientSessionParams{ID: build.cliSessionID, UserID: userID, ClientID: s.cliClientID, ClientLabel: "Paperboat enrollment: " + machine.DisplayName, DeviceType: "desktop", Os: machine.Platform, Scopes: s.cliScopes, CreatedAt: now, ApprovedAt: now}); err != nil {
+				return err
+			}
+			if err := tx.Queries().CreateClientAccessToken(ctx, dbsqlc.CreateClientAccessTokenParams{TokenHash: oneShotHash(s.cliHashKey, build.cliAccessToken), CLIClientSessionID: build.cliSessionID, ExpiresAt: now.Add(s.cliAccessLifetime), CreatedAt: now}); err != nil {
+				return err
+			}
+			if err := tx.Queries().CreateClientRefreshToken(ctx, dbsqlc.CreateClientRefreshTokenParams{TokenHash: oneShotHash(s.cliHashKey, build.cliRefreshToken), CLIClientSessionID: build.cliSessionID, ExpiresAt: now.Add(s.cliRefreshLifetime), CreatedAt: now}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if completed != 1 {
+		// Another request completed the same recovery generation. Read its
+		// ciphertext and return the winner rather than issuing another CLI
+		// session or helper credential.
+		ciphertext, replayErr := s.db.Queries().GetUserMachineInstallationConfigForReplay(ctx, dbsqlc.GetUserMachineInstallationConfigForReplayParams{VerifierHash: pairing.VerifierHash, PublicIdentityKey: pairing.PublicIdentityKey, Now: s.now().UTC()})
+		if replayErr != nil {
+			return nil, replayErr
+		}
+		plaintext, decryptErr := secrets.Decrypt(s.encryptionKey, ciphertext)
+		if decryptErr != nil || !json.Valid([]byte(plaintext)) {
+			return nil, ErrInstallationUnavailable
+		}
+		return json.RawMessage(plaintext), nil
+	}
+	return json.RawMessage(build.plaintext), nil
+}
+
+func clientSessionFromInstallationMaterial(material []byte) (json.RawMessage, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(material, &fields); err != nil {
+		return nil, err
+	}
+	session, ok := fields["client_session"]
+	if !ok || string(session) == "null" || len(session) == 0 {
+		return nil, nil
+	}
+	var value any
+	if err := json.Unmarshal(session, &value); err != nil {
+		return nil, err
+	}
+	return session, nil
+}
+
+func helperIDFromInstallationMaterial(material []byte) (string, error) {
+	var fields struct {
+		HelperID string `json:"helper_id"`
+	}
+	if err := json.Unmarshal(material, &fields); err != nil || strings.TrimSpace(fields.HelperID) == "" {
+		return "", ErrInstallationUnavailable
+	}
+	return fields.HelperID, nil
+}
+
+func replaceInstallationClientSession(material []byte, session installationClientSession) ([]byte, error) {
+	var fields map[string]any
+	if err := json.Unmarshal(material, &fields); err != nil {
+		return nil, err
+	}
+	fields["client_session"] = session
+	return json.Marshal(fields)
 }
 
 func shouldIssueCLIEnrollmentSession(setupMode string) bool {

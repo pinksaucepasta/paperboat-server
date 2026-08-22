@@ -6440,8 +6440,8 @@
     },
     "/v1/machines/pairings/installation": {
       "post": {
-        "summary": "Consume approved machine installation material",
-        "description": "Exchanges the one-time pairing verifier for installation material. The material is returned at most once.",
+        "summary": "Consume or recover approved machine installation material",
+        "description": "Exchanges the pairing verifier and the machine's stable public identity key for installation material. The first successful exchange consumes the pairing. A retry for the same identity can replay material while the enrollment is still installing; a protected resume can recover material for up to 24 hours after the original delivery. The runtime_enrolled assertion controls whether an existing helper identity may be reused; mismatched identities, completed enrollments, and expired recovery windows fail closed.",
         "security": [],
         "requestBody": {
           "required": true,
@@ -6451,12 +6451,24 @@
                 "type": "object",
                 "additionalProperties": false,
                 "required": [
-                  "verifier"
+                  "verifier",
+                  "public_identity_key"
                 ],
                 "properties": {
                   "verifier": {
                     "type": "string",
                     "minLength": 1
+                  },
+                  "public_identity_key": {
+                    "type": "string",
+                    "minLength": 40,
+                    "maxLength": 256,
+                    "description": "Stable base64url-encoded Ed25519 public identity key bound to the pairing."
+                  },
+                  "runtime_enrolled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Set true only when the protected resume journal confirms that this machine already persisted its runtime identity."
                   }
                 }
               }
@@ -6465,7 +6477,7 @@
         },
         "responses": {
           "200": {
-            "description": "Single-use installation material."
+            "description": "Installation material. The initial exchange consumes the pairing; an identity-bound retry may replay it during incomplete installation, and a protected resume may recover refreshed material within the bounded recovery window."
           },
           "400": {
             "$ref": "#/components/responses/Error"

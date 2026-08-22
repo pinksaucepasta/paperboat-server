@@ -590,6 +590,25 @@ WHERE enrollment.id = sqlc.arg(id) AND enrollment.jti_hash = sqlc.arg(jti_hash) 
   AND EXISTS (SELECT 1 FROM control_environments e WHERE e.id = enrollment.environment_id AND e.desired_state = 'active' AND e.revoked_at IS NULL)
 RETURNING *;
 
+-- name: GetConsumedControlHelperEnrollmentForReplay :one
+SELECT enrollment.*
+FROM control_helper_enrollments AS enrollment
+JOIN control_helpers AS helper
+  ON helper.id = enrollment.helper_id
+ AND helper.environment_id = enrollment.environment_id
+JOIN control_environments AS environment
+  ON environment.id = enrollment.environment_id
+WHERE enrollment.id = sqlc.arg(id)
+  AND enrollment.jti_hash = sqlc.arg(jti_hash)
+  AND enrollment.state = 'consumed'
+  AND enrollment.consumed_at IS NOT NULL
+  AND enrollment.expires_at > sqlc.arg(now)
+  AND helper.state = 'active'
+  AND helper.revoked_at IS NULL
+  AND environment.desired_state = 'active'
+  AND environment.revoked_at IS NULL
+FOR UPDATE OF enrollment, helper;
+
 -- name: ActivateControlHelper :one
 UPDATE control_helpers
 SET state = 'active', key_thumbprint = sqlc.arg(key_thumbprint), public_key = sqlc.arg(public_key), last_seen_at = sqlc.arg(now), updated_at = sqlc.arg(now)

@@ -69,8 +69,13 @@ func TestHelperEnrollmentExchangeIsSingleUseAndKeyBound(t *testing.T) {
 	if err != nil || claims.HelperID != grant.HelperID || claims.KeyThumbprint != "sha256:"+base64.RawURLEncoding.EncodeToString(thumbprint[:]) {
 		t.Fatalf("identity claims = %#v, %v", claims, err)
 	}
-	if _, err := service.Exchange(ctx, grant.Credential, helperPublic); !errors.Is(err, ErrEnrollmentUsed) {
-		t.Fatalf("replay error = %v", err)
+	replayed, err := service.Exchange(ctx, grant.Credential, helperPublic)
+	if err != nil || replayed.HelperID != identity.HelperID || replayed.MachineID != identity.MachineID || replayed.Credential == identity.Credential {
+		t.Fatalf("same-key exchange replay = %#v, %v; first = %#v", replayed, err, identity)
+	}
+	otherPublic := ed25519.NewKeyFromSeed([]byte(strings.Repeat("z", ed25519.SeedSize))).Public().(ed25519.PublicKey)
+	if _, err := service.Exchange(ctx, grant.Credential, otherPublic); !errors.Is(err, ErrEnrollmentUsed) {
+		t.Fatalf("different-key replay error = %v", err)
 	}
 	renewNow := now.Add(30 * 24 * time.Hour)
 	service.clock = func() time.Time { return renewNow }

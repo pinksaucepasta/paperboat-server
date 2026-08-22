@@ -523,6 +523,7 @@ WITH consumed AS (
   SET state = 'consumed', installation_config_consumed_at = now(), updated_at = now()
   WHERE verifier_hash = sqlc.arg(verifier_hash)
     AND state = 'approved'
+    AND (sqlc.arg(public_identity_key) = '' OR public_identity_key = sqlc.arg(public_identity_key))
     AND installation_config_ciphertext IS NOT NULL
     AND installation_config_consumed_at IS NULL
     AND expires_at > now()
@@ -533,6 +534,53 @@ WITH consumed AS (
   RETURNING e.id
 )
 SELECT installation_config_ciphertext FROM consumed;
+
+-- name: GetUserMachineInstallationConfigForReplay :one
+SELECT pairing.installation_config_ciphertext
+FROM user_machine_pairings AS pairing
+LEFT JOIN user_machine_enrollments AS enrollment
+  ON enrollment.pairing_id = pairing.id
+WHERE pairing.verifier_hash = sqlc.arg(verifier_hash)
+  AND (sqlc.arg(public_identity_key) = '' OR pairing.public_identity_key = sqlc.arg(public_identity_key))
+  AND pairing.state = 'consumed'
+  AND pairing.installation_config_ciphertext IS NOT NULL
+  AND pairing.installation_config_consumed_at IS NOT NULL
+  AND pairing.installation_recovery_operation_key IS NULL
+  AND pairing.expires_at > sqlc.arg(now)
+  AND (enrollment.id IS NULL OR enrollment.state IN ('material_issued','installing','connecting'))
+FOR UPDATE OF pairing;
+
+-- name: BeginUserMachineInstallationRecovery :one
+UPDATE user_machine_pairings
+SET installation_recovery_operation_key = coalesce(installation_recovery_operation_key, sqlc.arg(operation_key)),
+    expires_at = CASE WHEN installation_recovery_operation_key IS NULL THEN sqlc.arg(expires_at) ELSE expires_at END,
+    updated_at = now()
+WHERE id = sqlc.arg(id)
+  AND verifier_hash = sqlc.arg(verifier_hash)
+  AND public_identity_key = sqlc.arg(public_identity_key)
+  AND state = 'consumed'
+  AND installation_config_consumed_at IS NOT NULL
+  AND installation_config_consumed_at > sqlc.arg(recovery_after)
+RETURNING *;
+
+-- name: RenewUserMachineEnrollmentRecovery :execrows
+UPDATE user_machine_enrollments
+SET expires_at = sqlc.arg(expires_at), updated_at = now()
+WHERE pairing_id = sqlc.arg(pairing_id)
+  AND state IN ('material_issued','installing','connecting');
+
+-- name: CompleteUserMachineInstallationRecovery :execrows
+UPDATE user_machine_pairings
+SET installation_config_ciphertext = sqlc.arg(ciphertext),
+    expires_at = sqlc.arg(expires_at),
+    installation_recovery_operation_key = NULL,
+    updated_at = now()
+WHERE id = sqlc.arg(id)
+  AND verifier_hash = sqlc.arg(verifier_hash)
+  AND public_identity_key = sqlc.arg(public_identity_key)
+  AND state = 'consumed'
+  AND installation_config_consumed_at IS NOT NULL
+  AND installation_recovery_operation_key = sqlc.arg(operation_key);
 
 -- name: RevokeUserMachine :execrows
 UPDATE user_machines

@@ -9,8 +9,10 @@ CONFIG ?=
 ENV_FILE ?= .env.local
 GO_VERSION := 1.26.6
 SQLC_VERSION := v1.30.0
+GO_ROOT := $(shell GOTOOLCHAIN=go$(GO_VERSION) go env GOROOT)
+export PATH := $(GO_ROOT)/bin:$(PATH)
 GO := GOTOOLCHAIN=local go
-GOFMT := $(shell GOTOOLCHAIN=local go env GOROOT 2>/dev/null)/bin/gofmt
+GOFMT := $(GO_ROOT)/bin/gofmt
 GO_FILES := $(shell find . -path ./.git -prune -o -name '*.go' -print)
 TOPOLOGY_TERMINAL_CASE ?= TestPeerTerminalPingUsesProductionWSSConnector
 

@@ -1768,6 +1768,52 @@ func (q *Queries) GetConfigSyncMetrics(ctx context.Context) (GetConfigSyncMetric
 	return i, err
 }
 
+const getConsumedControlHelperEnrollmentForReplay = `-- name: GetConsumedControlHelperEnrollmentForReplay :one
+SELECT enrollment.id, enrollment.environment_id, enrollment.helper_id, enrollment.jti_hash, enrollment.operation_key, enrollment.request_hash, enrollment.grant_ciphertext, enrollment.state, enrollment.expires_at, enrollment.consumed_at, enrollment.revoked_at, enrollment.created_at
+FROM control_helper_enrollments AS enrollment
+JOIN control_helpers AS helper
+  ON helper.id = enrollment.helper_id
+ AND helper.environment_id = enrollment.environment_id
+JOIN control_environments AS environment
+  ON environment.id = enrollment.environment_id
+WHERE enrollment.id = $1
+  AND enrollment.jti_hash = $2
+  AND enrollment.state = 'consumed'
+  AND enrollment.consumed_at IS NOT NULL
+  AND enrollment.expires_at > $3
+  AND helper.state = 'active'
+  AND helper.revoked_at IS NULL
+  AND environment.desired_state = 'active'
+  AND environment.revoked_at IS NULL
+FOR UPDATE OF enrollment, helper
+`
+
+type GetConsumedControlHelperEnrollmentForReplayParams struct {
+	ID      string
+	JtiHash []byte
+	Now     time.Time
+}
+
+func (q *Queries) GetConsumedControlHelperEnrollmentForReplay(ctx context.Context, arg GetConsumedControlHelperEnrollmentForReplayParams) (ControlHelperEnrollment, error) {
+	row := q.db.QueryRow(ctx, getConsumedControlHelperEnrollmentForReplay, arg.ID, arg.JtiHash, arg.Now)
+	var i ControlHelperEnrollment
+	err := row.Scan(
+		&i.ID,
+		&i.EnvironmentID,
+		&i.HelperID,
+		&i.JtiHash,
+		&i.OperationKey,
+		&i.RequestHash,
+		&i.GrantCiphertext,
+		&i.State,
+		&i.ExpiresAt,
+		&i.ConsumedAt,
+		&i.RevokedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getControlConfigAssignment = `-- name: GetControlConfigAssignment :one
 SELECT id, environment_id, repository_id, mode, consent_state, warning_revision, accepted_at, revoked_at, version, created_at, updated_at, machine_id FROM control_config_assignments WHERE environment_id = $1
 `

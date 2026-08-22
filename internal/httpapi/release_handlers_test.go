@@ -118,6 +118,41 @@ func TestNewReleaseFilesRejectsRelativeAndSymlinkDirectories(t *testing.T) {
 	}
 }
 
+func TestReleaseFilesObservesReplacedReleaseDirectory(t *testing.T) {
+	root := t.TempDir()
+	current := filepath.Join(root, "current")
+	next := filepath.Join(root, "next")
+	for path, version := range map[string]string{current: "2026.08.22.21", next: "2026.08.22.22"} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		body := []byte(`{"schema":"paperboat.release-current/v1","version":"` + version + `"}`)
+		if err := os.WriteFile(filepath.Join(path, "current.json"), body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files, err := NewReleaseFiles(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertVersion := func(want string) {
+		t.Helper()
+		response := httptest.NewRecorder()
+		files.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/current.json", nil))
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("release response status=%d body=%q, want version %q", response.Code, response.Body.String(), want)
+		}
+	}
+	assertVersion("2026.08.22.21")
+	if err := os.Rename(current, filepath.Join(root, "previous")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(next, current); err != nil {
+		t.Fatal(err)
+	}
+	assertVersion("2026.08.22.22")
+}
+
 func TestTUFRepositoryDoesNotExposePrivateOrUnrelatedFiles(t *testing.T) {
 	directory := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(directory, "tuf"), 0o755); err != nil {

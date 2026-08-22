@@ -1,10 +1,19 @@
 x-server: &server
   image: ${PAPERBOAT_SERVER_IMAGE:?set PAPERBOAT_SERVER_IMAGE}
   env_file: ${PAPERBOAT_ENV_FILE:-.env}
+  environment:
+    # This destination is an invariant of the parent mount below. Do not let
+    # an older env file redirect the server to the parent directory.
+    PAPERBOAT_RELEASE_DIRECTORY: /srv/paperboat-releases/current
   volumes:
     - ../config/catalogs.example.json:/app/config/catalogs.json:ro
     - ./secrets:/run/secrets:ro
-    - ${PAPERBOAT_RELEASES_PATH:-./releases}:/srv/paperboat-releases:ro
+    # Mount the releases parent, not its current child. The release publisher
+    # atomically exchanges the current directory; binding the child itself
+    # would pin the container to the old inode after activation.
+    # PAPERBOAT_RELEASES_PATH remains a variable-name compatibility fallback,
+    # but its value must also identify the parent directory.
+    - ${PAPERBOAT_RELEASES_ROOT_PATH:-${PAPERBOAT_RELEASES_PATH:-/opt/paperboat/releases}}:/srv/paperboat-releases:ro
 
 services:
   migrate:

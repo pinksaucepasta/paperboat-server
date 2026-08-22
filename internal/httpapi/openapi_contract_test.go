@@ -160,6 +160,46 @@ func TestMachineSetupOpenAPIOnlyExposesHostAndClientModes(t *testing.T) {
 	}
 }
 
+func TestMachineInstallationOpenAPIIncludesIdentityBoundRecovery(t *testing.T) {
+	raw, err := os.ReadFile("../../docs/openapi.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Paths map[string]map[string]any `json:"paths"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("openapi json is invalid: %v", err)
+	}
+	operation := objectValue(t, doc.Paths["/v1/machines/pairings/installation"]["post"], "POST machine installation")
+	description, ok := operation["description"].(string)
+	if !ok || !strings.Contains(description, "24 hours") || !strings.Contains(description, "protected resume") {
+		t.Fatalf("machine installation description does not document bounded recovery: %q", description)
+	}
+	requestBody := objectValue(t, operation["requestBody"], "machine installation request body")
+	content := objectValue(t, requestBody["content"], "machine installation request content")
+	jsonContent := objectValue(t, content["application/json"], "machine installation JSON content")
+	schema := objectValue(t, jsonContent["schema"], "machine installation request schema")
+	if required := stringSet(t, schema["required"], "machine installation required fields"); !required["verifier"] || !required["public_identity_key"] {
+		t.Fatalf("machine installation required fields = %#v", required)
+	}
+	properties := objectValue(t, schema["properties"], "machine installation properties")
+	identity := objectValue(t, properties["public_identity_key"], "machine installation public identity key")
+	if identity["type"] != "string" || identity["minLength"] != float64(40) || identity["maxLength"] != float64(256) {
+		t.Fatalf("public_identity_key schema = %#v", identity)
+	}
+	runtimeEnrolled := objectValue(t, properties["runtime_enrolled"], "machine installation runtime enrollment")
+	if runtimeEnrolled["type"] != "boolean" || runtimeEnrolled["default"] != false {
+		t.Fatalf("runtime_enrolled schema = %#v", runtimeEnrolled)
+	}
+	responses := objectValue(t, operation["responses"], "machine installation responses")
+	okResponse := objectValue(t, responses["200"], "machine installation success response")
+	responseDescription, ok := okResponse["description"].(string)
+	if !ok || !strings.Contains(responseDescription, "identity-bound retry") || !strings.Contains(responseDescription, "recovery") {
+		t.Fatalf("machine installation success response does not document replay/recovery: %q", responseDescription)
+	}
+}
+
 func TestOpenAPIDocumentCoversPublicAndFrozenTargetPaths(t *testing.T) {
 	raw, err := os.ReadFile("../../docs/openapi.json")
 	if err != nil {
