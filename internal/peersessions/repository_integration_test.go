@@ -48,13 +48,13 @@ func TestSQLRepositoryIssuesReplaysConflictsAndRevokesAtomicPair(t *testing.T) {
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id) VALUES ($1,$2,$3)`, environmentID, "workspace_"+suffix, userID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_tunnel_nodes (id,edge_pool,protocol_version,process_epoch,state,ready,last_heartbeat_at,signaling_host,stun_host,stun_port,capacity,observation) VALUES ($1,'test','v1',$2,'ready',true,$3,'signal.example.test','stun.example.test',3478,'{"connectors":10}','{"active_streams":0}')`, nodeID, "epoch_"+suffix, now); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_tunnel_nodes (id,edge_pool,relay_region,protocol_version,process_epoch,state,ready,last_heartbeat_at,signaling_host,stun_host,stun_port,capacity,observation) VALUES ($1,'default','test','v1',$2,'ready',true,$3,'signal.example.test','stun.example.test',3478,'{"connectors":10}','{"active_streams":0}')`, nodeID, "epoch_"+suffix, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_tunnel_nodes (id,edge_pool,protocol_version,process_epoch,state,ready,last_heartbeat_at,signaling_host,stun_host,stun_port,capacity,observation) VALUES ($1,'fast','v1',$2,'ready',true,$3,'fast-signal.example.test','fast-stun.example.test',3478,'{"connectors":10}','{"active_streams":0}')`, fastNodeID, "fast_epoch_"+suffix, now); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_tunnel_nodes (id,edge_pool,relay_region,protocol_version,process_epoch,state,ready,last_heartbeat_at,signaling_host,stun_host,stun_port,capacity,observation) VALUES ($1,'default','fast','v1',$2,'ready',true,$3,'fast-signal.example.test','fast-stun.example.test',3478,'{"connectors":10}','{"active_streams":0}')`, fastNodeID, "fast_epoch_"+suffix, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_tunnel_nodes (id,edge_pool,protocol_version,process_epoch,state,ready,last_heartbeat_at,signaling_host,stun_host,stun_port,capacity,observation) VALUES ($1,'saturated','v1',$2,'ready',true,$3,'saturated-signal.example.test','saturated-stun.example.test',3478,'{"connectors":1}','{"active_streams":1}')`, saturatedNodeID, "saturated_epoch_"+suffix, now); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_tunnel_nodes (id,edge_pool,relay_region,protocol_version,process_epoch,state,ready,last_heartbeat_at,signaling_host,stun_host,stun_port,capacity,observation) VALUES ($1,'default','saturated','v1',$2,'ready',true,$3,'saturated-signal.example.test','saturated-stun.example.test',3478,'{"connectors":1}','{"active_streams":1}')`, saturatedNodeID, "saturated_epoch_"+suffix, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.account_e2ee_roots (user_id,public_key,fingerprint) VALUES ($1,$2,$3)`, userID, rootKey[:], rootFingerprint[:]); err != nil {

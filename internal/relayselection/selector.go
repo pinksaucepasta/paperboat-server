@@ -57,11 +57,18 @@ func Select(now time.Time, previous State, client, host Vector, nodes []Node) (N
 	if err != nil {
 		return Node{}, State{}, err
 	}
-	if !previous.ClientObservedAt.IsZero() && (client.ObservedAt.Before(previous.ClientObservedAt) || client.ObservedAt.Equal(previous.ClientObservedAt) && client.Generation <= previous.ClientGeneration) {
-		return Node{}, State{}, ErrInvalid
+	staleClientObservation := !previous.ClientObservedAt.IsZero() && (client.ObservedAt.Before(previous.ClientObservedAt) || client.ObservedAt.Equal(previous.ClientObservedAt) && client.Generation <= previous.ClientGeneration)
+	if staleClientObservation && previous.Current != "" {
+		for _, node := range nodes {
+			if node.Region == previous.Current {
+				return node, previous, nil
+			}
+		}
 	}
 	next := previous
-	next.ClientGeneration, next.ClientObservedAt = client.Generation, client.ObservedAt
+	if !staleClientObservation {
+		next.ClientGeneration, next.ClientObservedAt = client.Generation, client.ObservedAt
+	}
 	scores := make([]scoredNode, 0, len(nodes))
 	seen := make(map[string]bool, len(nodes))
 	for _, node := range nodes {
@@ -96,6 +103,12 @@ func Select(now time.Time, previous State, client, host Vector, nodes []Node) (N
 		return scores[i].rtt < scores[j].rtt
 	})
 	best := scores[0]
+	if staleClientObservation {
+		// Relay latency is advisory. A concurrent request can reach the server
+		// after a request carrying a newer observation. Keep the persisted
+		// selection state, but still route the peer attempt through a ready node.
+		return best.node, previous, nil
+	}
 	currentScore, currentOK := findScore(scores, next.Current)
 	if next.Current == "" || !currentOK {
 		next.Current = best.node.Region

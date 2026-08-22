@@ -55,7 +55,7 @@ SELECT controlling.endpoint_id AS controlling_endpoint_id,
        controlling.certificate AS controlling_certificate,
        controlled.certificate AS controlled_certificate,
        node.id AS edge_node_id,
-       node.edge_pool,
+       node.relay_region,
        node.signaling_host,
        node.stun_host,
        node.stun_port,
@@ -92,13 +92,14 @@ WHERE client.id = sqlc.arg(cli_client_session_id)
   AND environment.desired_state = 'active' AND environment.revoked_at IS NULL
   AND machine.revoked_at IS NULL AND machine.deleted_at IS NULL
   AND node.state = 'ready' AND node.ready = true
+  AND node.relay_region IS NOT NULL AND trim(node.relay_region) <> ''
   AND node.signaling_host IS NOT NULL AND node.stun_host IS NOT NULL AND node.stun_port IS NOT NULL
   AND node.last_heartbeat_at > sqlc.arg(node_stale_after)::timestamptz
 FOR UPDATE OF client, root, controlling, controlled, environment, node;
 
 -- name: ListReadyPeerRelayNodes :many
 SELECT DISTINCT ON (relay_region)
-  id, edge_pool, relay_id, relay_region, relay_name, signaling_host, stun_host, stun_port
+  id, relay_id, relay_region, relay_name, signaling_host, stun_host, stun_port
 FROM control_tunnel_nodes
 WHERE state = 'ready' AND ready = true
   AND last_heartbeat_at > sqlc.arg(node_stale_after)::timestamptz

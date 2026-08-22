@@ -56,7 +56,7 @@ func (r *SQLRepository) Reserve(ctx context.Context, request Request, hash [32]b
 		}
 		proposed.Controlling.EndpointID, proposed.Controlling.PeerEndpointID = authority.ControllingEndpointID, authority.ControlledEndpointID
 		proposed.Controlled.EndpointID, proposed.Controlled.PeerEndpointID = authority.ControlledEndpointID, authority.ControllingEndpointID
-		proposed.EdgeNodeID, proposed.EdgePool = authority.EdgeNodeID, authority.EdgePool
+		proposed.EdgeNodeID, proposed.EdgePool = authority.EdgeNodeID, authority.RelayRegion.String
 		proposed.HostGeneration, proposed.AuthorizationGeneration = authority.HostGeneration, authority.AuthorizationGeneration
 		proposed.SignalingHost, proposed.STUNHost, proposed.STUNPort = authority.SignalingHost.String, authority.StunHost.String, uint16(authority.StunPort.Int32)
 		proposed.ControllingCertificate = append([]byte(nil), authority.ControllingCertificate...)
@@ -93,7 +93,7 @@ func (r *SQLRepository) Reserve(ctx context.Context, request Request, hash [32]b
 			if selectErr != nil {
 				return selectErr
 			}
-			proposed.EdgeNodeID, proposed.EdgePool = selected.ID, selected.EdgePool
+			proposed.EdgeNodeID, proposed.EdgePool = selected.ID, selected.RelayRegion.String
 			proposed.SignalingHost, proposed.STUNHost, proposed.STUNPort = selected.SignalingHost.String, selected.StunHost.String, uint16(selected.StunPort.Int32)
 		}
 		credentials, err := json.Marshal(struct {
