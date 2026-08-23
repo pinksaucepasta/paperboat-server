@@ -119,7 +119,7 @@ func cliEndpointRequest(service cliEndpointRequester) http.HandlerFunc {
 		}
 		noise, noiseErr := decodeCanonicalBase64URL(document.NoisePublicKey)
 		quic, quicErr := decodeCanonicalBase64URL(document.QUICPublicKey)
-		if len(document.OperationID) < 8 || len(document.OperationID) > 128 || document.EndpointID != principal.Client.SessionID || document.Generation != 1 || noiseErr != nil || quicErr != nil || len(noise) != 32 || len(quic) != 32 {
+		if r.Header.Get("Idempotency-Key") != document.OperationID || len(document.OperationID) < 8 || len(document.OperationID) > 128 || document.EndpointID != principal.Client.SessionID || document.Generation != 1 || noiseErr != nil || quicErr != nil || len(noise) != 32 || len(quic) != 32 {
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "CLI endpoint enrollment request is invalid.")
 			return
 		}

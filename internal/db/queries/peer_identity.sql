@@ -146,6 +146,14 @@ WHERE request.operation_key = sqlc.arg(operation_key)
   AND request.endpoint_id = sqlc.arg(endpoint_id)
   AND request.generation = sqlc.arg(generation)
   AND request.role = 'cli' AND request.state = 'expired'
+  AND NOT EXISTS (
+    SELECT 1 FROM peer_endpoint_enrollment_requests pending
+    WHERE pending.user_id = request.user_id
+      AND pending.endpoint_id = request.endpoint_id
+      AND pending.generation = request.generation
+      AND pending.state = 'pending'
+      AND pending.operation_key <> request.operation_key
+  )
 RETURNING *;
 
 -- name: ListPendingPeerEndpointEnrollmentRequests :many

@@ -31,6 +31,7 @@ func TestCLIEndpointRequestBindsAuthenticatedSessionAndKeys(t *testing.T) {
 	quic := bytes.Repeat([]byte{2}, 32)
 	var got peeridentity.CLIEndpointRequest
 	request := httptest.NewRequest(http.MethodPost, "/v1/e2ee/endpoint-requests", strings.NewReader(`{"operation_id":"operation_cli_01","endpoint_id":"cli_session_01","generation":1,"noise_public_key":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE","quic_public_key":"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI"}`))
+	request.Header.Set("Idempotency-Key", "operation_cli_01")
 	request = request.WithContext(context.WithValue(request.Context(), authContextKey{}, principal{User: auth.User{ID: "account_01"}, Client: &auth.ClientPrincipal{SessionID: "cli_session_01"}}))
 	response := httptest.NewRecorder()
 	cliEndpointRequest(cliEndpointRequesterFunc(func(_ context.Context, value peeridentity.CLIEndpointRequest) (peeridentity.EndpointEnrollmentRequest, error) {
@@ -57,6 +58,7 @@ func TestCLIEndpointRequestRejectsSessionImpersonation(t *testing.T) {
 
 func TestCLIEndpointRequestReturnsFulfilledReplayState(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/v1/e2ee/endpoint-requests", strings.NewReader(`{"operation_id":"operation_cli_01","endpoint_id":"cli_session_01","generation":1,"noise_public_key":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE","quic_public_key":"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI"}`))
+	request.Header.Set("Idempotency-Key", "operation_cli_01")
 	request = request.WithContext(context.WithValue(request.Context(), authContextKey{}, principal{User: auth.User{ID: "account_01"}, Client: &auth.ClientPrincipal{SessionID: "cli_session_01"}}))
 	response := httptest.NewRecorder()
 	cliEndpointRequest(cliEndpointRequesterFunc(func(_ context.Context, value peeridentity.CLIEndpointRequest) (peeridentity.EndpointEnrollmentRequest, error) {
@@ -67,6 +69,34 @@ func TestCLIEndpointRequestReturnsFulfilledReplayState(t *testing.T) {
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil || response.Code != http.StatusCreated || envelope.Data.State != "fulfilled" {
 		t.Fatalf("status=%d data=%+v err=%v body=%s", response.Code, envelope.Data, err, response.Body.String())
+	}
+}
+
+func TestCLIEndpointRequestRequiresMatchingIdempotencyKey(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		header string
+	}{
+		{name: "missing"},
+		{name: "different", header: "operation_cli_other"},
+		{name: "surrounding whitespace", header: " operation_cli_01"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/v1/e2ee/endpoint-requests", strings.NewReader(`{"operation_id":"operation_cli_01","endpoint_id":"cli_session_01","generation":1,"noise_public_key":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE","quic_public_key":"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI"}`))
+			if test.header != "" {
+				request.Header.Set("Idempotency-Key", test.header)
+			}
+			request = request.WithContext(context.WithValue(request.Context(), authContextKey{}, principal{User: auth.User{ID: "account_01"}, Client: &auth.ClientPrincipal{SessionID: "cli_session_01"}}))
+			response := httptest.NewRecorder()
+			called := false
+			cliEndpointRequest(cliEndpointRequesterFunc(func(context.Context, peeridentity.CLIEndpointRequest) (peeridentity.EndpointEnrollmentRequest, error) {
+				called = true
+				return peeridentity.EndpointEnrollmentRequest{}, nil
+			})).ServeHTTP(response, request)
+			if response.Code != http.StatusBadRequest || called {
+				t.Fatalf("status=%d called=%t body=%s", response.Code, called, response.Body.String())
+			}
+		})
 	}
 }
 

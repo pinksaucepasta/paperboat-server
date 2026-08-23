@@ -157,10 +157,16 @@ func (r *SQLRepository) RequestCLIEndpoint(ctx context.Context, request CLIEndpo
 		existing, err := q.GetPeerEndpointEnrollmentRequestByOperation(ctx, request.OperationID)
 		if err == nil {
 			matches := bytes.Equal(existing.RequestHash, hash[:]) && existing.UserID == request.UserID && existing.EndpointID == request.EndpointID && existing.Generation == int64(request.Generation) && existing.Role == "cli"
+			if !matches {
+				return ErrConflict
+			}
+			if err := requireActiveAccountRoot(ctx, q, request.UserID); err != nil {
+				return err
+			}
 			if matches && existing.State == "expired" {
 				renewed, renewErr := q.RenewExpiredCLIPeerEndpointEnrollmentRequest(ctx, dbsqlc.RenewExpiredCLIPeerEndpointEnrollmentRequestParams{CreatedAt: request.Now.UTC(), ExpiresAt: expiresAt.UTC(), OperationKey: request.OperationID, RequestHash: hash[:], UserID: request.UserID, EndpointID: request.EndpointID, Generation: int64(request.Generation)})
 				if errors.Is(renewErr, sql.ErrNoRows) {
-					return ErrUnavailable
+					return classifyCLIRenewalNoRows(ctx, q, request)
 				}
 				if renewErr != nil {
 					return renewErr
@@ -171,7 +177,14 @@ func (r *SQLRepository) RequestCLIEndpoint(ctx context.Context, request CLIEndpo
 				}
 				return r.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: request.UserID, ActorType: audit.ActorSystem, EventType: "peer_endpoint.cli_enrollment_renewed", ResourceType: "peer_endpoint_enrollment", ResourceID: renewed.ID, IdempotencyKey: request.OperationID + ":renew", Metadata: map[string]any{"endpoint_id": request.EndpointID, "generation": request.Generation, "role": "cli"}})
 			}
-			if !matches || existing.State != "pending" || !existing.ExpiresAt.After(request.Now) {
+			if existing.State == "fulfilled" {
+				// The certificate is already durably registered. Return the same
+				// enrollment record so a client can recover after losing the first
+				// response without creating another request or certificate.
+				result, err = endpointRequestFromRow(existing)
+				return err
+			}
+			if existing.State != "pending" || !existing.ExpiresAt.After(request.Now) {
 				return ErrConflict
 			}
 			result, err = endpointRequestFromRow(existing)
@@ -180,8 +193,57 @@ func (r *SQLRepository) RequestCLIEndpoint(ctx context.Context, request CLIEndpo
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
+		if err := requireActiveAccountRoot(ctx, q, request.UserID); err != nil {
+			return err
+		}
 		row, err := q.CreateCLIPeerEndpointEnrollmentRequest(ctx, dbsqlc.CreateCLIPeerEndpointEnrollmentRequestParams{ID: id, OperationKey: request.OperationID, RequestHash: hash[:], UserID: request.UserID, EndpointID: request.EndpointID, Generation: int64(request.Generation), NoisePublicKey: request.NoisePublicKey[:], QuicPublicKey: request.QUICPublicKey[:], CreatedAt: request.Now.UTC(), ExpiresAt: expiresAt.UTC()})
 		if errors.Is(err, sql.ErrNoRows) {
+			// ON CONFLICT can lose either to the same operation racing in another
+			// transaction or to a different operation already pending for this
+			// endpoint identity. Re-read after PostgreSQL has resolved the conflict
+			// so the former is an idempotent replay and the latter is a stable 409.
+			winner, winnerErr := q.GetPeerEndpointEnrollmentRequestByOperation(ctx, request.OperationID)
+			if winnerErr == nil {
+				matches := bytes.Equal(winner.RequestHash, hash[:]) && winner.UserID == request.UserID && winner.EndpointID == request.EndpointID && winner.Generation == int64(request.Generation) && winner.Role == "cli"
+				if !matches {
+					return ErrConflict
+				}
+				switch {
+				case winner.State == "fulfilled":
+					result, winnerErr = endpointRequestFromRow(winner)
+					return winnerErr
+				case winner.State == "pending" && winner.ExpiresAt.After(request.Now):
+					result, winnerErr = endpointRequestFromRow(winner)
+					return winnerErr
+				case winner.State == "expired":
+					renewed, renewErr := q.RenewExpiredCLIPeerEndpointEnrollmentRequest(ctx, dbsqlc.RenewExpiredCLIPeerEndpointEnrollmentRequestParams{CreatedAt: request.Now.UTC(), ExpiresAt: expiresAt.UTC(), OperationKey: request.OperationID, RequestHash: hash[:], UserID: request.UserID, EndpointID: request.EndpointID, Generation: int64(request.Generation)})
+					if errors.Is(renewErr, sql.ErrNoRows) {
+						return classifyCLIRenewalNoRows(ctx, q, request)
+					}
+					if renewErr != nil {
+						return renewErr
+					}
+					result, renewErr = endpointRequestFromRow(renewed)
+					if renewErr != nil {
+						return renewErr
+					}
+					return r.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: request.UserID, ActorType: audit.ActorSystem, EventType: "peer_endpoint.cli_enrollment_renewed", ResourceType: "peer_endpoint_enrollment", ResourceID: renewed.ID, IdempotencyKey: request.OperationID + ":renew", Metadata: map[string]any{"endpoint_id": request.EndpointID, "generation": request.Generation, "role": "cli"}})
+				default:
+					return ErrConflict
+				}
+			}
+			if !errors.Is(winnerErr, sql.ErrNoRows) {
+				return winnerErr
+			}
+			_, pendingErr := q.GetMatchingPeerEndpointEnrollmentRequestForUpdate(ctx, dbsqlc.GetMatchingPeerEndpointEnrollmentRequestForUpdateParams{
+				UserID: request.UserID, EndpointID: request.EndpointID, Generation: int64(request.Generation), Now: request.Now.UTC(),
+			})
+			if pendingErr == nil {
+				return ErrConflict
+			}
+			if !errors.Is(pendingErr, sql.ErrNoRows) {
+				return pendingErr
+			}
 			return ErrUnavailable
 		}
 		if err != nil {
@@ -194,6 +256,33 @@ func (r *SQLRepository) RequestCLIEndpoint(ctx context.Context, request CLIEndpo
 		return r.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: request.UserID, ActorType: audit.ActorSystem, EventType: "peer_endpoint.cli_enrollment_requested", ResourceType: "peer_endpoint_enrollment", ResourceID: row.ID, IdempotencyKey: request.OperationID, Metadata: map[string]any{"endpoint_id": request.EndpointID, "generation": request.Generation, "role": "cli"}})
 	})
 	return result, err
+}
+
+func requireActiveAccountRoot(ctx context.Context, q *dbsqlc.Queries, userID string) error {
+	root, err := q.GetAccountE2EERootForUpdate(ctx, userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrUnavailable
+	}
+	if err != nil {
+		return err
+	}
+	if root.RevokedAt.Valid || len(root.PublicKey) != ed25519.PublicKeySize || len(root.Fingerprint) != sha256.Size || root.Generation != 1 {
+		return ErrUnavailable
+	}
+	return nil
+}
+
+func classifyCLIRenewalNoRows(ctx context.Context, q *dbsqlc.Queries, request CLIEndpointRequest) error {
+	_, err := q.GetMatchingPeerEndpointEnrollmentRequestForUpdate(ctx, dbsqlc.GetMatchingPeerEndpointEnrollmentRequestForUpdateParams{
+		UserID: request.UserID, EndpointID: request.EndpointID, Generation: int64(request.Generation), Now: request.Now.UTC(),
+	})
+	if err == nil {
+		return ErrConflict
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrUnavailable
+	}
+	return err
 }
 
 func (r *SQLRepository) ListPendingEndpoints(ctx context.Context, userID string, now time.Time, limit int32) ([]EndpointEnrollmentRequest, error) {
