@@ -49,9 +49,9 @@ jobs:
           cache: true
       - name: Verify enrollment revocation migrations
         run: |
-          go test ./internal/db -run '^(TestCLIEndpointSessionRevocationCascadeBackfillAndIsolation|TestMigration116UpgradesFrom115AndBackfillsOnlyOwningAccount)$' -count=1
+          go test ./internal/db -run '^(TestCLIEndpointSessionRevocationCascadeBackfillAndIsolation|TestMigration116(UpgradesFrom115AndBackfillsOnlyOwningAccount|RepairsMarked115WithoutLifecycleDDL))$' -count=1
           go test ./cmd/paperboat-server -run '^TestMigrateBeforeServe' -count=1
           go test ./internal/httpapi -run '^TestBrowserLogoutKeepsCLIClientActiveAndDeleteReturnsNoContent$' -count=1
-          go test -race ./internal/db -run '^(TestCLIEndpointSessionRevocationCascadeBackfillAndIsolation|TestMigration116UpgradesFrom115AndBackfillsOnlyOwningAccount)$' -count=1
+          go test -race ./internal/db -run '^(TestCLIEndpointSessionRevocationCascadeBackfillAndIsolation|TestMigration116(UpgradesFrom115AndBackfillsOnlyOwningAccount|RepairsMarked115WithoutLifecycleDDL))$' -count=1
           go test -race ./cmd/paperboat-server -run '^TestMigrateBeforeServe' -count=1
           go test -race ./internal/httpapi -run '^TestBrowserLogoutKeepsCLIClientActiveAndDeleteReturnsNoContent$' -count=1

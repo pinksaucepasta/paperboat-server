@@ -1,4 +1,36 @@
 -- +goose Up
+-- Migration 115 was published from two histories. Some databases recorded
+-- version 115 before the lifecycle DDL below existed, so version 116 must
+-- establish the full lifecycle schema instead of assuming 115 did so.
+ALTER TABLE peer_endpoint_enrollment_requests
+  DROP CONSTRAINT IF EXISTS peer_endpoint_enrollment_requests_state_check;
+
+ALTER TABLE peer_endpoint_enrollment_requests
+  ADD CONSTRAINT peer_endpoint_enrollment_requests_state_check
+  CHECK (state IN ('pending','fulfilled','expired','denied','revoked')) NOT VALID;
+
+ALTER TABLE peer_endpoint_enrollment_requests
+  VALIDATE CONSTRAINT peer_endpoint_enrollment_requests_state_check;
+
+CREATE TABLE IF NOT EXISTS peer_endpoint_enrollment_denials (
+  operation_id text PRIMARY KEY CHECK (operation_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{15,255}$'),
+  request_id text NOT NULL UNIQUE REFERENCES peer_endpoint_enrollment_requests(id) ON DELETE CASCADE,
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at timestamptz NOT NULL
+);
+
+ALTER TABLE peer_endpoint_certificates
+  DROP CONSTRAINT IF EXISTS peer_endpoint_certificates_revocation_reason_check;
+
+ALTER TABLE peer_endpoint_certificates
+  ADD CONSTRAINT peer_endpoint_certificates_revocation_reason_check
+  CHECK (revocation_reason IS NULL OR revocation_reason IN
+    ('endpoint_replaced','endpoint_removed','account_revoked','key_compromise','certificate_superseded','client_revoked'))
+  NOT VALID;
+
+ALTER TABLE peer_endpoint_certificates
+  VALIDATE CONSTRAINT peer_endpoint_certificates_revocation_reason_check;
+
 ALTER TABLE peer_endpoint_certificate_revocations
   DROP CONSTRAINT IF EXISTS peer_endpoint_certificate_revocations_reason_check;
 

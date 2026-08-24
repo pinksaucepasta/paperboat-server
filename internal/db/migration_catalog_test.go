@@ -107,6 +107,10 @@ func TestCLIEndpointEnrollmentLifecycleMigrationsAreClosedWorld(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, required := range [][]byte{
+		[]byte("CHECK (state IN ('pending','fulfilled','expired','denied','revoked')) NOT VALID"),
+		[]byte("CREATE TABLE IF NOT EXISTS peer_endpoint_enrollment_denials"),
+		[]byte("VALIDATE CONSTRAINT peer_endpoint_certificates_revocation_reason_check"),
+		[]byte("VALIDATE CONSTRAINT peer_endpoint_certificate_revocations_reason_check"),
 		[]byte("CREATE OR REPLACE FUNCTION revoke_cli_peer_endpoint_for_session("),
 		[]byte("ON CONFLICT (user_id, certificate_fingerprint) DO NOTHING"),
 		[]byte("AFTER UPDATE OF state, revoked_at, revocation_reason ON cli_client_sessions"),
@@ -116,5 +120,14 @@ func TestCLIEndpointEnrollmentLifecycleMigrationsAreClosedWorld(t *testing.T) {
 		if !bytes.Contains(repair, required) {
 			t.Fatalf("CLI revocation repair migration missing %q: %s", required, repair)
 		}
+	}
+	stateRepair := bytes.Index(repair, []byte("CHECK (state IN ('pending','fulfilled','expired','denied','revoked')) NOT VALID"))
+	denialRepair := bytes.Index(repair, []byte("CREATE TABLE IF NOT EXISTS peer_endpoint_enrollment_denials"))
+	certificateRepair := bytes.Index(repair, []byte("VALIDATE CONSTRAINT peer_endpoint_certificates_revocation_reason_check"))
+	ledgerRepair := bytes.Index(repair, []byte("VALIDATE CONSTRAINT peer_endpoint_certificate_revocations_reason_check"))
+	helper := bytes.Index(repair, []byte("CREATE OR REPLACE FUNCTION revoke_cli_peer_endpoint_for_session("))
+	backfill := bytes.LastIndex(repair, []byte("WHERE session.state = 'revoked'"))
+	if !(stateRepair < denialRepair && denialRepair < certificateRepair && certificateRepair < ledgerRepair && ledgerRepair < helper && helper < backfill) {
+		t.Fatalf("CLI revocation repair must establish and validate lifecycle constraints before defining the helper and running its backfill: %s", repair)
 	}
 }
