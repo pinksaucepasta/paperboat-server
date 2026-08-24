@@ -118,6 +118,32 @@ RETURNING *;
 SELECT * FROM peer_endpoint_enrollment_requests
 WHERE operation_key = sqlc.arg(operation_key);
 
+-- name: GetPeerEndpointEnrollmentRequestByIDForUpdate :one
+SELECT * FROM peer_endpoint_enrollment_requests
+WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id)
+FOR UPDATE;
+
+-- name: GetPeerEndpointEnrollmentDenialByOperationForUpdate :one
+SELECT * FROM peer_endpoint_enrollment_denials
+WHERE operation_id = sqlc.arg(operation_id)
+FOR UPDATE;
+
+-- name: GetPeerEndpointEnrollmentDenialByRequestForUpdate :one
+SELECT * FROM peer_endpoint_enrollment_denials
+WHERE request_id = sqlc.arg(request_id)
+FOR UPDATE;
+
+-- name: CreatePeerEndpointEnrollmentDenial :one
+INSERT INTO peer_endpoint_enrollment_denials (operation_id, request_id, user_id, created_at)
+VALUES (sqlc.arg(operation_id), sqlc.arg(request_id), sqlc.arg(user_id), sqlc.arg(created_at))
+RETURNING *;
+
+-- name: DenyPeerEndpointEnrollmentRequest :one
+UPDATE peer_endpoint_enrollment_requests
+SET state = 'denied', certificate_fingerprint = NULL, fulfilled_at = NULL
+WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND state = 'pending'
+RETURNING *;
+
 -- name: RenewExpiredPeerEndpointEnrollmentRequest :one
 UPDATE peer_endpoint_enrollment_requests request
 SET state = 'pending', created_at = sqlc.arg(created_at), expires_at = sqlc.arg(expires_at),
@@ -175,6 +201,18 @@ UPDATE peer_endpoint_enrollment_requests
 SET state = 'fulfilled', certificate_fingerprint = sqlc.arg(certificate_fingerprint),
     fulfilled_at = sqlc.arg(now)
 WHERE id = sqlc.arg(id) AND state = 'pending'
+RETURNING *;
+
+-- name: RevokePeerEndpointEnrollmentRequestsForCertificate :execrows
+UPDATE peer_endpoint_enrollment_requests
+SET state = 'revoked', certificate_fingerprint = NULL, fulfilled_at = NULL
+WHERE certificate_fingerprint = sqlc.arg(certificate_fingerprint)
+  AND state = 'fulfilled';
+
+-- name: RevokePeerEndpointEnrollmentRequest :one
+UPDATE peer_endpoint_enrollment_requests
+SET state = 'revoked', certificate_fingerprint = NULL, fulfilled_at = NULL
+WHERE id = sqlc.arg(id) AND state = 'fulfilled'
 RETURNING *;
 
 -- name: ExpirePeerEndpointEnrollmentRequests :execrows

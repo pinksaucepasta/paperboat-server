@@ -1025,6 +1025,13 @@ type PeerEndpointCertificateRevocation struct {
 	CreatedAt              time.Time
 }
 
+type PeerEndpointEnrollmentDenial struct {
+	OperationID string
+	RequestID   string
+	UserID      string
+	CreatedAt   time.Time
+}
+
 type PeerEndpointEnrollmentRequest struct {
 	ID                     string
 	OperationKey           string

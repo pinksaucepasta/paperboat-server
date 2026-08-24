@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -74,6 +75,133 @@ func TestSQLRepositoryBootstrapsRootAndCertificateAtomically(t *testing.T) {
 	}
 	if roots != 1 || certificates != 1 {
 		t.Fatalf("roots=%d certificates=%d", roots, certificates)
+	}
+}
+
+func TestSQLRepositoryCLIEnrollmentLifecycleUsesServerTimeAndAccountScope(t *testing.T) {
+	dsn := os.Getenv("PAPERBOAT_TEST_DATABASE_DSN")
+	if dsn == "" {
+		t.Skip("set PAPERBOAT_TEST_DATABASE_DSN to run peer identity repository integration tests")
+	}
+	store, err := db.Open(config.Database{Driver: "postgres", DSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := db.Migrate(ctx, store); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	suffix := strings.ToLower(strings.ReplaceAll(t.Name(), "/", "_")) + strings.ReplaceAll(now.Format("150405.000000000"), ".", "")
+	userID, otherUserID := "peer_lifecycle_user_"+suffix, "peer_lifecycle_other_"+suffix
+	for _, value := range []string{userID, otherUserID} {
+		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, value, "workos_"+value, value+"@example.test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rootPublic, rootPrivate, _ := ed25519.GenerateKey(nil)
+	otherRoot, _, _ := ed25519.GenerateKey(nil)
+	for _, value := range []struct {
+		userID string
+		public ed25519.PublicKey
+	}{{userID, rootPublic}, {otherUserID, otherRoot}} {
+		fingerprint := sha256.Sum256(value.public)
+		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.account_e2ee_roots (user_id,public_key,fingerprint) VALUES ($1,$2,$3)`, value.userID, value.public, fingerprint[:]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	repository, err := NewSQLRepository(store, audit.NewWriter(store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewService(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootFingerprint := sha256.Sum256(rootPublic)
+	register := func(request CLIEndpointRequest, serial uint64, issuedAt, registerAt time.Time) error {
+		raw := signedFixture(t, rootPrivate, userID, RoleCLI, request.EndpointID, 1, serial, issuedAt, registerAt.Add(time.Hour))
+		fingerprint := sha256.Sum256(raw)
+		_, err := service.Register(ctx, RegisterRequest{OperationID: "certificate_" + request.OperationID, UserID: userID, Certificate: raw, Expected: Expected{AccountID: userID, Role: RoleCLI, EndpointID: request.EndpointID, Generation: 1, Serial: serial}, ExpectedRootFingerprint: rootFingerprint, ExpectedCertificateFingerprint: fingerprint, ExpectedIssuedAt: issuedAt, ExpectedExpiresAt: registerAt.Add(time.Hour), Now: registerAt})
+		return err
+	}
+	newRequest := func(label string, at time.Time) (CLIEndpointRequest, EndpointEnrollmentRequest) {
+		request := CLIEndpointRequest{OperationID: "operation_" + label + "_" + suffix, UserID: userID, EndpointID: "endpoint_" + label + "_" + suffix, Generation: 1, NoisePublicKey: [32]byte{1}, QUICPublicKey: [32]byte{2}, Now: at}
+		value, err := service.RequestCLIEndpoint(ctx, request)
+		if err != nil {
+			t.Fatalf("create %s: %v", label, err)
+		}
+		return request, value
+	}
+
+	expiring, expiringValue := newRequest("expiry", now)
+	if err := register(expiring, 1, now.Add(time.Minute), now.Add(6*time.Minute)); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("late approval error=%v, want unavailable", err)
+	}
+	expired, err := service.EndpointRequest(ctx, userID, expiringValue.ID, now.Add(6*time.Minute))
+	if err != nil || expired.State != "expired" {
+		t.Fatalf("expired status=%+v err=%v", expired, err)
+	}
+	if _, err := service.EndpointRequest(ctx, otherUserID, expiringValue.ID, now.Add(6*time.Minute)); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("cross-account status error=%v", err)
+	}
+
+	_, denyValue := newRequest("deny", now.Add(10*time.Minute))
+	denyOperation := "deny_operation_" + suffix
+	denied, err := service.DenyEndpointRequest(ctx, denyOperation, userID, denyValue.ID, now.Add(11*time.Minute))
+	if err != nil || denied.State != "denied" {
+		t.Fatalf("denied=%+v err=%v", denied, err)
+	}
+	replay, err := service.DenyEndpointRequest(ctx, denyOperation, userID, denyValue.ID, now.Add(12*time.Minute))
+	if err != nil || replay.ID != denied.ID || replay.State != "denied" {
+		t.Fatalf("denial replay=%+v err=%v", replay, err)
+	}
+	if _, err := service.DenyEndpointRequest(ctx, denyOperation+"_other", userID, denyValue.ID, now.Add(12*time.Minute)); !errors.Is(err, ErrConflict) {
+		t.Fatalf("conflicting denial error=%v", err)
+	}
+	if _, err := service.DenyEndpointRequest(ctx, "deny_wrong_account_"+suffix, otherUserID, denyValue.ID, now.Add(12*time.Minute)); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("cross-account denial error=%v", err)
+	}
+
+	_, concurrentValue := newRequest("concurrent", now.Add(20*time.Minute))
+	concurrentOperation := "deny_concurrent_" + suffix
+	var wait sync.WaitGroup
+	errorsByCall := make(chan error, 2)
+	for range 2 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			value, err := service.DenyEndpointRequest(ctx, concurrentOperation, userID, concurrentValue.ID, now.Add(21*time.Minute))
+			if err == nil && value.State != "denied" {
+				err = errors.New("concurrent denial returned non-denied state")
+			}
+			errorsByCall <- err
+		}()
+	}
+	wait.Wait()
+	close(errorsByCall)
+	for err := range errorsByCall {
+		if err != nil {
+			t.Fatalf("concurrent idempotent denial: %v", err)
+		}
+	}
+
+	revokedRequest, revokedValue := newRequest("revoke", now.Add(30*time.Minute))
+	issuedAt := now.Add(31 * time.Minute)
+	if err := register(revokedRequest, 2, issuedAt, issuedAt); err != nil {
+		t.Fatalf("register revoke fixture: %v", err)
+	}
+	if _, err := service.Revoke(ctx, "revoke_operation_"+suffix, userID, revokedRequest.EndpointID, 1, 2, "endpoint_removed", now.Add(32*time.Minute)); err != nil {
+		t.Fatalf("revoke certificate: %v", err)
+	}
+	status, err := service.EndpointRequest(ctx, userID, revokedValue.ID, now.Add(32*time.Minute))
+	if err != nil || status.State != "revoked" {
+		t.Fatalf("revoked request status=%+v err=%v", status, err)
+	}
+	revokedReplay, replayErr := service.RequestCLIEndpoint(ctx, revokedRequest)
+	if !errors.Is(replayErr, ErrConflict) && (replayErr != nil || revokedReplay.State != "revoked") {
+		t.Fatalf("revoked certificate replay=%+v err=%v, want revoked or conflict", revokedReplay, replayErr)
 	}
 }
 

@@ -232,6 +232,36 @@ func (q *Queries) CreatePeerEndpointCertificateRevocation(ctx context.Context, a
 	return i, err
 }
 
+const createPeerEndpointEnrollmentDenial = `-- name: CreatePeerEndpointEnrollmentDenial :one
+INSERT INTO peer_endpoint_enrollment_denials (operation_id, request_id, user_id, created_at)
+VALUES ($1, $2, $3, $4)
+RETURNING operation_id, request_id, user_id, created_at
+`
+
+type CreatePeerEndpointEnrollmentDenialParams struct {
+	OperationID string
+	RequestID   string
+	UserID      string
+	CreatedAt   time.Time
+}
+
+func (q *Queries) CreatePeerEndpointEnrollmentDenial(ctx context.Context, arg CreatePeerEndpointEnrollmentDenialParams) (PeerEndpointEnrollmentDenial, error) {
+	row := q.db.QueryRow(ctx, createPeerEndpointEnrollmentDenial,
+		arg.OperationID,
+		arg.RequestID,
+		arg.UserID,
+		arg.CreatedAt,
+	)
+	var i PeerEndpointEnrollmentDenial
+	err := row.Scan(
+		&i.OperationID,
+		&i.RequestID,
+		&i.UserID,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const createPeerEndpointEnrollmentRequest = `-- name: CreatePeerEndpointEnrollmentRequest :one
 INSERT INTO peer_endpoint_enrollment_requests
   (id, operation_key, request_hash, user_id, endpoint_id, generation,
@@ -273,6 +303,40 @@ func (q *Queries) CreatePeerEndpointEnrollmentRequest(ctx context.Context, arg C
 		arg.EndpointID,
 		arg.UserID,
 	)
+	var i PeerEndpointEnrollmentRequest
+	err := row.Scan(
+		&i.ID,
+		&i.OperationKey,
+		&i.RequestHash,
+		&i.UserID,
+		&i.EndpointID,
+		&i.Generation,
+		&i.Role,
+		&i.NoisePublicKey,
+		&i.QuicPublicKey,
+		&i.State,
+		&i.CertificateFingerprint,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.FulfilledAt,
+	)
+	return i, err
+}
+
+const denyPeerEndpointEnrollmentRequest = `-- name: DenyPeerEndpointEnrollmentRequest :one
+UPDATE peer_endpoint_enrollment_requests
+SET state = 'denied', certificate_fingerprint = NULL, fulfilled_at = NULL
+WHERE id = $1 AND user_id = $2 AND state = 'pending'
+RETURNING id, operation_key, request_hash, user_id, endpoint_id, generation, role, noise_public_key, quic_public_key, state, certificate_fingerprint, created_at, expires_at, fulfilled_at
+`
+
+type DenyPeerEndpointEnrollmentRequestParams struct {
+	ID     string
+	UserID string
+}
+
+func (q *Queries) DenyPeerEndpointEnrollmentRequest(ctx context.Context, arg DenyPeerEndpointEnrollmentRequestParams) (PeerEndpointEnrollmentRequest, error) {
+	row := q.db.QueryRow(ctx, denyPeerEndpointEnrollmentRequest, arg.ID, arg.UserID)
 	var i PeerEndpointEnrollmentRequest
 	err := row.Scan(
 		&i.ID,
@@ -573,6 +637,75 @@ func (q *Queries) GetPeerEndpointCertificateRevocationForUpdate(ctx context.Cont
 	return i, err
 }
 
+const getPeerEndpointEnrollmentDenialByOperationForUpdate = `-- name: GetPeerEndpointEnrollmentDenialByOperationForUpdate :one
+SELECT operation_id, request_id, user_id, created_at FROM peer_endpoint_enrollment_denials
+WHERE operation_id = $1
+FOR UPDATE
+`
+
+func (q *Queries) GetPeerEndpointEnrollmentDenialByOperationForUpdate(ctx context.Context, operationID string) (PeerEndpointEnrollmentDenial, error) {
+	row := q.db.QueryRow(ctx, getPeerEndpointEnrollmentDenialByOperationForUpdate, operationID)
+	var i PeerEndpointEnrollmentDenial
+	err := row.Scan(
+		&i.OperationID,
+		&i.RequestID,
+		&i.UserID,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getPeerEndpointEnrollmentDenialByRequestForUpdate = `-- name: GetPeerEndpointEnrollmentDenialByRequestForUpdate :one
+SELECT operation_id, request_id, user_id, created_at FROM peer_endpoint_enrollment_denials
+WHERE request_id = $1
+FOR UPDATE
+`
+
+func (q *Queries) GetPeerEndpointEnrollmentDenialByRequestForUpdate(ctx context.Context, requestID string) (PeerEndpointEnrollmentDenial, error) {
+	row := q.db.QueryRow(ctx, getPeerEndpointEnrollmentDenialByRequestForUpdate, requestID)
+	var i PeerEndpointEnrollmentDenial
+	err := row.Scan(
+		&i.OperationID,
+		&i.RequestID,
+		&i.UserID,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getPeerEndpointEnrollmentRequestByIDForUpdate = `-- name: GetPeerEndpointEnrollmentRequestByIDForUpdate :one
+SELECT id, operation_key, request_hash, user_id, endpoint_id, generation, role, noise_public_key, quic_public_key, state, certificate_fingerprint, created_at, expires_at, fulfilled_at FROM peer_endpoint_enrollment_requests
+WHERE id = $1 AND user_id = $2
+FOR UPDATE
+`
+
+type GetPeerEndpointEnrollmentRequestByIDForUpdateParams struct {
+	ID     string
+	UserID string
+}
+
+func (q *Queries) GetPeerEndpointEnrollmentRequestByIDForUpdate(ctx context.Context, arg GetPeerEndpointEnrollmentRequestByIDForUpdateParams) (PeerEndpointEnrollmentRequest, error) {
+	row := q.db.QueryRow(ctx, getPeerEndpointEnrollmentRequestByIDForUpdate, arg.ID, arg.UserID)
+	var i PeerEndpointEnrollmentRequest
+	err := row.Scan(
+		&i.ID,
+		&i.OperationKey,
+		&i.RequestHash,
+		&i.UserID,
+		&i.EndpointID,
+		&i.Generation,
+		&i.Role,
+		&i.NoisePublicKey,
+		&i.QuicPublicKey,
+		&i.State,
+		&i.CertificateFingerprint,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.FulfilledAt,
+	)
+	return i, err
+}
+
 const getPeerEndpointEnrollmentRequestByOperation = `-- name: GetPeerEndpointEnrollmentRequestByOperation :one
 SELECT id, operation_key, request_hash, user_id, endpoint_id, generation, role, noise_public_key, quic_public_key, state, certificate_fingerprint, created_at, expires_at, fulfilled_at FROM peer_endpoint_enrollment_requests
 WHERE operation_key = $1
@@ -829,6 +962,50 @@ func (q *Queries) RevokePeerEndpointCertificate(ctx context.Context, arg RevokeP
 		&i.RevocationReason,
 	)
 	return i, err
+}
+
+const revokePeerEndpointEnrollmentRequest = `-- name: RevokePeerEndpointEnrollmentRequest :one
+UPDATE peer_endpoint_enrollment_requests
+SET state = 'revoked', certificate_fingerprint = NULL, fulfilled_at = NULL
+WHERE id = $1 AND state = 'fulfilled'
+RETURNING id, operation_key, request_hash, user_id, endpoint_id, generation, role, noise_public_key, quic_public_key, state, certificate_fingerprint, created_at, expires_at, fulfilled_at
+`
+
+func (q *Queries) RevokePeerEndpointEnrollmentRequest(ctx context.Context, id string) (PeerEndpointEnrollmentRequest, error) {
+	row := q.db.QueryRow(ctx, revokePeerEndpointEnrollmentRequest, id)
+	var i PeerEndpointEnrollmentRequest
+	err := row.Scan(
+		&i.ID,
+		&i.OperationKey,
+		&i.RequestHash,
+		&i.UserID,
+		&i.EndpointID,
+		&i.Generation,
+		&i.Role,
+		&i.NoisePublicKey,
+		&i.QuicPublicKey,
+		&i.State,
+		&i.CertificateFingerprint,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.FulfilledAt,
+	)
+	return i, err
+}
+
+const revokePeerEndpointEnrollmentRequestsForCertificate = `-- name: RevokePeerEndpointEnrollmentRequestsForCertificate :execrows
+UPDATE peer_endpoint_enrollment_requests
+SET state = 'revoked', certificate_fingerprint = NULL, fulfilled_at = NULL
+WHERE certificate_fingerprint = $1
+  AND state = 'fulfilled'
+`
+
+func (q *Queries) RevokePeerEndpointEnrollmentRequestsForCertificate(ctx context.Context, certificateFingerprint []byte) (int64, error) {
+	result, err := q.db.Exec(ctx, revokePeerEndpointEnrollmentRequestsForCertificate, certificateFingerprint)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const revokeSupersededPeerEndpointCertificates = `-- name: RevokeSupersededPeerEndpointCertificates :execrows

@@ -45,9 +45,17 @@ func (r *recordingRepository) ResolveAccountRoot(context.Context, string) (Accou
 	return r.root, r.err
 }
 
-func (r *recordingRepository) Register(_ context.Context, operation, userID string, value Certificate) (Certificate, error) {
+func (r *recordingRepository) Register(_ context.Context, operation, userID string, value Certificate, _ time.Time) (Certificate, error) {
 	r.operation, r.userID, r.value = operation, userID, value
 	return value, r.err
+}
+
+func (r *recordingRepository) GetEndpointRequest(context.Context, string, string, time.Time) (EndpointEnrollmentRequest, error) {
+	return EndpointEnrollmentRequest{}, r.err
+}
+
+func (r *recordingRepository) DenyEndpointRequest(context.Context, string, string, string, time.Time) (EndpointEnrollmentRequest, error) {
+	return EndpointEnrollmentRequest{}, r.err
 }
 
 func TestServiceRegistersOnlyVerifiedCertificateFields(t *testing.T) {

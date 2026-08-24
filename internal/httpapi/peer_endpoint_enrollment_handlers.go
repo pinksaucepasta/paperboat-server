@@ -31,6 +31,14 @@ type pendingEndpointReader interface {
 	PendingEndpoints(context.Context, string, time.Time) ([]peeridentity.EndpointEnrollmentRequest, error)
 }
 
+type endpointRequestReader interface {
+	EndpointRequest(context.Context, string, string, time.Time) (peeridentity.EndpointEnrollmentRequest, error)
+}
+
+type endpointRequestDenier interface {
+	DenyEndpointRequest(context.Context, string, string, string, time.Time) (peeridentity.EndpointEnrollmentRequest, error)
+}
+
 type machineEndpointStatusReader interface {
 	Get(context.Context, string, string, uint64, time.Time) (peeridentity.Certificate, error)
 	Root(context.Context, string) (peeridentity.AccountRoot, error)
@@ -38,6 +46,7 @@ type machineEndpointStatusReader interface {
 
 type endpointEnrollmentDocument struct {
 	RequestID      string `json:"request_id"`
+	AccountID      string `json:"account_id"`
 	EndpointID     string `json:"endpoint_id"`
 	Role           string `json:"role"`
 	State          string `json:"state"`
@@ -47,6 +56,50 @@ type endpointEnrollmentDocument struct {
 	CreatedAt      string `json:"created_at"`
 	ExpiresAt      string `json:"expires_at"`
 	SafetyCode     string `json:"safety_code"`
+}
+
+func endpointRequestStatus(service endpointRequestReader) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := principalFromContext(r.Context())
+		if !ok || principal.Client == nil {
+			writeError(w, r, http.StatusUnauthorized, "authentication_required", "CLI authentication is required.")
+			return
+		}
+		value, err := service.EndpointRequest(r.Context(), principal.User.ID, r.PathValue("request_id"), time.Now().UTC())
+		if err != nil {
+			if errors.Is(err, peeridentity.ErrUnavailable) {
+				writeError(w, r, http.StatusNotFound, "not_found", "Endpoint enrollment request was not found.")
+				return
+			}
+			writeError(w, r, http.StatusServiceUnavailable, "temporarily_unavailable", "Endpoint enrollment request could not be retrieved.")
+			return
+		}
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: endpointEnrollmentResponse(value)})
+	}
+}
+
+func endpointRequestDeny(service endpointRequestDenier) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := principalFromContext(r.Context())
+		operationID := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+		if !ok || principal.Client == nil || operationID == "" {
+			writeError(w, r, http.StatusBadRequest, "invalid_request", "Endpoint enrollment denial request is invalid.")
+			return
+		}
+		value, err := service.DenyEndpointRequest(r.Context(), operationID, principal.User.ID, r.PathValue("request_id"), time.Now().UTC())
+		if err != nil {
+			status, code := http.StatusBadRequest, "invalid_request"
+			switch {
+			case errors.Is(err, peeridentity.ErrUnavailable):
+				status, code = http.StatusNotFound, "not_found"
+			case errors.Is(err, peeridentity.ErrConflict):
+				status, code = http.StatusConflict, "operation_conflict"
+			}
+			writeError(w, r, status, code, "Endpoint enrollment request could not be denied.")
+			return
+		}
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: endpointEnrollmentResponse(value)})
+	}
 }
 
 func machineEndpointRequest(service machineEndpointRequester, verifier machineEndpointProofVerifier) http.HandlerFunc {
@@ -206,5 +259,5 @@ func pendingEndpoints(service pendingEndpointReader) http.HandlerFunc {
 }
 
 func endpointEnrollmentResponse(value peeridentity.EndpointEnrollmentRequest) endpointEnrollmentDocument {
-	return endpointEnrollmentDocument{RequestID: value.ID, EndpointID: value.EndpointID, Role: value.Role.String(), State: value.State, Generation: value.Generation, NoisePublicKey: base64.RawURLEncoding.EncodeToString(value.NoisePublicKey[:]), QUICPublicKey: base64.RawURLEncoding.EncodeToString(value.QUICPublicKey[:]), CreatedAt: value.CreatedAt.UTC().Format(time.RFC3339), ExpiresAt: value.ExpiresAt.UTC().Format(time.RFC3339), SafetyCode: value.SafetyCode()}
+	return endpointEnrollmentDocument{RequestID: value.ID, AccountID: value.UserID, EndpointID: value.EndpointID, Role: value.Role.String(), State: value.State, Generation: value.Generation, NoisePublicKey: base64.RawURLEncoding.EncodeToString(value.NoisePublicKey[:]), QUICPublicKey: base64.RawURLEncoding.EncodeToString(value.QUICPublicKey[:]), CreatedAt: value.CreatedAt.UTC().Format(time.RFC3339), ExpiresAt: value.ExpiresAt.UTC().Format(time.RFC3339), SafetyCode: value.SafetyCode()}
 }

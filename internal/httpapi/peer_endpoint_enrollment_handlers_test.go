@@ -22,6 +22,18 @@ type machineProofVerifierFunc func(context.Context, string, []byte, string, stri
 
 type cliEndpointRequesterFunc func(context.Context, peeridentity.CLIEndpointRequest) (peeridentity.EndpointEnrollmentRequest, error)
 
+type endpointRequestReaderFunc func(context.Context, string, string, time.Time) (peeridentity.EndpointEnrollmentRequest, error)
+
+func (f endpointRequestReaderFunc) EndpointRequest(ctx context.Context, userID, requestID string, now time.Time) (peeridentity.EndpointEnrollmentRequest, error) {
+	return f(ctx, userID, requestID, now)
+}
+
+type endpointRequestDenierFunc func(context.Context, string, string, string, time.Time) (peeridentity.EndpointEnrollmentRequest, error)
+
+func (f endpointRequestDenierFunc) DenyEndpointRequest(ctx context.Context, operationID, userID, requestID string, now time.Time) (peeridentity.EndpointEnrollmentRequest, error) {
+	return f(ctx, operationID, userID, requestID, now)
+}
+
 func (f cliEndpointRequesterFunc) RequestCLIEndpoint(ctx context.Context, request peeridentity.CLIEndpointRequest) (peeridentity.EndpointEnrollmentRequest, error) {
 	return f(ctx, request)
 }
@@ -97,6 +109,50 @@ func TestCLIEndpointRequestRequiresMatchingIdempotencyKey(t *testing.T) {
 				t.Fatalf("status=%d called=%t body=%s", response.Code, called, response.Body.String())
 			}
 		})
+	}
+}
+
+func TestCLIEndpointRequestStatusIsAccountScopedAndExplicit(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/v1/e2ee/endpoint-requests/per_0123456789abcdef", nil)
+	request.SetPathValue("request_id", "per_0123456789abcdef")
+	request = request.WithContext(context.WithValue(request.Context(), authContextKey{}, principal{User: auth.User{ID: "account_01"}, Client: &auth.ClientPrincipal{SessionID: "cli_session_01"}}))
+	response := httptest.NewRecorder()
+	endpointRequestStatus(endpointRequestReaderFunc(func(_ context.Context, userID, requestID string, now time.Time) (peeridentity.EndpointEnrollmentRequest, error) {
+		if userID != "account_01" || requestID != "per_0123456789abcdef" || now.IsZero() {
+			t.Fatalf("scope user=%q request=%q now=%v", userID, requestID, now)
+		}
+		return peeridentity.EndpointEnrollmentRequest{ID: requestID, UserID: userID, EndpointID: "cli_session_01", Role: peeridentity.RoleCLI, Generation: 1, State: "expired", NoisePublicKey: [32]byte{1}, QUICPublicKey: [32]byte{2}, CreatedAt: now.Add(-10 * time.Minute), ExpiresAt: now.Add(-5 * time.Minute)}, nil
+	})).ServeHTTP(response, request)
+	var envelope struct {
+		Data endpointEnrollmentDocument `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil || response.Code != http.StatusOK || envelope.Data.AccountID != "account_01" || envelope.Data.State != "expired" {
+		t.Fatalf("status=%d data=%+v err=%v body=%s", response.Code, envelope.Data, err, response.Body.String())
+	}
+
+	other := httptest.NewRecorder()
+	endpointRequestStatus(endpointRequestReaderFunc(func(context.Context, string, string, time.Time) (peeridentity.EndpointEnrollmentRequest, error) {
+		return peeridentity.EndpointEnrollmentRequest{}, peeridentity.ErrUnavailable
+	})).ServeHTTP(other, request)
+	if other.Code != http.StatusNotFound {
+		t.Fatalf("wrong-account status=%d body=%s", other.Code, other.Body.String())
+	}
+}
+
+func TestCLIEndpointRequestDenialBindsAccountAndOperation(t *testing.T) {
+	request := httptest.NewRequest(http.MethodDelete, "/v1/e2ee/endpoint-requests/per_0123456789abcdef", nil)
+	request.SetPathValue("request_id", "per_0123456789abcdef")
+	request.Header.Set("Idempotency-Key", "deny_operation_01")
+	request = request.WithContext(context.WithValue(request.Context(), authContextKey{}, principal{User: auth.User{ID: "account_01"}, Client: &auth.ClientPrincipal{SessionID: "approver_cli_01"}}))
+	response := httptest.NewRecorder()
+	endpointRequestDeny(endpointRequestDenierFunc(func(_ context.Context, operationID, userID, requestID string, now time.Time) (peeridentity.EndpointEnrollmentRequest, error) {
+		if operationID != "deny_operation_01" || userID != "account_01" || requestID != "per_0123456789abcdef" || now.IsZero() {
+			t.Fatalf("operation=%q user=%q request=%q now=%v", operationID, userID, requestID, now)
+		}
+		return peeridentity.EndpointEnrollmentRequest{ID: requestID, UserID: userID, EndpointID: "cli_session_01", Role: peeridentity.RoleCLI, Generation: 1, State: "denied", NoisePublicKey: [32]byte{1}, QUICPublicKey: [32]byte{2}, CreatedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Minute)}, nil
+	})).ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"state":"denied"`) || !strings.Contains(response.Body.String(), `"account_id":"account_01"`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

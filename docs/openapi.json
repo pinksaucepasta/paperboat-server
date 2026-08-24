@@ -63,6 +63,30 @@
           "data": {}
         }
       },
+      "EndpointEnrollmentResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/EndpointEnrollmentRequest" } }
+      },
+      "EndpointEnrollmentRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["request_id", "account_id", "endpoint_id", "role", "state", "generation", "noise_public_key", "quic_public_key", "created_at", "expires_at", "safety_code"],
+        "properties": {
+          "request_id": { "type": "string", "pattern": "^per_[A-Za-z0-9_-]{16,128}$" },
+          "account_id": { "type": "string", "maxLength": 128 },
+          "endpoint_id": { "type": "string", "maxLength": 128 },
+          "role": { "type": "string", "enum": ["cli", "machine"] },
+          "state": { "type": "string", "enum": ["pending", "fulfilled", "expired", "denied", "revoked"] },
+          "generation": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+          "noise_public_key": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" },
+          "quic_public_key": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "expires_at": { "type": "string", "format": "date-time" },
+          "safety_code": { "type": "string", "pattern": "^[a-f0-9]{5}-[a-f0-9]{5}$" }
+        }
+      },
       "NetworkCheckRegions": {
         "type": "object",
         "additionalProperties": false,
@@ -7308,7 +7332,7 @@
     },
     "/v1/e2ee/pending-endpoints": {
       "get": {
-        "summary": "List machine endpoint public keys awaiting a paired CLI signature",
+        "summary": "List endpoint public keys awaiting a paired CLI signature",
         "operationId": "get_v1_e2ee_pending_endpoints",
         "security": [{ "bearerAccess": [] }],
         "x-required-bearer-scopes": ["projects:read"],
@@ -7340,8 +7364,36 @@
           } } }
         },
         "responses": {
-          "201": { "description": "Pending CLI endpoint request.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "201": { "description": "Pending CLI endpoint request.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EndpointEnrollmentResponse" } } } },
           "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" }, "403": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" }, "503": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/v1/e2ee/endpoint-requests/{request_id}": {
+      "parameters": [
+        { "name": "request_id", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^per_[A-Za-z0-9_-]{16,128}$" } }
+      ],
+      "get": {
+        "summary": "Retrieve an account-scoped endpoint enrollment request",
+        "description": "Returns the exact authenticated-account request with state pending, fulfilled, expired, denied, or revoked. Expiry is evaluated using authoritative server time.",
+        "operationId": "get_v1_e2ee_endpoint_request",
+        "security": [{ "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["projects:read"],
+        "responses": {
+          "200": { "description": "Current endpoint enrollment request state.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EndpointEnrollmentResponse" } } } },
+          "401": { "$ref": "#/components/responses/Error" }, "403": { "$ref": "#/components/responses/Error" }, "404": { "$ref": "#/components/responses/Error" }, "503": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "delete": {
+        "summary": "Deny a pending endpoint enrollment request",
+        "description": "Atomically transitions only the authenticated account's pending request to denied. Exact operation replay returns the same denied request; conflicting replay fails.",
+        "operationId": "delete_v1_e2ee_endpoint_request",
+        "security": [{ "bearerAccess": [] }],
+        "x-required-bearer-scopes": ["projects:connect"],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "responses": {
+          "200": { "description": "Endpoint enrollment request denied.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EndpointEnrollmentResponse" } } } },
+          "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" }, "403": { "$ref": "#/components/responses/Error" }, "404": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" }
         }
       }
     },

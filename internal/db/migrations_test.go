@@ -154,7 +154,29 @@ func TestMigrateRequiresPostgresIntegrationDSN(t *testing.T) {
 	if !strings.Contains(setupModeConstraint, "client") || !strings.Contains(setupModeConstraint, "host") || strings.Contains(setupModeConstraint, "session") {
 		t.Fatalf("machine setup-mode constraint = %q, want host/client only", setupModeConstraint)
 	}
-	for _, table := range []string{"account_e2ee_roots", "peer_endpoint_certificates", "peer_session_intents", "peer_signaling_grants", "peer_relay_allocations", "peer_endpoint_enrollment_requests", "managed_ssh_client_keys", "machine_ssh_host_key_owners", "machine_ssh_host_key_sets", "machine_ssh_host_keys"} {
+	for _, migration := range []int{114, 115} {
+		var applied bool
+		if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (SELECT 1 FROM paperboat.goose_db_version WHERE version_id=$1 AND is_applied)`, migration).Scan(&applied); err != nil {
+			t.Fatal(err)
+		}
+		if !applied {
+			t.Fatalf("CLI enrollment migration %d was not applied", migration)
+		}
+	}
+	var peerRoleConstraint, peerStateConstraint, certificateReasonConstraint string
+	for name, destination := range map[string]*string{
+		"peer_endpoint_enrollment_requests_role_check":       &peerRoleConstraint,
+		"peer_endpoint_enrollment_requests_state_check":      &peerStateConstraint,
+		"peer_endpoint_certificates_revocation_reason_check": &certificateReasonConstraint,
+	} {
+		if err := store.SQL().QueryRowContext(context.Background(), `SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid=CASE WHEN $1 LIKE 'peer_endpoint_certificates%' THEN 'paperboat.peer_endpoint_certificates'::regclass ELSE 'paperboat.peer_endpoint_enrollment_requests'::regclass END AND conname=$1`, name).Scan(destination); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !strings.Contains(peerRoleConstraint, "machine") || !strings.Contains(peerRoleConstraint, "cli") || !strings.Contains(peerStateConstraint, "denied") || !strings.Contains(certificateReasonConstraint, "client_revoked") {
+		t.Fatalf("peer lifecycle constraints role=%q state=%q reason=%q", peerRoleConstraint, peerStateConstraint, certificateReasonConstraint)
+	}
+	for _, table := range []string{"account_e2ee_roots", "peer_endpoint_certificates", "peer_session_intents", "peer_signaling_grants", "peer_relay_allocations", "peer_endpoint_enrollment_requests", "peer_endpoint_enrollment_denials", "managed_ssh_client_keys", "machine_ssh_host_key_owners", "machine_ssh_host_key_sets", "machine_ssh_host_keys"} {
 		var exists bool
 		if err := store.SQL().QueryRowContext(context.Background(), `SELECT to_regclass('paperboat.' || $1) IS NOT NULL`, table).Scan(&exists); err != nil {
 			t.Fatal(err)

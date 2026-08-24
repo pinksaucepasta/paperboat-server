@@ -2,12 +2,14 @@ package httpapi
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/auth"
 )
@@ -227,7 +229,7 @@ func TestUnknownRevokeTokenAndApprovalCodeMatchContract(t *testing.T) {
 }
 
 func TestBrowserLogoutKeepsCLIClientActiveAndDeleteReturnsNoContent(t *testing.T) {
-	_, router := newAuthIntegrationRouter(t)
+	store, router := newAuthIntegrationRouter(t)
 	cookies := loginCookies(t, router, "workos_logout_scope:logout-scope@example.com:Logout Scope")
 	grant := authorizeDevice(t, router)
 
@@ -240,6 +242,36 @@ func TestBrowserLogoutKeepsCLIClientActiveAndDeleteReturnsNoContent(t *testing.T
 		t.Fatalf("approve status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	tokens := pollDevice(t, router, grant.DeviceCode, http.StatusOK)
+	userID := userIDByEmail(t, store, "logout-scope@example.com")
+	rootPublic := bytes.Repeat([]byte{3}, 32)
+	rootFingerprint := sha256.Sum256(rootPublic)
+	if _, err := store.SQL().Exec(`INSERT INTO paperboat.account_e2ee_roots (user_id,public_key,fingerprint) VALUES ($1,$2,$3)`, userID, rootPublic, rootFingerprint[:]); err != nil {
+		t.Fatal(err)
+	}
+	certificate := bytes.Repeat([]byte{4}, 172)
+	certificateFingerprint := sha256.Sum256(certificate)
+	fulfilledHash := sha256.Sum256([]byte("fulfilled"))
+	pendingHash := sha256.Sum256([]byte("pending"))
+	fulfilledRequestID := "per_" + tokens.CLIClientSessionID + "_fulfilled"
+	pendingRequestID := "per_" + tokens.CLIClientSessionID + "_pending"
+	fulfilledOperation := "auth_revoke_fulfilled_" + tokens.CLIClientSessionID
+	pendingOperation := "auth_revoke_pending_" + tokens.CLIClientSessionID
+	now := time.Now().UTC().Truncate(time.Second)
+	if _, err := store.SQL().Exec(`
+		INSERT INTO paperboat.peer_endpoint_certificates
+		(fingerprint,user_id,endpoint_id,role,generation,serial,certificate,noise_public_key,quic_public_key,issued_at,expires_at)
+		VALUES ($1,$2,$3,'cli',1,1,$4,$5,$6,$7,$8)`, certificateFingerprint[:], userID, tokens.CLIClientSessionID, certificate, bytes.Repeat([]byte{1}, 32), bytes.Repeat([]byte{2}, 32), now, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().Exec(`
+		INSERT INTO paperboat.peer_endpoint_enrollment_requests
+		(id,operation_key,request_hash,user_id,endpoint_id,generation,role,noise_public_key,quic_public_key,state,certificate_fingerprint,created_at,expires_at,fulfilled_at)
+		VALUES
+		($1,$2,$3,$4,$5,1,'cli',$6,$7,'fulfilled',$8,$9,$10,$9),
+		($11,$12,$13,$4,$5,1,'cli',$6,$7,'pending',NULL,$9,$10,NULL)`,
+		fulfilledRequestID, fulfilledOperation, fulfilledHash[:], userID, tokens.CLIClientSessionID, bytes.Repeat([]byte{1}, 32), bytes.Repeat([]byte{2}, 32), certificateFingerprint[:], now, now.Add(time.Minute), pendingRequestID, pendingOperation, pendingHash[:]); err != nil {
+		t.Fatal(err)
+	}
 
 	req = httptest.NewRequest(http.MethodPost, "/v1/auth/logout", nil)
 	addCookies(req, cookies)
@@ -264,6 +296,18 @@ func TestBrowserLogoutKeepsCLIClientActiveAndDeleteReturnsNoContent(t *testing.T
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNoContent || rec.Body.Len() != 0 {
 		t.Fatalf("delete status=%d body=%q, want empty 204", rec.Code, rec.Body.String())
+	}
+	var revokedRequests int
+	if err := store.SQL().QueryRow(`SELECT count(*) FROM paperboat.peer_endpoint_enrollment_requests WHERE id IN ($1,$2) AND state='revoked' AND certificate_fingerprint IS NULL AND fulfilled_at IS NULL`, fulfilledRequestID, pendingRequestID).Scan(&revokedRequests); err != nil {
+		t.Fatal(err)
+	}
+	var certificateRevoked bool
+	var certificateReason string
+	if err := store.SQL().QueryRow(`SELECT revoked_at IS NOT NULL,coalesce(revocation_reason,'') FROM paperboat.peer_endpoint_certificates WHERE fingerprint=$1`, certificateFingerprint[:]).Scan(&certificateRevoked, &certificateReason); err != nil {
+		t.Fatal(err)
+	}
+	if revokedRequests != 2 || !certificateRevoked || certificateReason != "client_revoked" {
+		t.Fatalf("revoked requests=%d certificate_revoked=%t reason=%q", revokedRequests, certificateRevoked, certificateReason)
 	}
 }
 

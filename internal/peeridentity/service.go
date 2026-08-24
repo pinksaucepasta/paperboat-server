@@ -106,11 +106,13 @@ func (s *Service) Root(ctx context.Context, userID string) (AccountRoot, error) 
 type Repository interface {
 	Bootstrap(context.Context, string, string, ed25519.PublicKey, Certificate) (Certificate, error)
 	ResolveAccountRoot(context.Context, string) (AccountRoot, error)
-	Register(context.Context, string, string, Certificate) (Certificate, error)
+	Register(context.Context, string, string, Certificate, time.Time) (Certificate, error)
 	Get(context.Context, string, string, uint64, time.Time) (Certificate, error)
 	Revoke(context.Context, string, string, string, uint64, uint64, string, time.Time) (Certificate, error)
 	RequestMachineEndpoint(context.Context, MachineEndpointRequest, string, [sha256.Size]byte, time.Time) (EndpointEnrollmentRequest, error)
 	ListPendingEndpoints(context.Context, string, time.Time, int32) ([]EndpointEnrollmentRequest, error)
+	GetEndpointRequest(context.Context, string, string, time.Time) (EndpointEnrollmentRequest, error)
+	DenyEndpointRequest(context.Context, string, string, string, time.Time) (EndpointEnrollmentRequest, error)
 }
 
 func (s *Service) RequestMachineEndpoint(ctx context.Context, request MachineEndpointRequest) (EndpointEnrollmentRequest, error) {
@@ -148,6 +150,20 @@ func (s *Service) PendingEndpoints(ctx context.Context, userID string, now time.
 		return nil, ErrInvalid
 	}
 	return s.repository.ListPendingEndpoints(ctx, userID, now.UTC(), 100)
+}
+
+func (s *Service) EndpointRequest(ctx context.Context, userID, requestID string, now time.Time) (EndpointEnrollmentRequest, error) {
+	if s == nil || ctx == nil || !identifierExpr.MatchString(userID) || !identifierExpr.MatchString(requestID) || now.IsZero() {
+		return EndpointEnrollmentRequest{}, ErrInvalid
+	}
+	return s.repository.GetEndpointRequest(ctx, userID, requestID, now.UTC())
+}
+
+func (s *Service) DenyEndpointRequest(ctx context.Context, operationID, userID, requestID string, now time.Time) (EndpointEnrollmentRequest, error) {
+	if s == nil || ctx == nil || len(operationID) < 16 || len(operationID) > 256 || !identifierExpr.MatchString(userID) || !identifierExpr.MatchString(requestID) || now.IsZero() {
+		return EndpointEnrollmentRequest{}, ErrInvalid
+	}
+	return s.repository.DenyEndpointRequest(ctx, operationID, userID, requestID, now.UTC())
 }
 
 func randomEndpointRequestID() (string, error) {
@@ -229,7 +245,7 @@ func (s *Service) Register(ctx context.Context, request RegisterRequest) (Certif
 		return Certificate{}, ErrIdentity
 	}
 	certificate.RootFingerprint = root.Fingerprint
-	return s.repository.Register(ctx, request.OperationID, request.UserID, certificate)
+	return s.repository.Register(ctx, request.OperationID, request.UserID, certificate, request.Now.UTC())
 }
 
 func validateRegistration(request RegisterRequest, rootPublic ed25519.PublicKey) (Certificate, error) {

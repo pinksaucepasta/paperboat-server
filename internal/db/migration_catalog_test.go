@@ -68,3 +68,37 @@ func TestMachineSetupModeMigrationsOnlyPermitHostAndClient(t *testing.T) {
 		t.Fatalf("forward setup-mode migration must remove the old check, convert session rows, then enforce host/client only: %s", forward)
 	}
 }
+
+func TestCLIEndpointEnrollmentLifecycleMigrationsAreClosedWorld(t *testing.T) {
+	role, err := migrationsFS.ReadFile("migrations/114_peer_endpoint_enrollment_role_check.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range [][]byte{
+		[]byte("DROP CONSTRAINT IF EXISTS peer_endpoint_enrollment_requests_role_check"),
+		[]byte("CHECK (role IN ('machine','cli')) NOT VALID"),
+		[]byte("VALIDATE CONSTRAINT peer_endpoint_enrollment_requests_role_check"),
+	} {
+		if !bytes.Contains(role, required) {
+			t.Fatalf("role compatibility migration missing %q: %s", required, role)
+		}
+	}
+
+	lifecycle, err := migrationsFS.ReadFile("migrations/115_cli_endpoint_enrollment_lifecycle.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range [][]byte{
+		[]byte("CHECK (state IN ('pending','fulfilled','expired','denied','revoked')) NOT VALID"),
+		[]byte("CREATE TABLE peer_endpoint_enrollment_denials"),
+		[]byte("request_id text NOT NULL UNIQUE REFERENCES peer_endpoint_enrollment_requests(id) ON DELETE CASCADE"),
+		[]byte("'client_revoked'"),
+		[]byte("VALIDATE CONSTRAINT peer_endpoint_certificates_revocation_reason_check"),
+		[]byte("CREATE OR REPLACE FUNCTION revoke_cli_peer_endpoint_on_session_revocation()"),
+		[]byte("trg_cli_client_sessions_revoke_peer_endpoint"),
+	} {
+		if !bytes.Contains(lifecycle, required) {
+			t.Fatalf("CLI lifecycle migration missing %q: %s", required, lifecycle)
+		}
+	}
+}
