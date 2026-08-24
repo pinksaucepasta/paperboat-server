@@ -116,7 +116,7 @@ func (r *SQLRepository) RequestMachineEndpoint(ctx context.Context, request Mach
 				// same bound enrollment record so a client that failed before
 				// saving it locally can poll and recover; never create another
 				// request or certificate for this operation.
-				existing, err = reconcileFulfilledEndpointRequest(ctx, q, existing)
+				existing, err = reconcileFulfilledEndpointRequest(ctx, q, existing, request.Now)
 				if err != nil {
 					return err
 				}
@@ -185,7 +185,7 @@ func (r *SQLRepository) RequestCLIEndpoint(ctx context.Context, request CLIEndpo
 				// The certificate is already durably registered. Return the same
 				// enrollment record so a client can recover after losing the first
 				// response without creating another request or certificate.
-				existing, err = reconcileFulfilledEndpointRequest(ctx, q, existing)
+				existing, err = reconcileFulfilledEndpointRequest(ctx, q, existing, request.Now)
 				if err != nil {
 					return err
 				}
@@ -218,7 +218,7 @@ func (r *SQLRepository) RequestCLIEndpoint(ctx context.Context, request CLIEndpo
 				}
 				switch {
 				case winner.State == "fulfilled":
-					winner, winnerErr = reconcileFulfilledEndpointRequest(ctx, q, winner)
+					winner, winnerErr = reconcileFulfilledEndpointRequest(ctx, q, winner, request.Now)
 					if winnerErr != nil {
 						return winnerErr
 					}
@@ -264,7 +264,7 @@ func (r *SQLRepository) RequestCLIEndpoint(ctx context.Context, request CLIEndpo
 		if row.Role != "cli" {
 			return ErrUnavailable
 		}
-		row, err = reconcileFulfilledEndpointRequest(ctx, q, row)
+		row, err = reconcileFulfilledEndpointRequest(ctx, q, row, request.Now)
 		if err != nil {
 			return err
 		}
@@ -343,7 +343,7 @@ func (r *SQLRepository) GetEndpointRequest(ctx context.Context, userID, requestI
 		if row.Role != "cli" {
 			return ErrUnavailable
 		}
-		row, err = reconcileFulfilledEndpointRequest(ctx, q, row)
+		row, err = reconcileFulfilledEndpointRequest(ctx, q, row, now)
 		if err != nil {
 			return err
 		}
@@ -530,7 +530,7 @@ func endpointRequestFromRow(row dbsqlc.PeerEndpointEnrollmentRequest) (EndpointE
 		return EndpointEnrollmentRequest{}, ErrUnavailable
 	}
 	result := EndpointEnrollmentRequest{ID: row.ID, UserID: row.UserID, EndpointID: row.EndpointID, Generation: uint64(row.Generation), Role: roleFromString(row.Role), State: row.State, CreatedAt: row.CreatedAt.UTC(), ExpiresAt: row.ExpiresAt.UTC()}
-	if result.Role == 0 || (result.State != "pending" && result.State != "fulfilled" && result.State != "expired" && result.State != "revoked") {
+	if result.Role == 0 || (result.State != "pending" && result.State != "fulfilled" && result.State != "expired" && result.State != "denied" && result.State != "revoked") {
 		return EndpointEnrollmentRequest{}, ErrUnavailable
 	}
 	// CLI identities are intentionally single-generation. Reject malformed or
@@ -544,7 +544,7 @@ func endpointRequestFromRow(row dbsqlc.PeerEndpointEnrollmentRequest) (EndpointE
 	return result, nil
 }
 
-func reconcileFulfilledEndpointRequest(ctx context.Context, q *dbsqlc.Queries, row dbsqlc.PeerEndpointEnrollmentRequest) (dbsqlc.PeerEndpointEnrollmentRequest, error) {
+func reconcileFulfilledEndpointRequest(ctx context.Context, q *dbsqlc.Queries, row dbsqlc.PeerEndpointEnrollmentRequest, now time.Time) (dbsqlc.PeerEndpointEnrollmentRequest, error) {
 	if row.State != "fulfilled" {
 		return row, nil
 	}
@@ -552,7 +552,7 @@ func reconcileFulfilledEndpointRequest(ctx context.Context, q *dbsqlc.Queries, r
 		return dbsqlc.PeerEndpointEnrollmentRequest{}, ErrUnavailable
 	}
 	certificate, err := q.GetPeerEndpointCertificateByFingerprint(ctx, row.CertificateFingerprint)
-	if err == nil && !certificate.RevokedAt.Valid {
+	if err == nil && !certificate.RevokedAt.Valid && certificate.ExpiresAt.After(now) {
 		return row, nil
 	}
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {

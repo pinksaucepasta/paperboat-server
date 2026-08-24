@@ -69,6 +69,37 @@
         "required": ["data"],
         "properties": { "data": { "$ref": "#/components/schemas/EndpointEnrollmentRequest" } }
       },
+      "PendingEndpointEnrollmentResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/PendingEndpointEnrollmentRequest" } }
+      },
+      "PendingEndpointEnrollmentListResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data"],
+        "properties": {
+          "data": { "type": "array", "items": { "$ref": "#/components/schemas/PendingEndpointEnrollmentRequest" } }
+        }
+      },
+      "PendingEndpointEnrollmentRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["request_id", "endpoint_id", "role", "state", "generation", "noise_public_key", "quic_public_key", "created_at", "expires_at", "safety_code"],
+        "properties": {
+          "request_id": { "type": "string", "pattern": "^per_[A-Za-z0-9_-]{16,128}$" },
+          "endpoint_id": { "type": "string", "maxLength": 128 },
+          "role": { "type": "string", "enum": ["cli", "machine"] },
+          "state": { "type": "string", "enum": ["pending", "fulfilled", "expired", "denied", "revoked"] },
+          "generation": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+          "noise_public_key": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" },
+          "quic_public_key": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "expires_at": { "type": "string", "format": "date-time" },
+          "safety_code": { "type": "string", "pattern": "^[a-f0-9]{5}-[a-f0-9]{5}$" }
+        }
+      },
       "EndpointEnrollmentRequest": {
         "type": "object",
         "additionalProperties": false,
@@ -7337,7 +7368,7 @@
         "security": [{ "bearerAccess": [] }],
         "x-required-bearer-scopes": ["projects:read"],
         "responses": {
-          "200": { "description": "Pending endpoint signing requests.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessResponse" } } } },
+          "200": { "description": "Pending endpoint signing requests.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PendingEndpointEnrollmentListResponse" } } } },
           "401": { "$ref": "#/components/responses/Error" }, "403": { "$ref": "#/components/responses/Error" }, "503": { "$ref": "#/components/responses/Error" }
         }
       }
@@ -7364,7 +7395,7 @@
           } } }
         },
         "responses": {
-          "201": { "description": "Pending CLI endpoint request.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EndpointEnrollmentResponse" } } } },
+          "201": { "description": "Pending CLI endpoint request.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PendingEndpointEnrollmentResponse" } } } },
           "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" }, "403": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" }, "503": { "$ref": "#/components/responses/Error" }
         }
       }

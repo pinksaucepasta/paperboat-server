@@ -14,7 +14,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/auth"
 )
 
-var cliScopes = []string{"account:read", "clients:revoke", "projects:read", "projects:connect", "session:refresh"}
+var cliScopes = []string{"account:read", "clients:revoke", "projects:read", "projects:connect", "session:refresh", "diagnostics:upload"}
 
 func TestDeviceAuthorizationApprovalBearerRefreshAndReplay(t *testing.T) {
 	store, router := newAuthIntegrationRouter(t)

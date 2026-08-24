@@ -203,6 +203,16 @@ func TestSQLRepositoryCLIEnrollmentLifecycleUsesServerTimeAndAccountScope(t *tes
 	if !errors.Is(replayErr, ErrConflict) && (replayErr != nil || revokedReplay.State != "revoked") {
 		t.Fatalf("revoked certificate replay=%+v err=%v, want revoked or conflict", revokedReplay, replayErr)
 	}
+
+	expiredCertificateRequest, expiredCertificateValue := newRequest("certificate_expiry", now.Add(40*time.Minute))
+	expiredCertificateIssuedAt := now.Add(41 * time.Minute)
+	if err := register(expiredCertificateRequest, 3, expiredCertificateIssuedAt, expiredCertificateIssuedAt); err != nil {
+		t.Fatalf("register expiring certificate fixture: %v", err)
+	}
+	expiredCertificateStatus, err := service.EndpointRequest(ctx, userID, expiredCertificateValue.ID, expiredCertificateIssuedAt.Add(time.Hour+time.Second))
+	if err != nil || expiredCertificateStatus.State != "revoked" {
+		t.Fatalf("expired certificate request status=%+v err=%v", expiredCertificateStatus, err)
+	}
 }
 
 func TestSQLRepositoryCLIEndpointEnrollmentReplaysOnlyBoundActiveRequests(t *testing.T) {

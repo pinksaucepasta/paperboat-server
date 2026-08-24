@@ -79,7 +79,7 @@ func TestCLIEndpointRequestReturnsFulfilledReplayState(t *testing.T) {
 	var envelope struct {
 		Data endpointEnrollmentDocument `json:"data"`
 	}
-	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil || response.Code != http.StatusCreated || envelope.Data.State != "fulfilled" {
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil || response.Code != http.StatusCreated || envelope.Data.State != "fulfilled" || strings.Contains(response.Body.String(), `"account_id"`) {
 		t.Fatalf("status=%d data=%+v err=%v body=%s", response.Code, envelope.Data, err, response.Body.String())
 	}
 }
@@ -124,7 +124,7 @@ func TestCLIEndpointRequestStatusIsAccountScopedAndExplicit(t *testing.T) {
 		return peeridentity.EndpointEnrollmentRequest{ID: requestID, UserID: userID, EndpointID: "cli_session_01", Role: peeridentity.RoleCLI, Generation: 1, State: "expired", NoisePublicKey: [32]byte{1}, QUICPublicKey: [32]byte{2}, CreatedAt: now.Add(-10 * time.Minute), ExpiresAt: now.Add(-5 * time.Minute)}, nil
 	})).ServeHTTP(response, request)
 	var envelope struct {
-		Data endpointEnrollmentDocument `json:"data"`
+		Data endpointEnrollmentStatusDocument `json:"data"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil || response.Code != http.StatusOK || envelope.Data.AccountID != "account_01" || envelope.Data.State != "expired" {
 		t.Fatalf("status=%d data=%+v err=%v body=%s", response.Code, envelope.Data, err, response.Body.String())
