@@ -22,3 +22,36 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: make check race reproducible-builds binary-size-check static-analysis vulnerability-check license-check
+
+  enrollment-database:
+    runs-on: ubuntu-latest
+    env:
+      PAPERBOAT_TEST_DATABASE_DSN: postgres://paperboat:paperboat-test-only@127.0.0.1:5432/paperboat_test?sslmode=disable
+    services:
+      postgres:
+        image: postgres:17.5-bookworm@sha256:fbcea1bd13b6a882cd6caa6b58db3ae5c102efe50ec625b3e2a5cbc50db5bfe4
+        env:
+          POSTGRES_DB: paperboat_test
+          POSTGRES_PASSWORD: paperboat-test-only
+          POSTGRES_USER: paperboat
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U paperboat -d paperboat_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify enrollment revocation migrations
+        run: |
+          go test ./internal/db -run '^(TestCLIEndpointSessionRevocationCascadeBackfillAndIsolation|TestMigration116UpgradesFrom115AndBackfillsOnlyOwningAccount)$' -count=1
+          go test ./cmd/paperboat-server -run '^TestMigrateBeforeServe' -count=1
+          go test ./internal/httpapi -run '^TestBrowserLogoutKeepsCLIClientActiveAndDeleteReturnsNoContent$' -count=1
+          go test -race ./internal/db -run '^(TestCLIEndpointSessionRevocationCascadeBackfillAndIsolation|TestMigration116UpgradesFrom115AndBackfillsOnlyOwningAccount)$' -count=1
+          go test -race ./cmd/paperboat-server -run '^TestMigrateBeforeServe' -count=1
+          go test -race ./internal/httpapi -run '^TestBrowserLogoutKeepsCLIClientActiveAndDeleteReturnsNoContent$' -count=1
