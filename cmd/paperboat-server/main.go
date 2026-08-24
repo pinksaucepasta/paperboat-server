@@ -272,6 +272,9 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	logger := slog.New(handler)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if err := migrateBeforeServe(ctx, cfg.Database); err != nil {
+		return fmt.Errorf("apply database migrations before serving: %w", err)
+	}
 
 	server, err := app.New(app.Options{
 		Config: cfg,
@@ -284,6 +287,15 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	return nil
+}
+
+func migrateBeforeServe(ctx context.Context, database config.Database) (resultErr error) {
+	store, err := db.Open(database)
+	if err != nil {
+		return err
+	}
+	defer func() { resultErr = errors.Join(resultErr, store.Close()) }()
+	return db.Migrate(ctx, store)
 }
 
 func printUsage(w io.Writer) {

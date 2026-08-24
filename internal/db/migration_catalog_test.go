@@ -101,4 +101,20 @@ func TestCLIEndpointEnrollmentLifecycleMigrationsAreClosedWorld(t *testing.T) {
 			t.Fatalf("CLI lifecycle migration missing %q: %s", required, lifecycle)
 		}
 	}
+
+	repair, err := migrationsFS.ReadFile("migrations/116_cli_endpoint_revocation_repair.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range [][]byte{
+		[]byte("CREATE OR REPLACE FUNCTION revoke_cli_peer_endpoint_for_session("),
+		[]byte("ON CONFLICT (user_id, certificate_fingerprint) DO NOTHING"),
+		[]byte("AFTER UPDATE OF state, revoked_at, revocation_reason ON cli_client_sessions"),
+		[]byte("WHERE session.state = 'revoked'"),
+		[]byte("'client_revoked','account_revoked'"),
+	} {
+		if !bytes.Contains(repair, required) {
+			t.Fatalf("CLI revocation repair migration missing %q: %s", required, repair)
+		}
+	}
 }

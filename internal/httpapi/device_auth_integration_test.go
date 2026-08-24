@@ -306,8 +306,13 @@ func TestBrowserLogoutKeepsCLIClientActiveAndDeleteReturnsNoContent(t *testing.T
 	if err := store.SQL().QueryRow(`SELECT revoked_at IS NOT NULL,coalesce(revocation_reason,'') FROM paperboat.peer_endpoint_certificates WHERE fingerprint=$1`, certificateFingerprint[:]).Scan(&certificateRevoked, &certificateReason); err != nil {
 		t.Fatal(err)
 	}
-	if revokedRequests != 2 || !certificateRevoked || certificateReason != "client_revoked" {
-		t.Fatalf("revoked requests=%d certificate_revoked=%t reason=%q", revokedRequests, certificateRevoked, certificateReason)
+	var revocationRows int
+	var revocationReason string
+	if err := store.SQL().QueryRow(`SELECT count(*),min(reason) FROM paperboat.peer_endpoint_certificate_revocations WHERE user_id=$1 AND certificate_fingerprint=$2`, userID, certificateFingerprint[:]).Scan(&revocationRows, &revocationReason); err != nil {
+		t.Fatal(err)
+	}
+	if revokedRequests != 2 || !certificateRevoked || certificateReason != "client_revoked" || revocationRows != 1 || revocationReason != "client_revoked" {
+		t.Fatalf("revoked requests=%d certificate_revoked=%t reason=%q revocation_rows=%d revocation_reason=%q", revokedRequests, certificateRevoked, certificateReason, revocationRows, revocationReason)
 	}
 }
 

@@ -1,9 +1,12 @@
 package db_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -14,6 +17,149 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
 )
+
+func TestCLIEndpointSessionRevocationCascadeBackfillAndIsolation(t *testing.T) {
+	dsn := os.Getenv("PAPERBOAT_TEST_DATABASE_DSN")
+	if dsn == "" {
+		t.Skip("set PAPERBOAT_TEST_DATABASE_DSN to run CLI endpoint revocation integration tests")
+	}
+	store, err := db.Open(config.Database{Driver: "postgres", DSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := db.Migrate(context.Background(), store); err != nil {
+		t.Fatal(err)
+	}
+
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	now := time.Now().UTC().Truncate(time.Second)
+	users := []string{"usr_revoke_a_" + suffix, "usr_revoke_b_" + suffix, "usr_revoke_backfill_" + suffix}
+	sessions := []string{"cls_revoke_a_" + suffix, "cls_revoke_b_" + suffix, "cls_revoke_backfill_" + suffix}
+	defer func() {
+		_, _ = store.SQL().Exec(`DELETE FROM paperboat.cli_client_sessions WHERE id = ANY($1::text[])`, sessions)
+		_, _ = store.SQL().Exec(`DELETE FROM paperboat.users WHERE id = ANY($1::text[])`, users)
+	}()
+
+	type fixture struct {
+		userID, sessionID, requestID string
+		fingerprint                  [sha256.Size]byte
+	}
+	create := func(label string, state string, reason *string) fixture {
+		userID := "usr_revoke_" + label + "_" + suffix
+		sessionID := "cls_revoke_" + label + "_" + suffix
+		requestID := "per_revoke_" + label + "_" + suffix
+		seed := sha256.Sum256([]byte(label + "_" + suffix))
+		root := append([]byte(nil), seed[:]...)
+		rootFingerprint := sha256.Sum256(root)
+		if _, err := store.SQL().Exec(`INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_"+label+"_"+suffix, label+"_"+suffix+"@example.test"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.SQL().Exec(`INSERT INTO paperboat.account_e2ee_roots (user_id,public_key,fingerprint) VALUES ($1,$2,$3)`, userID, root, rootFingerprint[:]); err != nil {
+			t.Fatal(err)
+		}
+		var revokedAt any
+		var revocationReason any
+		if state == "revoked" {
+			revokedAt = now
+			if reason != nil {
+				revocationReason = *reason
+			}
+		}
+		if _, err := store.SQL().Exec(`INSERT INTO paperboat.cli_client_sessions (id,user_id,client_id,client_label,device_type,os,scopes,state,created_at,approved_at,revoked_at,revocation_reason) VALUES ($1,$2,$3,'Revocation test','desktop','test',ARRAY['projects:connect'],$4,$5,$5,$6,$7)`, sessionID, userID, "client_"+label+"_"+suffix, state, now.Add(-time.Hour), revokedAt, revocationReason); err != nil {
+			t.Fatal(err)
+		}
+		certificate := bytes.Repeat(seed[:], 6)[:172]
+		fingerprint := sha256.Sum256(certificate)
+		noise := sha256.Sum256(append([]byte("noise:"), seed[:]...))
+		quic := sha256.Sum256(append([]byte("quic:"), seed[:]...))
+		if _, err := store.SQL().Exec(`INSERT INTO paperboat.peer_endpoint_certificates (fingerprint,user_id,endpoint_id,role,generation,serial,certificate,noise_public_key,quic_public_key,issued_at,expires_at,created_at) VALUES ($1,$2,$3,'cli',1,1,$4,$5,$6,$7,$8,$9)`, fingerprint[:], userID, sessionID, certificate, noise[:], quic[:], now.Add(-time.Minute), now.Add(time.Hour), now.Add(-2*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		requestHash := sha256.Sum256([]byte(requestID))
+		if _, err := store.SQL().Exec(`INSERT INTO paperboat.peer_endpoint_enrollment_requests (id,operation_key,request_hash,user_id,endpoint_id,generation,role,noise_public_key,quic_public_key,state,certificate_fingerprint,created_at,expires_at,fulfilled_at) VALUES ($1,$2,$3,$4,$5,1,'cli',$6,$7,'fulfilled',$8,$9,$10,$9)`, requestID, "operation_"+label+"_"+suffix, requestHash[:], userID, sessionID, noise[:], quic[:], fingerprint[:], now.Add(-time.Minute), now.Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		return fixture{userID: userID, sessionID: sessionID, requestID: requestID, fingerprint: fingerprint}
+	}
+
+	logoutReason := "logout"
+	accountReason := "account_suspended"
+	first := create("a", "active", nil)
+	second := create("b", "active", nil)
+	stale := create("backfill", "revoked", &logoutReason)
+
+	machineEndpoint := "machine_revoke_" + suffix
+	machineCertificate := bytes.Repeat([]byte{91}, 172)
+	machineFingerprint := sha256.Sum256(machineCertificate)
+	machineRequestID := "per_machine_revoke_" + suffix
+	machineRequestHash := sha256.Sum256([]byte(machineRequestID))
+	if _, err := store.SQL().Exec(`INSERT INTO paperboat.peer_endpoint_certificates (fingerprint,user_id,endpoint_id,role,generation,serial,certificate,noise_public_key,quic_public_key,issued_at,expires_at,created_at) VALUES ($1,$2,$3,'machine',1,1,$4,$5,$6,$7,$8,$9)`, machineFingerprint[:], first.userID, machineEndpoint, machineCertificate, bytes.Repeat([]byte{92}, 32), bytes.Repeat([]byte{93}, 32), now.Add(-time.Minute), now.Add(time.Hour), now.Add(-2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().Exec(`INSERT INTO paperboat.peer_endpoint_enrollment_requests (id,operation_key,request_hash,user_id,endpoint_id,generation,role,noise_public_key,quic_public_key,state,certificate_fingerprint,created_at,expires_at,fulfilled_at) VALUES ($1,$2,$3,$4,$5,1,'machine',$6,$7,'fulfilled',$8,$9,$10,$9)`, machineRequestID, "operation_machine_"+suffix, machineRequestHash[:], first.userID, machineEndpoint, bytes.Repeat([]byte{92}, 32), bytes.Repeat([]byte{93}, 32), machineFingerprint[:], now.Add(-time.Minute), now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	assertRevoked := func(value fixture, wantReason string) {
+		t.Helper()
+		var requestState string
+		var requestCleared bool
+		if err := store.SQL().QueryRow(`SELECT state,certificate_fingerprint IS NULL AND fulfilled_at IS NULL FROM paperboat.peer_endpoint_enrollment_requests WHERE id=$1`, value.requestID).Scan(&requestState, &requestCleared); err != nil {
+			t.Fatal(err)
+		}
+		var certificateReason string
+		var certificateRevokedAt time.Time
+		if err := store.SQL().QueryRow(`SELECT revocation_reason,revoked_at FROM paperboat.peer_endpoint_certificates WHERE fingerprint=$1`, value.fingerprint[:]).Scan(&certificateReason, &certificateRevokedAt); err != nil {
+			t.Fatal(err)
+		}
+		var ledgerCount int
+		var ledgerReason string
+		if err := store.SQL().QueryRow(`SELECT count(*),min(reason) FROM paperboat.peer_endpoint_certificate_revocations WHERE user_id=$1 AND certificate_fingerprint=$2`, value.userID, value.fingerprint[:]).Scan(&ledgerCount, &ledgerReason); err != nil {
+			t.Fatal(err)
+		}
+		if requestState != "revoked" || !requestCleared || certificateReason != wantReason || !certificateRevokedAt.Equal(now) || ledgerCount != 1 || ledgerReason != wantReason {
+			t.Fatalf("request_state=%q cleared=%t certificate_reason=%q revoked_at=%s ledger_count=%d ledger_reason=%q", requestState, requestCleared, certificateReason, certificateRevokedAt, ledgerCount, ledgerReason)
+		}
+	}
+
+	if _, err := store.SQL().Exec(`UPDATE paperboat.cli_client_sessions SET state='revoked',revoked_at=$2,revocation_reason='logout' WHERE id=$1`, first.sessionID, now); err != nil {
+		t.Fatal(err)
+	}
+	assertRevoked(first, "client_revoked")
+	if _, err := store.SQL().Exec(`UPDATE paperboat.cli_client_sessions SET state='revoked',revoked_at=$2,revocation_reason='logout' WHERE id=$1`, first.sessionID, now); err != nil {
+		t.Fatal(err)
+	}
+	assertRevoked(first, "client_revoked")
+
+	if _, err := store.SQL().Exec(`UPDATE paperboat.cli_client_sessions SET state='revoked',revoked_at=$2,revocation_reason=$3 WHERE id=$1`, second.sessionID, now, accountReason); err != nil {
+		t.Fatal(err)
+	}
+	assertRevoked(second, "account_revoked")
+
+	var machineRequestState string
+	var machineRevoked bool
+	if err := store.SQL().QueryRow(`SELECT state FROM paperboat.peer_endpoint_enrollment_requests WHERE id=$1`, machineRequestID).Scan(&machineRequestState); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SQL().QueryRow(`SELECT revoked_at IS NOT NULL FROM paperboat.peer_endpoint_certificates WHERE fingerprint=$1`, machineFingerprint[:]).Scan(&machineRevoked); err != nil {
+		t.Fatal(err)
+	}
+	if machineRequestState != "fulfilled" || machineRevoked {
+		t.Fatalf("machine request state=%q certificate_revoked=%t", machineRequestState, machineRevoked)
+	}
+
+	// Execute the same idempotent set operation used by migration 116 to prove
+	// that rows already stale before trigger installation are repaired.
+	if _, err := store.SQL().Exec(`SELECT paperboat.revoke_cli_peer_endpoint_for_session(session.id,session.user_id,session.revoked_at,session.revocation_reason) FROM paperboat.cli_client_sessions session WHERE session.id=$1 AND session.state='revoked'`, stale.sessionID); err != nil {
+		t.Fatal(err)
+	}
+	assertRevoked(stale, "client_revoked")
+	if _, err := store.SQL().Exec(`SELECT paperboat.revoke_cli_peer_endpoint_for_session($1,$2,$3,$4)`, stale.sessionID, stale.userID, now, logoutReason); err != nil {
+		t.Fatal(err)
+	}
+	assertRevoked(stale, "client_revoked")
+}
 
 func TestMigrateRequiresPostgresIntegrationDSN(t *testing.T) {
 	dsn := os.Getenv("PAPERBOAT_TEST_DATABASE_DSN")
@@ -154,7 +300,7 @@ func TestMigrateRequiresPostgresIntegrationDSN(t *testing.T) {
 	if !strings.Contains(setupModeConstraint, "client") || !strings.Contains(setupModeConstraint, "host") || strings.Contains(setupModeConstraint, "session") {
 		t.Fatalf("machine setup-mode constraint = %q, want host/client only", setupModeConstraint)
 	}
-	for _, migration := range []int{114, 115} {
+	for _, migration := range []int{114, 115, 116} {
 		var applied bool
 		if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (SELECT 1 FROM paperboat.goose_db_version WHERE version_id=$1 AND is_applied)`, migration).Scan(&applied); err != nil {
 			t.Fatal(err)
@@ -175,6 +321,13 @@ func TestMigrateRequiresPostgresIntegrationDSN(t *testing.T) {
 	}
 	if !strings.Contains(peerRoleConstraint, "machine") || !strings.Contains(peerRoleConstraint, "cli") || !strings.Contains(peerStateConstraint, "denied") || !strings.Contains(certificateReasonConstraint, "client_revoked") {
 		t.Fatalf("peer lifecycle constraints role=%q state=%q reason=%q", peerRoleConstraint, peerStateConstraint, certificateReasonConstraint)
+	}
+	var revocationLedgerReasonConstraint string
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid='paperboat.peer_endpoint_certificate_revocations'::regclass AND conname='peer_endpoint_certificate_revocations_reason_check'`).Scan(&revocationLedgerReasonConstraint); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(revocationLedgerReasonConstraint, "client_revoked") || !strings.Contains(revocationLedgerReasonConstraint, "account_revoked") {
+		t.Fatalf("peer revocation ledger reason constraint=%q", revocationLedgerReasonConstraint)
 	}
 	for _, table := range []string{"account_e2ee_roots", "peer_endpoint_certificates", "peer_session_intents", "peer_signaling_grants", "peer_relay_allocations", "peer_endpoint_enrollment_requests", "peer_endpoint_enrollment_denials", "managed_ssh_client_keys", "machine_ssh_host_key_owners", "machine_ssh_host_key_sets", "machine_ssh_host_keys"} {
 		var exists bool
