@@ -474,7 +474,14 @@ func (s *Service) machineArtifact(platform, architecture string) (MachineArtifac
 	if s.artifactRepository == "" || version == "" || len(version) > 64 || strings.ContainsAny(version, "\x00\r\n/\\") || !releases.SupportedPlatformArchitecture(platform, architecture) {
 		return MachineArtifact{}, false
 	}
-	return MachineArtifact{Schema: "paperboat.tuf-target/v1", Kind: "pb", Version: version, Platform: platform, Architecture: architecture, RepositoryURL: s.artifactRepository, TargetPath: "pb-" + platform + "-" + architecture}, true
+	targetPath := "pb-" + platform + "-" + architecture
+	if platform == "windows" {
+		targetPath += ".exe"
+	}
+	if platform == "darwin" {
+		targetPath += ".pkg"
+	}
+	return MachineArtifact{Schema: "paperboat.tuf-target/v1", Kind: "pb", Version: version, Platform: platform, Architecture: architecture, RepositoryURL: s.artifactRepository, TargetPath: targetPath}, true
 }
 
 func New(store *db.DB, auditWriter *audit.Writer, policy Policy, seats SeatAuthorizer) *Service {
