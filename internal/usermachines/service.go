@@ -2802,7 +2802,10 @@ func replaceInstallationClientSession(material []byte, session installationClien
 }
 
 func shouldIssueCLIEnrollmentSession(setupMode string) bool {
-	return strings.TrimSpace(setupMode) == "client"
+	// Host is the superset of client capabilities. Both enrollment modes
+	// receive a local CLI session; host additionally receives runtime services.
+	mode := strings.TrimSpace(setupMode)
+	return mode == "host" || mode == "client"
 }
 
 func oneShotHash(key []byte, value string) string {
