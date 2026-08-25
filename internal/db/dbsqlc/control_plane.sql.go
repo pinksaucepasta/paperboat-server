@@ -5447,6 +5447,78 @@ func (q *Queries) RevokePendingHelperEnrollments(ctx context.Context, arg Revoke
 	return result.RowsAffected(), nil
 }
 
+const revokeUnboundAuthenticatedHostHelperEnrollment = `-- name: RevokeUnboundAuthenticatedHostHelperEnrollment :one
+WITH revoked AS (
+  UPDATE control_helper_enrollments AS enrollment
+  SET state = 'revoked', revoked_at = coalesce(enrollment.revoked_at, $2)
+  WHERE enrollment.id = $1
+    AND enrollment.environment_id = $3
+    AND enrollment.state = 'pending'
+    AND enrollment.revoked_at IS NULL
+    AND NOT EXISTS (
+      SELECT 1
+      FROM user_machine_pairings AS pairing
+      WHERE pairing.authenticated_setup_helper_enrollment_id = enrollment.id
+        AND pairing.authenticated_setup_cli_session_id IS NOT NULL
+        AND pairing.authenticated_setup_mode = 'host'
+        AND pairing.state IN ('approved', 'consumed')
+    )
+  RETURNING enrollment.id
+)
+SELECT (
+  EXISTS (SELECT 1 FROM revoked)
+  OR NOT EXISTS (
+    SELECT 1 FROM control_helper_enrollments AS candidate
+    WHERE candidate.id = $1
+  )
+  OR EXISTS (
+    SELECT 1 FROM control_helper_enrollments AS candidate
+    WHERE candidate.id = $1
+      AND (
+        candidate.state IN ('expired', 'revoked')
+        OR (candidate.state = 'pending'
+          AND (candidate.revoked_at IS NOT NULL OR candidate.expires_at <= $2))
+        OR (candidate.state = 'consumed' AND NOT EXISTS (
+          SELECT 1
+          FROM control_helpers AS helper
+          JOIN control_environments AS environment ON environment.id = helper.environment_id
+          WHERE helper.id = candidate.helper_id
+            AND helper.environment_id = candidate.environment_id
+            AND helper.state = 'active'
+            AND helper.revoked_at IS NULL
+            AND environment.desired_state = 'active'
+            AND environment.revoked_at IS NULL
+        ))
+      )
+  )
+  OR EXISTS (
+    SELECT 1
+    FROM user_machine_pairings AS pairing
+    JOIN user_machines AS machine ON machine.id = pairing.user_machine_id
+    JOIN control_helper_enrollments AS enrollment
+      ON enrollment.id = pairing.authenticated_setup_helper_enrollment_id
+     AND enrollment.environment_id = machine.environment_id
+    WHERE enrollment.id = $1
+      AND pairing.authenticated_setup_cli_session_id IS NOT NULL
+      AND pairing.authenticated_setup_mode = 'host'
+      AND pairing.state IN ('approved', 'consumed')
+  )
+)::boolean AS safe
+`
+
+type RevokeUnboundAuthenticatedHostHelperEnrollmentParams struct {
+	HelperEnrollmentID string
+	Now                time.Time
+	EnvironmentID      string
+}
+
+func (q *Queries) RevokeUnboundAuthenticatedHostHelperEnrollment(ctx context.Context, arg RevokeUnboundAuthenticatedHostHelperEnrollmentParams) (bool, error) {
+	row := q.db.QueryRow(ctx, revokeUnboundAuthenticatedHostHelperEnrollment, arg.HelperEnrollmentID, arg.Now, arg.EnvironmentID)
+	var safe bool
+	err := row.Scan(&safe)
+	return safe, err
+}
+
 const selectControlPreviewForEviction = `-- name: SelectControlPreviewForEviction :one
 SELECT id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at, source_kind, owner_mode FROM control_previews
 WHERE environment_id = $1 AND state NOT IN ('removed','expired')

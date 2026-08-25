@@ -10,6 +10,27 @@ INSERT INTO user_machine_pairings (
   sqlc.arg(expires_at)
 ) RETURNING *;
 
+-- name: CreateAuthenticatedHostSetupPairing :one
+INSERT INTO user_machine_pairings (
+  id, verifier_hash, user_code, requested_display_name, platform, architecture,
+  workspace_root, runtime_versions, public_identity_key, ssh_user, ssh_port,
+  can_reuse_runtime_identity, state, approved_by_user_id, user_machine_id,
+  authenticated_setup_cli_session_id, authenticated_setup_operation_id,
+  authenticated_setup_generation, authenticated_setup_mode,
+  approved_at, expires_at
+) VALUES (
+  sqlc.arg(id), sqlc.arg(verifier_hash), sqlc.arg(user_code), sqlc.arg(requested_display_name),
+  sqlc.arg(platform), sqlc.arg(architecture), sqlc.arg(workspace_root), sqlc.arg(runtime_versions),
+  sqlc.arg(public_identity_key), sqlc.narg(ssh_user), sqlc.narg(ssh_port),
+  sqlc.arg(can_reuse_runtime_identity), 'approved', sqlc.arg(user_id), sqlc.arg(user_machine_id),
+  sqlc.arg(cli_client_session_id), sqlc.arg(operation_id), sqlc.arg(installation_generation),
+  'host', now(), sqlc.arg(expires_at)
+)
+ON CONFLICT (authenticated_setup_cli_session_id, authenticated_setup_operation_id)
+  WHERE authenticated_setup_cli_session_id IS NOT NULL
+DO UPDATE SET authenticated_setup_operation_id = excluded.authenticated_setup_operation_id
+RETURNING *;
+
 -- name: UpsertPairingMachineSSHTarget :exec
 INSERT INTO machine_ssh_targets
   (user_machine_id, machine_generation, os_user, target_port, created_at, updated_at)
@@ -198,13 +219,32 @@ WHERE user_id = sqlc.arg(user_id)
   AND state IN ('pending', 'online', 'offline');
 
 -- name: RevokeUserMachinesForEntitlement :many
-UPDATE user_machines
-SET state = 'revoked', online = false, seat_state = 'released', revoked_at = now(), updated_at = now(), version = version + 1
-WHERE user_id = sqlc.arg(user_id)
-  AND seat_state = 'occupied'
-  AND deleted_at IS NULL
-  AND state IN ('pending', 'online', 'offline')
-RETURNING id;
+WITH revoked AS (
+  UPDATE user_machines
+  SET state = 'revoked', online = false, seat_state = 'released', revoked_at = now(), updated_at = now(), version = version + 1
+  WHERE user_id = sqlc.arg(user_id)
+    AND seat_state = 'occupied'
+    AND deleted_at IS NULL
+    AND state IN ('pending', 'online', 'offline')
+  RETURNING id
+), expired_installations AS (
+  UPDATE user_machine_pairings pairing
+  SET state = 'expired', expires_at = least(pairing.expires_at, now()), updated_at = now()
+  FROM revoked
+  WHERE pairing.user_machine_id = revoked.id
+    AND pairing.authenticated_setup_cli_session_id IS NOT NULL
+    AND pairing.authenticated_setup_mode = 'host'
+    AND pairing.state IN ('approved', 'consumed')
+  RETURNING pairing.authenticated_setup_helper_enrollment_id
+), revoked_grants AS (
+  UPDATE control_helper_enrollments enrollment
+  SET state = 'revoked', revoked_at = coalesce(enrollment.revoked_at, now())
+  FROM expired_installations
+  WHERE enrollment.id = expired_installations.authenticated_setup_helper_enrollment_id
+    AND enrollment.state = 'pending'
+    AND enrollment.revoked_at IS NULL
+)
+SELECT id FROM revoked;
 
 -- name: RevokeUserMachinesOverSeatLimit :many
 WITH excess AS (
@@ -242,6 +282,32 @@ SELECT * FROM user_machine_pairings WHERE id = sqlc.arg(id);
 -- name: ExpireUserMachinePairing :execrows
 UPDATE user_machine_pairings SET state = 'expired', updated_at = now()
 WHERE id = sqlc.arg(id) AND state = 'pending' AND expires_at <= now();
+
+-- name: ExpireAuthenticatedHostSetupPairingsForMachine :execrows
+UPDATE user_machine_pairings
+SET state = 'expired', expires_at = least(expires_at, sqlc.arg(now)), updated_at = sqlc.arg(now)
+WHERE user_machine_id = sqlc.arg(user_machine_id)
+  AND authenticated_setup_cli_session_id IS NOT NULL
+  AND authenticated_setup_mode = 'host'
+  AND state IN ('approved', 'consumed');
+
+-- name: ExpireAuthenticatedHostSetupPairingsForCLISession :one
+WITH expired AS (
+  UPDATE user_machine_pairings
+  SET state = 'expired', expires_at = least(expires_at, sqlc.arg(now)), updated_at = sqlc.arg(now)
+  WHERE authenticated_setup_cli_session_id = sqlc.arg(cli_client_session_id)
+    AND authenticated_setup_mode = 'host'
+    AND state IN ('approved', 'consumed')
+  RETURNING authenticated_setup_helper_enrollment_id
+), revoked_grants AS (
+  UPDATE control_helper_enrollments enrollment
+  SET state = 'revoked', revoked_at = coalesce(enrollment.revoked_at, sqlc.arg(now))
+  FROM expired
+  WHERE enrollment.id = expired.authenticated_setup_helper_enrollment_id
+    AND enrollment.state = 'pending'
+    AND enrollment.revoked_at IS NULL
+)
+SELECT count(*)::bigint FROM expired;
 
 -- name: CreateInteractiveMachine :one
 INSERT INTO user_machines (
@@ -532,13 +598,70 @@ UPDATE user_machine_pairings
 SET installation_config_ciphertext = sqlc.arg(ciphertext), updated_at = now()
 WHERE id = sqlc.arg(id) AND state = 'approved' AND installation_config_ciphertext IS NULL;
 
+-- name: BindAuthenticatedHostSetupHelperEnrollment :execrows
+UPDATE user_machine_pairings AS pairing
+SET authenticated_setup_helper_enrollment_id = sqlc.arg(helper_enrollment_id), updated_at = now()
+WHERE pairing.id = sqlc.arg(id)
+  AND pairing.authenticated_setup_cli_session_id IS NOT NULL
+  AND pairing.authenticated_setup_mode = 'host'
+  AND pairing.state IN ('approved', 'consumed')
+  AND NOT EXISTS (
+    SELECT 1
+    FROM user_machine_pairings AS other_pairing
+    WHERE other_pairing.id <> pairing.id
+      AND other_pairing.authenticated_setup_helper_enrollment_id = sqlc.arg(helper_enrollment_id)
+      AND other_pairing.authenticated_setup_cli_session_id IS NOT NULL
+      AND other_pairing.authenticated_setup_mode = 'host'
+      AND other_pairing.state IN ('approved', 'consumed')
+  )
+  AND (
+    pairing.authenticated_setup_helper_enrollment_id IS NULL
+    OR pairing.authenticated_setup_helper_enrollment_id = sqlc.arg(helper_enrollment_id)
+    OR (
+      pairing.state = 'consumed'
+      AND pairing.installation_recovery_operation_key IS NOT NULL
+      AND EXISTS (
+        SELECT 1
+        FROM control_helper_enrollments AS previous_enrollment
+        LEFT JOIN control_helpers AS previous_helper
+          ON previous_helper.id = previous_enrollment.helper_id
+         AND previous_helper.environment_id = previous_enrollment.environment_id
+        WHERE previous_enrollment.id = pairing.authenticated_setup_helper_enrollment_id
+          AND (
+            previous_enrollment.state IN ('expired', 'revoked')
+            OR (previous_enrollment.state = 'pending'
+              AND (previous_enrollment.revoked_at IS NOT NULL OR previous_enrollment.expires_at <= now()))
+            OR (previous_enrollment.state = 'consumed'
+              AND (previous_helper.id IS NULL OR previous_helper.state <> 'active' OR previous_helper.revoked_at IS NOT NULL))
+          )
+      )
+    )
+  )
+  AND EXISTS (
+    SELECT 1
+    FROM control_helper_enrollments AS enrollment
+    JOIN user_machines AS machine ON machine.id = pairing.user_machine_id
+    WHERE enrollment.id = sqlc.arg(helper_enrollment_id)
+      AND enrollment.environment_id = machine.environment_id
+      AND enrollment.state = 'pending'
+      AND enrollment.revoked_at IS NULL
+      AND enrollment.expires_at > now()
+  );
+
 -- name: ConsumeUserMachineInstallationConfig :one
 WITH consumed AS (
   UPDATE user_machine_pairings
   SET state = 'consumed', installation_config_consumed_at = now(), updated_at = now()
   WHERE verifier_hash = sqlc.arg(verifier_hash)
     AND state = 'approved'
-    AND (sqlc.arg(public_identity_key) = '' OR public_identity_key = sqlc.arg(public_identity_key))
+    AND (
+      (authenticated_setup_cli_session_id IS NULL
+        AND (sqlc.arg(public_identity_key) = '' OR public_identity_key = sqlc.arg(public_identity_key)))
+      OR
+      (authenticated_setup_cli_session_id IS NOT NULL
+        AND sqlc.arg(public_identity_key) <> ''
+        AND public_identity_key = sqlc.arg(public_identity_key))
+    )
     AND installation_config_ciphertext IS NOT NULL
     AND installation_config_consumed_at IS NULL
     AND expires_at > now()
@@ -556,7 +679,14 @@ FROM user_machine_pairings AS pairing
 LEFT JOIN user_machine_enrollments AS enrollment
   ON enrollment.pairing_id = pairing.id
 WHERE pairing.verifier_hash = sqlc.arg(verifier_hash)
-  AND (sqlc.arg(public_identity_key) = '' OR pairing.public_identity_key = sqlc.arg(public_identity_key))
+  AND (
+    (pairing.authenticated_setup_cli_session_id IS NULL
+      AND (sqlc.arg(public_identity_key) = '' OR pairing.public_identity_key = sqlc.arg(public_identity_key)))
+    OR
+    (pairing.authenticated_setup_cli_session_id IS NOT NULL
+      AND sqlc.arg(public_identity_key) <> ''
+      AND pairing.public_identity_key = sqlc.arg(public_identity_key))
+  )
   AND pairing.state = 'consumed'
   AND pairing.installation_config_ciphertext IS NOT NULL
   AND pairing.installation_config_consumed_at IS NOT NULL

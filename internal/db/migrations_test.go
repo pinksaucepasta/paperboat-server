@@ -154,6 +154,25 @@ func TestMigrateRequiresPostgresIntegrationDSN(t *testing.T) {
 	if !strings.Contains(setupModeConstraint, "client") || !strings.Contains(setupModeConstraint, "host") || strings.Contains(setupModeConstraint, "session") {
 		t.Fatalf("machine setup-mode constraint = %q, want host/client only", setupModeConstraint)
 	}
+	var peerRoleMigrationApplied bool
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT EXISTS (SELECT 1 FROM paperboat.goose_db_version WHERE version_id=114 AND is_applied)`).Scan(&peerRoleMigrationApplied); err != nil {
+		t.Fatal(err)
+	}
+	if !peerRoleMigrationApplied {
+		t.Fatal("peer endpoint role compatibility migration was not applied")
+	}
+	var peerRoleConstraint string
+	if err := store.SQL().QueryRowContext(context.Background(), `
+		SELECT pg_get_constraintdef(oid)
+		FROM pg_constraint
+		WHERE conrelid='paperboat.peer_endpoint_enrollment_requests'::regclass
+		  AND conname='peer_endpoint_enrollment_requests_role_check'
+	`).Scan(&peerRoleConstraint); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(peerRoleConstraint, "machine") || !strings.Contains(peerRoleConstraint, "cli") {
+		t.Fatalf("peer endpoint role constraint = %q, want machine/cli only", peerRoleConstraint)
+	}
 	for _, table := range []string{"account_e2ee_roots", "peer_endpoint_certificates", "peer_session_intents", "peer_signaling_grants", "peer_relay_allocations", "peer_endpoint_enrollment_requests", "managed_ssh_client_keys", "machine_ssh_host_key_owners", "machine_ssh_host_key_sets", "machine_ssh_host_keys"} {
 		var exists bool
 		if err := store.SQL().QueryRowContext(context.Background(), `SELECT to_regclass('paperboat.' || $1) IS NOT NULL`, table).Scan(&exists); err != nil {

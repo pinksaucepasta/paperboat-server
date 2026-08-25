@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -224,7 +225,7 @@ func TestEnsureBootGrantReplacesExpiredGrantAndStopsAfterEnrollment(t *testing.T
 func TestHostedWorkloadIdentityRecoversExpiredIdentityForSameKey(t *testing.T) {
 	store := openControlPlaneTestDB(t)
 	ctx := context.Background()
-	suffix := strings.ReplaceAll(t.Name(), "/", "_")
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
 	userID := "hosted_recovery_user_" + suffix
 	environmentID := "hosted_recovery_project_" + suffix
 	machineID := "hosted_recovery_machine_" + suffix
@@ -359,7 +360,7 @@ func TestConnectorAdmissionBindsProofGenerationNodeAndReplay(t *testing.T) {
 	store := openControlPlaneTestDB(t)
 	ctx := context.Background()
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
-	suffix := strings.ReplaceAll(t.Name(), "/", "_")
+	suffix := strings.ToLower(strings.ReplaceAll(t.Name(), "/", "_"))
 	environmentID := "env_admission_" + suffix
 	seedUsageScope(t, store, suffix)
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ('usr_test','workos_admission','admission@example.test','active') ON CONFLICT (id) DO NOTHING`); err != nil {
@@ -368,7 +369,7 @@ func TestConnectorAdmissionBindsProofGenerationNodeAndReplay(t *testing.T) {
 	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.control_environments SET owner_user_id='usr_test' WHERE id=$1`, "env_"+suffix); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.control_tunnel_nodes SET state='ready',ready=true,endpoint_host='edge.example.test',endpoint_tcp_port=26023,endpoint_quic_port=26023,last_heartbeat_at=$2 WHERE id=$1`, "node_"+suffix, now); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.control_tunnel_nodes SET state='ready',ready=true,endpoint_host='edge.example.test',endpoint_tcp_port=26023,endpoint_quic_port=26023,signaling_host='signal.example.test',stun_host='stun.example.test',stun_port=3478,last_heartbeat_at=$2 WHERE id=$1`, "node_"+suffix, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id) VALUES ($1,'workspace_test','usr_test')`, environmentID); err != nil {

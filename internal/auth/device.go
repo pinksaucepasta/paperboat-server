@@ -461,6 +461,9 @@ func (s *DeviceService) revokeTx(ctx context.Context, tx *db.Tx, sid, reason str
 	if err != nil {
 		return err
 	}
+	if _, err = q.ExpireAuthenticatedHostSetupPairingsForCLISession(ctx, dbsqlc.ExpireAuthenticatedHostSetupPairingsForCLISessionParams{Now: now, CLIClientSessionID: sql.NullString{String: sid, Valid: true}}); err != nil {
+		return err
+	}
 	return s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: identity.UserID, ActorType: audit.ActorUser, EventType: "auth.client.revoked", ResourceType: "client_session", ResourceID: sid, IdempotencyKey: "auth.client.revoked:" + sid, Metadata: map[string]any{"client_id": identity.ClientID, "reason": reason}})
 }
 

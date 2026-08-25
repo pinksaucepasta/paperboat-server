@@ -241,7 +241,7 @@ WHERE id = $3
   AND state = 'consumed'
   AND installation_config_consumed_at IS NOT NULL
   AND installation_config_consumed_at > $6
-RETURNING id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port, can_reuse_runtime_identity, installation_recovery_operation_key
+RETURNING id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port, can_reuse_runtime_identity, installation_recovery_operation_key, authenticated_setup_cli_session_id, authenticated_setup_operation_id, authenticated_setup_generation, authenticated_setup_mode, authenticated_setup_helper_enrollment_id
 `
 
 type BeginUserMachineInstallationRecoveryParams struct {
@@ -288,8 +288,77 @@ func (q *Queries) BeginUserMachineInstallationRecovery(ctx context.Context, arg 
 		&i.SshPort,
 		&i.CanReuseRuntimeIdentity,
 		&i.InstallationRecoveryOperationKey,
+		&i.AuthenticatedSetupCLISessionID,
+		&i.AuthenticatedSetupOperationID,
+		&i.AuthenticatedSetupGeneration,
+		&i.AuthenticatedSetupMode,
+		&i.AuthenticatedSetupHelperEnrollmentID,
 	)
 	return i, err
+}
+
+const bindAuthenticatedHostSetupHelperEnrollment = `-- name: BindAuthenticatedHostSetupHelperEnrollment :execrows
+UPDATE user_machine_pairings AS pairing
+SET authenticated_setup_helper_enrollment_id = $1, updated_at = now()
+WHERE pairing.id = $2
+  AND pairing.authenticated_setup_cli_session_id IS NOT NULL
+  AND pairing.authenticated_setup_mode = 'host'
+  AND pairing.state IN ('approved', 'consumed')
+  AND NOT EXISTS (
+    SELECT 1
+    FROM user_machine_pairings AS other_pairing
+    WHERE other_pairing.id <> pairing.id
+      AND other_pairing.authenticated_setup_helper_enrollment_id = $1
+      AND other_pairing.authenticated_setup_cli_session_id IS NOT NULL
+      AND other_pairing.authenticated_setup_mode = 'host'
+      AND other_pairing.state IN ('approved', 'consumed')
+  )
+  AND (
+    pairing.authenticated_setup_helper_enrollment_id IS NULL
+    OR pairing.authenticated_setup_helper_enrollment_id = $1
+    OR (
+      pairing.state = 'consumed'
+      AND pairing.installation_recovery_operation_key IS NOT NULL
+      AND EXISTS (
+        SELECT 1
+        FROM control_helper_enrollments AS previous_enrollment
+        LEFT JOIN control_helpers AS previous_helper
+          ON previous_helper.id = previous_enrollment.helper_id
+         AND previous_helper.environment_id = previous_enrollment.environment_id
+        WHERE previous_enrollment.id = pairing.authenticated_setup_helper_enrollment_id
+          AND (
+            previous_enrollment.state IN ('expired', 'revoked')
+            OR (previous_enrollment.state = 'pending'
+              AND (previous_enrollment.revoked_at IS NOT NULL OR previous_enrollment.expires_at <= now()))
+            OR (previous_enrollment.state = 'consumed'
+              AND (previous_helper.id IS NULL OR previous_helper.state <> 'active' OR previous_helper.revoked_at IS NOT NULL))
+          )
+      )
+    )
+  )
+  AND EXISTS (
+    SELECT 1
+    FROM control_helper_enrollments AS enrollment
+    JOIN user_machines AS machine ON machine.id = pairing.user_machine_id
+    WHERE enrollment.id = $1
+      AND enrollment.environment_id = machine.environment_id
+      AND enrollment.state = 'pending'
+      AND enrollment.revoked_at IS NULL
+      AND enrollment.expires_at > now()
+  )
+`
+
+type BindAuthenticatedHostSetupHelperEnrollmentParams struct {
+	HelperEnrollmentID sql.NullString
+	ID                 string
+}
+
+func (q *Queries) BindAuthenticatedHostSetupHelperEnrollment(ctx context.Context, arg BindAuthenticatedHostSetupHelperEnrollmentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, bindAuthenticatedHostSetupHelperEnrollment, arg.HelperEnrollmentID, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const bindCanonicalMachineIdentity = `-- name: BindCanonicalMachineIdentity :one
@@ -542,7 +611,14 @@ WITH consumed AS (
   SET state = 'consumed', installation_config_consumed_at = now(), updated_at = now()
   WHERE verifier_hash = $1
     AND state = 'approved'
-    AND ($2 = '' OR public_identity_key = $2)
+    AND (
+      (authenticated_setup_cli_session_id IS NULL
+        AND ($2 = '' OR public_identity_key = $2))
+      OR
+      (authenticated_setup_cli_session_id IS NOT NULL
+        AND $2 <> ''
+        AND public_identity_key = $2)
+    )
     AND installation_config_ciphertext IS NOT NULL
     AND installation_config_consumed_at IS NULL
     AND expires_at > now()
@@ -623,6 +699,105 @@ func (q *Queries) CountUserMachinesForUser(ctx context.Context, userID string) (
 	var column_1 int32
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const createAuthenticatedHostSetupPairing = `-- name: CreateAuthenticatedHostSetupPairing :one
+INSERT INTO user_machine_pairings (
+  id, verifier_hash, user_code, requested_display_name, platform, architecture,
+  workspace_root, runtime_versions, public_identity_key, ssh_user, ssh_port,
+  can_reuse_runtime_identity, state, approved_by_user_id, user_machine_id,
+  authenticated_setup_cli_session_id, authenticated_setup_operation_id,
+  authenticated_setup_generation, authenticated_setup_mode,
+  approved_at, expires_at
+) VALUES (
+  $1, $2, $3, $4,
+  $5, $6, $7, $8,
+  $9, $10, $11,
+  $12, 'approved', $13, $14,
+  $15, $16, $17,
+  'host', now(), $18
+)
+ON CONFLICT (authenticated_setup_cli_session_id, authenticated_setup_operation_id)
+  WHERE authenticated_setup_cli_session_id IS NOT NULL
+DO UPDATE SET authenticated_setup_operation_id = excluded.authenticated_setup_operation_id
+RETURNING id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port, can_reuse_runtime_identity, installation_recovery_operation_key, authenticated_setup_cli_session_id, authenticated_setup_operation_id, authenticated_setup_generation, authenticated_setup_mode, authenticated_setup_helper_enrollment_id
+`
+
+type CreateAuthenticatedHostSetupPairingParams struct {
+	ID                      string
+	VerifierHash            []byte
+	UserCode                string
+	RequestedDisplayName    string
+	Platform                string
+	Architecture            string
+	WorkspaceRoot           string
+	RuntimeVersions         []byte
+	PublicIdentityKey       string
+	SshUser                 sql.NullString
+	SshPort                 sql.NullInt32
+	CanReuseRuntimeIdentity bool
+	UserID                  sql.NullString
+	UserMachineID           sql.NullString
+	CLIClientSessionID      sql.NullString
+	OperationID             sql.NullString
+	InstallationGeneration  sql.NullInt64
+	ExpiresAt               time.Time
+}
+
+func (q *Queries) CreateAuthenticatedHostSetupPairing(ctx context.Context, arg CreateAuthenticatedHostSetupPairingParams) (UserMachinePairing, error) {
+	row := q.db.QueryRow(ctx, createAuthenticatedHostSetupPairing,
+		arg.ID,
+		arg.VerifierHash,
+		arg.UserCode,
+		arg.RequestedDisplayName,
+		arg.Platform,
+		arg.Architecture,
+		arg.WorkspaceRoot,
+		arg.RuntimeVersions,
+		arg.PublicIdentityKey,
+		arg.SshUser,
+		arg.SshPort,
+		arg.CanReuseRuntimeIdentity,
+		arg.UserID,
+		arg.UserMachineID,
+		arg.CLIClientSessionID,
+		arg.OperationID,
+		arg.InstallationGeneration,
+		arg.ExpiresAt,
+	)
+	var i UserMachinePairing
+	err := row.Scan(
+		&i.ID,
+		&i.VerifierHash,
+		&i.UserCode,
+		&i.RequestedDisplayName,
+		&i.Platform,
+		&i.Architecture,
+		&i.WorkspaceRoot,
+		&i.RuntimeVersions,
+		&i.State,
+		&i.ApprovedByUserID,
+		&i.UserMachineID,
+		&i.InstallationConfigCiphertext,
+		&i.InstallationConfigNonce,
+		&i.InstallationConfigConsumedAt,
+		&i.ExpiresAt,
+		&i.ApprovedAt,
+		&i.DeniedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.PublicIdentityKey,
+		&i.SshUser,
+		&i.SshPort,
+		&i.CanReuseRuntimeIdentity,
+		&i.InstallationRecoveryOperationKey,
+		&i.AuthenticatedSetupCLISessionID,
+		&i.AuthenticatedSetupOperationID,
+		&i.AuthenticatedSetupGeneration,
+		&i.AuthenticatedSetupMode,
+		&i.AuthenticatedSetupHelperEnrollmentID,
+	)
+	return i, err
 }
 
 const createHostedMachine = `-- name: CreateHostedMachine :one
@@ -1033,7 +1208,7 @@ INSERT INTO user_machine_pairings (
   $5, $6, $7, $8, $9,
   $10, $11, $12,
   $13
-) RETURNING id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port, can_reuse_runtime_identity, installation_recovery_operation_key
+) RETURNING id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port, can_reuse_runtime_identity, installation_recovery_operation_key, authenticated_setup_cli_session_id, authenticated_setup_operation_id, authenticated_setup_generation, authenticated_setup_mode, authenticated_setup_helper_enrollment_id
 `
 
 type CreateUserMachinePairingParams struct {
@@ -1094,6 +1269,11 @@ func (q *Queries) CreateUserMachinePairing(ctx context.Context, arg CreateUserMa
 		&i.SshPort,
 		&i.CanReuseRuntimeIdentity,
 		&i.InstallationRecoveryOperationKey,
+		&i.AuthenticatedSetupCLISessionID,
+		&i.AuthenticatedSetupOperationID,
+		&i.AuthenticatedSetupGeneration,
+		&i.AuthenticatedSetupMode,
+		&i.AuthenticatedSetupHelperEnrollmentID,
 	)
 	return i, err
 }
@@ -1214,6 +1394,59 @@ type DenyUserMachinePairingParams struct {
 
 func (q *Queries) DenyUserMachinePairing(ctx context.Context, arg DenyUserMachinePairingParams) (int64, error) {
 	result, err := q.db.Exec(ctx, denyUserMachinePairing, arg.UserID, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const expireAuthenticatedHostSetupPairingsForCLISession = `-- name: ExpireAuthenticatedHostSetupPairingsForCLISession :one
+WITH expired AS (
+  UPDATE user_machine_pairings
+  SET state = 'expired', expires_at = least(expires_at, $1), updated_at = $1
+  WHERE authenticated_setup_cli_session_id = $2
+    AND authenticated_setup_mode = 'host'
+    AND state IN ('approved', 'consumed')
+  RETURNING authenticated_setup_helper_enrollment_id
+), revoked_grants AS (
+  UPDATE control_helper_enrollments enrollment
+  SET state = 'revoked', revoked_at = coalesce(enrollment.revoked_at, $1)
+  FROM expired
+  WHERE enrollment.id = expired.authenticated_setup_helper_enrollment_id
+    AND enrollment.state = 'pending'
+    AND enrollment.revoked_at IS NULL
+)
+SELECT count(*)::bigint FROM expired
+`
+
+type ExpireAuthenticatedHostSetupPairingsForCLISessionParams struct {
+	Now                time.Time
+	CLIClientSessionID sql.NullString
+}
+
+func (q *Queries) ExpireAuthenticatedHostSetupPairingsForCLISession(ctx context.Context, arg ExpireAuthenticatedHostSetupPairingsForCLISessionParams) (int64, error) {
+	row := q.db.QueryRow(ctx, expireAuthenticatedHostSetupPairingsForCLISession, arg.Now, arg.CLIClientSessionID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const expireAuthenticatedHostSetupPairingsForMachine = `-- name: ExpireAuthenticatedHostSetupPairingsForMachine :execrows
+UPDATE user_machine_pairings
+SET state = 'expired', expires_at = least(expires_at, $1), updated_at = $1
+WHERE user_machine_id = $2
+  AND authenticated_setup_cli_session_id IS NOT NULL
+  AND authenticated_setup_mode = 'host'
+  AND state IN ('approved', 'consumed')
+`
+
+type ExpireAuthenticatedHostSetupPairingsForMachineParams struct {
+	Now           time.Time
+	UserMachineID sql.NullString
+}
+
+func (q *Queries) ExpireAuthenticatedHostSetupPairingsForMachine(ctx context.Context, arg ExpireAuthenticatedHostSetupPairingsForMachineParams) (int64, error) {
+	result, err := q.db.Exec(ctx, expireAuthenticatedHostSetupPairingsForMachine, arg.Now, arg.UserMachineID)
 	if err != nil {
 		return 0, err
 	}
@@ -2311,7 +2544,14 @@ FROM user_machine_pairings AS pairing
 LEFT JOIN user_machine_enrollments AS enrollment
   ON enrollment.pairing_id = pairing.id
 WHERE pairing.verifier_hash = $1
-  AND ($2 = '' OR pairing.public_identity_key = $2)
+  AND (
+    (pairing.authenticated_setup_cli_session_id IS NULL
+      AND ($2 = '' OR pairing.public_identity_key = $2))
+    OR
+    (pairing.authenticated_setup_cli_session_id IS NOT NULL
+      AND $2 <> ''
+      AND pairing.public_identity_key = $2)
+  )
   AND pairing.state = 'consumed'
   AND pairing.installation_config_ciphertext IS NOT NULL
   AND pairing.installation_config_consumed_at IS NOT NULL
@@ -2335,7 +2575,7 @@ func (q *Queries) GetUserMachineInstallationConfigForReplay(ctx context.Context,
 }
 
 const getUserMachinePairingByID = `-- name: GetUserMachinePairingByID :one
-SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port, can_reuse_runtime_identity, installation_recovery_operation_key FROM user_machine_pairings WHERE id = $1
+SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port, can_reuse_runtime_identity, installation_recovery_operation_key, authenticated_setup_cli_session_id, authenticated_setup_operation_id, authenticated_setup_generation, authenticated_setup_mode, authenticated_setup_helper_enrollment_id FROM user_machine_pairings WHERE id = $1
 `
 
 func (q *Queries) GetUserMachinePairingByID(ctx context.Context, id string) (UserMachinePairing, error) {
@@ -2366,12 +2606,17 @@ func (q *Queries) GetUserMachinePairingByID(ctx context.Context, id string) (Use
 		&i.SshPort,
 		&i.CanReuseRuntimeIdentity,
 		&i.InstallationRecoveryOperationKey,
+		&i.AuthenticatedSetupCLISessionID,
+		&i.AuthenticatedSetupOperationID,
+		&i.AuthenticatedSetupGeneration,
+		&i.AuthenticatedSetupMode,
+		&i.AuthenticatedSetupHelperEnrollmentID,
 	)
 	return i, err
 }
 
 const getUserMachinePairingForCode = `-- name: GetUserMachinePairingForCode :one
-SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port, can_reuse_runtime_identity, installation_recovery_operation_key FROM user_machine_pairings
+SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port, can_reuse_runtime_identity, installation_recovery_operation_key, authenticated_setup_cli_session_id, authenticated_setup_operation_id, authenticated_setup_generation, authenticated_setup_mode, authenticated_setup_helper_enrollment_id FROM user_machine_pairings
 WHERE user_code = $1 FOR UPDATE
 `
 
@@ -2403,12 +2648,17 @@ func (q *Queries) GetUserMachinePairingForCode(ctx context.Context, userCode str
 		&i.SshPort,
 		&i.CanReuseRuntimeIdentity,
 		&i.InstallationRecoveryOperationKey,
+		&i.AuthenticatedSetupCLISessionID,
+		&i.AuthenticatedSetupOperationID,
+		&i.AuthenticatedSetupGeneration,
+		&i.AuthenticatedSetupMode,
+		&i.AuthenticatedSetupHelperEnrollmentID,
 	)
 	return i, err
 }
 
 const getUserMachinePairingForVerifier = `-- name: GetUserMachinePairingForVerifier :one
-SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port, can_reuse_runtime_identity, installation_recovery_operation_key FROM user_machine_pairings
+SELECT id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port, can_reuse_runtime_identity, installation_recovery_operation_key, authenticated_setup_cli_session_id, authenticated_setup_operation_id, authenticated_setup_generation, authenticated_setup_mode, authenticated_setup_helper_enrollment_id FROM user_machine_pairings
 WHERE verifier_hash = $1 FOR UPDATE
 `
 
@@ -2440,6 +2690,11 @@ func (q *Queries) GetUserMachinePairingForVerifier(ctx context.Context, verifier
 		&i.SshPort,
 		&i.CanReuseRuntimeIdentity,
 		&i.InstallationRecoveryOperationKey,
+		&i.AuthenticatedSetupCLISessionID,
+		&i.AuthenticatedSetupOperationID,
+		&i.AuthenticatedSetupGeneration,
+		&i.AuthenticatedSetupMode,
+		&i.AuthenticatedSetupHelperEnrollmentID,
 	)
 	return i, err
 }
@@ -3887,13 +4142,32 @@ func (q *Queries) RevokeUserMachineAccessSessionsForUser(ctx context.Context, ar
 }
 
 const revokeUserMachinesForEntitlement = `-- name: RevokeUserMachinesForEntitlement :many
-UPDATE user_machines
-SET state = 'revoked', online = false, seat_state = 'released', revoked_at = now(), updated_at = now(), version = version + 1
-WHERE user_id = $1
-  AND seat_state = 'occupied'
-  AND deleted_at IS NULL
-  AND state IN ('pending', 'online', 'offline')
-RETURNING id
+WITH revoked AS (
+  UPDATE user_machines
+  SET state = 'revoked', online = false, seat_state = 'released', revoked_at = now(), updated_at = now(), version = version + 1
+  WHERE user_id = $1
+    AND seat_state = 'occupied'
+    AND deleted_at IS NULL
+    AND state IN ('pending', 'online', 'offline')
+  RETURNING id
+), expired_installations AS (
+  UPDATE user_machine_pairings pairing
+  SET state = 'expired', expires_at = least(pairing.expires_at, now()), updated_at = now()
+  FROM revoked
+  WHERE pairing.user_machine_id = revoked.id
+    AND pairing.authenticated_setup_cli_session_id IS NOT NULL
+    AND pairing.authenticated_setup_mode = 'host'
+    AND pairing.state IN ('approved', 'consumed')
+  RETURNING pairing.authenticated_setup_helper_enrollment_id
+), revoked_grants AS (
+  UPDATE control_helper_enrollments enrollment
+  SET state = 'revoked', revoked_at = coalesce(enrollment.revoked_at, now())
+  FROM expired_installations
+  WHERE enrollment.id = expired_installations.authenticated_setup_helper_enrollment_id
+    AND enrollment.state = 'pending'
+    AND enrollment.revoked_at IS NULL
+)
+SELECT id FROM revoked
 `
 
 func (q *Queries) RevokeUserMachinesForEntitlement(ctx context.Context, userID string) ([]string, error) {

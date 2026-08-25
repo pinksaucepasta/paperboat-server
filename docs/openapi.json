@@ -6202,6 +6202,63 @@
         "operationId": "post_v1_machines_setup"
       }
     },
+    "/v1/machines/{machine_id}/host-setup-installations": {
+      "parameters": [
+        {"name": "machine_id", "in": "path", "required": true, "schema": {"type": "string"}}
+      ],
+      "post": {
+        "summary": "Prepare authenticated Host installation material",
+        "description": "Idempotently issues verifier-bound installation material for the exact authenticated CLI session, machine identity, Host setup mode, and installation generation after the release artifact has been verified locally.",
+        "security": [{"bearerAccess": []}],
+        "x-required-bearer-scopes": ["projects:connect"],
+        "parameters": [
+          {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 8, "maxLength": 128}}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["verifier", "public_identity_key", "installation_generation", "setup_mode", "artifact"],
+                "properties": {
+                  "verifier": {"type": "string", "minLength": 32, "maxLength": 256},
+                  "public_identity_key": {"type": "string", "minLength": 40, "maxLength": 256},
+                  "installation_generation": {"type": "integer", "minimum": 1},
+                  "setup_mode": {"const": "host"},
+                  "artifact": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["schema", "kind", "version", "platform", "architecture", "repository_url", "target_path"],
+                    "properties": {
+                      "schema": {"type": "string"},
+                      "kind": {"type": "string"},
+                      "version": {"type": "string"},
+                      "platform": {"type": "string"},
+                      "architecture": {"type": "string"},
+                      "repository_url": {"type": "string", "format": "uri"},
+                      "target_path": {"type": "string"}
+                    }
+                  },
+                  "ssh_user": {"type": "string", "minLength": 1, "maxLength": 128},
+                  "ssh_port": {"type": "integer", "minimum": 1, "maximum": 65535},
+                  "can_reuse_runtime_identity": {"type": "boolean"}
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {"description": "Authenticated Host installation material is ready for verifier-bound consumption."},
+          "400": {"$ref": "#/components/responses/Error"},
+          "401": {"$ref": "#/components/responses/Error"},
+          "409": {"$ref": "#/components/responses/Error"},
+          "503": {"$ref": "#/components/responses/Error"}
+        },
+        "operationId": "post_v1_machines_machine_id_host_setup_installations"
+      }
+    },
     "/v1/machines/{machine_id}/control-credentials": {
       "parameters": [
         {"name": "machine_id", "in": "path", "required": true, "schema": {"type": "string"}}

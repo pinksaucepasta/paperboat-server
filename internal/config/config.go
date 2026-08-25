@@ -517,6 +517,18 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.CLIAuth.VerificationURL) == "" || strings.TrimSpace(c.CLIAuth.MachinesURL) == "" || strings.TrimSpace(c.CLIAuth.ClientID) == "" || len(c.CLIAuth.AllowedScopes) == 0 {
 		errs = append(errs, fmt.Errorf("cli_auth verification_url, machines_url, client_id, and allowed_scopes are required"))
 	}
+	for _, requiredScope := range []string{"projects:read", "projects:connect"} {
+		found := false
+		for _, configuredScope := range c.CLIAuth.AllowedScopes {
+			if configuredScope == requiredScope {
+				found = true
+				break
+			}
+		}
+		if !found {
+			errs = append(errs, fmt.Errorf("cli_auth.allowed_scopes must include %s for one-shot CLI enrollment", requiredScope))
+		}
+	}
 	if verificationURL, err := url.Parse(c.CLIAuth.VerificationURL); err != nil || (verificationURL.Scheme != "http" && verificationURL.Scheme != "https") || verificationURL.Host == "" {
 		errs = append(errs, fmt.Errorf("cli_auth.verification_url must be an absolute http or https URL"))
 	}

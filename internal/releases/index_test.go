@@ -23,12 +23,9 @@ func validIndex() ReleaseIndex {
 }
 
 func componentTargets(platform, architecture, format string) []ComponentTarget {
-	result := make([]ComponentTarget, 0, 5)
-	for _, component := range []string{"cli", "runtime", "hostd", "updater", "launcher"} {
-		result = append(result, ComponentTarget{Component: component, TargetPath: component + "-" + platform + "-" + architecture,
-			SHA256: strings.Repeat("a", 64), Length: 1024, Platform: platform, Architecture: architecture, BinaryFormat: format})
-	}
-	return result
+	name := AssetName(platform, architecture)
+	return []ComponentTarget{{Component: "pb", TargetPath: name, AssetName: name, Repository: "example/paperboat-cli", DownloadURL: "https://github.com/example/paperboat-cli/releases/download/2026.08.18.1/" + name,
+		SHA256: strings.Repeat("a", 64), Length: 1024, Platform: platform, Architecture: architecture, BinaryFormat: format}}
 }
 
 func TestReleaseIndexDecodeStrictlyValidatesSignedPayload(t *testing.T) {
@@ -79,18 +76,44 @@ func TestReleaseIndexRejectsInvalidDigestAndWindow(t *testing.T) {
 	}
 }
 
+func TestReleaseIndexRejectsNonCanonicalDownloadCoordinates(t *testing.T) {
+	cases := []struct {
+		name string
+		edit func(*ReleaseIndex)
+	}{
+		{name: "repository punctuation", edit: func(index *ReleaseIndex) {
+			index.Targets[0].Repository = "example owner/paperboat-cli"
+		}},
+		{name: "repository port", edit: func(index *ReleaseIndex) {
+			index.Targets[0].DownloadURL = strings.Replace(index.Targets[0].DownloadURL, "https://github.com/", "https://github.com:443/", 1)
+		}},
+		{name: "escaped URL", edit: func(index *ReleaseIndex) {
+			index.Targets[0].DownloadURL = strings.Replace(index.Targets[0].DownloadURL, "pb-linux-amd64", "pb-linux%2Dam"+"d64", 1)
+		}},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			index := validIndex()
+			test.edit(&index)
+			if err := index.Validate(time.Now().UTC()); err == nil {
+				t.Fatal("non-canonical release coordinates were accepted")
+			}
+		})
+	}
+}
+
 func TestReleaseIndexRejectsDarwinAMD64(t *testing.T) {
 	index := validIndex()
 	index.Platform = "darwin"
 	index.Architecture = "amd64"
-	index.BinaryFormat = "mach-o"
-	index.Targets = componentTargets("darwin", "amd64", "mach-o")
+	index.BinaryFormat = "pkg"
+	index.Targets = componentTargets("darwin", "amd64", "pkg")
 	if err := index.Validate(time.Now().UTC()); err == nil {
 		t.Fatal("darwin amd64 release index was accepted")
 	}
 
 	index.Architecture = "arm64"
-	index.Targets = componentTargets("darwin", "arm64", "mach-o")
+	index.Targets = componentTargets("darwin", "arm64", "pkg")
 	if err := index.Validate(time.Now().UTC()); err != nil {
 		t.Fatalf("darwin arm64 release index was rejected: %v", err)
 	}

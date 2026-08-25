@@ -284,6 +284,7 @@ func NewRouter(opts Options) http.Handler {
 			mux.HandleFunc("POST /v1/machines/pairings", userMachinePairings(opts.Machines))
 			if opts.DeviceAuth != nil {
 				mux.Handle("POST /v1/machines/setup", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", machineSetup(opts.Machines))))
+				mux.Handle("POST /v1/machines/{machine_id}/host-setup-installations", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", authenticatedHostSetupInstallation(opts.Machines))))
 				mux.Handle("POST /v1/machines/{machine_id}/control-credentials", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", machineControlIssue(opts.Machines))))
 				mux.Handle("POST /v1/machines/{machine_id}/unpair", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", machineUnpair(opts.Machines))))
 			}

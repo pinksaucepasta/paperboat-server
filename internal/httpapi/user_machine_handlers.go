@@ -90,6 +90,52 @@ func machineSetup(service *usermachines.Service) http.HandlerFunc {
 	}
 }
 
+func authenticatedHostSetupInstallation(service *usermachines.Service) http.HandlerFunc {
+	type request struct {
+		Verifier                string                       `json:"verifier"`
+		PublicIdentityKey       string                       `json:"public_identity_key"`
+		InstallationGeneration  int64                        `json:"installation_generation"`
+		SetupMode               string                       `json:"setup_mode"`
+		Artifact                usermachines.MachineArtifact `json:"artifact"`
+		SSHUser                 string                       `json:"ssh_user,omitempty"`
+		SSHPort                 uint16                       `json:"ssh_port,omitempty"`
+		CanReuseRuntimeIdentity bool                         `json:"can_reuse_runtime_identity,omitempty"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := principalFromContext(r.Context())
+		if !ok || principal.Client == nil {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "CLI authentication is required.")
+			return
+		}
+		var body request
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&body); err != nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON.")
+			return
+		}
+		result, err := service.PrepareAuthenticatedHostSetup(r.Context(), principal.User.ID, principal.Client.SessionID, r.PathValue("machine_id"), usermachines.AuthenticatedHostSetupInput{
+			OperationID: r.Header.Get("Idempotency-Key"), Verifier: body.Verifier,
+			PublicIdentityKey: body.PublicIdentityKey, InstallationGeneration: body.InstallationGeneration,
+			SetupMode: body.SetupMode, Artifact: body.Artifact, SSHUser: body.SSHUser, SSHPort: body.SSHPort,
+			CanReuseRuntimeIdentity: body.CanReuseRuntimeIdentity,
+		})
+		switch {
+		case errors.Is(err, usermachines.ErrInvalidHostSetupInstallation):
+			writeError(w, r, http.StatusConflict, "host_setup_installation_invalid", "Host setup changed before installation material could be issued. Retry setup.")
+		case errors.Is(err, usermachines.ErrHostSetupOperationConflict):
+			writeError(w, r, http.StatusConflict, "idempotency_key_conflict", "Idempotency-Key conflicts with an existing Host setup request.")
+		case errors.Is(err, usermachines.ErrProvisioningUnavailable):
+			writeError(w, r, http.StatusServiceUnavailable, "host_setup_provisioning_unavailable", "Host setup provisioning is temporarily unavailable.")
+		case err != nil:
+			writeError(w, r, http.StatusInternalServerError, "host_setup_installation_failed", "Unable to prepare Host installation material.")
+		default:
+			noStore(w)
+			writeJSON(w, http.StatusCreated, SuccessResponse{Data: result})
+		}
+	}
+}
+
 func userMachineEnrollmentStart(service *usermachines.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := principalFromContext(r.Context())

@@ -67,12 +67,13 @@ func TestEdgeHandlerRejectsUnauthorizedAndUnknownRoutes(t *testing.T) {
 func TestEdgeAssignmentSerializesRevokedAsBoolean(t *testing.T) {
 	store := openControlPlaneTestDB(t)
 	ctx := context.Background()
-	suffix := strings.ReplaceAll(t.Name(), "/", "_") + time.Now().Format("150405.000000000")
+	suffix := strings.ToLower(strings.ReplaceAll(t.Name(), "/", "_")) + time.Now().Format("150405.000000000")
 	environment, helper, node := "env_"+suffix, "helper_"+suffix, "node_"+suffix
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_environments (id,workspace_id) VALUES ($1,$2)`, environment, "workspace_"+suffix); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_tunnel_nodes (id,edge_pool,protocol_version,process_epoch) VALUES ($1,'default','1.0',$2)`, node, "process_"+suffix); err != nil {
+	relayID := "relay-" + strings.NewReplacer("_", "-", ".", "-").Replace(suffix)
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_tunnel_nodes (id,edge_pool,relay_id,protocol_version,process_epoch) VALUES ($1,'default',$3,'1.0',$2)`, node, "process_"+suffix, relayID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_helpers (id,environment_id,state) VALUES ($1,$2,'active')`, helper, environment); err != nil {
@@ -108,8 +109,9 @@ func TestListProbeRegionsSelectsFreshReadyNodePerRegion(t *testing.T) {
 	store := openControlPlaneTestDB(t)
 	ctx := context.Background()
 	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
-	suffix := strings.ReplaceAll(t.Name(), "/", "_") + now.Format("150405")
-	nodes := []string{"node_fsn_old_" + suffix, "node_fsn_new_" + suffix, "node_hel_" + suffix, "node_stale_" + suffix, "node_unready_" + suffix}
+	suffix := now.Format("150405")
+	nodeSuffix := strings.ReplaceAll(suffix, "_", "-")
+	nodes := []string{"node-fsn-old-" + nodeSuffix, "node-fsn-new-" + nodeSuffix, "node-hel-" + nodeSuffix, "node-stale-" + nodeSuffix, "node-unready-" + nodeSuffix}
 	for _, node := range nodes {
 		t.Cleanup(func() {
 			_, _ = store.SQL().ExecContext(context.Background(), `DELETE FROM paperboat.control_tunnel_nodes WHERE id=$1`, node)

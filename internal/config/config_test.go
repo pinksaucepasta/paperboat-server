@@ -272,6 +272,30 @@ func TestValidationRejectsInvalidCLIAuthURLAndTrustedProxyCIDR(t *testing.T) {
 	}
 }
 
+func TestValidationRequiresOneShotCLIEnrollmentScopes(t *testing.T) {
+	for _, missing := range []string{"projects:read", "projects:connect"} {
+		t.Run(missing, func(t *testing.T) {
+			cfg := Default()
+			filtered := make([]string, 0, len(cfg.CLIAuth.AllowedScopes)-1)
+			for _, scope := range cfg.CLIAuth.AllowedScopes {
+				if scope != missing {
+					filtered = append(filtered, scope)
+				}
+			}
+			cfg.CLIAuth.AllowedScopes = filtered
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), "cli_auth.allowed_scopes") || !strings.Contains(err.Error(), missing) {
+				t.Fatalf("missing scope %q validation error = %v", missing, err)
+			}
+		})
+	}
+
+	cfg := Default()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("default CLI enrollment scopes rejected: %v", err)
+	}
+}
+
 func TestValidationAcceptsAbsoluteCLIAuthURLAndTrustedProxyCIDR(t *testing.T) {
 	cfg := Default()
 	cfg.CLIAuth.VerificationURL = "https://dashboard.example.com/cli/authorize"

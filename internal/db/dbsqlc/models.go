@@ -1619,30 +1619,35 @@ type UserMachineMaintenanceApproval struct {
 }
 
 type UserMachinePairing struct {
-	ID                               string
-	VerifierHash                     []byte
-	UserCode                         string
-	RequestedDisplayName             string
-	Platform                         string
-	Architecture                     string
-	WorkspaceRoot                    string
-	RuntimeVersions                  []byte
-	State                            string
-	ApprovedByUserID                 sql.NullString
-	UserMachineID                    sql.NullString
-	InstallationConfigCiphertext     []byte
-	InstallationConfigNonce          []byte
-	InstallationConfigConsumedAt     sql.NullTime
-	ExpiresAt                        time.Time
-	ApprovedAt                       sql.NullTime
-	DeniedAt                         sql.NullTime
-	CreatedAt                        time.Time
-	UpdatedAt                        time.Time
-	PublicIdentityKey                string
-	SshUser                          sql.NullString
-	SshPort                          sql.NullInt32
-	CanReuseRuntimeIdentity          bool
-	InstallationRecoveryOperationKey sql.NullString
+	ID                                   string
+	VerifierHash                         []byte
+	UserCode                             string
+	RequestedDisplayName                 string
+	Platform                             string
+	Architecture                         string
+	WorkspaceRoot                        string
+	RuntimeVersions                      []byte
+	State                                string
+	ApprovedByUserID                     sql.NullString
+	UserMachineID                        sql.NullString
+	InstallationConfigCiphertext         []byte
+	InstallationConfigNonce              []byte
+	InstallationConfigConsumedAt         sql.NullTime
+	ExpiresAt                            time.Time
+	ApprovedAt                           sql.NullTime
+	DeniedAt                             sql.NullTime
+	CreatedAt                            time.Time
+	UpdatedAt                            time.Time
+	PublicIdentityKey                    string
+	SshUser                              sql.NullString
+	SshPort                              sql.NullInt32
+	CanReuseRuntimeIdentity              bool
+	InstallationRecoveryOperationKey     sql.NullString
+	AuthenticatedSetupCLISessionID       sql.NullString
+	AuthenticatedSetupOperationID        sql.NullString
+	AuthenticatedSetupGeneration         sql.NullInt64
+	AuthenticatedSetupMode               sql.NullString
+	AuthenticatedSetupHelperEnrollmentID sql.NullString
 }
 
 type UserMachineTerminalSession struct {

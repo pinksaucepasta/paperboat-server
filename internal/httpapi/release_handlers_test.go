@@ -27,6 +27,18 @@ func TestReleaseDownloadsAreNotCutOffByAPIRequestTimeout(t *testing.T) {
 	}
 }
 
+func TestSplitEnrollmentParameterRequiresAnExactToken(t *testing.T) {
+	validToken := "4K7M9Q2V8X4N6P5R1T0W8Y2ZAB"
+	if token, hostname, ok := splitEnrollmentParameter("victus-" + validToken); !ok || token != validToken || hostname != "victus" {
+		t.Fatalf("valid enrollment parameter = %q, %q, %v", token, hostname, ok)
+	}
+	for _, token := range []string{"4K7M9Q2V8X4N6P5R1T0W8Y2Z!B", "4K7M9Q2V8X4N6P5R1T0W8Y2Zab"} {
+		if _, _, ok := splitEnrollmentParameter("victus-" + token); ok {
+			t.Fatalf("malformed enrollment token %q was accepted", token)
+		}
+	}
+}
+
 func TestReleaseEndpointsServeInstallAndTUF(t *testing.T) {
 	directory := t.TempDir()
 	if err := os.WriteFile(filepath.Join(directory, "install"), []byte("#!/bin/sh\necho paperboat\n"), 0o644); err != nil {
@@ -35,7 +47,7 @@ func TestReleaseEndpointsServeInstallAndTUF(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(directory, "windows"), []byte("Write-Output paperboat-windows\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(directory, "current.json"), []byte(`{"schema":"paperboat.release-current/v1","version":"2026.08.18.1"}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(directory, "current.json"), []byte(`{"schema":"paperboat.release-current/v1","version":"2026.08.18.1","repository":"pinksaucepasta/paperboat-cli","assets":{}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(directory, "tuf", "metadata"), 0o755); err != nil {
@@ -94,18 +106,13 @@ func TestWindowsReleaseTemplateUsesCanonicalModes(t *testing.T) {
 	template := strings.ToLower(string(body))
 	for _, required := range []string{
 		"'host'", "'client'", "--setup-mode=$setupmode",
-		"paperboat_${version}_windows_${arch}.msi",
-		"[environment]::getfolderpath([environment+specialfolder]::system)", "'msiexec.exe'",
-		"'/i'", "'/qn'", "'/norestart'", "'/l*v'", "waitforexit(1200000)",
+		"$server -notmatch '^https://'", "paperboat.release-current/v1", "pb-windows-$arch.exe", "__install", "releases/download",
 		"function assert-installedversion", "'paperboat\\bin\\pb.exe'",
 		"& $installedpb pair --server $server --enrollment-token $token --name $name \"--setup-mode=$setupmode\"",
 	} {
 		if !strings.Contains(template, required) {
 			t.Fatalf("Windows release template is missing canonical mode contract %q", required)
 		}
-	}
-	if strings.Contains(template, "pb-windows-$arch.exe") {
-		t.Fatal("Windows release template bootstraps pairing through a downloaded direct executable")
 	}
 	for _, removed := range []string{"receive", "session"} {
 		if strings.Contains(template, removed) {
@@ -136,7 +143,7 @@ func TestReleaseFilesObservesReplacedReleaseDirectory(t *testing.T) {
 		if err := os.MkdirAll(path, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		body := []byte(`{"schema":"paperboat.release-current/v1","version":"` + version + `"}`)
+		body := []byte(`{"schema":"paperboat.release-current/v1","version":"` + version + `","repository":"pinksaucepasta/paperboat-cli","assets":{}}`)
 		if err := os.WriteFile(filepath.Join(path, "current.json"), body, 0o600); err != nil {
 			t.Fatal(err)
 		}

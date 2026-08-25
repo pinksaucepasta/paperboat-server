@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -60,8 +61,8 @@ func TestDiagnosticsMetricsReportDurableBacklogs(t *testing.T) {
 	}
 	if _, err := store.SQL().ExecContext(ctx, `
 		INSERT INTO paperboat.control_tunnel_nodes
-			(id, edge_pool, protocol_version, process_epoch, state, last_heartbeat_at)
-		VALUES ($1, 'default', '1.0', $2, 'ready', $3)`, "diag_node_"+suffix, "diag_epoch_"+suffix, now.Add(-3*time.Minute)); err != nil {
+			(id, edge_pool, relay_id, protocol_version, process_epoch, state, last_heartbeat_at)
+		VALUES ($1, 'default', $4, '1.0', $2, 'ready', $3)`, "diag_node_"+suffix, "diag_epoch_"+suffix, now.Add(-3*time.Minute), "diag-node-"+strings.ReplaceAll(suffix, "_", "-")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`,

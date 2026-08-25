@@ -81,6 +81,9 @@ SELECT user_id,client_id FROM cli_client_sessions WHERE id=$1;
 -- name: GetClientSessionForInstallationRecovery :one
 SELECT user_id,client_id FROM cli_client_sessions WHERE id=$1 AND state='active' FOR UPDATE;
 
+-- name: GetActiveClientSessionForInstallation :one
+SELECT user_id,client_id FROM cli_client_sessions WHERE id=$1 AND state='active';
+
 -- name: RevokeClientSession :exec
 UPDATE cli_client_sessions SET state='revoked',revoked_at=coalesce(revoked_at,$2),revocation_reason=coalesce(revocation_reason,$3),version=version+1 WHERE id=$1;
 

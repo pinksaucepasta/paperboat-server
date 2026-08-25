@@ -582,6 +582,64 @@ UPDATE control_helper_enrollments
 SET state='revoked', revoked_at=sqlc.arg(now)
 WHERE environment_id=sqlc.arg(environment_id) AND state='pending' AND expires_at<=sqlc.arg(now) AND revoked_at IS NULL;
 
+-- name: RevokeUnboundAuthenticatedHostHelperEnrollment :one
+WITH revoked AS (
+  UPDATE control_helper_enrollments AS enrollment
+  SET state = 'revoked', revoked_at = coalesce(enrollment.revoked_at, sqlc.arg(now))
+  WHERE enrollment.id = sqlc.arg(helper_enrollment_id)
+    AND enrollment.environment_id = sqlc.arg(environment_id)
+    AND enrollment.state = 'pending'
+    AND enrollment.revoked_at IS NULL
+    AND NOT EXISTS (
+      SELECT 1
+      FROM user_machine_pairings AS pairing
+      WHERE pairing.authenticated_setup_helper_enrollment_id = enrollment.id
+        AND pairing.authenticated_setup_cli_session_id IS NOT NULL
+        AND pairing.authenticated_setup_mode = 'host'
+        AND pairing.state IN ('approved', 'consumed')
+    )
+  RETURNING enrollment.id
+)
+SELECT (
+  EXISTS (SELECT 1 FROM revoked)
+  OR NOT EXISTS (
+    SELECT 1 FROM control_helper_enrollments AS candidate
+    WHERE candidate.id = sqlc.arg(helper_enrollment_id)
+  )
+  OR EXISTS (
+    SELECT 1 FROM control_helper_enrollments AS candidate
+    WHERE candidate.id = sqlc.arg(helper_enrollment_id)
+      AND (
+        candidate.state IN ('expired', 'revoked')
+        OR (candidate.state = 'pending'
+          AND (candidate.revoked_at IS NOT NULL OR candidate.expires_at <= sqlc.arg(now)))
+        OR (candidate.state = 'consumed' AND NOT EXISTS (
+          SELECT 1
+          FROM control_helpers AS helper
+          JOIN control_environments AS environment ON environment.id = helper.environment_id
+          WHERE helper.id = candidate.helper_id
+            AND helper.environment_id = candidate.environment_id
+            AND helper.state = 'active'
+            AND helper.revoked_at IS NULL
+            AND environment.desired_state = 'active'
+            AND environment.revoked_at IS NULL
+        ))
+      )
+  )
+  OR EXISTS (
+    SELECT 1
+    FROM user_machine_pairings AS pairing
+    JOIN user_machines AS machine ON machine.id = pairing.user_machine_id
+    JOIN control_helper_enrollments AS enrollment
+      ON enrollment.id = pairing.authenticated_setup_helper_enrollment_id
+     AND enrollment.environment_id = machine.environment_id
+    WHERE enrollment.id = sqlc.arg(helper_enrollment_id)
+      AND pairing.authenticated_setup_cli_session_id IS NOT NULL
+      AND pairing.authenticated_setup_mode = 'host'
+      AND pairing.state IN ('approved', 'consumed')
+  )
+)::boolean AS safe;
+
 -- name: ConsumeControlHelperEnrollment :one
 UPDATE control_helper_enrollments AS enrollment
 SET state = 'consumed', consumed_at = sqlc.arg(now)

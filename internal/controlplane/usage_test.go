@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -292,7 +293,8 @@ func seedUsageScope(t *testing.T, store *db.DB, suffix string) {
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_environments (id, workspace_id) VALUES ($1,$2)`, "env_"+suffix, "workspace_"+suffix); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_tunnel_nodes (id,edge_pool,protocol_version,process_epoch) VALUES ($1,'default','1.0',$2)`, "node_"+suffix, "process_"+suffix); err != nil {
+	relayID := "relay-" + strings.NewReplacer("_", "-", ".", "-").Replace(suffix)
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_tunnel_nodes (id,edge_pool,relay_id,protocol_version,process_epoch) VALUES ($1,'default',$3,'1.0',$2)`, "node_"+suffix, "process_"+suffix, relayID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_routes (id,environment_id,kind,public_host,target_host,target_port) VALUES ($1,$2,'runtime_https_wss',$3,'127.0.0.1',8443)`, "route_"+suffix, "env_"+suffix, "route-"+suffix+".example.test"); err != nil {

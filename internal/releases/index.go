@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -60,6 +61,9 @@ type ReleaseIndex struct {
 type ComponentTarget struct {
 	Component    string `json:"component"`
 	TargetPath   string `json:"target_path"`
+	AssetName    string `json:"asset_name"`
+	Repository   string `json:"repository"`
+	DownloadURL  string `json:"download_url"`
 	SHA256       string `json:"sha256"`
 	Length       int64  `json:"length"`
 	Platform     string `json:"platform"`
@@ -138,24 +142,15 @@ func (i ReleaseIndex) Validate(now time.Time) error {
 }
 
 func (i ReleaseIndex) validateTargets() error {
-	required := map[string]bool{"cli": false, "runtime": false, "hostd": false, "updater": false, "launcher": false}
-	if len(i.Targets) != len(required) {
+	if len(i.Targets) != 1 {
 		return errIndexInvalid
 	}
-	for _, target := range i.Targets {
-		if _, ok := required[target.Component]; !ok || required[target.Component] {
-			return errIndexInvalid
-		}
-		if target.Platform != i.Platform || target.Architecture != i.Architecture || target.BinaryFormat != i.BinaryFormat ||
-			len(target.SHA256) != sha256.Size*2 || !isLowerHex(target.SHA256) || target.Length < 1 || target.Length > 512<<20 ||
-			!indexValuePattern.MatchString(target.TargetPath) || strings.Contains(target.TargetPath, "..") || strings.ContainsAny(target.TargetPath, "\\?#") {
-			return errIndexInvalid
-		}
-		want := target.Component + "-" + i.Platform + "-" + i.Architecture
-		if target.TargetPath != want {
-			return errIndexInvalid
-		}
-		required[target.Component] = true
+	target := i.Targets[0]
+	want := AssetName(i.Platform, i.Architecture)
+	if target.Component != "pb" || target.TargetPath != want || target.AssetName != want || !validRepository(target.Repository) || target.Platform != i.Platform || target.Architecture != i.Architecture || target.BinaryFormat != i.BinaryFormat ||
+		len(target.SHA256) != sha256.Size*2 || !isLowerHex(target.SHA256) || target.Length < 1 || target.Length > 512<<20 ||
+		!indexValuePattern.MatchString(target.TargetPath) || strings.Contains(target.TargetPath, "..") || strings.ContainsAny(target.TargetPath, "\\?#") || !ValidDownloadURL(target.DownloadURL, target.Repository, i.Version, want) {
+		return errIndexInvalid
 	}
 	return nil
 }
@@ -165,7 +160,7 @@ func validBinaryFormat(platform, format string) bool {
 	case "linux":
 		return format == "elf"
 	case "darwin":
-		return format == "mach-o"
+		return format == "pkg"
 	case "windows":
 		return format == "pe"
 	}
@@ -258,3 +253,25 @@ func (i ReleaseIndex) String() string {
 // release bundle. It intentionally validates shape only; downgrade policy is
 // a separate signed/index decision.
 func ValidVersion(value string) bool { return validVersion(value) }
+
+// AssetName is the single immutable release asset name for a native target.
+func AssetName(platform, architecture string) string {
+	name := "pb-" + platform + "-" + architecture
+	if platform == "windows" {
+		name += ".exe"
+	}
+	if platform == "darwin" {
+		name += ".pkg"
+	}
+	return name
+}
+
+func ValidDownloadURL(raw, repository, version, assetName string) bool {
+	parsed, err := url.Parse(raw)
+	canonical := "https://github.com/" + repository + "/releases/download/" + version + "/" + assetName
+	return err == nil && raw == canonical && validRepository(repository) && parsed.Scheme == "https" && parsed.Hostname() == "github.com" && parsed.Port() == "" && parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == "" && parsed.Path == "/"+repository+"/releases/download/"+version+"/"+assetName
+}
+
+func validRepository(value string) bool {
+	return githubRepositoryPattern.MatchString(value)
+}

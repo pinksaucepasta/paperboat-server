@@ -41,6 +41,8 @@ import (
 var (
 	ErrInvalidPairing               = errors.New("invalid user-machine pairing")
 	ErrInvalidSetup                 = errors.New("invalid machine setup")
+	ErrInvalidHostSetupInstallation = errors.New("invalid authenticated host setup installation")
+	ErrHostSetupOperationConflict   = errors.New("authenticated host setup operation conflicts with an existing request")
 	ErrMachineIdentityConflict      = errors.New("machine identity belongs to another account")
 	ErrMachineNameConflict          = errors.New("machine name is already in use")
 	ErrInvalidMachineName           = errors.New("invalid machine name")
@@ -232,33 +234,35 @@ type Policy struct {
 	AllowedPlatforms []string
 }
 type Service struct {
-	db                 *db.DB
-	audit              *audit.Writer
-	policy             Policy
-	seats              SeatAuthorizer
-	now                func() time.Time
-	provisioner        access.Client
-	encryptionKey      string
-	credentials        access.CredentialIssuer
-	issuer             string
-	ttl                time.Duration
-	fileTransferPolicy accessdescriptor.FileTransferPolicy
-	maxSessions        int
-	controlSigner      *mint.Provider
-	controlRuntime     userMachineHelperRuntime
-	bootstrapCommand   string
-	helperGrant        func(context.Context, string, string, string, time.Duration) (HelperEnrollmentGrant, error)
-	helperRecovery     func(context.Context, string, string, string, string, time.Duration) (HelperEnrollmentGrant, error)
-	artifactRepository string
-	artifactVersion    string
-	artifactVersionFn  func() string
-	helperBaseDomain   string
-	helperListenPort   int32
-	cliClientID        string
-	cliScopes          string
-	cliAccessLifetime  time.Duration
-	cliRefreshLifetime time.Duration
-	cliHashKey         []byte
+	db                          *db.DB
+	audit                       *audit.Writer
+	policy                      Policy
+	seats                       SeatAuthorizer
+	now                         func() time.Time
+	provisioner                 access.Client
+	encryptionKey               string
+	credentials                 access.CredentialIssuer
+	issuer                      string
+	ttl                         time.Duration
+	fileTransferPolicy          accessdescriptor.FileTransferPolicy
+	maxSessions                 int
+	controlSigner               *mint.Provider
+	controlRuntime              userMachineHelperRuntime
+	bootstrapCommand            string
+	helperGrant                 func(context.Context, string, string, string, time.Duration) (HelperEnrollmentGrant, error)
+	helperRecovery              func(context.Context, string, string, string, string, time.Duration) (HelperEnrollmentGrant, error)
+	authenticatedHelperGrant    func(context.Context, string, string, string, time.Duration, HelperEnrollmentAuthorityGuard) (HelperEnrollmentGrant, error)
+	authenticatedHelperRecovery func(context.Context, string, string, string, string, time.Duration, HelperEnrollmentAuthorityGuard) (HelperEnrollmentGrant, error)
+	artifactRepository          string
+	artifactVersion             string
+	artifactVersionFn           func() string
+	helperBaseDomain            string
+	helperListenPort            int32
+	cliClientID                 string
+	cliScopes                   string
+	cliAccessLifetime           time.Duration
+	cliRefreshLifetime          time.Duration
+	cliHashKey                  []byte
 }
 
 type userMachineHelperRuntime interface {
@@ -270,6 +274,68 @@ type HelperEnrollmentGrant struct {
 	HelperID     string    `json:"helper_id"`
 	Credential   string    `json:"credential"`
 	ExpiresAt    time.Time `json:"expires_at"`
+}
+
+// HelperEnrollmentAuthorityGuard is called inside the transaction that makes
+// authenticated Host helper authority durable. An empty enrollment ID locks
+// and validates the exact pairing before issuance; the issued ID is then bound
+// before that pairing lock is released. This serializes downgrade and session
+// revocation with both grant persistence and disclosure.
+type HelperEnrollmentAuthorityGuard func(context.Context, *db.Tx, string) error
+
+// PersistAuthenticatedHelperEnrollment keeps the pairing locked across helper
+// grant issuance and exact binding. Read committed is required because the
+// enrollment service commits the grant in its own transaction; a serializable
+// outer snapshot cannot see that new FK target. If binding cannot commit, the
+// exact unbound pending grant is revoked before the error is returned.
+func PersistAuthenticatedHelperEnrollment(ctx context.Context, store *db.DB, environmentID string, guard HelperEnrollmentAuthorityGuard, issue func(context.Context) (HelperEnrollmentGrant, error)) (HelperEnrollmentGrant, error) {
+	if store == nil || strings.TrimSpace(environmentID) == "" || guard == nil || issue == nil {
+		return HelperEnrollmentGrant{}, ErrProvisioningUnavailable
+	}
+	var result HelperEnrollmentGrant
+	err := store.InReadCommittedTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := guard(ctx, tx, ""); err != nil {
+			return err
+		}
+		grant, err := issue(ctx)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(grant.EnrollmentID) == "" {
+			return ErrProvisioningUnavailable
+		}
+		result = grant
+		return guard(ctx, tx, grant.EnrollmentID)
+	})
+	if err == nil {
+		return result, nil
+	}
+	if strings.TrimSpace(result.EnrollmentID) == "" {
+		return HelperEnrollmentGrant{}, err
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	var safe bool
+	cleanupErr := store.InReadCommittedTx(cleanupCtx, func(ctx context.Context, tx *db.Tx) error {
+		// The empty guard acquires the same pairing lock as bind/revocation.
+		// Its validation result is intentionally ignored here: an expired or
+		// revoked pairing still requires cleanup of any unbound pending grant.
+		_ = guard(ctx, tx, "")
+		var cleanupErr error
+		safe, cleanupErr = tx.Queries().RevokeUnboundAuthenticatedHostHelperEnrollment(ctx, dbsqlc.RevokeUnboundAuthenticatedHostHelperEnrollmentParams{
+			HelperEnrollmentID: result.EnrollmentID,
+			Now:                time.Now().UTC(),
+			EnvironmentID:      environmentID,
+		})
+		return cleanupErr
+	})
+	if cleanupErr == nil && !safe {
+		cleanupErr = errors.New("helper enrollment remained consumed without an active authenticated Host binding")
+	}
+	if cleanupErr != nil {
+		err = errors.Join(err, fmt.Errorf("revoke unbound authenticated Host helper enrollment: %w", cleanupErr))
+	}
+	return HelperEnrollmentGrant{}, err
 }
 
 func (s *Service) FailInstallation(ctx context.Context, enrollmentID, environmentID, helperID, helperEnrollmentID, stage string) error {
@@ -374,6 +440,13 @@ func (s *Service) ConfigureHelperEnrollment(issuer func(context.Context, string,
 
 func (s *Service) ConfigureHelperRecovery(recover func(context.Context, string, string, string, string, time.Duration) (HelperEnrollmentGrant, error)) {
 	s.helperRecovery = recover
+}
+
+func (s *Service) ConfigureAuthenticatedHelperEnrollment(
+	issuer func(context.Context, string, string, string, time.Duration, HelperEnrollmentAuthorityGuard) (HelperEnrollmentGrant, error),
+	recover func(context.Context, string, string, string, string, time.Duration, HelperEnrollmentAuthorityGuard) (HelperEnrollmentGrant, error),
+) {
+	s.authenticatedHelperGrant, s.authenticatedHelperRecovery = issuer, recover
 }
 
 func (s *Service) ConfigureMachineArtifacts(repositoryURL, version string) error {
@@ -600,6 +673,212 @@ type Pairing struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
+type AuthenticatedHostSetupInput struct {
+	OperationID, Verifier, PublicIdentityKey string
+	InstallationGeneration                   int64
+	SetupMode                                string
+	Artifact                                 MachineArtifact
+	SSHUser                                  string
+	SSHPort                                  uint16
+	CanReuseRuntimeIdentity                  bool
+}
+
+type AuthenticatedHostSetupInstallation struct {
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// PrepareAuthenticatedHostSetup issues verifier-bound installation material
+// only after an authenticated CLI has completed the exact Host transition.
+// The CLI session and operation ID make retries idempotent, while the machine
+// identity, generation, and setup mode prevent authority from crossing setup
+// attempts.
+func (s *Service) PrepareAuthenticatedHostSetup(ctx context.Context, userID, cliClientSessionID, machineID string, in AuthenticatedHostSetupInput) (AuthenticatedHostSetupInstallation, error) {
+	userID, cliClientSessionID, machineID = strings.TrimSpace(userID), strings.TrimSpace(cliClientSessionID), strings.TrimSpace(machineID)
+	in.OperationID, in.Verifier, in.PublicIdentityKey = strings.TrimSpace(in.OperationID), strings.TrimSpace(in.Verifier), strings.TrimSpace(in.PublicIdentityKey)
+	if userID == "" || cliClientSessionID == "" || machineID == "" || !execOperationIDPattern.MatchString(in.OperationID) || len(in.Verifier) < 32 || len(in.Verifier) > 256 || in.SetupMode != "host" || in.InstallationGeneration < 1 {
+		return AuthenticatedHostSetupInstallation{}, ErrInvalidHostSetupInstallation
+	}
+	verifierHash := sha256.Sum256([]byte(in.Verifier))
+	userCode, err := randomCode(8)
+	if err != nil {
+		return AuthenticatedHostSetupInstallation{}, err
+	}
+	expiresAt := s.now().UTC().Add(s.policy.PairingLifetime)
+	var machine UserMachine
+	var pairing dbsqlc.UserMachinePairing
+	err = s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		var loadErr error
+		machine, loadErr = s.authenticatedHostSetupMachineForUpdate(ctx, tx, userID, cliClientSessionID, machineID, in)
+		if loadErr != nil {
+			return loadErr
+		}
+		pairing, loadErr = tx.Queries().CreateAuthenticatedHostSetupPairing(ctx, dbsqlc.CreateAuthenticatedHostSetupPairingParams{
+			ID: newID("ump"), VerifierHash: verifierHash[:], UserCode: userCode,
+			RequestedDisplayName: machine.DisplayName, Platform: machine.Platform, Architecture: machine.Architecture,
+			WorkspaceRoot: machine.WorkspaceRoot, RuntimeVersions: machine.RuntimeVersions,
+			PublicIdentityKey:       machine.PublicIdentityKey,
+			SshUser:                 sql.NullString{String: in.SSHUser, Valid: in.SSHUser != ""},
+			SshPort:                 sql.NullInt32{Int32: int32(in.SSHPort), Valid: in.SSHPort != 0},
+			CanReuseRuntimeIdentity: in.CanReuseRuntimeIdentity,
+			UserID:                  sql.NullString{String: userID, Valid: true},
+			UserMachineID:           sql.NullString{String: machine.ID, Valid: true},
+			CLIClientSessionID:      sql.NullString{String: cliClientSessionID, Valid: true},
+			OperationID:             sql.NullString{String: in.OperationID, Valid: true},
+			InstallationGeneration:  sql.NullInt64{Int64: in.InstallationGeneration, Valid: true},
+			ExpiresAt:               expiresAt,
+		})
+		if loadErr != nil {
+			if userMachineTerminalSessionUniqueViolation(loadErr) {
+				return ErrHostSetupOperationConflict
+			}
+			return loadErr
+		}
+		if !authenticatedHostSetupPairingMatches(pairing, userID, cliClientSessionID, machine, in, verifierHash[:], s.now().UTC()) {
+			return ErrHostSetupOperationConflict
+		}
+		return nil
+	})
+	if err != nil {
+		return AuthenticatedHostSetupInstallation{}, err
+	}
+
+	var candidateCiphertext []byte
+	if len(pairing.InstallationConfigCiphertext) == 0 {
+		operationKey := "authenticated-host-setup:" + pairing.ID
+		authorityGuard := func(ctx context.Context, tx *db.Tx, helperEnrollmentID string) error {
+			_, _, guardErr := s.authenticatedHostSetupForPairingLock(ctx, tx, userID, cliClientSessionID, machineID, pairing.ID, in, verifierHash[:], "approved")
+			if guardErr != nil || helperEnrollmentID == "" {
+				return guardErr
+			}
+			if n, bindErr := tx.Queries().BindAuthenticatedHostSetupHelperEnrollment(ctx, dbsqlc.BindAuthenticatedHostSetupHelperEnrollmentParams{ID: pairing.ID, HelperEnrollmentID: sql.NullString{String: helperEnrollmentID, Valid: true}}); bindErr != nil {
+				return bindErr
+			} else if n != 1 {
+				return ErrHostSetupOperationConflict
+			}
+			return nil
+		}
+		build, buildErr := s.buildInstallationMaterial(ctx, userID, pairing, machine, operationKey, nil, in.CanReuseRuntimeIdentity, "", &in.Artifact, authorityGuard)
+		if buildErr != nil {
+			return AuthenticatedHostSetupInstallation{}, buildErr
+		}
+		candidateCiphertext = build.ciphertext
+	}
+	err = s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		currentMachine, current, loadErr := s.authenticatedHostSetupForPairingLock(ctx, tx, userID, cliClientSessionID, machineID, pairing.ID, in, verifierHash[:], "approved")
+		if loadErr != nil {
+			return loadErr
+		}
+		if len(current.InstallationConfigCiphertext) == 0 {
+			if len(candidateCiphertext) == 0 {
+				return ErrHostSetupOperationConflict
+			}
+			if n, setErr := tx.Queries().SetUserMachineInstallationConfig(ctx, dbsqlc.SetUserMachineInstallationConfigParams{ID: current.ID, Ciphertext: candidateCiphertext}); setErr != nil {
+				return setErr
+			} else if n != 1 {
+				return ErrHostSetupOperationConflict
+			}
+			current.InstallationConfigCiphertext = candidateCiphertext
+		}
+		if !s.authenticatedHostSetupMaterialMatches(current.InstallationConfigCiphertext, currentMachine.ID, currentMachine.EnvironmentID, in.InstallationGeneration, in.Artifact, current.AuthenticatedSetupHelperEnrollmentID) {
+			return ErrHostSetupOperationConflict
+		}
+		pairing = current
+		return s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "machine.host_setup_installation_prepared", ResourceType: "machine", ResourceID: currentMachine.ID, IdempotencyKey: "machine.host_setup_installation_prepared:" + cliClientSessionID + ":" + in.OperationID, Metadata: map[string]any{"installation_generation": in.InstallationGeneration}})
+	})
+	if err != nil {
+		return AuthenticatedHostSetupInstallation{}, err
+	}
+	return AuthenticatedHostSetupInstallation{ExpiresAt: pairing.ExpiresAt}, nil
+}
+
+func (s *Service) authenticatedHostSetupMachineForUpdate(ctx context.Context, tx *db.Tx, userID, cliClientSessionID, machineID string, in AuthenticatedHostSetupInput) (UserMachine, error) {
+	session, err := tx.Queries().GetClientSessionForInstallationRecovery(ctx, cliClientSessionID)
+	if errors.Is(err, sql.ErrNoRows) || err == nil && session.UserID != userID {
+		return UserMachine{}, ErrInvalidHostSetupInstallation
+	}
+	if err != nil {
+		return UserMachine{}, err
+	}
+	row, err := tx.Queries().GetUserMachineForUpdate(ctx, dbsqlc.GetUserMachineForUpdateParams{ID: machineID, UserID: userID})
+	if errors.Is(err, sql.ErrNoRows) {
+		return UserMachine{}, ErrInvalidHostSetupInstallation
+	}
+	if err != nil {
+		return UserMachine{}, err
+	}
+	return s.validateAuthenticatedHostSetupMachine(mapMachine(row), in)
+}
+
+// authenticatedHostSetupForPairingLock uses the pairing as the common
+// serialization row for issuance, Client downgrade, unpair, entitlement loss,
+// machine removal, and CLI-session revocation. Session and machine reads stay
+// non-locking after that row is held, so a transition that already owns the
+// machine or session row can wait for issuance and then revoke its grant
+// without forming a lock cycle.
+func (s *Service) authenticatedHostSetupForPairingLock(ctx context.Context, tx *db.Tx, userID, cliClientSessionID, machineID, pairingID string, in AuthenticatedHostSetupInput, verifierHash []byte, requiredState string) (UserMachine, dbsqlc.UserMachinePairing, error) {
+	pairing, err := tx.Queries().GetUserMachinePairingForVerifier(ctx, verifierHash)
+	if err != nil || pairing.ID != pairingID || pairing.State != requiredState {
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return UserMachine{}, dbsqlc.UserMachinePairing{}, err
+		}
+		return UserMachine{}, dbsqlc.UserMachinePairing{}, ErrHostSetupOperationConflict
+	}
+	session, err := tx.Queries().GetActiveClientSessionForInstallation(ctx, cliClientSessionID)
+	if err != nil || session.UserID != userID {
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return UserMachine{}, dbsqlc.UserMachinePairing{}, err
+		}
+		return UserMachine{}, dbsqlc.UserMachinePairing{}, ErrInvalidHostSetupInstallation
+	}
+	row, err := tx.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: machineID, UserID: userID})
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			return UserMachine{}, dbsqlc.UserMachinePairing{}, err
+		}
+		return UserMachine{}, dbsqlc.UserMachinePairing{}, ErrInvalidHostSetupInstallation
+	}
+	machine, err := s.validateAuthenticatedHostSetupMachine(mapMachine(row), in)
+	if err != nil {
+		return UserMachine{}, dbsqlc.UserMachinePairing{}, err
+	}
+	if !authenticatedHostSetupPairingMatches(pairing, userID, cliClientSessionID, machine, in, verifierHash, s.now().UTC()) {
+		return UserMachine{}, dbsqlc.UserMachinePairing{}, ErrHostSetupOperationConflict
+	}
+	return machine, pairing, nil
+}
+
+func (s *Service) validateAuthenticatedHostSetupMachine(machine UserMachine, in AuthenticatedHostSetupInput) (UserMachine, error) {
+	expectedArtifact, artifactAvailable := s.machineArtifact(machine.Platform, machine.Architecture)
+	if machine.SetupMode != "host" || !slices.Contains(machine.SetupRoles, "host") || machine.SeatState != "occupied" ||
+		machine.InstallationGeneration != in.InstallationGeneration || machine.PublicIdentityKey != in.PublicIdentityKey ||
+		!artifactAvailable || in.Artifact != expectedArtifact {
+		return UserMachine{}, ErrInvalidHostSetupInstallation
+	}
+	pairingInput := PairingInput{
+		Verifier: in.Verifier, DisplayName: machine.DisplayName, Platform: machine.Platform,
+		Architecture: machine.Architecture, WorkspaceRoot: machine.WorkspaceRoot,
+		PublicIdentityKey: machine.PublicIdentityKey, RuntimeVersions: machine.RuntimeVersions,
+		SSHUser: in.SSHUser, SSHPort: in.SSHPort, CanReuseRuntimeIdentity: in.CanReuseRuntimeIdentity,
+	}
+	if err := s.validatePairing(pairingInput); err != nil {
+		return UserMachine{}, ErrInvalidHostSetupInstallation
+	}
+	return machine, nil
+}
+
+func authenticatedHostSetupPairingMatches(pairing dbsqlc.UserMachinePairing, userID, cliClientSessionID string, machine UserMachine, in AuthenticatedHostSetupInput, verifierHash []byte, now time.Time) bool {
+	return pairing.AuthenticatedSetupCLISessionID.Valid && pairing.AuthenticatedSetupCLISessionID.String == cliClientSessionID &&
+		pairing.AuthenticatedSetupOperationID.Valid && pairing.AuthenticatedSetupOperationID.String == in.OperationID &&
+		pairing.AuthenticatedSetupGeneration.Valid && pairing.AuthenticatedSetupGeneration.Int64 == in.InstallationGeneration &&
+		pairing.AuthenticatedSetupMode.Valid && pairing.AuthenticatedSetupMode.String == "host" &&
+		pairing.ApprovedByUserID.Valid && pairing.ApprovedByUserID.String == userID && pairing.UserMachineID.Valid && pairing.UserMachineID.String == machine.ID &&
+		pairing.PublicIdentityKey == machine.PublicIdentityKey && bytes.Equal(pairing.VerifierHash, verifierHash) &&
+		pairing.RequestedDisplayName == machine.DisplayName && pairing.Platform == machine.Platform && pairing.Architecture == machine.Architecture &&
+		pairing.WorkspaceRoot == machine.WorkspaceRoot && bytes.Equal(pairing.RuntimeVersions, machine.RuntimeVersions) && pairing.CanReuseRuntimeIdentity == in.CanReuseRuntimeIdentity &&
+		pairing.SshUser == (sql.NullString{String: in.SSHUser, Valid: in.SSHUser != ""}) && pairing.SshPort == (sql.NullInt32{Int32: int32(in.SSHPort), Valid: in.SSHPort != 0}) &&
+		slices.Contains([]string{"approved", "consumed"}, pairing.State) && now.Before(pairing.ExpiresAt)
+}
+
 type SetupInput struct {
 	DisplayName, Platform, Architecture, WorkspaceRoot, PublicIdentityKey string
 	SetupMode                                                             string
@@ -617,6 +896,10 @@ func (s *Service) Setup(ctx context.Context, userID string, in SetupInput) (User
 		!slices.Contains(s.policy.AllowedPlatforms, strings.ToLower(strings.TrimSpace(in.Platform))) ||
 		keyErr != nil || len(publicKey) != ed25519.PublicKeySize {
 		return UserMachine{}, ErrInvalidSetup
+	}
+	artifact, artifactAvailable := s.machineArtifact(strings.ToLower(strings.TrimSpace(in.Platform)), strings.ToLower(strings.TrimSpace(in.Architecture)))
+	if !artifactAvailable || s.issuer == "" || s.helperListenPort == 0 {
+		return UserMachine{}, ErrProvisioningUnavailable
 	}
 	in.WorkspaceRoot = workspaceRoot
 	if len(in.RuntimeVersions) == 0 {
@@ -638,6 +921,12 @@ func (s *Service) Setup(ctx context.Context, userID string, in SetupInput) (User
 			row, err = tx.Queries().AddUserMachineInteractiveRole(ctx, dbsqlc.AddUserMachineInteractiveRoleParams{ID: row.ID, UserID: userID, DisplayName: strings.TrimSpace(in.DisplayName), RuntimeVersions: in.RuntimeVersions, SetupMode: in.SetupMode, ConfiguredCapabilities: configuredCapabilities(in.SetupMode)})
 			if err != nil {
 				return err
+			}
+			if in.SetupMode == "host" {
+				row, err = s.completeAuthenticatedHostSetupTx(ctx, tx, userID, row, in)
+				if err != nil {
+					return err
+				}
 			}
 			if wasHost && in.SetupMode != "host" {
 				downgradedFromHost = true
@@ -678,6 +967,12 @@ func (s *Service) Setup(ctx context.Context, userID string, in SetupInput) (User
 		if _, err := tx.Queries().CreateControlEnvironment(ctx, dbsqlc.CreateControlEnvironmentParams{ID: environmentID, WorkspaceID: row.ID, OwnerUserID: sql.NullString{String: userID, Valid: true}, DesiredState: "active"}); err != nil {
 			return err
 		}
+		if in.SetupMode == "host" {
+			row, err = s.completeAuthenticatedHostSetupTx(ctx, tx, userID, row, in)
+			if err != nil {
+				return err
+			}
+		}
 		if in.SetupMode == "client" {
 			if err := s.ensureHelperRoute(ctx, tx, row.ID, row.EnvironmentID); err != nil {
 				return err
@@ -692,14 +987,45 @@ func (s *Service) Setup(ctx context.Context, userID string, in SetupInput) (User
 	if err == nil && downgradedFromHost {
 		err = s.RevokeUserMachineSessions(ctx, result.ID, "machine_mode_downgraded")
 	}
-	if err == nil && in.SetupMode == "client" {
-		artifact, ok := s.machineArtifact(result.Platform, result.Architecture)
-		if !ok || s.issuer == "" || s.helperListenPort == 0 {
-			return UserMachine{}, ErrProvisioningUnavailable
-		}
+	if err == nil {
 		result.Installation = &ClientInstallation{ControlURL: s.issuer, HelperListenAddress: fmt.Sprintf("127.0.0.1:%d", s.helperListenPort), Artifact: artifact}
 	}
 	return result, err
+}
+
+func (s *Service) completeAuthenticatedHostSetupTx(ctx context.Context, tx *db.Tx, userID string, row dbsqlc.UserMachine, in SetupInput) (dbsqlc.UserMachine, error) {
+	var err error
+	row, err = tx.Queries().AddUserMachineHostRole(ctx, dbsqlc.AddUserMachineHostRoleParams{
+		ID: row.ID, UserID: userID, DisplayName: strings.TrimSpace(in.DisplayName),
+		WorkspaceRoot: in.WorkspaceRoot, RuntimeVersions: in.RuntimeVersions,
+	})
+	if err != nil {
+		return dbsqlc.UserMachine{}, err
+	}
+	if row.SeatState == "released" {
+		if s.seats == nil {
+			return dbsqlc.UserMachine{}, ErrSeatUnavailable
+		}
+		if err := s.seats.ReserveUserMachineSeat(ctx, tx, userID); err != nil {
+			return dbsqlc.UserMachine{}, err
+		}
+		if n, err := tx.Queries().OccupyUserMachineSeat(ctx, dbsqlc.OccupyUserMachineSeatParams{ID: row.ID, UserID: userID}); err != nil || n != 1 {
+			if err != nil {
+				return dbsqlc.UserMachine{}, err
+			}
+			return dbsqlc.UserMachine{}, ErrEnrollmentState
+		}
+		row.SeatState = "occupied"
+	} else if row.SeatState != "occupied" {
+		return dbsqlc.UserMachine{}, ErrEnrollmentState
+	}
+	if err := s.ensureHelperRoute(ctx, tx, row.ID, row.EnvironmentID); err != nil {
+		return dbsqlc.UserMachine{}, err
+	}
+	if _, err := s.ensureCurrentBandwidthPeriod(ctx, tx, row); err != nil {
+		return dbsqlc.UserMachine{}, err
+	}
+	return row, nil
 }
 
 func (s *Service) CreatePairing(ctx context.Context, in PairingInput) (Pairing, error) {
@@ -1582,6 +1908,7 @@ func (s *Service) approve(ctx context.Context, userID, userCode, setupMode strin
 	var pairingID string
 	var alreadyProvisioned bool
 	var pairingExpired bool
+	var downgradedFromHost bool
 	err := s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		pairing, err := tx.Queries().GetUserMachinePairingForCode(ctx, strings.TrimSpace(userCode))
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1647,6 +1974,19 @@ func (s *Service) approve(ctx context.Context, userID, userCode, setupMode strin
 				}
 				row.SeatState = "occupied"
 			}
+			wasHost := row.SetupMode == "host" || slices.Contains(row.SetupRoles, "host")
+			if setupMode == "client" {
+				row, err = tx.Queries().AddUserMachineInteractiveRole(ctx, dbsqlc.AddUserMachineInteractiveRoleParams{ID: row.ID, UserID: userID, DisplayName: pairing.RequestedDisplayName, RuntimeVersions: pairing.RuntimeVersions, SetupMode: "client", ConfiguredCapabilities: configuredCapabilities("client")})
+				if err != nil {
+					return err
+				}
+				if wasHost {
+					downgradedFromHost = true
+					if err := s.revokeHostAuthorityTx(ctx, tx, row.ID, row.EnvironmentID, s.now().UTC()); err != nil {
+						return err
+					}
+				}
+			}
 			// A retry may come from a preserved machine record after local runtime
 			// identity loss. Bind the pairing's authenticated key before issuing
 			// material so the returned installation generation is authoritative.
@@ -1704,6 +2044,7 @@ func (s *Service) approve(ctx context.Context, userID, userCode, setupMode strin
 				} else if existing.SeatState != "occupied" {
 					return ErrEnrollmentState
 				}
+				wasHost := existing.SetupMode == "host" || slices.Contains(existing.SetupRoles, "host")
 				row, err := tx.Queries().AddUserMachineHostRole(ctx, dbsqlc.AddUserMachineHostRoleParams{ID: existing.ID, UserID: userID, DisplayName: pairing.RequestedDisplayName, WorkspaceRoot: pairing.WorkspaceRoot, RuntimeVersions: pairing.RuntimeVersions})
 				if err != nil {
 					return err
@@ -1712,6 +2053,12 @@ func (s *Service) approve(ctx context.Context, userID, userCode, setupMode strin
 					row, err = tx.Queries().AddUserMachineInteractiveRole(ctx, dbsqlc.AddUserMachineInteractiveRoleParams{ID: existing.ID, UserID: userID, DisplayName: pairing.RequestedDisplayName, RuntimeVersions: pairing.RuntimeVersions, SetupMode: "client", ConfiguredCapabilities: configuredCapabilities("client")})
 					if err != nil {
 						return err
+					}
+					if wasHost {
+						downgradedFromHost = true
+						if err := s.revokeHostAuthorityTx(ctx, tx, row.ID, row.EnvironmentID, s.now().UTC()); err != nil {
+							return err
+						}
 					}
 				}
 				if err := s.ensureHelperRoute(ctx, tx, row.ID, row.EnvironmentID); err != nil {
@@ -1831,6 +2178,7 @@ func (s *Service) approve(ctx context.Context, userID, userCode, setupMode strin
 			} else if existing.SeatState != "occupied" {
 				return ErrEnrollmentState
 			}
+			wasHost := existing.SetupMode == "host" || slices.Contains(existing.SetupRoles, "host")
 			row, err := tx.Queries().AddUserMachineHostRole(ctx, dbsqlc.AddUserMachineHostRoleParams{
 				ID: existing.ID, UserID: userID, DisplayName: pairing.RequestedDisplayName,
 				WorkspaceRoot: pairing.WorkspaceRoot, RuntimeVersions: pairing.RuntimeVersions,
@@ -1842,6 +2190,12 @@ func (s *Service) approve(ctx context.Context, userID, userCode, setupMode strin
 				row, err = tx.Queries().AddUserMachineInteractiveRole(ctx, dbsqlc.AddUserMachineInteractiveRoleParams{ID: existing.ID, UserID: userID, DisplayName: pairing.RequestedDisplayName, RuntimeVersions: pairing.RuntimeVersions, SetupMode: "client", ConfiguredCapabilities: configuredCapabilities("client")})
 				if err != nil {
 					return err
+				}
+				if wasHost {
+					downgradedFromHost = true
+					if err := s.revokeHostAuthorityTx(ctx, tx, row.ID, row.EnvironmentID, s.now().UTC()); err != nil {
+						return err
+					}
 				}
 			}
 			if err := s.ensureHelperRoute(ctx, tx, row.ID, row.EnvironmentID); err != nil {
@@ -1877,6 +2231,9 @@ func (s *Service) approve(ctx context.Context, userID, userCode, setupMode strin
 	})
 	if pairingExpired {
 		return UserMachine{}, ErrPairingExpired
+	}
+	if err == nil && downgradedFromHost {
+		err = s.RevokeUserMachineSessions(ctx, out.ID, "machine_mode_downgraded")
 	}
 	if err != nil || alreadyProvisioned {
 		return out, err
@@ -2004,7 +2361,7 @@ type installationClientSession struct {
 	Scope        string `json:"scope"`
 }
 
-func (s *Service) buildInstallationMaterial(ctx context.Context, userID string, pairing dbsqlc.UserMachinePairing, machine UserMachine, operationKey string, existingClientSession json.RawMessage, reuseRuntimeIdentity bool, expectedHelperID string) (installationMaterialBuild, error) {
+func (s *Service) buildInstallationMaterial(ctx context.Context, userID string, pairing dbsqlc.UserMachinePairing, machine UserMachine, operationKey string, existingClientSession json.RawMessage, reuseRuntimeIdentity bool, expectedHelperID string, exactArtifact *MachineArtifact, authorityGuard HelperEnrollmentAuthorityGuard) (installationMaterialBuild, error) {
 	if strings.TrimSpace(s.encryptionKey) == "" {
 		return installationMaterialBuild{}, errors.New("user-machine provisioning encryption is not configured")
 	}
@@ -2012,8 +2369,11 @@ func (s *Service) buildInstallationMaterial(ctx context.Context, userID string, 
 		return installationMaterialBuild{}, ErrProvisioningUnavailable
 	}
 	artifact, ok := s.machineArtifact(machine.Platform, machine.Architecture)
+	if exactArtifact != nil {
+		artifact, ok = *exactArtifact, *exactArtifact == artifact
+	}
 	if !ok {
-		return installationMaterialBuild{}, errors.New("user-machine artifact is unavailable")
+		return installationMaterialBuild{}, errors.New("user-machine artifact is unavailable or changed")
 	}
 	enrollment, err := s.db.Queries().GetUserMachineEnrollmentForPairingUpdate(ctx, sql.NullString{String: pairing.ID, Valid: true})
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -2046,7 +2406,14 @@ func (s *Service) buildInstallationMaterial(ctx context.Context, userID string, 
 			if !operationKeyProvided {
 				operationKey = "byod-recovery:" + pairing.ID
 			}
-			grant, err = s.helperRecovery(ctx, userID, operationKey, machine.EnvironmentID, existing.ID, 10*time.Minute)
+			if authorityGuard != nil {
+				if s.authenticatedHelperRecovery == nil {
+					return installationMaterialBuild{}, ErrProvisioningUnavailable
+				}
+				grant, err = s.authenticatedHelperRecovery(ctx, userID, operationKey, machine.EnvironmentID, existing.ID, 10*time.Minute, authorityGuard)
+			} else {
+				grant, err = s.helperRecovery(ctx, userID, operationKey, machine.EnvironmentID, existing.ID, 10*time.Minute)
+			}
 			if err != nil {
 				return installationMaterialBuild{}, err
 			}
@@ -2060,7 +2427,14 @@ func (s *Service) buildInstallationMaterial(ctx context.Context, userID string, 
 		// active for this recovery generation.
 		return installationMaterialBuild{}, ErrInstallationUnavailable
 	} else {
-		grant, err = s.helperGrant(ctx, userID, operationKey, machine.EnvironmentID, 10*time.Minute)
+		if authorityGuard != nil {
+			if s.authenticatedHelperGrant == nil {
+				return installationMaterialBuild{}, ErrProvisioningUnavailable
+			}
+			grant, err = s.authenticatedHelperGrant(ctx, userID, operationKey, machine.EnvironmentID, 10*time.Minute, authorityGuard)
+		} else {
+			grant, err = s.helperGrant(ctx, userID, operationKey, machine.EnvironmentID, 10*time.Minute)
+		}
 		if err != nil {
 			return installationMaterialBuild{}, err
 		}
@@ -2116,7 +2490,7 @@ func (s *Service) provisionApprovedUserMachineWithOperation(ctx context.Context,
 	if err != nil {
 		return err
 	}
-	build, err := s.buildInstallationMaterial(ctx, userID, pairing, machine, operationKey, nil, pairing.CanReuseRuntimeIdentity, "")
+	build, err := s.buildInstallationMaterial(ctx, userID, pairing, machine, operationKey, nil, pairing.CanReuseRuntimeIdentity, "", nil, nil)
 	if err != nil {
 		return err
 	}
@@ -2155,6 +2529,8 @@ func (s *Service) provisionRecoveredUserMachine(ctx context.Context, userID stri
 	}
 	var existingClientSession json.RawMessage
 	var expectedHelperID string
+	var exactArtifact *MachineArtifact
+	var authenticatedBinding *authenticatedHostSetupMaterialBinding
 	if len(pairing.InstallationConfigCiphertext) > 0 {
 		plaintext, err := secrets.Decrypt(s.encryptionKey, pairing.InstallationConfigCiphertext)
 		if err != nil {
@@ -2175,8 +2551,20 @@ func (s *Service) provisionRecoveredUserMachine(ctx context.Context, userID stri
 		if err != nil {
 			return nil, ErrInstallationUnavailable
 		}
+		if pairing.AuthenticatedSetupCLISessionID.Valid {
+			binding, err := authenticatedHostSetupMaterialBindingFromPlaintext([]byte(plaintext))
+			if err != nil || binding.MachineID != machine.ID || binding.EnvironmentID != machine.EnvironmentID || binding.Generation != pairing.AuthenticatedSetupGeneration.Int64 || binding.SetupMode != "host" {
+				return nil, ErrInstallationUnavailable
+			}
+			authenticatedBinding = &binding
+			exactArtifact = &binding.Artifact
+		}
 	}
-	build, err := s.buildInstallationMaterial(ctx, userID, pairing, machine, operationKey, existingClientSession, runtimeEnrolled, expectedHelperID)
+	var authorityGuard HelperEnrollmentAuthorityGuard
+	if authenticatedBinding != nil {
+		authorityGuard = s.authenticatedHostSetupRecoveryAuthorityGuard(userID, pairing, *authenticatedBinding)
+	}
+	build, err := s.buildInstallationMaterial(ctx, userID, pairing, machine, operationKey, existingClientSession, runtimeEnrolled, expectedHelperID, exactArtifact, authorityGuard)
 	if err != nil {
 		return nil, err
 	}
@@ -2201,6 +2589,18 @@ func (s *Service) provisionRecoveredUserMachine(ctx context.Context, userID stri
 	}
 	var completed int64
 	err = s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if authorityGuard != nil {
+			if guardErr := authorityGuard(ctx, tx, ""); guardErr != nil {
+				return guardErr
+			}
+			current, currentErr := tx.Queries().GetUserMachinePairingForVerifier(ctx, pairing.VerifierHash)
+			if currentErr != nil {
+				return currentErr
+			}
+			if !s.authenticatedHostSetupMaterialMatches(build.ciphertext, machine.ID, machine.EnvironmentID, machine.InstallationGeneration, *exactArtifact, current.AuthenticatedSetupHelperEnrollmentID) {
+				return ErrInstallationUnavailable
+			}
+		}
 		if build.existingCLISessionID != "" {
 			identity, identityErr := tx.Queries().GetClientSessionForInstallationRecovery(ctx, build.existingCLISessionID)
 			if identityErr != nil || identity.UserID != userID || identity.ClientID != s.cliClientID {
@@ -2285,6 +2685,104 @@ func helperIDFromInstallationMaterial(material []byte) (string, error) {
 		return "", ErrInstallationUnavailable
 	}
 	return fields.HelperID, nil
+}
+
+type authenticatedHostSetupMaterialBinding struct {
+	MachineID     string          `json:"user_machine_id"`
+	EnvironmentID string          `json:"environment_id"`
+	HelperID      string          `json:"helper_id"`
+	EnrollmentID  string          `json:"enrollment_id"`
+	ReuseIdentity bool            `json:"reuse_identity"`
+	Generation    int64           `json:"installation_generation"`
+	SetupMode     string          `json:"setup_mode"`
+	Artifact      MachineArtifact `json:"artifact"`
+}
+
+func authenticatedHostSetupMaterialBindingFromPlaintext(material []byte) (authenticatedHostSetupMaterialBinding, error) {
+	var binding authenticatedHostSetupMaterialBinding
+	if err := json.Unmarshal(material, &binding); err != nil || binding.MachineID == "" || binding.EnvironmentID == "" || binding.HelperID == "" ||
+		(!binding.ReuseIdentity && binding.EnrollmentID == "") || binding.Generation < 1 || binding.SetupMode != "host" {
+		return authenticatedHostSetupMaterialBinding{}, ErrInstallationUnavailable
+	}
+	return binding, nil
+}
+
+func (s *Service) authenticatedHostSetupMaterialMatches(ciphertext []byte, machineID, environmentID string, generation int64, artifact MachineArtifact, helperEnrollmentID sql.NullString) bool {
+	plaintext, err := secrets.Decrypt(s.encryptionKey, ciphertext)
+	if err != nil {
+		return false
+	}
+	binding, err := authenticatedHostSetupMaterialBindingFromPlaintext([]byte(plaintext))
+	if err != nil || binding.MachineID != machineID || binding.EnvironmentID != environmentID || binding.Generation != generation || binding.SetupMode != "host" || binding.Artifact != artifact {
+		return false
+	}
+	if binding.ReuseIdentity {
+		return binding.EnrollmentID == ""
+	}
+	return helperEnrollmentID.Valid && binding.EnrollmentID == helperEnrollmentID.String
+}
+
+func (s *Service) authenticatedHostSetupRecoveryAuthorityGuard(userID string, expected dbsqlc.UserMachinePairing, binding authenticatedHostSetupMaterialBinding) HelperEnrollmentAuthorityGuard {
+	return func(ctx context.Context, tx *db.Tx, helperEnrollmentID string) error {
+		if !expected.AuthenticatedSetupCLISessionID.Valid || !expected.AuthenticatedSetupOperationID.Valid || !expected.AuthenticatedSetupGeneration.Valid ||
+			!expected.AuthenticatedSetupMode.Valid || expected.AuthenticatedSetupMode.String != "host" || !expected.InstallationRecoveryOperationKey.Valid ||
+			expected.InstallationRecoveryOperationKey.String == "" {
+			return ErrInstallationUnavailable
+		}
+		current, err := tx.Queries().GetUserMachinePairingForVerifier(ctx, expected.VerifierHash)
+		if err != nil {
+			if !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			return ErrInstallationUnavailable
+		}
+		session, err := tx.Queries().GetActiveClientSessionForInstallation(ctx, expected.AuthenticatedSetupCLISessionID.String)
+		if err != nil || session.UserID != userID {
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			return ErrInstallationUnavailable
+		}
+		row, err := tx.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: binding.MachineID, UserID: userID})
+		if err != nil {
+			if !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			return ErrInstallationUnavailable
+		}
+		machine := mapMachine(row)
+		artifact, artifactAvailable := s.machineArtifact(machine.Platform, machine.Architecture)
+		if machine.EnvironmentID != binding.EnvironmentID || machine.SetupMode != "host" || !slices.Contains(machine.SetupRoles, "host") || machine.SeatState != "occupied" ||
+			machine.InstallationGeneration != binding.Generation || machine.PublicIdentityKey != expected.PublicIdentityKey || !artifactAvailable || artifact != binding.Artifact {
+			return ErrInstallationUnavailable
+		}
+		if !authenticatedHostSetupRecoveryPairingMatches(current, expected, userID, machine, binding, s.now().UTC()) {
+			return ErrInstallationUnavailable
+		}
+		if helperEnrollmentID != "" {
+			if n, bindErr := tx.Queries().BindAuthenticatedHostSetupHelperEnrollment(ctx, dbsqlc.BindAuthenticatedHostSetupHelperEnrollmentParams{ID: expected.ID, HelperEnrollmentID: sql.NullString{String: helperEnrollmentID, Valid: true}}); bindErr != nil {
+				return bindErr
+			} else if n != 1 {
+				return ErrInstallationUnavailable
+			}
+		}
+		return nil
+	}
+}
+
+func authenticatedHostSetupRecoveryPairingMatches(current, expected dbsqlc.UserMachinePairing, userID string, machine UserMachine, binding authenticatedHostSetupMaterialBinding, now time.Time) bool {
+	return current.ID == expected.ID && bytes.Equal(current.VerifierHash, expected.VerifierHash) && current.PublicIdentityKey == expected.PublicIdentityKey &&
+		current.ApprovedByUserID.Valid && current.ApprovedByUserID.String == userID && current.UserMachineID.Valid && current.UserMachineID.String == machine.ID &&
+		current.AuthenticatedSetupCLISessionID == expected.AuthenticatedSetupCLISessionID && current.AuthenticatedSetupOperationID == expected.AuthenticatedSetupOperationID &&
+		current.AuthenticatedSetupGeneration.Valid && current.AuthenticatedSetupGeneration == expected.AuthenticatedSetupGeneration && current.AuthenticatedSetupGeneration.Int64 == binding.Generation &&
+		current.AuthenticatedSetupMode.Valid && current.AuthenticatedSetupMode == expected.AuthenticatedSetupMode && current.AuthenticatedSetupMode.String == "host" &&
+		current.RequestedDisplayName == machine.DisplayName && current.Platform == machine.Platform && current.Architecture == machine.Architecture &&
+		current.WorkspaceRoot == machine.WorkspaceRoot && bytes.Equal(current.RuntimeVersions, machine.RuntimeVersions) &&
+		current.SshUser == expected.SshUser && current.SshPort == expected.SshPort && current.CanReuseRuntimeIdentity == expected.CanReuseRuntimeIdentity &&
+		current.State == "consumed" && current.InstallationConfigConsumedAt.Valid && current.InstallationConfigConsumedAt == expected.InstallationConfigConsumedAt &&
+		current.InstallationRecoveryOperationKey.Valid && current.InstallationRecoveryOperationKey == expected.InstallationRecoveryOperationKey &&
+		bytes.Equal(current.InstallationConfigCiphertext, expected.InstallationConfigCiphertext) && current.ExpiresAt.Equal(expected.ExpiresAt) && now.Before(current.ExpiresAt) &&
+		binding.MachineID == machine.ID && binding.EnvironmentID == machine.EnvironmentID && binding.Artifact.Platform == machine.Platform && binding.Artifact.Architecture == machine.Architecture
 }
 
 func replaceInstallationClientSession(material []byte, session installationClientSession) ([]byte, error) {
@@ -2884,6 +3382,12 @@ func (s *Service) Unpair(ctx context.Context, userID, machineID string) (UserMac
 }
 
 func (s *Service) revokeHostAuthorityTx(ctx context.Context, tx *db.Tx, machineID, environmentID string, now time.Time) error {
+	if err := expireAuthenticatedHostSetupPairingsTx(ctx, tx, machineID, now); err != nil {
+		return err
+	}
+	if _, err := tx.Queries().RevokeControlHelperEnrollmentsForEnvironment(ctx, dbsqlc.RevokeControlHelperEnrollmentsForEnvironmentParams{EnvironmentID: environmentID, RevokedAt: sql.NullTime{Time: now, Valid: true}}); err != nil {
+		return err
+	}
 	if _, err := tx.Queries().StopCodexSessionsForMachine(ctx, dbsqlc.StopCodexSessionsForMachineParams{MachineID: machineID, Now: sql.NullTime{Time: now, Valid: true}}); err != nil {
 		return err
 	}
@@ -2894,6 +3398,11 @@ func (s *Service) revokeHostAuthorityTx(ctx context.Context, tx *db.Tx, machineI
 		return err
 	}
 	_, err := tx.Queries().RevokeControlConfigRepositoryLeasesForEnvironment(ctx, dbsqlc.RevokeControlConfigRepositoryLeasesForEnvironmentParams{EnvironmentID: sql.NullString{String: environmentID, Valid: true}, Now: sql.NullTime{Time: now, Valid: true}})
+	return err
+}
+
+func expireAuthenticatedHostSetupPairingsTx(ctx context.Context, tx *db.Tx, machineID string, now time.Time) error {
+	_, err := tx.Queries().ExpireAuthenticatedHostSetupPairingsForMachine(ctx, dbsqlc.ExpireAuthenticatedHostSetupPairingsForMachineParams{Now: now, UserMachineID: sql.NullString{String: machineID, Valid: true}})
 	return err
 }
 
@@ -2926,6 +3435,9 @@ func (s *Service) revokeUserMachineControl(ctx context.Context, userID, userMach
 		}
 		if changed != 1 {
 			return ErrNotFound
+		}
+		if err := expireAuthenticatedHostSetupPairingsTx(ctx, tx, machine.ID, now); err != nil {
+			return err
 		}
 		return s.revokeEnvironmentControlTx(ctx, tx, machine.EnvironmentID, now)
 	})
@@ -3038,6 +3550,9 @@ func (s *Service) ReconcileUserMachineEntitlement(ctx context.Context, userID st
 			}
 			for _, machine := range machines {
 				revokedMachineIDs = append(revokedMachineIDs, machine.ID)
+				if err := expireAuthenticatedHostSetupPairingsTx(ctx, tx, machine.ID, now); err != nil {
+					return err
+				}
 				if err := s.revokeEnvironmentControlTx(ctx, tx, machine.EnvironmentID, now); err != nil {
 					return err
 				}
@@ -3049,6 +3564,9 @@ func (s *Service) ReconcileUserMachineEntitlement(ctx context.Context, userID st
 			return err
 		}
 		for _, environment := range environments {
+			if err := expireAuthenticatedHostSetupPairingsTx(ctx, tx, environment.ID, now); err != nil {
+				return err
+			}
 			if err := s.revokeEnvironmentControlTx(ctx, tx, environment.EnvironmentID, now); err != nil {
 				return err
 			}

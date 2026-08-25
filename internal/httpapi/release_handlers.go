@@ -138,7 +138,7 @@ func splitEnrollmentParameter(value string) (string, string, bool) {
 		return "", "", false
 	}
 	hostname, token := value[:separator], value[separator+1:]
-	if !enrollmentHostnamePattern.MatchString(hostname) || enrollmentTokenPattern.FindString(token) == "" {
+	if !enrollmentHostnamePattern.MatchString(hostname) || !enrollmentTokenPattern.MatchString(token) {
 		return "", "", false
 	}
 	if _, reserved := reservedEnrollmentHostnames[hostname]; reserved {

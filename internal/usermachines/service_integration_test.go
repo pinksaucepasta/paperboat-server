@@ -13,15 +13,19 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pinksaucepasta/paperboat-server/internal/access"
 	"github.com/pinksaucepasta/paperboat-server/internal/accessdescriptor"
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
+	authservice "github.com/pinksaucepasta/paperboat-server/internal/auth"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
+	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
 	"github.com/pinksaucepasta/paperboat-server/internal/mint"
@@ -223,6 +227,820 @@ func TestOnlineClientMachineCanUpgradeToHost(t *testing.T) {
 	}
 	if upgraded.ID != machine.ID || upgraded.SetupMode != "host" || upgraded.SeatState != "occupied" || !upgraded.Capabilities.TerminalHost.Configured {
 		t.Fatalf("upgraded=%+v", upgraded)
+	}
+}
+
+func TestAuthenticatedClientToHostSetupIsBoundIdempotentAndRollsBack(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID, clientSessionID := "usr_authenticated_host_"+suffix, "cls_authenticated_host_"+suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_"+suffix, "authenticated-host-"+suffix+"@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.cli_client_sessions (id,user_id,client_id,client_label,device_type,os,scopes,state,created_at,approved_at) VALUES ($1,$2,$3,'Host setup test','desktop','linux',ARRAY['projects:connect'],'active',$4,$4)`, clientSessionID, userID, "client_"+suffix, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machine_entitlements (id,user_id,provider_subscription_id,product_code,state,seat_quantity,allowance_bytes,current_period_start,current_period_end) VALUES ($1,$2,$3,'connected-test','active',1,1048576,now()-interval '1 hour',now()+interval '1 hour')`, "ume_authenticated_host_"+suffix, userID, "sub_authenticated_host_"+suffix); err != nil {
+		t.Fatal(err)
+	}
+	public, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey := base64.RawURLEncoding.EncodeToString(public)
+	setupSigner, err := mint.NewEphemeral(time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setupEnrollments := controlplane.NewEnrollmentService(store, setupSigner, audit.NewWriter(store), "https://api.paperboat.test", "authenticated-host-setup-enrollment-key")
+	service := New(store, audit.NewWriter(store), Policy{PairingLifetime: 10 * time.Minute, AllowedPlatforms: []string{"linux"}}, testSeatAuthorizer{})
+	service.ConfigureProvisioning(access.FakeClient{}, "authenticated-host-key")
+	service.ConfigureAccess(nil, "https://api.paperboat.test", 5*time.Minute)
+	service.ConfigureHelperEnrollment(func(_ context.Context, gotUserID, operationKey, environmentID string, _ time.Duration) (HelperEnrollmentGrant, error) {
+		if gotUserID != userID || !strings.Contains(operationKey, clientSessionID) || environmentID == "" {
+			t.Fatalf("helper grant binding user=%q operation=%q environment=%q", gotUserID, operationKey, environmentID)
+		}
+		return HelperEnrollmentGrant{EnrollmentID: "henr_authenticated_" + suffix, HelperID: "helper_authenticated_" + suffix, Credential: strings.Repeat("c", 48), ExpiresAt: time.Now().UTC().Add(10 * time.Minute)}, nil
+	})
+	service.ConfigureAuthenticatedHelperEnrollment(
+		func(ctx context.Context, gotUserID, operationKey, environmentID string, lifetime time.Duration, guard HelperEnrollmentAuthorityGuard) (HelperEnrollmentGrant, error) {
+			if gotUserID != userID || !strings.HasPrefix(operationKey, "authenticated-host-setup:ump_") || environmentID == "" {
+				return HelperEnrollmentGrant{}, fmt.Errorf("helper grant binding user=%q operation=%q environment=%q", gotUserID, operationKey, environmentID)
+			}
+			return PersistAuthenticatedHelperEnrollment(ctx, store, environmentID, guard, func(ctx context.Context) (HelperEnrollmentGrant, error) {
+				grant, issueErr := setupEnrollments.Issue(ctx, gotUserID, operationKey, environmentID, lifetime)
+				return HelperEnrollmentGrant{EnrollmentID: grant.EnrollmentID, HelperID: grant.HelperID, Credential: grant.Credential, ExpiresAt: grant.ExpiresAt}, issueErr
+			})
+		},
+		func(context.Context, string, string, string, string, time.Duration, HelperEnrollmentAuthorityGuard) (HelperEnrollmentGrant, error) {
+			return HelperEnrollmentGrant{}, errors.New("unexpected authenticated helper recovery")
+		},
+	)
+	if err := service.ConfigureRuntimeRoute("runtime.example.test", 38080); err != nil {
+		t.Fatal(err)
+	}
+	configureSignedTestArtifact(t, service)
+	input := SetupInput{SetupMode: "client", DisplayName: "Studio", Platform: "linux", Architecture: "amd64", WorkspaceRoot: "/home/paperboat", PublicIdentityKey: publicKey, RuntimeVersions: json.RawMessage(`{"pb":"test"}`)}
+	clientMachine, err := service.Setup(ctx, userID, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.SetupMode = "host"
+	hostMachine, err := service.Setup(ctx, userID, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hostMachine.ID != clientMachine.ID || hostMachine.SetupMode != "host" || !slices.Contains(hostMachine.SetupRoles, "host") || hostMachine.SeatState != "occupied" || hostMachine.InstallationGeneration != clientMachine.InstallationGeneration+1 || hostMachine.Installation == nil {
+		t.Fatalf("authenticated Host transition = %+v, previous = %+v", hostMachine, clientMachine)
+	}
+	verifier := "authenticated-host-verifier-" + suffix
+	request := AuthenticatedHostSetupInput{OperationID: "host-setup-operation-" + suffix, Verifier: verifier, PublicIdentityKey: publicKey, InstallationGeneration: hostMachine.InstallationGeneration, SetupMode: "host", Artifact: hostMachine.Installation.Artifact}
+	first, err := service.PrepareAuthenticatedHostSetup(ctx, userID, clientSessionID, hostMachine.ID, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.PrepareAuthenticatedHostSetup(ctx, userID, clientSessionID, hostMachine.ID, request)
+	if err != nil || second.ExpiresAt != first.ExpiresAt {
+		t.Fatalf("idempotent prepare = %+v, err=%v; first=%+v", second, err, first)
+	}
+	var pairingCount int
+	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.user_machine_pairings WHERE authenticated_setup_cli_session_id=$1 AND authenticated_setup_operation_id=$2`, clientSessionID, request.OperationID).Scan(&pairingCount); err != nil || pairingCount != 1 {
+		t.Fatalf("authenticated pairing count=%d err=%v", pairingCount, err)
+	}
+	if _, err := service.ConsumeInstallation(ctx, verifier); !errors.Is(err, ErrInstallationUnavailable) {
+		t.Fatalf("authenticated Host material accepted a legacy identity-less consume: %v", err)
+	}
+	material, err := service.ConsumeInstallationForIdentity(ctx, verifier, publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields struct {
+		MachineID  string `json:"user_machine_id"`
+		Generation int64  `json:"installation_generation"`
+		SetupMode  string `json:"setup_mode"`
+	}
+	if err := json.Unmarshal(material, &fields); err != nil || fields.MachineID != hostMachine.ID || fields.Generation != hostMachine.InstallationGeneration || fields.SetupMode != "host" {
+		t.Fatalf("material=%s fields=%+v err=%v", material, fields, err)
+	}
+	conflict := request
+	conflict.Verifier += "-different"
+	if _, err := service.PrepareAuthenticatedHostSetup(ctx, userID, clientSessionID, hostMachine.ID, conflict); !errors.Is(err, ErrHostSetupOperationConflict) {
+		t.Fatalf("operation conflict error=%v", err)
+	}
+	conflict = request
+	conflict.Artifact.Version += "-different"
+	service.ConfigureMachineArtifactVersionResolver(func() string { return conflict.Artifact.Version })
+	if _, err := service.PrepareAuthenticatedHostSetup(ctx, userID, clientSessionID, hostMachine.ID, conflict); !errors.Is(err, ErrHostSetupOperationConflict) {
+		t.Fatalf("artifact conflict error=%v", err)
+	}
+	service.ConfigureMachineArtifactVersionResolver(nil)
+	input.SetupMode = "client"
+	rolledBack, err := service.Setup(ctx, userID, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rolledBack.SetupMode != "client" || !reflect.DeepEqual(rolledBack.SetupRoles, []string{"interactive"}) || rolledBack.SeatState != "released" || rolledBack.InstallationGeneration != hostMachine.InstallationGeneration+1 || rolledBack.Installation == nil {
+		t.Fatalf("Client rollback=%+v", rolledBack)
+	}
+	var pairingState string
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state FROM paperboat.user_machine_pairings WHERE authenticated_setup_cli_session_id=$1 AND authenticated_setup_operation_id=$2`, clientSessionID, request.OperationID).Scan(&pairingState); err != nil || pairingState != "expired" {
+		t.Fatalf("rolled-back authenticated pairing state=%q err=%v", pairingState, err)
+	}
+	if _, err := service.ConsumeInstallationForIdentity(ctx, verifier, publicKey); !errors.Is(err, ErrInstallationExpired) {
+		t.Fatalf("rolled-back authenticated material remained recoverable: %v", err)
+	}
+
+	// Pairing creation and material persistence are separate short transactions
+	// because helper enrollment can perform its own database work. Hold material
+	// construction between them and prove a concurrent downgrade wins the second
+	// lock, expires the pairing, and leaves no consumable Host authority.
+	input.SetupMode = "host"
+	raceHost, err := service.Setup(ctx, userID, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raceHelperID, raceEnrollmentID := "helper_authenticated_race_"+suffix, "henr_authenticated_race_"+suffix
+	authorityPersisted, releaseAuthority := make(chan struct{}), make(chan struct{})
+	var authorityPersistedOnce sync.Once
+	service.ConfigureAuthenticatedHelperEnrollment(
+		func(ctx context.Context, gotUserID, operationKey, environmentID string, _ time.Duration, guard HelperEnrollmentAuthorityGuard) (HelperEnrollmentGrant, error) {
+			expiresAt := time.Now().UTC().Add(10 * time.Minute)
+			err := store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+				if err := guard(ctx, tx, ""); err != nil {
+					return err
+				}
+				if _, err := tx.Queries().CreateControlHelper(ctx, dbsqlc.CreateControlHelperParams{ID: raceHelperID, EnvironmentID: environmentID}); err != nil {
+					return err
+				}
+				if _, err := tx.Queries().CreateControlHelperEnrollment(ctx, dbsqlc.CreateControlHelperEnrollmentParams{
+					ID: raceEnrollmentID, EnvironmentID: environmentID, HelperID: raceHelperID,
+					JtiHash: []byte("race-jti-" + suffix), OperationKey: "helper-enrollment:" + gotUserID + ":" + operationKey,
+					RequestHash: []byte("race-request-" + suffix), GrantCiphertext: []byte("race-grant-" + suffix), ExpiresAt: expiresAt,
+				}); err != nil {
+					return err
+				}
+				if err := guard(ctx, tx, raceEnrollmentID); err != nil {
+					return err
+				}
+				authorityPersistedOnce.Do(func() { close(authorityPersisted) })
+				select {
+				case <-releaseAuthority:
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			})
+			return HelperEnrollmentGrant{EnrollmentID: raceEnrollmentID, HelperID: raceHelperID, Credential: strings.Repeat("r", 48), ExpiresAt: expiresAt}, err
+		},
+		func(context.Context, string, string, string, string, time.Duration, HelperEnrollmentAuthorityGuard) (HelperEnrollmentGrant, error) {
+			return HelperEnrollmentGrant{}, errors.New("unexpected authenticated helper recovery")
+		},
+	)
+	raceVerifier := "authenticated-host-race-verifier-" + suffix
+	raceRequest := AuthenticatedHostSetupInput{OperationID: "host-setup-race-operation-" + suffix, Verifier: raceVerifier, PublicIdentityKey: publicKey, InstallationGeneration: raceHost.InstallationGeneration, SetupMode: "host", Artifact: raceHost.Installation.Artifact}
+	type prepareResult struct {
+		value AuthenticatedHostSetupInstallation
+		err   error
+	}
+	raceStartedAt := time.Now()
+	raceCtx, cancelRace := context.WithTimeout(ctx, 60*time.Second)
+	defer cancelRace()
+	var releaseAuthorityOnce sync.Once
+	releaseInitialAuthority := func() { releaseAuthorityOnce.Do(func() { close(releaseAuthority) }) }
+	defer releaseInitialAuthority()
+	prepareDone := make(chan prepareResult, 1)
+	go func() {
+		value, prepareErr := service.PrepareAuthenticatedHostSetup(raceCtx, userID, clientSessionID, raceHost.ID, raceRequest)
+		prepareDone <- prepareResult{value: value, err: prepareErr}
+	}()
+	select {
+	case <-authorityPersisted:
+	case <-raceCtx.Done():
+		fatalWithPostgresLocks(t, store, "authenticated Host helper authority was not persisted after %s: %v", time.Since(raceStartedAt), raceCtx.Err())
+	}
+	authorityPersistedAt := time.Now()
+	input.SetupMode = "client"
+	type rollbackResult struct {
+		value UserMachine
+		err   error
+	}
+	rollbackDone := make(chan rollbackResult, 1)
+	go func() {
+		value, rollbackErr := service.Setup(raceCtx, userID, input)
+		rollbackDone <- rollbackResult{value: value, err: rollbackErr}
+	}()
+	if err := waitForUserMachineRowLock(raceCtx, store, raceHost.ID); err != nil {
+		fatalWithPostgresLocks(t, store, "Client rollback did not acquire the machine row before authority release after %s: %v", time.Since(authorityPersistedAt), err)
+	}
+	rollbackLockedAt := time.Now()
+	releaseInitialAuthority()
+	authorityReleasedAt := time.Now()
+	postReleaseCtx, cancelPostRelease := context.WithTimeout(raceCtx, 30*time.Second)
+	defer cancelPostRelease()
+	var rolledBackConcurrently rollbackResult
+	select {
+	case rolledBackConcurrently = <-rollbackDone:
+	case <-postReleaseCtx.Done():
+		fatalWithPostgresLocks(t, store, "concurrent Client rollback did not finish within the post-release bound; authority=%s machine_lock=%s post_release=%s: %v", authorityPersistedAt.Sub(raceStartedAt), rollbackLockedAt.Sub(authorityPersistedAt), time.Since(authorityReleasedAt), postReleaseCtx.Err())
+	}
+	rollbackFinishedAt := time.Now()
+	if rolledBackConcurrently.err != nil {
+		t.Fatal(rolledBackConcurrently.err)
+	}
+	concurrentRollback := rolledBackConcurrently.value
+	if concurrentRollback.SetupMode != "client" || concurrentRollback.InstallationGeneration != raceHost.InstallationGeneration+1 {
+		t.Fatalf("concurrent Client rollback=%+v", concurrentRollback)
+	}
+	var prepared prepareResult
+	select {
+	case prepared = <-prepareDone:
+	case <-postReleaseCtx.Done():
+		fatalWithPostgresLocks(t, store, "authenticated Host material construction did not finish within the post-release bound; rollback=%s post_release=%s: %v", rollbackFinishedAt.Sub(authorityReleasedAt), time.Since(authorityReleasedAt), postReleaseCtx.Err())
+	}
+	t.Logf("authenticated Host issuance race completed: authority=%s machine_lock=%s rollback_after_release=%s total_after_release=%s", authorityPersistedAt.Sub(raceStartedAt), rollbackLockedAt.Sub(authorityPersistedAt), rollbackFinishedAt.Sub(authorityReleasedAt), time.Since(authorityReleasedAt))
+	if prepared.err != nil && !errors.Is(prepared.err, ErrInvalidHostSetupInstallation) && !errors.Is(prepared.err, ErrHostSetupOperationConflict) {
+		t.Fatalf("stale Host issuance result=%+v err=%v", prepared.value, prepared.err)
+	}
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state FROM paperboat.user_machine_pairings WHERE authenticated_setup_cli_session_id=$1 AND authenticated_setup_operation_id=$2`, clientSessionID, raceRequest.OperationID).Scan(&pairingState); err != nil || pairingState != "expired" {
+		t.Fatalf("concurrent rollback pairing state=%q err=%v", pairingState, err)
+	}
+	if _, err := service.ConsumeInstallationForIdentity(ctx, raceVerifier, publicKey); !errors.Is(err, ErrInstallationExpired) {
+		t.Fatalf("concurrently rolled-back Host material remained consumable: %v", err)
+	}
+	var grantState string
+	var grantRevokedAt sql.NullTime
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state,revoked_at FROM paperboat.control_helper_enrollments WHERE id=$1 AND helper_id=$2`, raceEnrollmentID, raceHelperID).Scan(&grantState, &grantRevokedAt); err != nil || grantState != "revoked" || !grantRevokedAt.Valid {
+		t.Fatalf("concurrently rolled-back helper grant state=%q revoked_at=%v err=%v", grantState, grantRevokedAt, err)
+	}
+
+	// A consumed authenticated setup may recover material after a lost response.
+	// Persist a real replacement grant under the recovery guard, race a Client
+	// downgrade against it, and prove neither that grant nor refreshed material
+	// survives the downgrade.
+	input.SetupMode = "host"
+	recoveryHost, err := service.Setup(ctx, userID, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recoverySeedGrant HelperEnrollmentGrant
+	service.ConfigureAuthenticatedHelperEnrollment(
+		func(ctx context.Context, gotUserID, operationKey, environmentID string, lifetime time.Duration, guard HelperEnrollmentAuthorityGuard) (HelperEnrollmentGrant, error) {
+			grant, issueErr := PersistAuthenticatedHelperEnrollment(ctx, store, environmentID, guard, func(ctx context.Context) (HelperEnrollmentGrant, error) {
+				issued, err := setupEnrollments.Issue(ctx, gotUserID, operationKey, environmentID, lifetime)
+				return HelperEnrollmentGrant{EnrollmentID: issued.EnrollmentID, HelperID: issued.HelperID, Credential: issued.Credential, ExpiresAt: issued.ExpiresAt}, err
+			})
+			if issueErr == nil {
+				recoverySeedGrant = grant
+			}
+			return grant, issueErr
+		},
+		func(context.Context, string, string, string, string, time.Duration, HelperEnrollmentAuthorityGuard) (HelperEnrollmentGrant, error) {
+			return HelperEnrollmentGrant{}, errors.New("unexpected authenticated helper recovery")
+		},
+	)
+	recoveryVerifier := "authenticated-host-recovery-verifier-" + suffix
+	recoveryRequest := AuthenticatedHostSetupInput{OperationID: "host-setup-recovery-operation-" + suffix, Verifier: recoveryVerifier, PublicIdentityKey: publicKey, InstallationGeneration: recoveryHost.InstallationGeneration, SetupMode: "host", Artifact: recoveryHost.Installation.Artifact}
+	if _, err := service.PrepareAuthenticatedHostSetup(ctx, userID, clientSessionID, recoveryHost.ID, recoveryRequest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ConsumeInstallationForIdentity(ctx, recoveryVerifier, publicKey); err != nil {
+		t.Fatal(err)
+	}
+	if recoverySeedGrant.EnrollmentID == "" || recoverySeedGrant.HelperID == "" {
+		t.Fatalf("authenticated recovery seed grant=%+v", recoverySeedGrant)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.control_helper_enrollments SET state='revoked',revoked_at=now() WHERE id=$1 AND state='pending'`, recoverySeedGrant.EnrollmentID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machine_pairings SET expires_at=now()-interval '1 second' WHERE authenticated_setup_cli_session_id=$1 AND authenticated_setup_operation_id=$2`, clientSessionID, recoveryRequest.OperationID); err != nil {
+		t.Fatal(err)
+	}
+	recoveryEnrollmentID := "henr_authenticated_recovery_race_" + suffix
+	recoveryAuthorityPersisted, releaseRecoveryAuthority := make(chan struct{}), make(chan struct{})
+	var recoveryAuthorityPersistedOnce sync.Once
+	service.ConfigureAuthenticatedHelperEnrollment(
+		func(ctx context.Context, gotUserID, operationKey, environmentID string, _ time.Duration, guard HelperEnrollmentAuthorityGuard) (HelperEnrollmentGrant, error) {
+			expiresAt := time.Now().UTC().Add(10 * time.Minute)
+			err := store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+				if err := guard(ctx, tx, ""); err != nil {
+					return err
+				}
+				if _, err := tx.Queries().CreateControlHelperEnrollment(ctx, dbsqlc.CreateControlHelperEnrollmentParams{
+					ID: recoveryEnrollmentID, EnvironmentID: environmentID, HelperID: recoverySeedGrant.HelperID,
+					JtiHash: []byte("recovery-race-jti-" + suffix), OperationKey: "helper-enrollment:" + gotUserID + ":" + operationKey,
+					RequestHash: []byte("recovery-race-request-" + suffix), GrantCiphertext: []byte("recovery-race-grant-" + suffix), ExpiresAt: expiresAt,
+				}); err != nil {
+					return err
+				}
+				if err := guard(ctx, tx, recoveryEnrollmentID); err != nil {
+					return err
+				}
+				recoveryAuthorityPersistedOnce.Do(func() { close(recoveryAuthorityPersisted) })
+				select {
+				case <-releaseRecoveryAuthority:
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			})
+			return HelperEnrollmentGrant{EnrollmentID: recoveryEnrollmentID, HelperID: recoverySeedGrant.HelperID, Credential: strings.Repeat("z", 48), ExpiresAt: expiresAt}, err
+		},
+		func(context.Context, string, string, string, string, time.Duration, HelperEnrollmentAuthorityGuard) (HelperEnrollmentGrant, error) {
+			return HelperEnrollmentGrant{}, errors.New("unexpected authenticated helper recovery")
+		},
+	)
+	type recoveryResult struct {
+		material json.RawMessage
+		err      error
+	}
+	recoveryStartedAt := time.Now()
+	recoveryCtx, cancelRecovery := context.WithTimeout(ctx, 60*time.Second)
+	defer cancelRecovery()
+	var releaseRecoveryAuthorityOnce sync.Once
+	releaseRecoveredAuthority := func() { releaseRecoveryAuthorityOnce.Do(func() { close(releaseRecoveryAuthority) }) }
+	defer releaseRecoveredAuthority()
+	recoveryDone := make(chan recoveryResult, 1)
+	go func() {
+		material, recoveryErr := service.ConsumeInstallationForIdentityState(recoveryCtx, recoveryVerifier, publicKey, false)
+		recoveryDone <- recoveryResult{material: material, err: recoveryErr}
+	}()
+	select {
+	case <-recoveryAuthorityPersisted:
+	case <-recoveryCtx.Done():
+		fatalWithPostgresLocks(t, store, "authenticated Host recovery helper authority was not persisted after %s: %v", time.Since(recoveryStartedAt), recoveryCtx.Err())
+	}
+	recoveryAuthorityPersistedAt := time.Now()
+	input.SetupMode = "client"
+	recoveryRollbackDone := make(chan rollbackResult, 1)
+	go func() {
+		value, rollbackErr := service.Setup(recoveryCtx, userID, input)
+		recoveryRollbackDone <- rollbackResult{value: value, err: rollbackErr}
+	}()
+	if err := waitForUserMachineRowLock(recoveryCtx, store, recoveryHost.ID); err != nil {
+		fatalWithPostgresLocks(t, store, "Client rollback did not acquire the machine row before recovery authority release after %s: %v", time.Since(recoveryAuthorityPersistedAt), err)
+	}
+	recoveryRollbackLockedAt := time.Now()
+	releaseRecoveredAuthority()
+	recoveryAuthorityReleasedAt := time.Now()
+	recoveryPostReleaseCtx, cancelRecoveryPostRelease := context.WithTimeout(recoveryCtx, 30*time.Second)
+	defer cancelRecoveryPostRelease()
+	var recovered recoveryResult
+	select {
+	case recovered = <-recoveryDone:
+	case <-recoveryPostReleaseCtx.Done():
+		fatalWithPostgresLocks(t, store, "authenticated Host material recovery did not finish within the post-release bound; authority=%s machine_lock=%s post_release=%s: %v", recoveryAuthorityPersistedAt.Sub(recoveryStartedAt), recoveryRollbackLockedAt.Sub(recoveryAuthorityPersistedAt), time.Since(recoveryAuthorityReleasedAt), recoveryPostReleaseCtx.Err())
+	}
+	recoveryFinishedAt := time.Now()
+	if recovered.err != nil && !errors.Is(recovered.err, ErrInstallationUnavailable) {
+		t.Fatalf("stale authenticated Host recovery err=%v material=%s", recovered.err, recovered.material)
+	}
+	select {
+	case rolledBackConcurrently = <-recoveryRollbackDone:
+	case <-recoveryPostReleaseCtx.Done():
+		fatalWithPostgresLocks(t, store, "Client rollback racing authenticated recovery did not finish within the post-release bound; recovery=%s post_release=%s: %v", recoveryFinishedAt.Sub(recoveryAuthorityReleasedAt), time.Since(recoveryAuthorityReleasedAt), recoveryPostReleaseCtx.Err())
+	}
+	t.Logf("authenticated Host recovery race completed: authority=%s machine_lock=%s recovery_after_release=%s total_after_release=%s", recoveryAuthorityPersistedAt.Sub(recoveryStartedAt), recoveryRollbackLockedAt.Sub(recoveryAuthorityPersistedAt), recoveryFinishedAt.Sub(recoveryAuthorityReleasedAt), time.Since(recoveryAuthorityReleasedAt))
+	if rolledBackConcurrently.err != nil || rolledBackConcurrently.value.SetupMode != "client" || rolledBackConcurrently.value.InstallationGeneration != recoveryHost.InstallationGeneration+1 {
+		t.Fatalf("Client rollback racing authenticated recovery=%+v err=%v", rolledBackConcurrently.value, rolledBackConcurrently.err)
+	}
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state FROM paperboat.user_machine_pairings WHERE authenticated_setup_cli_session_id=$1 AND authenticated_setup_operation_id=$2`, clientSessionID, recoveryRequest.OperationID).Scan(&pairingState); err != nil || pairingState != "expired" {
+		t.Fatalf("recovery-race pairing state=%q err=%v", pairingState, err)
+	}
+	if _, err := service.ConsumeInstallationForIdentity(ctx, recoveryVerifier, publicKey); !errors.Is(err, ErrInstallationExpired) {
+		t.Fatalf("rolled-back recovered Host material remained consumable: %v", err)
+	}
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state,revoked_at FROM paperboat.control_helper_enrollments WHERE id=$1 AND helper_id=$2`, recoveryEnrollmentID, recoverySeedGrant.HelperID).Scan(&grantState, &grantRevokedAt); err != nil || grantState != "revoked" || !grantRevokedAt.Valid {
+		t.Fatalf("rolled-back recovery helper grant state=%q revoked_at=%v err=%v", grantState, grantRevokedAt, err)
+	}
+
+	// The authenticated CLI session is part of the authority binding. Pause
+	// after the helper credential is minted but before it is bound, queue session
+	// revocation on the pairing lock, then prove the exact disclosed credential
+	// is revoked before either operation returns authority to the caller.
+	input.SetupMode = "host"
+	sessionHost, err := service.Setup(ctx, userID, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionSigner, err := mint.NewEphemeral(time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionEnrollmentService := controlplane.NewEnrollmentService(store, sessionSigner, audit.NewWriter(store), "https://api.paperboat.test", "authenticated-session-enrollment-key")
+	var sessionGrant controlplane.EnrollmentGrant
+	sessionGrantPersisted, releaseSessionGrant := make(chan struct{}), make(chan struct{})
+	var sessionGrantPersistedOnce, releaseSessionGrantOnce sync.Once
+	releasePersistedSessionGrant := func() { releaseSessionGrantOnce.Do(func() { close(releaseSessionGrant) }) }
+	defer releasePersistedSessionGrant()
+	service.ConfigureAuthenticatedHelperEnrollment(
+		func(ctx context.Context, gotUserID, operationKey, environmentID string, lifetime time.Duration, guard HelperEnrollmentAuthorityGuard) (HelperEnrollmentGrant, error) {
+			return PersistAuthenticatedHelperEnrollment(ctx, store, environmentID, guard, func(ctx context.Context) (HelperEnrollmentGrant, error) {
+				grant, err := sessionEnrollmentService.Issue(ctx, gotUserID, operationKey, environmentID, lifetime)
+				if err != nil {
+					return HelperEnrollmentGrant{}, err
+				}
+				sessionGrant = grant
+				sessionGrantPersistedOnce.Do(func() { close(sessionGrantPersisted) })
+				select {
+				case <-releaseSessionGrant:
+					return HelperEnrollmentGrant{EnrollmentID: grant.EnrollmentID, HelperID: grant.HelperID, Credential: grant.Credential, ExpiresAt: grant.ExpiresAt}, nil
+				case <-ctx.Done():
+					return HelperEnrollmentGrant{}, ctx.Err()
+				}
+			})
+		},
+		func(context.Context, string, string, string, string, time.Duration, HelperEnrollmentAuthorityGuard) (HelperEnrollmentGrant, error) {
+			return HelperEnrollmentGrant{}, errors.New("unexpected authenticated helper recovery")
+		},
+	)
+	sessionVerifier := "authenticated-host-session-verifier-" + suffix
+	sessionRequest := AuthenticatedHostSetupInput{OperationID: "host-setup-session-operation-" + suffix, Verifier: sessionVerifier, PublicIdentityKey: publicKey, InstallationGeneration: sessionHost.InstallationGeneration, SetupMode: "host", Artifact: sessionHost.Installation.Artifact}
+	sessionCtx, cancelSessionRace := context.WithTimeout(ctx, 60*time.Second)
+	defer cancelSessionRace()
+	sessionPrepareDone := make(chan prepareResult, 1)
+	go func() {
+		value, prepareErr := service.PrepareAuthenticatedHostSetup(sessionCtx, userID, clientSessionID, sessionHost.ID, sessionRequest)
+		sessionPrepareDone <- prepareResult{value: value, err: prepareErr}
+	}()
+	select {
+	case <-sessionGrantPersisted:
+	case <-sessionCtx.Done():
+		fatalWithPostgresLocks(t, store, "authenticated Host session-race grant was not persisted: %v", sessionCtx.Err())
+	}
+	deviceAuth := authservice.NewDeviceService(store, audit.NewWriter(store), config.Default().CLIAuth, []string{"authenticated-host-session-hash-key"})
+	sessionRevokeDone := make(chan error, 1)
+	go func() {
+		sessionRevokeDone <- deviceAuth.RevokeClient(sessionCtx, userID, clientSessionID, "authenticated_host_test")
+	}()
+	if err := waitForCLIClientSessionRowLock(sessionCtx, store, clientSessionID); err != nil {
+		fatalWithPostgresLocks(t, store, "CLI session revocation did not acquire the session row before helper binding: %v", err)
+	}
+	releasePersistedSessionGrant()
+	select {
+	case err := <-sessionRevokeDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-sessionCtx.Done():
+		fatalWithPostgresLocks(t, store, "CLI session revocation did not finish after helper binding: %v", sessionCtx.Err())
+	}
+	select {
+	case prepared := <-sessionPrepareDone:
+		if prepared.err != nil && !errors.Is(prepared.err, ErrInvalidHostSetupInstallation) && !errors.Is(prepared.err, ErrHostSetupOperationConflict) {
+			t.Fatalf("session-raced Host preparation=%+v err=%v", prepared.value, prepared.err)
+		}
+	case <-sessionCtx.Done():
+		fatalWithPostgresLocks(t, store, "authenticated Host preparation did not finish after CLI session revocation: %v", sessionCtx.Err())
+	}
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state FROM paperboat.user_machine_pairings WHERE authenticated_setup_cli_session_id=$1 AND authenticated_setup_operation_id=$2`, clientSessionID, sessionRequest.OperationID).Scan(&pairingState); err != nil || pairingState != "expired" {
+		t.Fatalf("CLI session revocation pairing state=%q err=%v", pairingState, err)
+	}
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state,revoked_at FROM paperboat.control_helper_enrollments WHERE id=$1`, sessionGrant.EnrollmentID).Scan(&grantState, &grantRevokedAt); err != nil || grantState != "revoked" || !grantRevokedAt.Valid {
+		t.Fatalf("CLI-session-revoked helper grant state=%q revoked_at=%v err=%v", grantState, grantRevokedAt, err)
+	}
+	_, sessionHelperPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessionEnrollmentService.Exchange(ctx, sessionGrant.Credential, sessionHelperPrivate.Public().(ed25519.PublicKey)); !errors.Is(err, controlplane.ErrEnrollmentUsed) {
+		t.Fatalf("CLI-session-revoked helper credential remained exchangeable: %v", err)
+	}
+	if _, err := service.ConsumeInstallationForIdentity(ctx, sessionVerifier, publicKey); !errors.Is(err, ErrInstallationExpired) {
+		t.Fatalf("CLI-session-revoked Host material remained consumable: %v", err)
+	}
+}
+
+func TestPersistAuthenticatedHelperEnrollmentCompensatesBindFailure(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID := "usr_authenticated_compensation_" + suffix
+	machineID := "mch_authenticated_compensation_" + suffix
+	environmentID := "env_authenticated_compensation_" + suffix
+	sessionID := "cls_authenticated_compensation_" + suffix
+	pairingID := "ump_authenticated_compensation_" + suffix
+	publicKeyHash := sha256.Sum256([]byte("authenticated-compensation-public-key-" + suffix))
+	publicKey := base64.RawURLEncoding.EncodeToString(publicKeyHash[:])
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_authenticated_compensation_"+suffix, "authenticated-compensation-"+suffix+"@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.cli_client_sessions (id,user_id,client_id,client_label,device_type,os,scopes,state,created_at,approved_at) VALUES ($1,$2,$3,'Host compensation','desktop','linux',ARRAY['projects:connect'],'active',now(),now())`, sessionID, userID, "client_authenticated_compensation_"+suffix); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,setup_roles,setup_mode,public_identity_key,installation_generation) VALUES ($1,$2,$3,'Host compensation','linux','amd64','/workspace','offline','occupied',ARRAY['host','interactive'],'host',$4,2)`, machineID, userID, environmentID, publicKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id,desired_state) VALUES ($1,$2,$3,'active')`, environmentID, machineID, userID); err != nil {
+		t.Fatal(err)
+	}
+	verifierHash := sha256.Sum256([]byte("authenticated-compensation-verifier-" + suffix))
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machine_pairings (
+id,verifier_hash,user_code,requested_display_name,platform,architecture,workspace_root,runtime_versions,state,approved_by_user_id,user_machine_id,public_identity_key,expires_at,approved_at,
+authenticated_setup_cli_session_id,authenticated_setup_operation_id,authenticated_setup_generation,authenticated_setup_mode
+) VALUES ($1,$2,$3,'Host compensation','linux','amd64','/workspace','{}','approved',$4,$5,$6,now()+interval '10 minutes',now(),$7,$8,2,'host')`, pairingID, verifierHash[:], "COMP"+suffix, userID, machineID, publicKey, sessionID, "authenticated-compensation-operation-"+suffix); err != nil {
+		t.Fatal(err)
+	}
+	signer, err := mint.NewEphemeral(time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollments := controlplane.NewEnrollmentService(store, signer, audit.NewWriter(store), "https://api.paperboat.test", "authenticated-compensation-enrollment-key")
+	bindFailure := errors.New("injected authenticated Host helper bind failure")
+	guard := func(ctx context.Context, tx *db.Tx, helperEnrollmentID string) error {
+		pairing, err := tx.Queries().GetUserMachinePairingForVerifier(ctx, verifierHash[:])
+		if err != nil {
+			return err
+		}
+		if pairing.ID != pairingID || pairing.State != "approved" {
+			return ErrHostSetupOperationConflict
+		}
+		if helperEnrollmentID != "" {
+			return bindFailure
+		}
+		return nil
+	}
+	var issued controlplane.EnrollmentGrant
+	_, err = PersistAuthenticatedHelperEnrollment(ctx, store, environmentID, guard, func(ctx context.Context) (HelperEnrollmentGrant, error) {
+		grant, issueErr := enrollments.Issue(ctx, userID, "authenticated-compensation:"+suffix, environmentID, 10*time.Minute)
+		issued = grant
+		return HelperEnrollmentGrant{EnrollmentID: grant.EnrollmentID, HelperID: grant.HelperID, Credential: grant.Credential, ExpiresAt: grant.ExpiresAt}, issueErr
+	})
+	if !errors.Is(err, bindFailure) {
+		t.Fatalf("authenticated helper bind failure=%v", err)
+	}
+	var enrollmentState string
+	var revokedAt sql.NullTime
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state,revoked_at FROM paperboat.control_helper_enrollments WHERE id=$1`, issued.EnrollmentID).Scan(&enrollmentState, &revokedAt); err != nil || enrollmentState != "revoked" || !revokedAt.Valid {
+		t.Fatalf("compensated helper grant state=%q revoked_at=%v err=%v", enrollmentState, revokedAt, err)
+	}
+	var boundEnrollmentID sql.NullString
+	if err := store.SQL().QueryRowContext(ctx, `SELECT authenticated_setup_helper_enrollment_id FROM paperboat.user_machine_pairings WHERE id=$1`, pairingID).Scan(&boundEnrollmentID); err != nil || boundEnrollmentID.Valid {
+		t.Fatalf("failed helper grant remained bound=%v err=%v", boundEnrollmentID, err)
+	}
+	_, helperPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := enrollments.Exchange(ctx, issued.Credential, helperPrivate.Public().(ed25519.PublicKey)); !errors.Is(err, controlplane.ErrEnrollmentUsed) {
+		t.Fatalf("compensated helper credential remained exchangeable: %v", err)
+	}
+	foreignEnvironmentID := "env_authenticated_compensation_foreign_" + suffix
+	foreignHelperID := "helper_authenticated_compensation_foreign_" + suffix
+	foreignEnrollmentID := "henr_authenticated_compensation_foreign_" + suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id,desired_state) VALUES ($1,$2,$3,'active')`, foreignEnvironmentID, "workspace_authenticated_compensation_foreign_"+suffix, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_helpers (id,environment_id) VALUES ($1,$2)`, foreignHelperID, foreignEnvironmentID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_helper_enrollments (id,environment_id,helper_id,jti_hash,operation_key,request_hash,grant_ciphertext,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,now()+interval '10 minutes')`, foreignEnrollmentID, foreignEnvironmentID, foreignHelperID, []byte("foreign-jti-"+suffix), "foreign-operation-"+suffix, []byte("foreign-request-"+suffix), []byte("foreign-grant-"+suffix)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		n, err := tx.Queries().BindAuthenticatedHostSetupHelperEnrollment(ctx, dbsqlc.BindAuthenticatedHostSetupHelperEnrollmentParams{ID: pairingID, HelperEnrollmentID: sql.NullString{String: foreignEnrollmentID, Valid: true}})
+		if err != nil {
+			return err
+		}
+		if n != 0 {
+			return fmt.Errorf("foreign-environment helper binding changed %d pairings", n)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	validEnrollmentID := "henr_authenticated_compensation_bound_" + suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_helper_enrollments (id,environment_id,helper_id,jti_hash,operation_key,request_hash,grant_ciphertext,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,now()+interval '10 minutes')`, validEnrollmentID, environmentID, issued.HelperID, []byte("bound-jti-"+suffix), "bound-operation-"+suffix, []byte("bound-request-"+suffix), []byte("bound-grant-"+suffix)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		n, err := tx.Queries().BindAuthenticatedHostSetupHelperEnrollment(ctx, dbsqlc.BindAuthenticatedHostSetupHelperEnrollmentParams{ID: pairingID, HelperEnrollmentID: sql.NullString{String: validEnrollmentID, Valid: true}})
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return fmt.Errorf("same-environment helper binding changed %d pairings", n)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.control_helper_enrollments SET state='revoked',revoked_at=now() WHERE id=$1`, validEnrollmentID); err != nil {
+		t.Fatal(err)
+	}
+	replacementEnrollmentID := "henr_authenticated_compensation_replacement_" + suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_helper_enrollments (id,environment_id,helper_id,jti_hash,operation_key,request_hash,grant_ciphertext,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,now()+interval '10 minutes')`, replacementEnrollmentID, environmentID, issued.HelperID, []byte("replacement-jti-"+suffix), "replacement-operation-"+suffix, []byte("replacement-request-"+suffix), []byte("replacement-grant-"+suffix)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		n, err := tx.Queries().BindAuthenticatedHostSetupHelperEnrollment(ctx, dbsqlc.BindAuthenticatedHostSetupHelperEnrollmentParams{ID: pairingID, HelperEnrollmentID: sql.NullString{String: replacementEnrollmentID, Valid: true}})
+		if err != nil {
+			return err
+		}
+		if n != 0 {
+			return fmt.Errorf("authenticated helper overwrite changed %d pairings", n)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machine_pairings SET state='consumed',installation_config_consumed_at=now() WHERE id=$1`, pairingID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		n, err := tx.Queries().BindAuthenticatedHostSetupHelperEnrollment(ctx, dbsqlc.BindAuthenticatedHostSetupHelperEnrollmentParams{ID: pairingID, HelperEnrollmentID: sql.NullString{String: replacementEnrollmentID, Valid: true}})
+		if err != nil {
+			return err
+		}
+		if n != 0 {
+			return fmt.Errorf("authenticated helper replacement without an active recovery changed %d pairings", n)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machine_pairings SET installation_recovery_operation_key=$2 WHERE id=$1`, pairingID, "authenticated-compensation-recovery-"+suffix); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		n, err := tx.Queries().BindAuthenticatedHostSetupHelperEnrollment(ctx, dbsqlc.BindAuthenticatedHostSetupHelperEnrollmentParams{ID: pairingID, HelperEnrollmentID: sql.NullString{String: replacementEnrollmentID, Valid: true}})
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return fmt.Errorf("authenticated recovery terminal helper replacement changed %d pairings", n)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var recoveredBinding sql.NullString
+	if err := store.SQL().QueryRowContext(ctx, `SELECT authenticated_setup_helper_enrollment_id FROM paperboat.user_machine_pairings WHERE id=$1`, pairingID).Scan(&recoveredBinding); err != nil || !recoveredBinding.Valid || recoveredBinding.String != replacementEnrollmentID {
+		t.Fatalf("authenticated recovery helper binding=%v err=%v", recoveredBinding, err)
+	}
+	competingPairingID := "ump_authenticated_compensation_competing_" + suffix
+	competingVerifierHash := sha256.Sum256([]byte("authenticated-compensation-competing-verifier-" + suffix))
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machine_pairings (
+id,verifier_hash,user_code,requested_display_name,platform,architecture,workspace_root,runtime_versions,state,approved_by_user_id,user_machine_id,public_identity_key,expires_at,approved_at,
+authenticated_setup_cli_session_id,authenticated_setup_operation_id,authenticated_setup_generation,authenticated_setup_mode
+) VALUES ($1,$2,$3,'Host compensation','linux','amd64','/workspace','{}','approved',$4,$5,$6,now()+interval '10 minutes',now(),$7,$8,2,'host')`, competingPairingID, competingVerifierHash[:], "COMQ"+suffix, userID, machineID, publicKey, sessionID, "authenticated-compensation-competing-operation-"+suffix); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		n, err := tx.Queries().BindAuthenticatedHostSetupHelperEnrollment(ctx, dbsqlc.BindAuthenticatedHostSetupHelperEnrollmentParams{ID: competingPairingID, HelperEnrollmentID: sql.NullString{String: replacementEnrollmentID, Valid: true}})
+		if err != nil {
+			return err
+		}
+		if n != 0 {
+			return fmt.Errorf("one helper enrollment bound to %d competing authenticated pairings", n)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Queries().ExpireAuthenticatedHostSetupPairingsForCLISession(ctx, dbsqlc.ExpireAuthenticatedHostSetupPairingsForCLISessionParams{Now: time.Now().UTC(), CLIClientSessionID: sql.NullString{String: sessionID, Valid: true}}); err != nil {
+		t.Fatal(err)
+	}
+	var replacementState string
+	var replacementRevokedAt sql.NullTime
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state,revoked_at FROM paperboat.control_helper_enrollments WHERE id=$1`, replacementEnrollmentID).Scan(&replacementState, &replacementRevokedAt); err != nil || replacementState != "revoked" || !replacementRevokedAt.Valid {
+		t.Fatalf("authenticated recovery replacement grant state=%q revoked_at=%v err=%v", replacementState, replacementRevokedAt, err)
+	}
+}
+
+func TestEntitlementRevocationExpiresAuthenticatedHostGrant(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID, machineID, environmentID := "usr_entitlement_host_"+suffix, "mch_entitlement_host_"+suffix, "env_entitlement_host_"+suffix
+	sessionID, pairingID := "cls_entitlement_host_"+suffix, "ump_entitlement_host_"+suffix
+	publicKeyHash := sha256.Sum256([]byte("entitlement-host-public-key-" + suffix))
+	publicKey := base64.RawURLEncoding.EncodeToString(publicKeyHash[:])
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_entitlement_host_"+suffix, "entitlement-host-"+suffix+"@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.cli_client_sessions (id,user_id,client_id,client_label,device_type,os,scopes,state,created_at,approved_at) VALUES ($1,$2,$3,'Entitlement Host','desktop','linux',ARRAY['projects:connect'],'active',now(),now())`, sessionID, userID, "client_entitlement_host_"+suffix); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,setup_roles,setup_mode,public_identity_key,installation_generation) VALUES ($1,$2,$3,'Entitlement Host','linux','amd64','/workspace','offline','occupied',ARRAY['host','interactive'],'host',$4,2)`, machineID, userID, environmentID, publicKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id,desired_state) VALUES ($1,$2,$3,'active')`, environmentID, machineID, userID); err != nil {
+		t.Fatal(err)
+	}
+	signer, err := mint.NewEphemeral(time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollments := controlplane.NewEnrollmentService(store, signer, audit.NewWriter(store), "https://api.paperboat.test", "entitlement-host-enrollment-key")
+	grant, err := enrollments.Issue(ctx, userID, "entitlement-host-grant:"+suffix, environmentID, 10*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifierHash := sha256.Sum256([]byte("entitlement-host-verifier-" + suffix))
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machine_pairings (
+id,verifier_hash,user_code,requested_display_name,platform,architecture,workspace_root,runtime_versions,state,approved_by_user_id,user_machine_id,public_identity_key,expires_at,approved_at,
+authenticated_setup_cli_session_id,authenticated_setup_operation_id,authenticated_setup_generation,authenticated_setup_mode,authenticated_setup_helper_enrollment_id
+) VALUES ($1,$2,$3,'Entitlement Host','linux','amd64','/workspace','{}','approved',$4,$5,$6,now()+interval '10 minutes',now(),$7,$8,2,'host',$9)`, pairingID, verifierHash[:], "ENTL"+suffix, userID, machineID, publicKey, sessionID, "entitlement-host-operation-"+suffix, grant.EnrollmentID); err != nil {
+		t.Fatal(err)
+	}
+	revoked, err := store.Queries().RevokeUserMachinesForEntitlement(ctx, userID)
+	if err != nil || !reflect.DeepEqual(revoked, []string{machineID}) {
+		t.Fatalf("entitlement-revoked machines=%v err=%v", revoked, err)
+	}
+	var machineState, pairingState, grantState string
+	var firstRevokedAt sql.NullTime
+	if err := store.SQL().QueryRowContext(ctx, `SELECT m.state,p.state,e.state,e.revoked_at FROM paperboat.user_machines m JOIN paperboat.user_machine_pairings p ON p.user_machine_id=m.id JOIN paperboat.control_helper_enrollments e ON e.id=p.authenticated_setup_helper_enrollment_id WHERE m.id=$1`, machineID).Scan(&machineState, &pairingState, &grantState, &firstRevokedAt); err != nil {
+		t.Fatal(err)
+	}
+	if machineState != "revoked" || pairingState != "expired" || grantState != "revoked" || !firstRevokedAt.Valid {
+		t.Fatalf("entitlement revocation states machine=%q pairing=%q grant=%q revoked_at=%v", machineState, pairingState, grantState, firstRevokedAt)
+	}
+	_, helperPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := enrollments.Exchange(ctx, grant.Credential, helperPrivate.Public().(ed25519.PublicKey)); !errors.Is(err, controlplane.ErrEnrollmentUsed) {
+		t.Fatalf("entitlement-revoked helper credential remained exchangeable: %v", err)
+	}
+	if replay, err := store.Queries().RevokeUserMachinesForEntitlement(ctx, userID); err != nil || len(replay) != 0 {
+		t.Fatalf("entitlement revocation replay=%v err=%v", replay, err)
+	}
+	var replayRevokedAt sql.NullTime
+	if err := store.SQL().QueryRowContext(ctx, `SELECT revoked_at FROM paperboat.control_helper_enrollments WHERE id=$1`, grant.EnrollmentID).Scan(&replayRevokedAt); err != nil || !replayRevokedAt.Valid || !replayRevokedAt.Time.Equal(firstRevokedAt.Time) {
+		t.Fatalf("entitlement revocation replay timestamp=%v first=%v err=%v", replayRevokedAt, firstRevokedAt, err)
+	}
+}
+
+func TestClientRolePairingRevokesAuthenticatedHostAuthority(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID, machineID, environmentID := "usr_client_pairing_host_"+suffix, "mch_client_pairing_host_"+suffix, "env_client_pairing_host_"+suffix
+	sessionID, authenticatedPairingID := "cls_client_pairing_host_"+suffix, "ump_client_pairing_host_authenticated_"+suffix
+	helperID, helperEnrollmentID := "hlp_client_pairing_host_"+suffix, "enr_client_pairing_host_"+suffix
+	public, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey := base64.RawURLEncoding.EncodeToString(public)
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_client_pairing_host_"+suffix, "client-pairing-host-"+suffix+"@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.cli_client_sessions (id,user_id,client_id,client_label,device_type,os,scopes,state,created_at,approved_at) VALUES ($1,$2,$3,'Client pairing Host rollback','desktop','linux',ARRAY['projects:connect'],'active',now(),now())`, sessionID, userID, "client_client_pairing_host_"+suffix); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machine_entitlements (id,user_id,provider_subscription_id,product_code,state,seat_quantity,allowance_bytes,current_period_start,current_period_end) VALUES ($1,$2,$3,'connected-test','active',1,1048576,now()-interval '1 hour',now()+interval '1 hour')`, "ume_client_pairing_host_"+suffix, userID, "sub_client_pairing_host_"+suffix); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,runtime_versions,setup_roles,setup_mode,configured_capabilities,public_identity_key,installation_generation) VALUES ($1,$2,$3,'Client pairing Host','linux','amd64','/workspace','offline','occupied','{}',ARRAY['host','interactive'],'host',ARRAY['file_receive','preview_launch','terminal_host','codex_host','session_host','keep_awake'],$4,2)`, machineID, userID, environmentID, publicKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id,desired_state) VALUES ($1,$2,$3,'active')`, environmentID, machineID, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_helpers (id,environment_id) VALUES ($1,$2)`, helperID, environmentID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_helper_enrollments (id,environment_id,helper_id,jti_hash,operation_key,request_hash,grant_ciphertext,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,now()+interval '10 minutes')`, helperEnrollmentID, environmentID, helperID, []byte("client-pairing-host-jti-"+suffix), "client-pairing-host-grant-"+suffix, []byte("client-pairing-host-request-"+suffix), []byte("client-pairing-host-ciphertext-"+suffix)); err != nil {
+		t.Fatal(err)
+	}
+	authenticatedVerifierHash := sha256.Sum256([]byte("client-pairing-host-authenticated-verifier-" + suffix))
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machine_pairings (
+id,verifier_hash,user_code,requested_display_name,platform,architecture,workspace_root,runtime_versions,state,approved_by_user_id,user_machine_id,public_identity_key,expires_at,approved_at,
+authenticated_setup_cli_session_id,authenticated_setup_operation_id,authenticated_setup_generation,authenticated_setup_mode,authenticated_setup_helper_enrollment_id
+) VALUES ($1,$2,$3,'Client pairing Host','linux','amd64','/workspace','{}','approved',$4,$5,$6,now()+interval '10 minutes',now(),$7,$8,2,'host',$9)`, authenticatedPairingID, authenticatedVerifierHash[:], "CPHA"+suffix, userID, machineID, publicKey, sessionID, "client-pairing-host-authenticated-operation-"+suffix, helperEnrollmentID); err != nil {
+		t.Fatal(err)
+	}
+	legacyPairingID, legacyUserCode := "ump_client_pairing_host_legacy_"+suffix, "CPHL"+suffix
+	legacyVerifierHash := sha256.Sum256([]byte("client-pairing-host-legacy-verifier-" + suffix))
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machine_pairings (id,verifier_hash,user_code,requested_display_name,platform,architecture,workspace_root,runtime_versions,state,public_identity_key,expires_at) VALUES ($1,$2,$3,'Client pairing Host','linux','amd64','/workspace','{}','pending',$4,now()+interval '10 minutes')`, legacyPairingID, legacyVerifierHash[:], legacyUserCode, publicKey); err != nil {
+		t.Fatal(err)
+	}
+	service := New(store, audit.NewWriter(store), Policy{PairingLifetime: 10 * time.Minute, AllowedPlatforms: []string{"linux"}}, testSeatAuthorizer{})
+	service.ConfigureProvisioning(access.FakeClient{}, "client-pairing-host-key")
+	service.ConfigureAccess(nil, "https://api.paperboat.test", 5*time.Minute)
+	service.ConfigureHelperEnrollment(func(context.Context, string, string, string, time.Duration) (HelperEnrollmentGrant, error) {
+		return HelperEnrollmentGrant{EnrollmentID: "enr_client_pairing_material_" + suffix, HelperID: "hlp_client_pairing_material_" + suffix, Credential: strings.Repeat("m", 48), ExpiresAt: time.Now().UTC().Add(10 * time.Minute)}, nil
+	})
+	if err := service.ConfigureRuntimeRoute("runtime.example.test", 38080); err != nil {
+		t.Fatal(err)
+	}
+	configureSignedTestArtifact(t, service)
+	rolledBack, err := service.approve(ctx, userID, legacyUserCode, "client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rolledBack.ID != machineID || rolledBack.SetupMode != "client" || rolledBack.SeatState != "released" || slices.Contains(rolledBack.SetupRoles, "host") || rolledBack.InstallationGeneration != 3 {
+		t.Fatalf("client-role pairing rollback=%+v", rolledBack)
+	}
+	var pairingState, grantState string
+	var grantRevokedAt sql.NullTime
+	if err := store.SQL().QueryRowContext(ctx, `SELECT pairing.state,enrollment.state,enrollment.revoked_at FROM paperboat.user_machine_pairings pairing JOIN paperboat.control_helper_enrollments enrollment ON enrollment.id=pairing.authenticated_setup_helper_enrollment_id WHERE pairing.id=$1`, authenticatedPairingID).Scan(&pairingState, &grantState, &grantRevokedAt); err != nil {
+		t.Fatal(err)
+	}
+	if pairingState != "expired" || grantState != "revoked" || !grantRevokedAt.Valid {
+		t.Fatalf("client-role pairing authority state pairing=%q grant=%q revoked_at=%v", pairingState, grantState, grantRevokedAt)
 	}
 }
 
@@ -1756,6 +2574,89 @@ func (i *recordingIssuer) RevokeCLI(_ context.Context, input access.CredentialRe
 		return errors.New("helper unavailable")
 	}
 	return nil
+}
+
+func fatalWithPostgresLocks(t *testing.T, store *db.DB, format string, args ...any) {
+	t.Helper()
+	message := fmt.Sprintf(format, args...)
+	t.Fatalf("%s\nPostgreSQL lock state:\n%s", message, postgresLockDiagnostics(store))
+}
+
+func postgresLockDiagnostics(store *db.DB) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	rows, err := store.SQL().QueryContext(ctx, `
+SELECT activity.pid,
+       activity.state,
+       coalesce(activity.wait_event_type, ''),
+       coalesce(activity.wait_event, ''),
+       pg_blocking_pids(activity.pid)::text,
+       coalesce(lock.locktype, ''),
+       coalesce(lock.mode, ''),
+       coalesce(lock.granted, false),
+       coalesce(lock.relation::regclass::text, ''),
+       coalesce(lock.page::text, ''),
+       coalesce(lock.tuple::text, ''),
+       left(regexp_replace(activity.query, E'[\\n\\r]+', ' ', 'g'), 240)
+FROM pg_stat_activity AS activity
+LEFT JOIN pg_locks AS lock ON lock.pid = activity.pid
+WHERE activity.datname = current_database()
+  AND activity.pid <> pg_backend_pid()
+  AND activity.state <> 'idle'
+ORDER BY activity.pid, lock.granted, lock.locktype, lock.mode
+LIMIT 100`)
+	if err != nil {
+		return "diagnostic query failed: " + err.Error()
+	}
+	defer rows.Close()
+	var result strings.Builder
+	for rows.Next() {
+		var pid int
+		var state, waitType, waitEvent, blockers, lockType, lockMode, relation, page, tuple, query string
+		var granted bool
+		if err := rows.Scan(&pid, &state, &waitType, &waitEvent, &blockers, &lockType, &lockMode, &granted, &relation, &page, &tuple, &query); err != nil {
+			return "diagnostic scan failed: " + err.Error()
+		}
+		fmt.Fprintf(&result, "pid=%d state=%s wait=%s/%s blockers=%s lock=%s/%s granted=%t relation=%s page=%s tuple=%s query=%q\n", pid, state, waitType, waitEvent, blockers, lockType, lockMode, granted, relation, page, tuple, query)
+	}
+	if err := rows.Err(); err != nil {
+		return "diagnostic rows failed: " + err.Error()
+	}
+	if result.Len() == 0 {
+		return "no non-idle PostgreSQL sessions"
+	}
+	return result.String()
+}
+
+func waitForUserMachineRowLock(ctx context.Context, store *db.DB, machineID string) error {
+	return waitForPostgresRowLock(ctx, store, `SELECT id FROM paperboat.user_machines WHERE id=$1 FOR UPDATE NOWAIT`, machineID)
+}
+
+func waitForCLIClientSessionRowLock(ctx context.Context, store *db.DB, sessionID string) error {
+	return waitForPostgresRowLock(ctx, store, `SELECT id FROM paperboat.cli_client_sessions WHERE id=$1 FOR UPDATE NOWAIT`, sessionID)
+}
+
+func waitForPostgresRowLock(ctx context.Context, store *db.DB, query, id string) error {
+	for {
+		var lockedID string
+		err := store.SQL().QueryRowContext(ctx, query, id).Scan(&lockedID)
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "55P03" {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func testStore(t *testing.T) *db.DB {
