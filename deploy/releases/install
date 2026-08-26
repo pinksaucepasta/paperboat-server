@@ -20,6 +20,7 @@ install_dir_requested=false
 
 if [ -n "${PAPERBOAT_ENROLLMENT_TOKEN:-}" ]; then enrollment_token=$PAPERBOAT_ENROLLMENT_TOKEN; pair=true; fi
 if [ -n "${PAPERBOAT_MACHINE_NAME:-}" ]; then machine_name=$PAPERBOAT_MACHINE_NAME; fi
+if [ -n "${PAPERBOAT_SETUP_MODE:-}" ]; then pair_mode=$PAPERBOAT_SETUP_MODE; fi
 
 usage() {
   cat <<'EOF'
@@ -159,7 +160,12 @@ cleanup_existing() {
     rm -f "$HOME/.config/systemd/user/paperboat-local-daemon.service"
     rm -f "$HOME/.local/bin/pb"
   fi
-  rm -rf "$HOME/Library/Application Support/paperboat/runtime" "$HOME/Library/Application Support/paperboat/state" "$HOME/.config/paperboat" "$HOME/.local/share/paperboat"
+  rm -rf "$HOME/Library/Application Support/paperboat" "$HOME/.paperboat/runtime" "$HOME/.paperboat/state" "$HOME/.config/paperboat" "$HOME/.local/share/paperboat" "$HOME/.local/state/paperboat"
+  if [ "$os" = darwin ]; then
+    sudo -n rm -f /usr/local/libexec/paperboat/pb 2>/dev/null || true
+  else
+    rm -f /usr/local/libexec/paperboat/pb
+  fi
 }
 
 asset="pb-${os}-${arch}"
@@ -167,8 +173,6 @@ asset="pb-${os}-${arch}"
 [ "$os" != darwin ] || asset="$asset.pkg"
 format=elf
 [ "$os" != darwin ] || format=pkg
-
-cleanup_existing
 
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/paperboat-install.XXXXXX")
 trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
@@ -209,7 +213,7 @@ expected_url="https://github.com/${repository}/releases/download/${version}/${as
 
 download="$tmp_dir/$asset"
 echo "Downloading Paperboat for ${os}/${arch}..." >&2
-curl -fL --proto '=https' --tlsv1.2 "$asset_url" -o "$download"
+curl --fail --location --show-error --silent --retry 5 --retry-delay 2 --connect-timeout 15 --max-time 900 --proto '=https' --tlsv1.2 "$asset_url" -o "$download"
 actual_length=$(wc -c < "$download" | tr -d ' ')
 [ "$actual_length" = "$expected_length" ] || { echo "pb installer: release asset length verification failed" >&2; exit 1; }
 if command -v shasum >/dev/null 2>&1; then
@@ -223,6 +227,9 @@ else
   exit 1
 fi
 [ "$actual" = "$expected" ] || { echo "pb installer: release asset digest verification failed" >&2; exit 1; }
+
+# Preserve the existing installation if download or verification fails.
+cleanup_existing
 
 if [ "$os" = darwin ]; then
   command -v installer >/dev/null 2>&1 || { echo "pb installer: macOS installer is required" >&2; exit 1; }
@@ -250,8 +257,10 @@ esac
 set --
 if [ -n "$machine_name" ]; then set -- "$@" --name "$machine_name"; fi
 if [ "$pair" = true ]; then
-  first=${enrollment_token%${enrollment_token#?}}
-  case "$first" in 0|2|4|6|8|B|D|F|H|J|L|N|P|R|T|V|X|Z) pair_mode=host ;; *) pair_mode=client ;; esac
+  if [ -z "${PAPERBOAT_SETUP_MODE:-}" ]; then
+    first=${enrollment_token%${enrollment_token#?}}
+    case "$first" in 0|2|4|6|8|B|D|F|H|J|L|N|P|R|T|V|X|Z) pair_mode=host ;; *) pair_mode=client ;; esac
+  fi
   set -- "$@" --setup-mode "$pair_mode"
   [ -z "$enrollment_token" ] || set -- "$@" --enrollment-token "$enrollment_token"
   [ -z "$enrollment_token_file" ] || set -- "$@" --enrollment-token-file "$enrollment_token_file"
