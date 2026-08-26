@@ -41,6 +41,25 @@ $download = Join-Path $dir $asset
 $partial = "$download.download"
 $installedPb = Join-Path ${env:ProgramFiles} 'Paperboat\bin\pb.exe'
 
+# Dashboard enrollment is a clean replacement operation. Remove stale
+# services, binaries, and Paperboat-owned state before staging the new build.
+function Clear-ExistingPaperboat {
+  $services = @('PaperboatHostd','PaperboatSshd','PaperboatUpdated')
+  foreach ($svc in $services) {
+    & sc.exe stop $svc 2>$null | Out-Null
+    & sc.exe delete $svc 2>$null | Out-Null
+  }
+  $paths = @(
+    (Join-Path ${env:ProgramFiles} 'Paperboat'),
+    (Join-Path $env:ProgramData 'Paperboat'),
+    (Join-Path $env:LOCALAPPDATA 'Paperboat'),
+    (Join-Path $env:USERPROFILE '.paperboat'),
+    (Join-Path $env:USERPROFILE '.config\paperboat')
+  )
+  foreach ($path in $paths) { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue }
+}
+Clear-ExistingPaperboat
+
 function Download-ReleaseFile([string]$Url, [string]$Output) {
   for ($attempt = 1; $attempt -le 4; $attempt++) {
     Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
