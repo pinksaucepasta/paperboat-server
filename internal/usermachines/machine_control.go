@@ -81,7 +81,9 @@ func (s *Service) IssueInitialMachineControl(ctx context.Context, machineID, env
 		return MachineControlCredential{}, ErrMachineControlInvalid
 	}
 	machine, err := s.db.Queries().GetActiveUserMachineForControl(ctx, machineID)
-	if err != nil || machine.EnvironmentID != environmentID || machine.SetupMode != "client" {
+	// Initial machine-control credentials are for managed hosts. Client
+	// enrollments never run a host runtime and must not mint this credential.
+	if err != nil || machine.EnvironmentID != environmentID || machine.SetupMode != "host" {
 		return MachineControlCredential{}, ErrMachineControlInvalid
 	}
 	connector, err := s.db.Queries().EnsureControlConnectorMachine(ctx, dbsqlc.EnsureControlConnectorMachineParams{EnvironmentID: machine.EnvironmentID, ConnectorID: "runtime", MachineID: machine.ID, EdgePool: "default"})
