@@ -113,17 +113,12 @@ func serveEnrollmentScript(w http.ResponseWriter, r *http.Request, files http.Ha
 		return
 	}
 	preamble := []byte("$env:PAPERBOAT_ENROLLMENT_TOKEN='" + strings.ReplaceAll(token, "'", "''") + "';")
-	mode := r.URL.Query().Get("mode")
-	if mode != "host" && mode != "client" { mode = "" }
 	if powershell {
-		if mode != "" { preamble = append(preamble, []byte("$env:PAPERBOAT_SETUP_MODE='"+mode+"';")...) }
 		if hostname != "" {
 			preamble = append(preamble, []byte("$env:PAPERBOAT_MACHINE_NAME='"+hostname+"';")...)
 		}
 	} else {
-		preamble = []byte("PAPERBOAT_ENROLLMENT_TOKEN='" + token + "' PAPERBOAT_MACHINE_NAME='" + hostname + "'")
-		if mode != "" { preamble = append(preamble, []byte(" PAPERBOAT_SETUP_MODE='"+mode+"'")...) }
-		preamble = append(preamble, '\n')
+		preamble = []byte("PAPERBOAT_ENROLLMENT_TOKEN='" + token + "' PAPERBOAT_MACHINE_NAME='" + hostname + "'\n")
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
