@@ -627,9 +627,10 @@ WITH consumed AS (
   UPDATE user_machine_enrollments e
   SET state = CASE WHEN machine.setup_mode = 'client' THEN 'ready' ELSE 'installing' END,
       updated_at = now()
-  FROM consumed
-  JOIN user_machines machine ON machine.id = e.user_machine_id
-  WHERE e.pairing_id = consumed.id AND e.state = 'material_issued'
+  FROM consumed, user_machines machine
+  WHERE e.pairing_id = consumed.id
+    AND machine.id = e.user_machine_id
+    AND e.state = 'material_issued'
   RETURNING e.id
 )
 SELECT installation_config_ciphertext FROM consumed
