@@ -360,6 +360,15 @@ func (q *Queries) GetClientSessionIdentity(ctx context.Context, id string) (GetC
 	return i, err
 }
 
+const markFreshE2EEBootstrapSession = `-- name: MarkFreshE2EEBootstrapSession :exec
+UPDATE cli_client_sessions SET fresh_e2ee_bootstrap=true WHERE id=$1 AND state='active'
+`
+
+func (q *Queries) MarkFreshE2EEBootstrapSession(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, markFreshE2EEBootstrapSession, id)
+	return err
+}
+
 const getClientSessionOwnerForUpdate = `-- name: GetClientSessionOwnerForUpdate :one
 SELECT user_id FROM cli_client_sessions WHERE id=$1 FOR UPDATE
 `

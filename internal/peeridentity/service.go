@@ -33,8 +33,9 @@ type RegisterRequest struct {
 
 type BootstrapRequest struct {
 	RegisterRequest
-	CLIClientSessionID string
-	RootPublicKey      ed25519.PublicKey
+	CLIClientSessionID   string
+	RootPublicKey        ed25519.PublicKey
+	AllowRootReplacement bool
 }
 
 type AccountRoot struct {
@@ -179,6 +180,15 @@ func (s *Service) Bootstrap(ctx context.Context, request BootstrapRequest) (Cert
 		return Certificate{}, err
 	}
 	certificate.RootFingerprint = rootFingerprint
+	if request.AllowRootReplacement {
+		fresh, ok := s.repository.(interface {
+			BootstrapFresh(context.Context, string, string, string, ed25519.PublicKey, Certificate) (Certificate, error)
+		})
+		if !ok {
+			return Certificate{}, ErrUnavailable
+		}
+		return fresh.BootstrapFresh(ctx, request.OperationID, request.UserID, request.CLIClientSessionID, append(ed25519.PublicKey(nil), request.RootPublicKey...), certificate)
+	}
 	return s.repository.Bootstrap(ctx, request.OperationID, request.UserID, append(ed25519.PublicKey(nil), request.RootPublicKey...), certificate)
 }
 

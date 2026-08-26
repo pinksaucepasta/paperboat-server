@@ -2507,6 +2507,9 @@ func (s *Service) provisionApprovedUserMachineWithOperation(ctx context.Context,
 			if err := tx.Queries().CreateClientSession(ctx, dbsqlc.CreateClientSessionParams{ID: build.cliSessionID, UserID: userID, ClientID: s.cliClientID, ClientLabel: "Paperboat enrollment: " + machine.DisplayName, DeviceType: "desktop", Os: machine.Platform, Scopes: s.cliScopes, CreatedAt: now, ApprovedAt: now}); err != nil {
 				return err
 			}
+			if err := tx.Queries().MarkFreshE2EEBootstrapSession(ctx, build.cliSessionID); err != nil {
+				return err
+			}
 			if err := tx.Queries().CreateClientAccessToken(ctx, dbsqlc.CreateClientAccessTokenParams{TokenHash: oneShotHash(s.cliHashKey, build.cliAccessToken), CLIClientSessionID: build.cliSessionID, ExpiresAt: now.Add(s.cliAccessLifetime), CreatedAt: now}); err != nil {
 				return err
 			}
@@ -2637,6 +2640,9 @@ func (s *Service) provisionRecoveredUserMachine(ctx context.Context, userID stri
 		if build.cliSessionID != "" {
 			now := s.now().UTC()
 			if err := tx.Queries().CreateClientSession(ctx, dbsqlc.CreateClientSessionParams{ID: build.cliSessionID, UserID: userID, ClientID: s.cliClientID, ClientLabel: "Paperboat enrollment: " + machine.DisplayName, DeviceType: "desktop", Os: machine.Platform, Scopes: s.cliScopes, CreatedAt: now, ApprovedAt: now}); err != nil {
+				return err
+			}
+			if err := tx.Queries().MarkFreshE2EEBootstrapSession(ctx, build.cliSessionID); err != nil {
 				return err
 			}
 			if err := tx.Queries().CreateClientAccessToken(ctx, dbsqlc.CreateClientAccessTokenParams{TokenHash: oneShotHash(s.cliHashKey, build.cliAccessToken), CLIClientSessionID: build.cliSessionID, ExpiresAt: now.Add(s.cliAccessLifetime), CreatedAt: now}); err != nil {

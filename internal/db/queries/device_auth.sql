@@ -78,6 +78,9 @@ UNION SELECT cli_client_session_id FROM cli_refresh_tokens WHERE token_hash = AN
 -- name: GetClientSessionIdentity :one
 SELECT user_id,client_id FROM cli_client_sessions WHERE id=$1;
 
+-- name: MarkFreshE2EEBootstrapSession :exec
+UPDATE cli_client_sessions SET fresh_e2ee_bootstrap=true WHERE id=$1 AND state='active';
+
 -- name: GetClientSessionForInstallationRecovery :one
 SELECT user_id,client_id FROM cli_client_sessions WHERE id=$1 AND state='active' FOR UPDATE;
 

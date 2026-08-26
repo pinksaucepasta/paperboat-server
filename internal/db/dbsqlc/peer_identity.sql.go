@@ -384,6 +384,54 @@ func (q *Queries) GetActiveAccountE2EERoot(ctx context.Context, userID string) (
 	return i, err
 }
 
+const getFreshEnrollmentClientSession = `-- name: GetFreshEnrollmentClientSession :one
+SELECT user_id FROM cli_client_sessions
+WHERE id = $1 AND user_id = $2
+  AND state = 'active' AND client_label LIKE 'Paperboat enrollment:%'
+`
+
+func (q *Queries) GetFreshEnrollmentClientSession(ctx context.Context, id, userID string) (string, error) {
+	row := q.db.QueryRow(ctx, getFreshEnrollmentClientSession, id, userID)
+	var value string
+	err := row.Scan(&value)
+	return value, err
+}
+
+const replaceAccountE2EERoot = `-- name: ReplaceAccountE2EERoot :one
+UPDATE account_e2ee_roots
+SET public_key = $1, fingerprint = $2, generation = 1, updated_at = $3, revoked_at = NULL
+WHERE user_id = $4
+RETURNING user_id, public_key, fingerprint, generation, created_at, updated_at, revoked_at
+`
+
+type ReplaceAccountE2EERootParams struct {
+	PublicKey   []byte
+	Fingerprint []byte
+	Now         time.Time
+	UserID      string
+}
+
+func (q *Queries) ReplaceAccountE2EERoot(ctx context.Context, arg ReplaceAccountE2EERootParams) (AccountE2eeRoot, error) {
+	row := q.db.QueryRow(ctx, replaceAccountE2EERoot, arg.PublicKey, arg.Fingerprint, arg.Now, arg.UserID)
+	var i AccountE2eeRoot
+	err := row.Scan(&i.UserID, &i.PublicKey, &i.Fingerprint, &i.Generation, &i.CreatedAt, &i.UpdatedAt, &i.RevokedAt)
+	return i, err
+}
+
+const revokeAllPeerEndpointCertificates = `-- name: RevokeAllPeerEndpointCertificates :execrows
+UPDATE peer_endpoint_certificates
+SET revoked_at = $1, revocation_reason = 'account_revoked'
+WHERE user_id = $2 AND revoked_at IS NULL
+`
+
+func (q *Queries) RevokeAllPeerEndpointCertificates(ctx context.Context, now sql.NullTime, userID string) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeAllPeerEndpointCertificates, now, userID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getActivePeerEndpointCertificateForUpdate = `-- name: GetActivePeerEndpointCertificateForUpdate :one
 SELECT certificate.fingerprint, certificate.user_id, certificate.endpoint_id, certificate.role, certificate.generation, certificate.serial, certificate.certificate, certificate.noise_public_key, certificate.quic_public_key, certificate.issued_at, certificate.expires_at, certificate.created_at, certificate.revoked_at, certificate.revocation_reason FROM peer_endpoint_certificates certificate
 JOIN account_e2ee_roots root ON root.user_id = certificate.user_id

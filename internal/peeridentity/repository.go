@@ -55,6 +55,53 @@ func (r *SQLRepository) Bootstrap(ctx context.Context, operationID, userID strin
 	return result, err
 }
 
+// BootstrapFresh is the one-shot dashboard enrollment ceremony. The CLI
+// session is created transactionally with installation material and is marked
+// by its enrollment label, so only that short-lived session can replace the
+// account root after a machine wipe. Existing endpoint certificates are
+// revoked before the new root is installed.
+func (r *SQLRepository) BootstrapFresh(ctx context.Context, operationID, userID, cliSessionID string, rootPublic ed25519.PublicKey, proposed Certificate) (Certificate, error) {
+	if r == nil || ctx == nil || len(operationID) < 16 || len(operationID) > 256 || !identifierExpr.MatchString(userID) || !identifierExpr.MatchString(cliSessionID) || len(rootPublic) != ed25519.PublicKeySize || proposed.Role != RoleCLI || proposed.EndpointID != cliSessionID || proposed.AccountID != userID {
+		return Certificate{}, ErrInvalid
+	}
+	rootFingerprint := sha256.Sum256(rootPublic)
+	if proposed.RootFingerprint != rootFingerprint {
+		return Certificate{}, ErrIdentity
+	}
+	var result Certificate
+	err := r.store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		q := tx.Queries()
+		if _, err := q.GetFreshEnrollmentClientSession(ctx, cliSessionID, userID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrConflict
+			}
+			return err
+		}
+		root, err := q.GetAccountE2EERootForUpdate(ctx, userID)
+		if errors.Is(err, sql.ErrNoRows) {
+			root, err = q.CreateAccountE2EERoot(ctx, dbsqlc.CreateAccountE2EERootParams{UserID: userID, PublicKey: rootPublic, Fingerprint: rootFingerprint[:]})
+		}
+		if err != nil {
+			return err
+		}
+		if root.RevokedAt.Valid || root.Generation != 1 {
+			return ErrConflict
+		}
+		if !bytes.Equal(root.PublicKey, rootPublic) {
+			if _, err := q.RevokeAllPeerEndpointCertificates(ctx, sql.NullTime{Time: proposed.IssuedAt, Valid: true}, userID); err != nil {
+				return err
+			}
+			root, err = q.ReplaceAccountE2EERoot(ctx, dbsqlc.ReplaceAccountE2EERootParams{PublicKey: rootPublic, Fingerprint: rootFingerprint[:], Now: proposed.IssuedAt, UserID: userID})
+			if err != nil {
+				return err
+			}
+		}
+		result, err = r.registerTx(ctx, tx, operationID, userID, proposed, root, false)
+		return err
+	})
+	return result, err
+}
+
 func NewSQLRepository(store *db.DB, writer *audit.Writer) (*SQLRepository, error) {
 	if store == nil || writer == nil {
 		return nil, ErrInvalid

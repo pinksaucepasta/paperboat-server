@@ -102,7 +102,7 @@ func e2eeBootstrap(service e2eeBootstrapper) http.HandlerFunc {
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "E2EE bootstrap request is invalid.")
 			return
 		}
-		value, err := service.Bootstrap(r.Context(), peeridentity.BootstrapRequest{RegisterRequest: peeridentity.RegisterRequest{OperationID: operationID, UserID: principal.User.ID, Certificate: certificate, Expected: peeridentity.Expected{AccountID: principal.User.ID, Role: peeridentity.RoleCLI, EndpointID: principal.Client.SessionID, Generation: 1, Serial: document.Certificate.Serial}, ExpectedRootFingerprint: rootFingerprint, ExpectedCertificateFingerprint: certificateFingerprint, ExpectedIssuedAt: issuedAt, ExpectedExpiresAt: expiresAt, Now: time.Now().UTC()}, CLIClientSessionID: principal.Client.SessionID, RootPublicKey: rootPublic})
+		value, err := service.Bootstrap(r.Context(), peeridentity.BootstrapRequest{RegisterRequest: peeridentity.RegisterRequest{OperationID: operationID, UserID: principal.User.ID, Certificate: certificate, Expected: peeridentity.Expected{AccountID: principal.User.ID, Role: peeridentity.RoleCLI, EndpointID: principal.Client.SessionID, Generation: 1, Serial: document.Certificate.Serial}, ExpectedRootFingerprint: rootFingerprint, ExpectedCertificateFingerprint: certificateFingerprint, ExpectedIssuedAt: issuedAt, ExpectedExpiresAt: expiresAt, Now: time.Now().UTC()}, CLIClientSessionID: principal.Client.SessionID, RootPublicKey: rootPublic, AllowRootReplacement: r.Header.Get("X-Paperboat-Fresh-Enrollment") == "1"})
 		if err != nil {
 			status, code := http.StatusBadRequest, "invalid_identity"
 			switch {

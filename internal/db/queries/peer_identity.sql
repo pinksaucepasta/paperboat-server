@@ -13,6 +13,23 @@ FOR UPDATE;
 SELECT * FROM account_e2ee_roots
 WHERE user_id = sqlc.arg(user_id) AND revoked_at IS NULL;
 
+-- name: GetFreshEnrollmentClientSession :one
+SELECT user_id FROM cli_client_sessions
+WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id)
+  AND state = 'active' AND fresh_e2ee_bootstrap = true;
+
+-- name: ReplaceAccountE2EERoot :one
+UPDATE account_e2ee_roots
+SET public_key = sqlc.arg(public_key), fingerprint = sqlc.arg(fingerprint),
+    generation = 1, updated_at = sqlc.arg(now), revoked_at = NULL
+WHERE user_id = sqlc.arg(user_id)
+RETURNING *;
+
+-- name: RevokeAllPeerEndpointCertificates :execrows
+UPDATE peer_endpoint_certificates
+SET revoked_at = sqlc.arg(now), revocation_reason = 'account_revoked'
+WHERE user_id = sqlc.arg(user_id) AND revoked_at IS NULL;
+
 -- name: CreatePeerEndpointCertificate :one
 INSERT INTO peer_endpoint_certificates
   (fingerprint, user_id, endpoint_id, role, generation, serial, certificate,
