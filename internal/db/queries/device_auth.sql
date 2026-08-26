@@ -81,6 +81,9 @@ SELECT user_id,client_id FROM cli_client_sessions WHERE id=$1;
 -- name: MarkFreshE2EEBootstrapSession :exec
 UPDATE cli_client_sessions SET fresh_e2ee_bootstrap=true WHERE id=$1 AND state='active';
 
+-- name: ConsumeFreshE2EEBootstrapSession :exec
+UPDATE cli_client_sessions SET fresh_e2ee_bootstrap=false WHERE id=$1;
+
 -- name: GetClientSessionForInstallationRecovery :one
 SELECT user_id,client_id FROM cli_client_sessions WHERE id=$1 AND state='active' FOR UPDATE;
 

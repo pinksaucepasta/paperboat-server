@@ -97,7 +97,10 @@ func (r *SQLRepository) BootstrapFresh(ctx context.Context, operationID, userID,
 			}
 		}
 		result, err = r.registerTx(ctx, tx, operationID, userID, proposed, root, false)
-		return err
+		if err != nil {
+			return err
+		}
+		return q.ConsumeFreshE2EEBootstrapSession(ctx, cliSessionID)
 	})
 	return result, err
 }

@@ -369,6 +369,15 @@ func (q *Queries) MarkFreshE2EEBootstrapSession(ctx context.Context, id string) 
 	return err
 }
 
+const consumeFreshE2EEBootstrapSession = `-- name: ConsumeFreshE2EEBootstrapSession :exec
+UPDATE cli_client_sessions SET fresh_e2ee_bootstrap=false WHERE id=$1
+`
+
+func (q *Queries) ConsumeFreshE2EEBootstrapSession(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, consumeFreshE2EEBootstrapSession, id)
+	return err
+}
+
 const getClientSessionOwnerForUpdate = `-- name: GetClientSessionOwnerForUpdate :one
 SELECT user_id FROM cli_client_sessions WHERE id=$1 FOR UPDATE
 `
