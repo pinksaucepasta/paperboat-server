@@ -624,8 +624,12 @@ WITH consumed AS (
     AND expires_at > now()
   RETURNING id, installation_config_ciphertext
 ), advanced AS (
-  UPDATE user_machine_enrollments e SET state = 'installing', updated_at = now()
-  FROM consumed WHERE e.pairing_id = consumed.id AND e.state = 'material_issued'
+  UPDATE user_machine_enrollments e
+  SET state = CASE WHEN machine.setup_mode = 'client' THEN 'ready' ELSE 'installing' END,
+      updated_at = now()
+  FROM consumed
+  JOIN user_machines machine ON machine.id = e.user_machine_id
+  WHERE e.pairing_id = consumed.id AND e.state = 'material_issued'
   RETURNING e.id
 )
 SELECT installation_config_ciphertext FROM consumed
