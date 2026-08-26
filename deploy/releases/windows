@@ -39,6 +39,7 @@ $dir = Join-Path $env:TEMP 'Paperboat\bootstrap'
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 $download = Join-Path $dir $asset
 $partial = "$download.download"
+$stateRoot = Join-Path $env:LOCALAPPDATA 'Paperboat\runtime'
 $installedPb = Join-Path ${env:ProgramFiles} 'Paperboat\bin\pb.exe'
 
 function Download-ReleaseFile([string]$Url, [string]$Output) {
@@ -75,6 +76,19 @@ function Assert-InstalledVersion([string]$Path, [string]$ExpectedVersion) {
   return $output -match ("(?m)^.*\bVersion\s+" + [regex]::Escape($ExpectedVersion) + "\s*$")
 }
 
+if (-not [string]::IsNullOrWhiteSpace($token)) {
+  # Enrollment owns the one privileged installation boundary. Starting the
+  # Windows services before pairing races the enrollment process: hostd can
+  # create a different machine identity while the user process is pairing.
+  # Let the downloaded unified executable pair first; its host bootstrap
+  # commits the authenticated identity and installs/starts services last.
+  $first = $token.Substring(0, 1)
+  $setupMode = if ('02468BDFHJLNPRTVXZ'.Contains($first)) { 'host' } else { 'client' }
+  & $download pair --server $server --enrollment-token $token --name $name "--setup-mode=$setupMode" --state-root $stateRoot
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  exit 0
+}
+
 if (-not (Assert-InstalledVersion $installedPb $version) -or (Get-FileHash -Algorithm SHA256 -LiteralPath $installedPb -ErrorAction SilentlyContinue).Hash.ToLowerInvariant() -ne $actual) {
   # __install is implemented by the downloaded pb.exe itself. This is the
   # only elevation boundary and avoids downloading another executable.
@@ -87,11 +101,3 @@ if (-not (Assert-InstalledVersion $installedPb $version) -or (Get-FileHash -Algo
   if ($process.ExitCode -ne 0) { throw "Paperboat self-install failed with exit code $($process.ExitCode)." }
 }
 if (-not (Assert-InstalledVersion $installedPb $version)) { throw "Installed Paperboat does not report release $version." }
-
-if (-not [string]::IsNullOrWhiteSpace($token)) {
-  $first = $token.Substring(0, 1)
-  $setupMode = if ('02468BDFHJLNPRTVXZ'.Contains($first)) { 'host' } else { 'client' }
-  Remove-Item Env:PAPERBOAT_ENROLLMENT_TOKEN -ErrorAction SilentlyContinue
-  & $installedPb pair --server $server --enrollment-token $token --name $name "--setup-mode=$setupMode"
-  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-}

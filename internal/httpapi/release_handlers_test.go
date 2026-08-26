@@ -108,7 +108,7 @@ func TestWindowsReleaseTemplateUsesCanonicalModes(t *testing.T) {
 		"'host'", "'client'", "--setup-mode=$setupmode",
 		"$server -notmatch '^https://'", "paperboat.release-current/v1", "pb-windows-$arch.exe", "__install", "releases/download",
 		"function assert-installedversion", "'paperboat\\bin\\pb.exe'",
-		"& $installedpb pair --server $server --enrollment-token $token --name $name \"--setup-mode=$setupmode\"",
+		"& $download pair --server $server --enrollment-token $token --name $name \"--setup-mode=$setupmode\"",
 	} {
 		if !strings.Contains(template, required) {
 			t.Fatalf("Windows release template is missing canonical mode contract %q", required)
