@@ -88,7 +88,12 @@ func installScript(files http.Handler) http.HandlerFunc {
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		powershell := strings.Contains(strings.ToLower(r.UserAgent()), "powershell")
+		// Windows PowerShell 5.1 does not consistently identify itself in the
+		// default User-Agent. Dashboard commands therefore carry an explicit
+		// shell=powershell query marker; retain User-Agent detection for older
+		// commands and direct callers.
+		shell := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("shell")))
+		powershell := shell == "powershell" || strings.Contains(strings.ToLower(r.UserAgent()), "powershell")
 		path := "/install"
 		if powershell {
 			path = "/windows"

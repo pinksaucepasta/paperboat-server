@@ -77,6 +77,13 @@ func TestReleaseEndpointsServeInstallAndTUF(t *testing.T) {
 	if windows.Code != http.StatusOK || !strings.Contains(windows.Body.String(), "PAPERBOAT_ENROLLMENT_TOKEN") {
 		t.Fatalf("windows response = %d %q", windows.Code, windows.Body.String())
 	}
+	legacyWindows := httptest.NewRecorder()
+	legacyWindowsRequest := httptest.NewRequest(http.MethodGet, "/install?p=4K7M9Q2V8X4N6P5R1T0W8Y2ZAB&shell=powershell", nil)
+	legacyWindowsRequest.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT; Windows NT 10.0; en-US)")
+	router.ServeHTTP(legacyWindows, legacyWindowsRequest)
+	if legacyWindows.Code != http.StatusOK || !strings.Contains(legacyWindows.Body.String(), "Write-Output paperboat-windows") {
+		t.Fatalf("Windows PowerShell 5.1 response = %d %q", legacyWindows.Code, legacyWindows.Body.String())
+	}
 	removed := httptest.NewRecorder()
 	router.ServeHTTP(removed, httptest.NewRequest(http.MethodGet, "/windows?p=4K7M9Q2V8X4N6P5R1T0W8Y2ZAB", nil))
 	if removed.Code != http.StatusNotFound {
