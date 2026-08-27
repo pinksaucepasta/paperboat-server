@@ -69,10 +69,30 @@ if ([int64]$file.Length -ne [int64]$assetMetadata.length) { throw "Paperboat rel
 $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $download).Hash.ToLowerInvariant()
 if ($actual -ne [string]$assetMetadata.sha256) { throw "Paperboat release asset digest verification failed for $asset." }
 
+Unblock-File -LiteralPath $download -ErrorAction SilentlyContinue
+
+$trustedBootstrapDirectory = Join-Path ${env:ProgramFiles} 'Paperboat\bootstrap'
+function Stage-TrustedBootstrap([string]$Source) {
+  New-Item -ItemType Directory -Force -Path $trustedBootstrapDirectory | Out-Null
+  $staged = Join-Path $trustedBootstrapDirectory ('pb-' + [guid]::NewGuid().ToString('N') + '.exe')
+  Copy-Item -LiteralPath $Source -Destination $staged -Force
+  Unblock-File -LiteralPath $staged -ErrorAction SilentlyContinue
+  return $staged
+}
+
 function Assert-InstalledVersion([string]$Path, [string]$ExpectedVersion) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
-  $output = (& $Path --version 2>&1 | Out-String)
-  if ($LASTEXITCODE -ne 0) { return $false }
+  $capture = [IO.Path]::GetTempFileName()
+  $captureError = "$capture.err"
+  try {
+    $probe = Start-Process -FilePath $Path -ArgumentList '--version' -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput $capture -RedirectStandardError $captureError
+    if ($probe.ExitCode -ne 0) { return $false }
+    $output = ((Get-Content -LiteralPath $capture -Raw -ErrorAction SilentlyContinue) + (Get-Content -LiteralPath $captureError -Raw -ErrorAction SilentlyContinue))
+  } catch {
+    return $false
+  } finally {
+    Remove-Item -LiteralPath $capture,$captureError -Force -ErrorAction SilentlyContinue
+  }
   $versionMatches = [regex]::Matches($output, '(Version[\t ]+[0-9A-Za-z._-]+)')
   return $versionMatches.Count -eq 1 -and $versionMatches[0].Groups[1].Value -eq ("Version " + $ExpectedVersion)
 }
@@ -84,15 +104,23 @@ if (-not (Assert-InstalledVersion $download $version)) {
 function Test-Administrator {
   $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
   $principal = [Security.Principal.WindowsPrincipal]::new($identity)
-  return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+  if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { return $false }
+  $probe = Join-Path $trustedBootstrapDirectory ('.elevation-' + [guid]::NewGuid().ToString('N'))
+  try {
+    New-Item -ItemType Directory -Force -Path $trustedBootstrapDirectory | Out-Null
+    New-Item -ItemType File -Path $probe -Force | Out-Null
+    Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+    return $true
+  } catch {
+    Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+    return $false
+  }
 }
 
 if ($freshEnrollment -or -not (Assert-InstalledVersion $installedPb $version) -or (Get-FileHash -Algorithm SHA256 -LiteralPath $installedPb -ErrorAction SilentlyContinue).Hash.ToLowerInvariant() -ne $actual) {
   # __install is implemented by the downloaded pb.exe itself. This is the
   # only binary-install elevation boundary and avoids downloading another
-  # executable. It stages the binary only; enrollment below owns service
-  # installation and starts services only after the authenticated material is
-  # committed.
+  # executable.
   $arguments = @('__install', '--source', $download, '--version', $version)
   if ($freshEnrollment) { $arguments += '--fresh' }
   # An already-elevated SSH or deployment process has no interactive desktop
@@ -100,16 +128,27 @@ if ($freshEnrollment -or -not (Assert-InstalledVersion $installedPb $version) -o
   # that environment returns Access is denied even though the caller already
   # has a full administrator token. Execute directly in that case; ordinary
   # desktop terminals still use RunAs and show the normal UAC prompt.
+  $installerExecutable = $null
+  try { $installerExecutable = Stage-TrustedBootstrap $download } catch { $installerExecutable = $null }
+  if ($null -ne $installerExecutable) {
+    $arguments[2] = $installerExecutable
+  }
+  $runAsPath = if ($null -ne $installerExecutable) { $installerExecutable } else { $download }
   if (Test-Administrator) {
-    $process = Start-Process -FilePath $download -ArgumentList $arguments -PassThru -WindowStyle Hidden
+    & $runAsPath @arguments
+    if ($LASTEXITCODE -ne 0) { throw "Paperboat self-install failed with exit code $LASTEXITCODE." }
   } else {
-    $process = Start-Process -FilePath $download -ArgumentList $arguments -Verb RunAs -PassThru -WindowStyle Hidden
+    $elevatedArguments = @($arguments)
+    if ($runAsPath.Contains(' ')) { $elevatedArguments[2] = '"' + $arguments[2] + '"' }
+    $installOutput = Join-Path $dir 'install.stdout'
+    $installError = Join-Path $dir 'install.stderr'
+    $process = Start-Process -FilePath $runAsPath -ArgumentList $elevatedArguments -Verb RunAs -PassThru -Wait -WindowStyle Hidden -RedirectStandardOutput $installOutput -RedirectStandardError $installError
+    if ($process.ExitCode -ne 0) {
+      $detail = ((Get-Content -LiteralPath $installOutput -Raw -ErrorAction SilentlyContinue) + (Get-Content -LiteralPath $installError -Raw -ErrorAction SilentlyContinue)).Trim()
+      if ($detail.Length -gt 2000) { $detail = $detail.Substring(0, 2000) }
+      throw "Paperboat self-install failed with exit code $($process.ExitCode): $detail"
+    }
   }
-  if (-not $process.WaitForExit(1200000)) {
-    try { $process.Kill() } finally { $process.WaitForExit() }
-    throw 'Paperboat installation exceeded the 20 minute limit.'
-  }
-  if ($process.ExitCode -ne 0) { throw "Paperboat self-install failed with exit code $($process.ExitCode)." }
 }
 if (-not (Assert-InstalledVersion $installedPb $version)) { throw "Installed Paperboat does not report release $version." }
 
@@ -131,7 +170,12 @@ if ($freshEnrollment) {
   $first = $token.Substring(0, 1)
   $setupMode = if ('02468BDFHJLNPRTVXZ'.Contains($first)) { 'host' } else { 'client' }
   Remove-Item Env:PAPERBOAT_ENROLLMENT_TOKEN -ErrorAction SilentlyContinue
-  & $installedPb pair --server $server --enrollment-token $token --name $name "--setup-mode=$setupMode"
-  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-  exit 0
+  $pairArguments = @('pair', '--server', $server, '--enrollment-token', $token, '--name', $name, "--setup-mode=$setupMode")
+  if (Test-Administrator) {
+    & $installedPb @pairArguments
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  } else {
+    $pairProcess = Start-Process -FilePath $installedPb -ArgumentList $pairArguments -Verb RunAs -PassThru -Wait
+    if ($pairProcess.ExitCode -ne 0) { exit $pairProcess.ExitCode }
+  }
 }
