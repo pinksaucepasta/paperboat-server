@@ -54,6 +54,8 @@ SELECT controlling.endpoint_id AS controlling_endpoint_id,
        controlled.endpoint_id AS controlled_endpoint_id,
        controlling.certificate AS controlling_certificate,
        controlled.certificate AS controlled_certificate,
+       controlling.key_id AS controlling_key_id,
+       controlled.key_id AS controlled_key_id,
        node.id AS edge_node_id,
        node.relay_region,
        node.signaling_host,
@@ -117,6 +119,12 @@ WHERE state = 'ready' AND ready = true
 ORDER BY relay_region, last_heartbeat_at DESC, id
 LIMIT 32;
 
+-- name: ListActivePeerSessionTrustedKeys :many
+SELECT key_id, public_key, fingerprint, generation
+FROM account_e2ee_keys
+WHERE user_id = sqlc.arg(user_id) AND revoked_at IS NULL
+ORDER BY created_at, key_id;
+
 -- name: IsPeerRelayNodeReady :one
 SELECT EXISTS (
   SELECT 1 FROM control_tunnel_nodes
@@ -168,6 +176,8 @@ WHERE intent_id = sqlc.arg(intent_id);
 SELECT intent.*,
        controlling.certificate AS controlling_certificate,
        controlled.certificate AS controlled_certificate,
+       controlling.key_id AS controlling_key_id,
+       controlled.key_id AS controlled_key_id,
        controlling_grant.endpoint_id AS controlling_endpoint_id,
        controlling_grant.peer_endpoint_id AS controlling_peer_endpoint_id,
        controlling_grant.jti AS controlling_jti,

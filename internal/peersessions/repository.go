@@ -3,8 +3,10 @@ package peersessions
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -54,6 +56,10 @@ func (r *SQLRepository) Reserve(ctx context.Context, request Request, hash [32]b
 		if err != nil {
 			return err
 		}
+		trustedKeys, err := trustedKeysFromRows(tx.Queries(), ctx, request.UserID)
+		if err != nil {
+			return err
+		}
 		proposed.Controlling.EndpointID, proposed.Controlling.PeerEndpointID = authority.ControllingEndpointID, authority.ControlledEndpointID
 		proposed.Controlled.EndpointID, proposed.Controlled.PeerEndpointID = authority.ControlledEndpointID, authority.ControllingEndpointID
 		proposed.EdgeNodeID, proposed.EdgePool = authority.EdgeNodeID, authority.RelayRegion.String
@@ -61,6 +67,9 @@ func (r *SQLRepository) Reserve(ctx context.Context, request Request, hash [32]b
 		proposed.SignalingHost, proposed.STUNHost, proposed.STUNPort = authority.SignalingHost.String, authority.StunHost.String, uint16(authority.StunPort.Int32)
 		proposed.ControllingCertificate = append([]byte(nil), authority.ControllingCertificate...)
 		proposed.ControlledCertificate = append([]byte(nil), authority.ControlledCertificate...)
+		proposed.ControllingCertificateKeyID = authority.ControllingKeyID
+		proposed.ControlledCertificateKeyID = authority.ControlledKeyID
+		proposed.TrustedKeys = trustedKeys
 
 		existing, err := tx.Queries().GetPeerSessionIntentByOperationForUpdate(ctx, request.OperationKey)
 		if err == nil {
@@ -82,7 +91,7 @@ func (r *SQLRepository) Reserve(ctx context.Context, request Request, hash [32]b
 			if relayErr != nil {
 				return relayErr
 			}
-			result, err = r.replayReservation(existing, grants, relay, authority)
+			result, err = r.replayReservation(existing, grants, relay, authority, trustedKeys)
 			return err
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
@@ -252,11 +261,17 @@ func (r *SQLRepository) Controlled(ctx context.Context, userID, machineID string
 		return reservation{}, ErrInvalid
 	}
 	var row dbsqlc.ResolveControlledPeerSessionForMachineRow
+	var trustedKeys []TrustedKey
 	err := r.store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		var resolveErr error
 		row, resolveErr = tx.Queries().ResolveControlledPeerSessionForMachine(ctx, dbsqlc.ResolveControlledPeerSessionForMachineParams{UserID: userID, MachineID: machineID, HostGeneration: hostGeneration, Now: now.UTC(), NodeStaleAfter: now.UTC().Add(-r.nodeFreshness)})
 		if resolveErr != nil {
 			return resolveErr
+		}
+		var keyErr error
+		trustedKeys, keyErr = trustedKeysFromRows(tx.Queries(), ctx, row.UserID)
+		if keyErr != nil {
+			return keyErr
 		}
 		updated, markErr := tx.Queries().MarkControlledPeerSessionDelivered(ctx, dbsqlc.MarkControlledPeerSessionDeliveredParams{ID: row.ID, DeliveredAt: now.UTC()})
 		if markErr != nil {
@@ -287,7 +302,7 @@ func (r *SQLRepository) Controlled(ctx context.Context, userID, machineID string
 	if json.Unmarshal([]byte(plaintext), &credentials) != nil || credentials.Ufrag == "" || credentials.Password == "" || !validPurposeConsumer(row.Purpose, credentials.Consumer) || !validAllowedPaths(row.Purpose, credentials.AllowedPaths) || !validTransferBinding(row.Purpose, credentials.Transfer) || !row.EdgePool.Valid || !row.SignalingHost.Valid || !row.StunHost.Valid || !row.StunPort.Valid || row.StunPort.Int32 <= 0 || row.StunPort.Int32 > 65535 || len(row.RouteAllocation) != 16 || row.RouteGeneration <= 0 || row.ByteLimit <= 0 || row.AuthorizationGeneration <= 0 || row.HostGeneration != hostGeneration {
 		return reservation{}, ErrUnavailable
 	}
-	return reservation{UserID: row.UserID, CLIClientSessionID: row.CLIClientSessionID, OperationKey: row.OperationKey, IntentID: row.ID, EnvironmentID: row.EnvironmentID, Purpose: row.Purpose, Consumer: credentials.Consumer, AllowedPaths: append([]string(nil), credentials.AllowedPaths...), EdgeNodeID: row.EdgeNodeID, EdgePool: row.EdgePool.String, SignalingHost: row.SignalingHost.String, STUNHost: row.StunHost.String, STUNPort: uint16(row.StunPort.Int32), ICEUfrag: credentials.Ufrag, ICEPassword: credentials.Password, ControllingCertificate: append([]byte(nil), row.ControllingCertificate...), ControlledCertificate: append([]byte(nil), row.ControlledCertificate...), AttemptGeneration: row.AttemptGeneration, NetworkGeneration: row.NetworkGeneration, HostGeneration: row.HostGeneration, AuthorizationGeneration: row.AuthorizationGeneration, IssuedAt: row.CreatedAt, ExpiresAt: row.ExpiresAt, Controlling: grant{EndpointID: row.ControllingEndpointID, PeerEndpointID: row.ControllingPeerEndpointID, Role: "controlling", JTI: row.ControllingJti}, Controlled: grant{EndpointID: row.ControlledEndpointID, PeerEndpointID: row.ControlledPeerEndpointID, Role: "controlled", JTI: row.ControlledJti}, Relay: relayAllocation{RouteAllocation: base64.RawURLEncoding.EncodeToString(row.RouteAllocation), JTI: row.RelayJti, RouteGeneration: row.RouteGeneration, ByteLimit: row.ByteLimit}, Transfer: cloneTransferBinding(credentials.Transfer)}, nil
+	return reservation{UserID: row.UserID, CLIClientSessionID: row.CLIClientSessionID, OperationKey: row.OperationKey, IntentID: row.ID, EnvironmentID: row.EnvironmentID, Purpose: row.Purpose, Consumer: credentials.Consumer, AllowedPaths: append([]string(nil), credentials.AllowedPaths...), EdgeNodeID: row.EdgeNodeID, EdgePool: row.EdgePool.String, SignalingHost: row.SignalingHost.String, STUNHost: row.StunHost.String, STUNPort: uint16(row.StunPort.Int32), ICEUfrag: credentials.Ufrag, ICEPassword: credentials.Password, ControllingCertificate: append([]byte(nil), row.ControllingCertificate...), ControlledCertificate: append([]byte(nil), row.ControlledCertificate...), ControllingCertificateKeyID: row.ControllingKeyID, ControlledCertificateKeyID: row.ControlledKeyID, TrustedKeys: trustedKeys, AttemptGeneration: row.AttemptGeneration, NetworkGeneration: row.NetworkGeneration, HostGeneration: row.HostGeneration, AuthorizationGeneration: row.AuthorizationGeneration, IssuedAt: row.CreatedAt, ExpiresAt: row.ExpiresAt, Controlling: grant{EndpointID: row.ControllingEndpointID, PeerEndpointID: row.ControllingPeerEndpointID, Role: "controlling", JTI: row.ControllingJti}, Controlled: grant{EndpointID: row.ControlledEndpointID, PeerEndpointID: row.ControlledPeerEndpointID, Role: "controlled", JTI: row.ControlledJti}, Relay: relayAllocation{RouteAllocation: base64.RawURLEncoding.EncodeToString(row.RouteAllocation), JTI: row.RelayJti, RouteGeneration: row.RouteGeneration, ByteLimit: row.ByteLimit}, Transfer: cloneTransferBinding(credentials.Transfer)}, nil
 }
 
 func validRevocationReason(value string) bool {
@@ -299,7 +314,7 @@ func validRevocationReason(value string) bool {
 	}
 }
 
-func (r *SQLRepository) replayReservation(intent dbsqlc.PeerSessionIntent, grants []dbsqlc.PeerSignalingGrant, relay dbsqlc.PeerRelayAllocation, authority dbsqlc.ResolvePeerSessionAuthorityForUpdateRow) (reservation, error) {
+func (r *SQLRepository) replayReservation(intent dbsqlc.PeerSessionIntent, grants []dbsqlc.PeerSignalingGrant, relay dbsqlc.PeerRelayAllocation, authority dbsqlc.ResolvePeerSessionAuthorityForUpdateRow, trustedKeys []TrustedKey) (reservation, error) {
 	plaintext, err := secrets.Decrypt(r.encryptionKey, intent.IceCredentialsCiphertext)
 	if err != nil {
 		return reservation{}, ErrUnavailable
@@ -317,7 +332,7 @@ func (r *SQLRepository) replayReservation(intent dbsqlc.PeerSessionIntent, grant
 	if !intent.EdgePool.Valid || !intent.SignalingHost.Valid || !intent.StunHost.Valid || !intent.StunPort.Valid || intent.EdgePool.String == "" || intent.SignalingHost.String == "" || intent.StunHost.String == "" || intent.StunPort.Int32 <= 0 || intent.StunPort.Int32 > 65535 {
 		return reservation{}, ErrUnavailable
 	}
-	result := reservation{UserID: intent.UserID, CLIClientSessionID: intent.CLIClientSessionID, OperationKey: intent.OperationKey, IntentID: intent.ID, EnvironmentID: intent.EnvironmentID, Purpose: intent.Purpose, Consumer: credentials.Consumer, AllowedPaths: append([]string(nil), credentials.AllowedPaths...), EdgeNodeID: intent.EdgeNodeID, EdgePool: intent.EdgePool.String, SignalingHost: intent.SignalingHost.String, STUNHost: intent.StunHost.String, STUNPort: uint16(intent.StunPort.Int32), ICEUfrag: credentials.Ufrag, ICEPassword: credentials.Password, ControllingCertificate: append([]byte(nil), authority.ControllingCertificate...), ControlledCertificate: append([]byte(nil), authority.ControlledCertificate...), AttemptGeneration: intent.AttemptGeneration, NetworkGeneration: intent.NetworkGeneration, HostGeneration: authority.HostGeneration, AuthorizationGeneration: authority.AuthorizationGeneration, IssuedAt: intent.CreatedAt, ExpiresAt: intent.ExpiresAt, Transfer: cloneTransferBinding(credentials.Transfer)}
+	result := reservation{UserID: intent.UserID, CLIClientSessionID: intent.CLIClientSessionID, OperationKey: intent.OperationKey, IntentID: intent.ID, EnvironmentID: intent.EnvironmentID, Purpose: intent.Purpose, Consumer: credentials.Consumer, AllowedPaths: append([]string(nil), credentials.AllowedPaths...), EdgeNodeID: intent.EdgeNodeID, EdgePool: intent.EdgePool.String, SignalingHost: intent.SignalingHost.String, STUNHost: intent.StunHost.String, STUNPort: uint16(intent.StunPort.Int32), ICEUfrag: credentials.Ufrag, ICEPassword: credentials.Password, ControllingCertificate: append([]byte(nil), authority.ControllingCertificate...), ControlledCertificate: append([]byte(nil), authority.ControlledCertificate...), ControllingCertificateKeyID: authority.ControllingKeyID, ControlledCertificateKeyID: authority.ControlledKeyID, TrustedKeys: trustedKeys, AttemptGeneration: intent.AttemptGeneration, NetworkGeneration: intent.NetworkGeneration, HostGeneration: authority.HostGeneration, AuthorizationGeneration: authority.AuthorizationGeneration, IssuedAt: intent.CreatedAt, ExpiresAt: intent.ExpiresAt, Transfer: cloneTransferBinding(credentials.Transfer)}
 	if len(relay.RouteAllocation) != 16 || relay.Jti == "" || relay.RouteGeneration < 1 || relay.ByteLimit < 1 || relay.ByteLimit > 1<<40 || relay.RevokedAt.Valid {
 		return reservation{}, fmt.Errorf("peer session intent has invalid relay authority")
 	}
@@ -338,6 +353,28 @@ func (r *SQLRepository) replayReservation(intent dbsqlc.PeerSessionIntent, grant
 	}
 	if result.Controlling.JTI == "" || result.Controlled.JTI == "" {
 		return reservation{}, fmt.Errorf("peer session intent has incomplete signaling authority")
+	}
+	return result, nil
+}
+
+func trustedKeysFromRows(queries *dbsqlc.Queries, ctx context.Context, userID string) ([]TrustedKey, error) {
+	rows, err := queries.ListActivePeerSessionTrustedKeys(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, ErrUnavailable
+	}
+	result := make([]TrustedKey, 0, len(rows))
+	for _, row := range rows {
+		if row.KeyID == "" || len(row.PublicKey) != sha256.Size || len(row.Fingerprint) != sha256.Size || row.Generation <= 0 {
+			return nil, ErrUnavailable
+		}
+		fingerprint := sha256.Sum256(row.PublicKey)
+		if !bytes.Equal(fingerprint[:], row.Fingerprint) || row.KeyID != "aek_"+hex.EncodeToString(fingerprint[:]) {
+			return nil, ErrUnavailable
+		}
+		result = append(result, TrustedKey{KeyID: row.KeyID, PublicKey: append([]byte(nil), row.PublicKey...), Fingerprint: append([]byte(nil), row.Fingerprint...), Generation: row.Generation})
 	}
 	return result, nil
 }

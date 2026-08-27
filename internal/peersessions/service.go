@@ -74,6 +74,15 @@ type Credential struct {
 	ExpiresAt  time.Time
 }
 
+// TrustedKey is an active account E2EE key that a peer can use to validate
+// endpoint certificates carried by a session descriptor.
+type TrustedKey struct {
+	KeyID       string
+	PublicKey   []byte
+	Fingerprint []byte
+	Generation  int64
+}
+
 type Relay struct {
 	Region          string
 	RouteAllocation string
@@ -85,63 +94,69 @@ type Relay struct {
 }
 
 type Pair struct {
-	UserID                  string
-	CLIClientSessionID      string
-	OperationKey            string
-	IntentID                string
-	EnvironmentID           string
-	Purpose                 string
-	Consumer                string
-	EdgeNodeID              string
-	EdgePool                string
-	SignalingHost           string
-	STUNHost                string
-	STUNPort                uint16
-	ICEUfrag                string
-	ICEPassword             string
-	ControllingCertificate  []byte
-	ControlledCertificate   []byte
-	AttemptGeneration       int64
-	NetworkGeneration       int64
-	AllowedPaths            []string
-	HostGeneration          int64
-	AuthorizationGeneration int64
-	IssuedAt                time.Time
-	ExpiresAt               time.Time
-	Controlling             Credential
-	Controlled              Credential
-	Relay                   Relay
-	Transfer                *TransferBinding
+	UserID                      string
+	CLIClientSessionID          string
+	OperationKey                string
+	IntentID                    string
+	EnvironmentID               string
+	Purpose                     string
+	Consumer                    string
+	EdgeNodeID                  string
+	EdgePool                    string
+	SignalingHost               string
+	STUNHost                    string
+	STUNPort                    uint16
+	ICEUfrag                    string
+	ICEPassword                 string
+	ControllingCertificate      []byte
+	ControlledCertificate       []byte
+	ControllingCertificateKeyID string
+	ControlledCertificateKeyID  string
+	TrustedKeys                 []TrustedKey
+	AttemptGeneration           int64
+	NetworkGeneration           int64
+	AllowedPaths                []string
+	HostGeneration              int64
+	AuthorizationGeneration     int64
+	IssuedAt                    time.Time
+	ExpiresAt                   time.Time
+	Controlling                 Credential
+	Controlled                  Credential
+	Relay                       Relay
+	Transfer                    *TransferBinding
 }
 
 type reservation struct {
-	UserID                  string
-	CLIClientSessionID      string
-	OperationKey            string
-	IntentID                string
-	EnvironmentID           string
-	Purpose                 string
-	Consumer                string
-	EdgeNodeID              string
-	AttemptGeneration       int64
-	NetworkGeneration       int64
-	AllowedPaths            []string
-	HostGeneration          int64
-	AuthorizationGeneration int64
-	EdgePool                string
-	SignalingHost           string
-	STUNHost                string
-	STUNPort                uint16
-	ICEUfrag                string
-	ICEPassword             string
-	ControllingCertificate  []byte
-	ControlledCertificate   []byte
-	IssuedAt                time.Time
-	ExpiresAt               time.Time
-	Controlling             grant
-	Controlled              grant
-	Relay                   relayAllocation
-	Transfer                *TransferBinding
+	UserID                      string
+	CLIClientSessionID          string
+	OperationKey                string
+	IntentID                    string
+	EnvironmentID               string
+	Purpose                     string
+	Consumer                    string
+	EdgeNodeID                  string
+	AttemptGeneration           int64
+	NetworkGeneration           int64
+	AllowedPaths                []string
+	HostGeneration              int64
+	AuthorizationGeneration     int64
+	EdgePool                    string
+	SignalingHost               string
+	STUNHost                    string
+	STUNPort                    uint16
+	ICEUfrag                    string
+	ICEPassword                 string
+	ControllingCertificate      []byte
+	ControlledCertificate       []byte
+	ControllingCertificateKeyID string
+	ControlledCertificateKeyID  string
+	TrustedKeys                 []TrustedKey
+	IssuedAt                    time.Time
+	ExpiresAt                   time.Time
+	Controlling                 grant
+	Controlled                  grant
+	Relay                       relayAllocation
+	Transfer                    *TransferBinding
 }
 
 type grant struct {
@@ -403,7 +418,11 @@ func (s *Service) NextControlled(ctx context.Context, userID, machineID string, 
 }
 
 func pairFromReservation(value reservation, controlling, controlled Credential, relay Relay) Pair {
-	return Pair{UserID: value.UserID, CLIClientSessionID: value.CLIClientSessionID, OperationKey: value.OperationKey, IntentID: value.IntentID, EnvironmentID: value.EnvironmentID, Purpose: value.Purpose, Consumer: value.Consumer, EdgeNodeID: value.EdgeNodeID, EdgePool: value.EdgePool, SignalingHost: value.SignalingHost, STUNHost: value.STUNHost, STUNPort: value.STUNPort, ICEUfrag: value.ICEUfrag, ICEPassword: value.ICEPassword, ControllingCertificate: append([]byte(nil), value.ControllingCertificate...), ControlledCertificate: append([]byte(nil), value.ControlledCertificate...), AttemptGeneration: value.AttemptGeneration, NetworkGeneration: value.NetworkGeneration, AllowedPaths: append([]string(nil), value.AllowedPaths...), HostGeneration: value.HostGeneration, AuthorizationGeneration: value.AuthorizationGeneration, IssuedAt: value.IssuedAt, ExpiresAt: value.ExpiresAt, Controlling: controlling, Controlled: controlled, Relay: relay, Transfer: cloneTransferBinding(value.Transfer)}
+	trustedKeys := make([]TrustedKey, 0, len(value.TrustedKeys))
+	for _, key := range value.TrustedKeys {
+		trustedKeys = append(trustedKeys, TrustedKey{KeyID: key.KeyID, PublicKey: append([]byte(nil), key.PublicKey...), Fingerprint: append([]byte(nil), key.Fingerprint...), Generation: key.Generation})
+	}
+	return Pair{UserID: value.UserID, CLIClientSessionID: value.CLIClientSessionID, OperationKey: value.OperationKey, IntentID: value.IntentID, EnvironmentID: value.EnvironmentID, Purpose: value.Purpose, Consumer: value.Consumer, EdgeNodeID: value.EdgeNodeID, EdgePool: value.EdgePool, SignalingHost: value.SignalingHost, STUNHost: value.STUNHost, STUNPort: value.STUNPort, ICEUfrag: value.ICEUfrag, ICEPassword: value.ICEPassword, ControllingCertificate: append([]byte(nil), value.ControllingCertificate...), ControlledCertificate: append([]byte(nil), value.ControlledCertificate...), ControllingCertificateKeyID: value.ControllingCertificateKeyID, ControlledCertificateKeyID: value.ControlledCertificateKeyID, TrustedKeys: trustedKeys, AttemptGeneration: value.AttemptGeneration, NetworkGeneration: value.NetworkGeneration, AllowedPaths: append([]string(nil), value.AllowedPaths...), HostGeneration: value.HostGeneration, AuthorizationGeneration: value.AuthorizationGeneration, IssuedAt: value.IssuedAt, ExpiresAt: value.ExpiresAt, Controlling: controlling, Controlled: controlled, Relay: relay, Transfer: cloneTransferBinding(value.Transfer)}
 }
 
 func (s *Service) signRelay(intent reservation) (Relay, error) {

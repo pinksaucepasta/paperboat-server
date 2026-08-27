@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -44,6 +45,7 @@ type peerAttemptDescriptor struct {
 	IssuedAt                string                   `json:"issued_at"`
 	ExpiresAt               string                   `json:"expires_at"`
 	EndpointCertificates    []peerAttemptCertificate `json:"endpoint_certificates"`
+	TrustedKeys             []trustedKeyDocument     `json:"trusted_keys"`
 	Direct                  peerAttemptDirect        `json:"direct"`
 	Signaling               peerAttemptSignaling     `json:"signaling"`
 	Relays                  []peerAttemptRelay       `json:"relays"`
@@ -54,6 +56,7 @@ type peerAttemptDescriptor struct {
 
 type peerAttemptCertificate struct {
 	EndpointID  string `json:"endpoint_id"`
+	KeyID       string `json:"key_id"`
 	Certificate string `json:"certificate"`
 }
 type peerAttemptDirect struct {
@@ -218,7 +221,7 @@ func peerAttemptResponse(pair peersessions.Pair, role string) peerAttemptDescrip
 			allowedPaths = []string{"direct_quic"}
 		}
 	}
-	result := peerAttemptDescriptor{Version: 1, AccountID: pair.UserID, DeviceID: pair.CLIClientSessionID, OperationID: pair.OperationKey, IntentID: pair.IntentID, EnvironmentID: pair.EnvironmentID, Purpose: pair.Purpose, InitiatorEndpointID: pair.Controlling.EndpointID, ResponderEndpointID: pair.Controlled.EndpointID, Role: role, AttemptGeneration: pair.AttemptGeneration, NetworkGeneration: pair.NetworkGeneration, HostGeneration: pair.HostGeneration, AuthorizationGeneration: pair.AuthorizationGeneration, IssuedAt: pair.IssuedAt.UTC().Format("2006-01-02T15:04:05Z"), ExpiresAt: pair.ExpiresAt.UTC().Format("2006-01-02T15:04:05Z"), EndpointCertificates: []peerAttemptCertificate{{EndpointID: pair.Controlling.EndpointID, Certificate: base64.RawURLEncoding.EncodeToString(pair.ControllingCertificate)}, {EndpointID: pair.Controlled.EndpointID, Certificate: base64.RawURLEncoding.EncodeToString(pair.ControlledCertificate)}}, Direct: peerAttemptDirect{ICEUfrag: pair.ICEUfrag, ICEPassword: pair.ICEPassword, STUNURLs: []string{"stun:" + pair.STUNHost + ":" + strconv.Itoa(int(pair.STUNPort))}}, Signaling: peerAttemptSignaling{URL: "wss://" + pair.SignalingHost + "/v1/peer-signaling", Credential: credential, Subprotocol: "paperboat.peer-signaling.v1"}, Relays: []peerAttemptRelay{{Region: pair.Relay.Region, RouteGeneration: pair.Relay.RouteGeneration, QUICURL: "https://" + pair.SignalingHost + "/v1/peer-relay", WSSURL: "wss://" + pair.SignalingHost + "/v1/peer-relay", RouteToken: pair.Relay.Token, PMTUToken: pair.Relay.PMTUToken, PMTUURL: "udp://" + pair.STUNHost + ":" + strconv.Itoa(int(pair.STUNPort)), ExpiresAt: pair.Relay.ExpiresAt.UTC().Format("2006-01-02T15:04:05Z")}}, Policy: peerAttemptPolicy{AllowedPaths: allowedPaths, RelayDeadlineMS: 15000, HealthIntervalMS: 15000, MaxCandidates: 32}}
+	result := peerAttemptDescriptor{Version: 1, AccountID: pair.UserID, DeviceID: pair.CLIClientSessionID, OperationID: pair.OperationKey, IntentID: pair.IntentID, EnvironmentID: pair.EnvironmentID, Purpose: pair.Purpose, InitiatorEndpointID: pair.Controlling.EndpointID, ResponderEndpointID: pair.Controlled.EndpointID, Role: role, AttemptGeneration: pair.AttemptGeneration, NetworkGeneration: pair.NetworkGeneration, HostGeneration: pair.HostGeneration, AuthorizationGeneration: pair.AuthorizationGeneration, IssuedAt: pair.IssuedAt.UTC().Format("2006-01-02T15:04:05Z"), ExpiresAt: pair.ExpiresAt.UTC().Format("2006-01-02T15:04:05Z"), EndpointCertificates: []peerAttemptCertificate{{EndpointID: pair.Controlling.EndpointID, KeyID: pair.ControllingCertificateKeyID, Certificate: base64.RawURLEncoding.EncodeToString(pair.ControllingCertificate)}, {EndpointID: pair.Controlled.EndpointID, KeyID: pair.ControlledCertificateKeyID, Certificate: base64.RawURLEncoding.EncodeToString(pair.ControlledCertificate)}}, TrustedKeys: peerAttemptTrustedKeyDocuments(pair.TrustedKeys), Direct: peerAttemptDirect{ICEUfrag: pair.ICEUfrag, ICEPassword: pair.ICEPassword, STUNURLs: []string{"stun:" + pair.STUNHost + ":" + strconv.Itoa(int(pair.STUNPort))}}, Signaling: peerAttemptSignaling{URL: "wss://" + pair.SignalingHost + "/v1/peer-signaling", Credential: credential, Subprotocol: "paperboat.peer-signaling.v1"}, Relays: []peerAttemptRelay{{Region: pair.Relay.Region, RouteGeneration: pair.Relay.RouteGeneration, QUICURL: "https://" + pair.SignalingHost + "/v1/peer-relay", WSSURL: "wss://" + pair.SignalingHost + "/v1/peer-relay", RouteToken: pair.Relay.Token, PMTUToken: pair.Relay.PMTUToken, PMTUURL: "udp://" + pair.STUNHost + ":" + strconv.Itoa(int(pair.STUNPort)), ExpiresAt: pair.Relay.ExpiresAt.UTC().Format("2006-01-02T15:04:05Z")}}, Policy: peerAttemptPolicy{AllowedPaths: allowedPaths, RelayDeadlineMS: 15000, HealthIntervalMS: 15000, MaxCandidates: 32}}
 	result.Consumer = pair.Consumer
 	if pair.Purpose == "peer_transport" {
 		result.StreamPolicy = &peerAttemptStreamPolicy{Protocol: "paperboat.peer-stream.v1", AllowedConsumers: []string{"terminal", "exec", "ssh", "private_preview", "codex"}, MaximumStreams: 64}
@@ -227,6 +230,17 @@ func peerAttemptResponse(pair peersessions.Pair, role string) peerAttemptDescrip
 		result.Transfer = &peerAttemptTransfer{TransferID: pair.Transfer.TransferID, Generation: pair.Transfer.Generation, ExpiresAt: pair.Transfer.ExpiresAt.UTC().Format("2006-01-02T15:04:05Z")}
 	}
 	return result
+}
+
+func peerAttemptTrustedKeyDocuments(keys []peersessions.TrustedKey) []trustedKeyDocument {
+	documents := make([]trustedKeyDocument, 0, len(keys))
+	for _, key := range keys {
+		documents = append(documents, trustedKeyDocument{
+			KeyID: key.KeyID, PublicKey: base64.RawURLEncoding.EncodeToString(key.PublicKey),
+			Fingerprint: hex.EncodeToString(key.Fingerprint), Generation: uint64(key.Generation),
+		})
+	}
+	return documents
 }
 
 func peerAttemptError(w http.ResponseWriter, r *http.Request, err error) bool {

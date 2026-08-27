@@ -440,6 +440,45 @@ func (q *Queries) IsPeerRelayNodeReady(ctx context.Context, arg IsPeerRelayNodeR
 	return exists, err
 }
 
+const listActivePeerSessionTrustedKeys = `-- name: ListActivePeerSessionTrustedKeys :many
+SELECT key_id, public_key, fingerprint, generation
+FROM account_e2ee_keys
+WHERE user_id = $1 AND revoked_at IS NULL
+ORDER BY created_at, key_id
+`
+
+type ListActivePeerSessionTrustedKeysRow struct {
+	KeyID       string
+	PublicKey   []byte
+	Fingerprint []byte
+	Generation  int64
+}
+
+func (q *Queries) ListActivePeerSessionTrustedKeys(ctx context.Context, userID string) ([]ListActivePeerSessionTrustedKeysRow, error) {
+	rows, err := q.db.Query(ctx, listActivePeerSessionTrustedKeys, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListActivePeerSessionTrustedKeysRow
+	for rows.Next() {
+		var i ListActivePeerSessionTrustedKeysRow
+		if err := rows.Scan(
+			&i.KeyID,
+			&i.PublicKey,
+			&i.Fingerprint,
+			&i.Generation,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listActivePeerSignalingJTIs = `-- name: ListActivePeerSignalingJTIs :many
 SELECT g.jti
 FROM peer_signaling_grants g
@@ -666,6 +705,8 @@ const resolveControlledPeerSessionForMachine = `-- name: ResolveControlledPeerSe
 SELECT intent.id, intent.operation_key, intent.request_hash, intent.user_id, intent.cli_client_session_id, intent.environment_id, intent.purpose, intent.edge_node_id, intent.controlling_certificate_fingerprint, intent.controlled_certificate_fingerprint, intent.attempt_generation, intent.network_generation, intent.state, intent.expires_at, intent.revoked_at, intent.revocation_reason, intent.created_at, intent.ice_credentials_ciphertext, intent.edge_pool, intent.signaling_host, intent.stun_host, intent.stun_port, intent.controlled_delivered_at,
        controlling.certificate AS controlling_certificate,
        controlled.certificate AS controlled_certificate,
+       controlling.key_id AS controlling_key_id,
+       controlled.key_id AS controlled_key_id,
        controlling_grant.endpoint_id AS controlling_endpoint_id,
        controlling_grant.peer_endpoint_id AS controlling_peer_endpoint_id,
        controlling_grant.jti AS controlling_jti,
@@ -753,6 +794,8 @@ type ResolveControlledPeerSessionForMachineRow struct {
 	ControlledDeliveredAt             sql.NullTime
 	ControllingCertificate            []byte
 	ControlledCertificate             []byte
+	ControllingKeyID                  string
+	ControlledKeyID                   string
 	ControllingEndpointID             string
 	ControllingPeerEndpointID         string
 	ControllingJti                    string
@@ -802,6 +845,8 @@ func (q *Queries) ResolveControlledPeerSessionForMachine(ctx context.Context, ar
 		&i.ControlledDeliveredAt,
 		&i.ControllingCertificate,
 		&i.ControlledCertificate,
+		&i.ControllingKeyID,
+		&i.ControlledKeyID,
 		&i.ControllingEndpointID,
 		&i.ControllingPeerEndpointID,
 		&i.ControllingJti,
@@ -823,6 +868,8 @@ SELECT controlling.endpoint_id AS controlling_endpoint_id,
        controlled.endpoint_id AS controlled_endpoint_id,
        controlling.certificate AS controlling_certificate,
        controlled.certificate AS controlled_certificate,
+       controlling.key_id AS controlling_key_id,
+       controlled.key_id AS controlled_key_id,
        node.id AS edge_node_id,
        node.relay_region,
        node.signaling_host,
@@ -886,6 +933,8 @@ type ResolvePeerSessionAuthorityForUpdateRow struct {
 	ControlledEndpointID         string
 	ControllingCertificate       []byte
 	ControlledCertificate        []byte
+	ControllingKeyID             string
+	ControlledKeyID              string
 	EdgeNodeID                   string
 	RelayRegion                  sql.NullString
 	SignalingHost                sql.NullString
@@ -915,6 +964,8 @@ func (q *Queries) ResolvePeerSessionAuthorityForUpdate(ctx context.Context, arg 
 		&i.ControlledEndpointID,
 		&i.ControllingCertificate,
 		&i.ControlledCertificate,
+		&i.ControllingKeyID,
+		&i.ControlledKeyID,
 		&i.EdgeNodeID,
 		&i.RelayRegion,
 		&i.SignalingHost,
