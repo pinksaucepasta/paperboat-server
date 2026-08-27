@@ -1,8 +1,8 @@
 -- +goose Up
 
--- A user may trust more than one E2EE signing key. The original
--- account_e2ee_roots row remains the account-level lifecycle guard used by
--- older persistence tables; individual device trust is represented here.
+-- A user may trust more than one E2EE signing key. Account-level lifecycle
+-- revocation remains represented by account_e2ee_roots; individual device
+-- trust is represented here.
 CREATE TABLE account_e2ee_keys (
   key_id text PRIMARY KEY CHECK (key_id ~ '^aek_[A-Za-z0-9_-]{16,128}$'),
   user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -136,9 +136,8 @@ AFTER UPDATE OF revoked_at ON account_e2ee_keys
 FOR EACH ROW
 EXECUTE FUNCTION revoke_account_e2ee_key_dependents();
 
--- The account row is retained as an account-level lifecycle marker for older
--- records, but it is not a certificate trust key. If that marker is revoked,
--- revoke every active device key through the same dependent cleanup trigger.
+-- Account-level revocation is propagated to every active device key through
+-- the same dependent cleanup trigger.
 CREATE OR REPLACE FUNCTION revoke_account_e2ee_keys_for_root()
 RETURNS trigger
 LANGUAGE plpgsql

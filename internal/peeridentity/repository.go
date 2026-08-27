@@ -521,9 +521,9 @@ func endpointRequestFromRow(row dbsqlc.PeerEndpointEnrollmentRequest) (EndpointE
 	if result.Role == 0 || (result.State != "pending" && result.State != "fulfilled" && result.State != "expired" && result.State != "revoked") {
 		return EndpointEnrollmentRequest{}, ErrUnavailable
 	}
-	// CLI identities are intentionally single-generation. Reject malformed or
-	// legacy rows rather than exposing a request that could not produce the
-	// certificate contract enforced by Bootstrap (role=cli, generation=1).
+	// CLI identities are intentionally single-generation. Reject malformed
+	// rows rather than exposing a request that cannot produce the certificate
+	// contract enforced by Bootstrap (role=cli, generation=1).
 	if result.Role == RoleCLI && result.Generation != 1 {
 		return EndpointEnrollmentRequest{}, ErrUnavailable
 	}
