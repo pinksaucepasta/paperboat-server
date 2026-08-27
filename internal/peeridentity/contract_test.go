@@ -17,7 +17,7 @@ func TestApprovedEndpointCertificateVector(t *testing.T) {
 	}
 	var vector struct {
 		RootPublicKey          string `json:"root_public_key"`
-		RootFingerprint        string `json:"root_fingerprint"`
+		KeyID                  string `json:"key_id"`
 		Certificate            string `json:"certificate"`
 		CertificateFingerprint string `json:"certificate_fingerprint"`
 		Now                    string `json:"now"`
@@ -35,8 +35,8 @@ func TestApprovedEndpointCertificateVector(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rootFingerprint, err := RootFingerprint(ed25519.PublicKey(root))
-	if err != nil || rootFingerprint != vector.RootFingerprint || hex.EncodeToString(certificate.Fingerprint[:]) != vector.CertificateFingerprint {
-		t.Fatalf("root=%s certificate=%s error=%v", rootFingerprint, hex.EncodeToString(certificate.Fingerprint[:]), err)
+	keyID, err := KeyID(ed25519.PublicKey(root))
+	if err != nil || keyID != vector.KeyID || hex.EncodeToString(certificate.Fingerprint[:]) != vector.CertificateFingerprint {
+		t.Fatalf("key_id=%s certificate=%s error=%v", keyID, hex.EncodeToString(certificate.Fingerprint[:]), err)
 	}
 }
