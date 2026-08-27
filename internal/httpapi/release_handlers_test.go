@@ -114,7 +114,7 @@ func TestWindowsReleaseTemplateUsesCanonicalModes(t *testing.T) {
 	for _, required := range []string{
 		"'host'", "'client'", "--setup-mode=$setupmode",
 		"$server -notmatch '^https://'", "paperboat.release-current/v1", "pb-windows-$arch.exe", "__install", "releases/download",
-		"function assert-installedversion", "'paperboat\\bin\\pb.exe'",
+		"function assert-installedversion", "function test-administrator", "if ($freshenrollment) { $arguments += '--fresh' }", "'paperboat\\bin\\pb.exe'",
 		"& $installedpb pair --server $server --enrollment-token $token --name $name \"--setup-mode=$setupmode\"",
 	} {
 		if !strings.Contains(template, required) {
@@ -128,6 +128,20 @@ func TestWindowsReleaseTemplateUsesCanonicalModes(t *testing.T) {
 	}
 	if strings.Index(template, "__install") > strings.Index(template, "pair --server") {
 		t.Fatal("Windows enrollment pairs before the final installed executable is staged")
+	}
+	adminBranch := strings.Index(template, "if (test-administrator) {")
+	directStart := strings.Index(template, "$process = start-process -filepath $download -argumentlist $arguments -passthru")
+	runAsStart := strings.Index(template, "$process = start-process -filepath $download -argumentlist $arguments -verb runas -passthru")
+	if adminBranch < 0 || directStart < adminBranch || runAsStart < directStart {
+		t.Fatal("Windows release template does not separate elevated direct execution from desktop UAC elevation")
+	}
+	if strings.Contains(template, "clear-existingpaperboat") || strings.Contains(template, "sc.exe stop") {
+		t.Fatal("Windows release template eagerly deletes the existing enrollment before verified installation")
+	}
+	freshCleanup := strings.Index(template, "foreach ($statepath in @(")
+	verifiedInstall := strings.LastIndex(template, "if (-not (assert-installedversion $installedpb $version))")
+	if freshCleanup < 0 || verifiedInstall < 0 || freshCleanup < verifiedInstall {
+		t.Fatal("Windows fresh enrollment does not clear user state after verified installation")
 	}
 }
 
