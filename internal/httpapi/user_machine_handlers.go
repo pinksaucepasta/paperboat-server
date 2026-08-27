@@ -946,7 +946,12 @@ func userMachineDelete(service *usermachines.Service) http.HandlerFunc {
 			return
 		}
 		if err := service.Delete(r.Context(), p.User.ID, r.PathValue("machine_id")); err != nil {
-			writeError(w, r, http.StatusNotFound, "user_machine_not_found", "Machine was not found.")
+			if errors.Is(err, usermachines.ErrNotFound) {
+				writeError(w, r, http.StatusNotFound, "user_machine_not_found", "Machine was not found.")
+				return
+			}
+			slog.Error("delete user machine failed", "error", err, "machine_id", r.PathValue("machine_id"))
+			writeError(w, r, http.StatusInternalServerError, "user_machine_delete_failed", "Unable to delete this machine.")
 			return
 		}
 		writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]bool{"deleted": true}})
