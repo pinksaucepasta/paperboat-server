@@ -2510,6 +2510,13 @@ func (s *Service) provisionApprovedUserMachineWithOperation(ctx context.Context,
 			if err := tx.Queries().MarkFreshE2EEBootstrapSession(ctx, build.cliSessionID); err != nil {
 				return err
 			}
+			if bound, err := tx.Queries().BindCLIClientSessionToUserMachine(ctx, dbsqlc.BindCLIClientSessionToUserMachineParams{
+				TargetMachineID: sql.NullString{String: machine.ID, Valid: true}, TargetCLISessionID: build.cliSessionID, TargetUserID: userID,
+			}); err != nil {
+				return err
+			} else if bound != 1 {
+				return ErrInstallationUnavailable
+			}
 			if err := tx.Queries().CreateClientAccessToken(ctx, dbsqlc.CreateClientAccessTokenParams{TokenHash: oneShotHash(s.cliHashKey, build.cliAccessToken), CLIClientSessionID: build.cliSessionID, ExpiresAt: now.Add(s.cliAccessLifetime), CreatedAt: now}); err != nil {
 				return err
 			}
@@ -2616,6 +2623,13 @@ func (s *Service) provisionRecoveredUserMachine(ctx context.Context, userID stri
 			if identityErr != nil || identity.UserID != userID || identity.ClientID != s.cliClientID {
 				return ErrInstallationUnavailable
 			}
+			if bound, bindErr := tx.Queries().BindCLIClientSessionToUserMachine(ctx, dbsqlc.BindCLIClientSessionToUserMachineParams{
+				TargetMachineID: sql.NullString{String: machine.ID, Valid: true}, TargetCLISessionID: build.existingCLISessionID, TargetUserID: userID,
+			}); bindErr != nil {
+				return bindErr
+			} else if bound != 1 {
+				return ErrInstallationUnavailable
+			}
 		}
 		var completeErr error
 		completed, completeErr = tx.Queries().CompleteUserMachineInstallationRecovery(ctx, dbsqlc.CompleteUserMachineInstallationRecoveryParams{
@@ -2644,6 +2658,13 @@ func (s *Service) provisionRecoveredUserMachine(ctx context.Context, userID stri
 			}
 			if err := tx.Queries().MarkFreshE2EEBootstrapSession(ctx, build.cliSessionID); err != nil {
 				return err
+			}
+			if bound, err := tx.Queries().BindCLIClientSessionToUserMachine(ctx, dbsqlc.BindCLIClientSessionToUserMachineParams{
+				TargetMachineID: sql.NullString{String: machine.ID, Valid: true}, TargetCLISessionID: build.cliSessionID, TargetUserID: userID,
+			}); err != nil {
+				return err
+			} else if bound != 1 {
+				return ErrInstallationUnavailable
 			}
 			if err := tx.Queries().CreateClientAccessToken(ctx, dbsqlc.CreateClientAccessTokenParams{TokenHash: oneShotHash(s.cliHashKey, build.cliAccessToken), CLIClientSessionID: build.cliSessionID, ExpiresAt: now.Add(s.cliAccessLifetime), CreatedAt: now}); err != nil {
 				return err
@@ -3430,6 +3451,97 @@ func (s *Service) Delete(ctx context.Context, userID, userMachineID string) erro
 	return errors.Join(auditErr, s.RevokeUserMachineSessions(ctx, userMachineID, "user_machine_deleted"))
 }
 
+// cleanupUserMachineDeviceTx fences every credential and machine-scoped
+// record that is not covered by the user_machines soft-delete itself. It must
+// run in the same transaction as the machine state transition so an offline
+// machine cannot reconnect in the gap between removal and credential cleanup.
+func (s *Service) cleanupUserMachineDeviceTx(ctx context.Context, tx *db.Tx, userID, userMachineID string, now time.Time) error {
+	queries := tx.Queries()
+	machineID := sql.NullString{String: userMachineID, Valid: true}
+	revocationTime := sql.NullTime{Time: now, Valid: true}
+
+	if _, err := queries.RevokeUserMachineE2EEKeys(ctx, dbsqlc.RevokeUserMachineE2EEKeysParams{
+		RevocationTime: now, TargetUserID: userID, TargetMachineID: machineID,
+	}); err != nil {
+		return err
+	}
+	if _, err := queries.RevokeCLIClientSessionsForUserMachine(ctx, dbsqlc.RevokeCLIClientSessionsForUserMachineParams{
+		RevocationTime: revocationTime, RevocationCause: sql.NullString{String: "device_removed", Valid: true}, TargetMachineID: machineID, TargetUserID: userID,
+	}); err != nil {
+		return err
+	}
+	if _, err := queries.RevokeCLIClientAccessTokensForUserMachine(ctx, dbsqlc.RevokeCLIClientAccessTokensForUserMachineParams{
+		RevocationTime: revocationTime, TargetMachineID: machineID, TargetUserID: userID,
+	}); err != nil {
+		return err
+	}
+	if _, err := queries.RevokeCLIClientRefreshTokensForUserMachine(ctx, dbsqlc.RevokeCLIClientRefreshTokensForUserMachineParams{
+		RevocationTime: revocationTime, TargetMachineID: machineID, TargetUserID: userID,
+	}); err != nil {
+		return err
+	}
+	if _, err := queries.RevokeUserMachinePeerAuthority(ctx, dbsqlc.RevokeUserMachinePeerAuthorityParams{
+		TargetMachineID: userMachineID, TargetUserID: userID, RevocationTime: revocationTime,
+	}); err != nil {
+		return err
+	}
+	if _, err := queries.ExpireUserMachinePairings(ctx, dbsqlc.ExpireUserMachinePairingsParams{ExpiredAt: now, TargetMachineID: machineID}); err != nil {
+		return err
+	}
+	if _, err := queries.DeleteUserMachineEnrollments(ctx, dbsqlc.DeleteUserMachineEnrollmentsParams{ExpiredAt: now, TargetMachineID: machineID}); err != nil {
+		return err
+	}
+	if _, err := queries.ExpireUserMachineDiagnosticUploadIntents(ctx, dbsqlc.ExpireUserMachineDiagnosticUploadIntentsParams{TargetMachineID: machineID, TargetUserID: userID}); err != nil {
+		return err
+	}
+	if _, err := queries.StopCodexSessionsForMachine(ctx, dbsqlc.StopCodexSessionsForMachineParams{MachineID: userMachineID, Now: revocationTime}); err != nil {
+		return err
+	}
+	if _, err := queries.DeleteUserMachineControlRenewals(ctx, userMachineID); err != nil {
+		return err
+	}
+	if _, err := queries.DeleteUserMachineTransferDestinationDefault(ctx, dbsqlc.DeleteUserMachineTransferDestinationDefaultParams{TargetUserID: userID, TargetMachineID: userMachineID}); err != nil {
+		return err
+	}
+	if _, err := queries.ClearProjectTerminalTransferDestinationsForMachine(ctx, dbsqlc.ClearProjectTerminalTransferDestinationsForMachineParams{ExpiredAt: now, TargetMachineID: machineID}); err != nil {
+		return err
+	}
+	if _, err := queries.ClearUserMachineTerminalTransferDestinationsForMachine(ctx, dbsqlc.ClearUserMachineTerminalTransferDestinationsForMachineParams{ExpiredAt: now, TargetMachineID: machineID}); err != nil {
+		return err
+	}
+	if _, err := queries.DeleteUserMachineTerminalSessionOperations(ctx, userMachineID); err != nil {
+		return err
+	}
+	if _, err := queries.DeleteUserMachineTerminalSessions(ctx, dbsqlc.DeleteUserMachineTerminalSessionsParams{ExpiredAt: now, TargetMachineID: userMachineID}); err != nil {
+		return err
+	}
+	if _, err := queries.DeleteUserMachineAvailabilityOperations(ctx, userMachineID); err != nil {
+		return err
+	}
+	if _, err := queries.DeleteUserMachineUpdateObservation(ctx, userMachineID); err != nil {
+		return err
+	}
+	if _, err := queries.ExpireUserMachineMaintenanceApprovals(ctx, dbsqlc.ExpireUserMachineMaintenanceApprovalsParams{ExpiredAt: now, TargetMachineID: userMachineID}); err != nil {
+		return err
+	}
+	if _, err := queries.DeleteUserMachineRelaySelectionStates(ctx, dbsqlc.DeleteUserMachineRelaySelectionStatesParams{TargetUserID: userID, TargetMachineID: userMachineID}); err != nil {
+		return err
+	}
+	if _, err := queries.DeleteUserMachineSSHHostKeys(ctx, userMachineID); err != nil {
+		return err
+	}
+	if _, err := queries.DeleteUserMachineSSHHostKeySets(ctx, userMachineID); err != nil {
+		return err
+	}
+	if _, err := queries.DeleteUserMachineSSHHostKeyOwners(ctx, userMachineID); err != nil {
+		return err
+	}
+	if _, err := queries.DeleteUserMachineSSHTarget(ctx, userMachineID); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *Service) revokeUserMachineControl(ctx context.Context, userID, userMachineID string, deleted bool) error {
 	now := s.now().UTC()
 	return s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
@@ -3451,6 +3563,11 @@ func (s *Service) revokeUserMachineControl(ctx context.Context, userID, userMach
 		}
 		if changed != 1 {
 			return ErrNotFound
+		}
+		if deleted {
+			if err := s.cleanupUserMachineDeviceTx(ctx, tx, userID, machine.ID, now); err != nil {
+				return err
+			}
 		}
 		if err := expireAuthenticatedHostSetupPairingsTx(ctx, tx, machine.ID, now); err != nil {
 			return err
@@ -3487,7 +3604,10 @@ func (s *Service) revokeEnvironmentControlTx(ctx context.Context, tx *db.Tx, env
 	if _, err = tx.Queries().RevokeControlConfigRepositoryAccessForEnvironment(ctx, dbsqlc.RevokeControlConfigRepositoryAccessForEnvironmentParams{EnvironmentID: environmentID, Now: now}); err != nil {
 		return err
 	}
-	_, err = tx.Queries().RevokeControlConfigRepositoryLeasesForEnvironment(ctx, dbsqlc.RevokeControlConfigRepositoryLeasesForEnvironmentParams{EnvironmentID: sql.NullString{String: environmentID, Valid: true}, Now: sql.NullTime{Time: now, Valid: true}})
+	if _, err = tx.Queries().RevokeControlConfigRepositoryLeasesForEnvironment(ctx, dbsqlc.RevokeControlConfigRepositoryLeasesForEnvironmentParams{EnvironmentID: sql.NullString{String: environmentID, Valid: true}, Now: sql.NullTime{Time: now, Valid: true}}); err != nil {
+		return err
+	}
+	_, err = tx.Queries().RemoveControlPreviewsForEnvironment(ctx, dbsqlc.RemoveControlPreviewsForEnvironmentParams{RevocationTime: now, TargetEnvironmentID: environmentID})
 	return err
 }
 
