@@ -114,7 +114,7 @@ func TestWindowsReleaseTemplateUsesCanonicalModes(t *testing.T) {
 	for _, required := range []string{
 		"'host'", "'client'", "--setup-mode=$setupmode",
 		"$server -notmatch '^https://'", "paperboat.release-current/v1", "pb-windows-$arch.exe", "__install", "releases/download",
-		"function assert-installedversion", "function test-administrator", "if ($freshenrollment) { $arguments += '--fresh' }", "'paperboat\\bin\\pb.exe'",
+		"function assert-installedversion", "function test-administrator", "if ($freshenrollment) { $arguments += '--fresh' }", "'paperboat\\bin\\pb.exe'", "assert-installedversion $download $version",
 		"& $installedpb pair --server $server --enrollment-token $token --name $name \"--setup-mode=$setupmode\"",
 	} {
 		if !strings.Contains(template, required) {
