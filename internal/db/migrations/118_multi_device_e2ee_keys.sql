@@ -79,6 +79,7 @@ CREATE INDEX peer_endpoint_certificates_key_idx
 -- Revoking a device key is the server-side kill switch for every credential
 -- derived from that key. This runs in the same transaction as the revocation,
 -- so no newly issued or active peer credential can outlive its key.
+-- +goose StatementBegin
 CREATE OR REPLACE FUNCTION revoke_account_e2ee_key_dependents()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -136,6 +137,7 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+-- +goose StatementEnd
 
 CREATE TRIGGER account_e2ee_keys_revoke_dependents
 AFTER UPDATE OF revoked_at ON account_e2ee_keys
@@ -144,6 +146,7 @@ EXECUTE FUNCTION revoke_account_e2ee_key_dependents();
 
 -- Account-level revocation is propagated to every active device key through
 -- the same dependent cleanup trigger.
+-- +goose StatementBegin
 CREATE OR REPLACE FUNCTION revoke_account_e2ee_keys_for_root()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -159,6 +162,7 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+-- +goose StatementEnd
 
 CREATE TRIGGER account_e2ee_roots_revoke_keys
 AFTER UPDATE OF revoked_at ON account_e2ee_roots
@@ -167,6 +171,7 @@ EXECUTE FUNCTION revoke_account_e2ee_keys_for_root();
 
 -- A dashboard removal can revoke either the machine record or its CLI
 -- session. Keep both paths authoritative and idempotent.
+-- +goose StatementBegin
 CREATE OR REPLACE FUNCTION revoke_account_e2ee_keys_for_cli_session()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -182,12 +187,14 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+-- +goose StatementEnd
 
 CREATE TRIGGER cli_client_sessions_revoke_e2ee_keys
 AFTER UPDATE OF state ON cli_client_sessions
 FOR EACH ROW
 EXECUTE FUNCTION revoke_account_e2ee_keys_for_cli_session();
 
+-- +goose StatementBegin
 CREATE OR REPLACE FUNCTION revoke_account_e2ee_keys_for_machine()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -204,6 +211,7 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+-- +goose StatementEnd
 
 CREATE TRIGGER user_machines_revoke_e2ee_keys
 AFTER UPDATE OF revoked_at, deleted_at ON user_machines
