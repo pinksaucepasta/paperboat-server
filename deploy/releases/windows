@@ -125,7 +125,10 @@ if ($freshEnrollment -or -not (Assert-InstalledVersion $installedPb $version) -o
   }
   $runAsPath = if ($null -ne $installerExecutable) { $installerExecutable } else { $download }
   if (Test-Administrator) {
-    & $runAsPath @arguments
+    # The trusted Program Files staging directory is intentionally not
+    # user-readable. An already elevated process can execute the original
+    # verified download from the user's temp directory directly.
+    & $download @arguments
     if ($LASTEXITCODE -ne 0) { throw "Paperboat self-install failed with exit code $LASTEXITCODE." }
   } else {
     $elevatedArguments = @($arguments)
