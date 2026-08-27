@@ -20,21 +20,32 @@ func TestDeleteMachineRevokesBoundDeviceCredentialsAndState(t *testing.T) {
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
 	userID := "usr_cleanup_" + suffix
 	machineID := "mch_cleanup_" + suffix
+	siblingMachineID := "mch_cleanup_sibling_" + suffix
 	environmentID := "env_cleanup_" + suffix
 	cliSessionID := "cls_cleanup_" + suffix
+	siblingCLISessionID := "cls_cleanup_sibling_" + suffix
 	pairingID := "ump_cleanup_" + suffix
 	enrollmentID := "ume_cleanup_" + suffix
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	publicIdentityKey := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
+	siblingPublicIdentityKey := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{6}, 32))
 	rootPublicKey := bytes.Repeat([]byte{8}, 32)
+	siblingPublicKey := bytes.Repeat([]byte{9}, 32)
 	rootFingerprint := sha256.Sum256(rootPublicKey)
 	keyID := "aek_" + hex.EncodeToString(rootFingerprint[:])
+	siblingFingerprint := sha256.Sum256(siblingPublicKey)
+	siblingKeyID := "aek_" + hex.EncodeToString(siblingFingerprint[:])
 	certificateFingerprint := sha256.Sum256([]byte("certificate:" + suffix))
+	cliCertificateFingerprint := sha256.Sum256([]byte("cli-certificate:" + suffix))
+	siblingCertificateFingerprint := sha256.Sum256([]byte("sibling-certificate:" + suffix))
+	siblingCLICertificateFingerprint := sha256.Sum256([]byte("sibling-cli-certificate:" + suffix))
 	sshClientFingerprint := sha256.Sum256([]byte("ssh-client:" + suffix))
 	sshHostFingerprint := sha256.Sum256([]byte("ssh-host:" + suffix))
 	sshSetFingerprint := sha256.Sum256([]byte("ssh-set:" + suffix))
 	verifierHash := sha256.Sum256([]byte("verifier:" + suffix))
 	enrollmentTokenHash := sha256.Sum256([]byte("enrollment-token:" + suffix))
+	peerRequestHash := sha256.Sum256([]byte("peer-request:" + suffix))
+	siblingPeerRequestHash := sha256.Sum256([]byte("sibling-peer-request:" + suffix))
 
 	if _, err := store.SQL().ExecContext(ctx, `
 INSERT INTO paperboat.users (id, workos_subject, primary_email, status)
@@ -55,8 +66,24 @@ VALUES ($1, $2, $3, 'Cleanup test', 'linux', 'amd64', '/workspace', 'offline', '
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `
+INSERT INTO paperboat.user_machines
+  (id, user_id, environment_id, display_name, platform, architecture, workspace_root,
+   state, seat_state, public_identity_key, setup_roles, setup_mode, configured_capabilities)
+VALUES ($1, $2, $3, 'Sibling cleanup test', 'linux', 'amd64', '/sibling', 'offline', 'released',
+        $4, ARRAY['interactive']::text[], 'client', ARRAY['file_receive']::text[])`, siblingMachineID, userID, environmentID, siblingPublicIdentityKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `
 INSERT INTO paperboat.account_e2ee_roots (user_id, public_key, fingerprint, created_at, updated_at)
 VALUES ($1, $2, $3, $4, $4)`, userID, rootPublicKey, rootFingerprint[:], now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `
+INSERT INTO paperboat.cli_client_sessions
+  (id, user_id, client_id, client_label, device_type, os, scopes, state, created_at,
+   approved_at, user_machine_id)
+VALUES ($1, $2, 'paperboat', 'Cleanup test', 'desktop', 'linux', ARRAY['projects:read'],
+        'active', $3, $3, $4)`, cliSessionID, userID, now, machineID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `
@@ -70,8 +97,15 @@ VALUES ($1, $2, $3, $4, 1, $5, $6, $7, $7)`, keyID, userID, rootPublicKey, rootF
 INSERT INTO paperboat.cli_client_sessions
   (id, user_id, client_id, client_label, device_type, os, scopes, state, created_at,
    approved_at, user_machine_id)
-VALUES ($1, $2, 'paperboat', 'Cleanup test', 'desktop', 'linux', ARRAY['projects:read'],
-        'active', $3, $3, $4)`, cliSessionID, userID, now, machineID); err != nil {
+VALUES ($1, $2, 'paperboat', 'Sibling cleanup test', 'desktop', 'linux', ARRAY['projects:read'],
+        'active', $3, $3, $4)`, siblingCLISessionID, userID, now, siblingMachineID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `
+INSERT INTO paperboat.account_e2ee_keys
+  (key_id, user_id, public_key, fingerprint, generation, cli_client_session_id,
+   user_machine_id, created_at, updated_at)
+VALUES ($1, $2, $3, $4, 1, $5, $6, $7, $7)`, siblingKeyID, userID, siblingPublicKey, siblingFingerprint[:], siblingCLISessionID, siblingMachineID, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `
@@ -96,6 +130,56 @@ INSERT INTO paperboat.peer_endpoint_certificates
    noise_public_key, quic_public_key, issued_at, expires_at)
 VALUES ($1, $2, $3, $4, 'machine', 1, 1, $5, $6, $7, $8, $9)`, certificateFingerprint[:], userID, keyID, machineID, bytes.Repeat([]byte{1}, 172), bytes.Repeat([]byte{2}, 32), bytes.Repeat([]byte{3}, 32), now, now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
+	}
+	for _, certificate := range []struct {
+		fingerprint [sha256.Size]byte
+		keyID       string
+		endpointID  string
+		role        string
+		marker      byte
+	}{
+		{fingerprint: cliCertificateFingerprint, keyID: keyID, endpointID: cliSessionID, role: "cli", marker: 4},
+		{fingerprint: siblingCertificateFingerprint, keyID: siblingKeyID, endpointID: siblingMachineID, role: "machine", marker: 5},
+		{fingerprint: siblingCLICertificateFingerprint, keyID: siblingKeyID, endpointID: siblingCLISessionID, role: "cli", marker: 6},
+	} {
+		if _, err := store.SQL().ExecContext(ctx, `
+INSERT INTO paperboat.peer_endpoint_certificates
+  (fingerprint, user_id, key_id, endpoint_id, role, generation, serial, certificate,
+   noise_public_key, quic_public_key, issued_at, expires_at)
+VALUES ($1, $2, $3, $4, $5, 1, 1, $6, $7, $8, $9, $10)`, certificate.fingerprint[:], userID, certificate.keyID, certificate.endpointID, certificate.role, bytes.Repeat([]byte{certificate.marker}, 172), bytes.Repeat([]byte{certificate.marker + 10}, 32), bytes.Repeat([]byte{certificate.marker + 20}, 32), now, now.Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	peerNodeID := "edge_cleanup_" + suffix
+	if _, err := store.SQL().ExecContext(ctx, `
+INSERT INTO paperboat.control_tunnel_nodes
+  (id, edge_pool, protocol_version, process_epoch, state, ready, last_heartbeat_at)
+VALUES ($1, 'development', '1.0', $2, 'ready', true, $3)`, peerNodeID, "epoch_"+suffix, now); err != nil {
+		t.Fatal(err)
+	}
+	for _, peer := range []struct {
+		id, operationKey, sessionID, controlling, controlled string
+		requestHash                                          [sha256.Size]byte
+	}{
+		{id: "psi_cleanup_" + suffix, operationKey: "operation_cleanup_peer_" + suffix, sessionID: cliSessionID, controlling: hex.EncodeToString(cliCertificateFingerprint[:]), controlled: hex.EncodeToString(certificateFingerprint[:]), requestHash: peerRequestHash},
+		{id: "psi_cleanup_sibling_" + suffix, operationKey: "operation_cleanup_sibling_peer_" + suffix, sessionID: siblingCLISessionID, controlling: hex.EncodeToString(siblingCLICertificateFingerprint[:]), controlled: hex.EncodeToString(siblingCertificateFingerprint[:]), requestHash: siblingPeerRequestHash},
+	} {
+		controlling, err := hex.DecodeString(peer.controlling)
+		if err != nil {
+			t.Fatal(err)
+		}
+		controlled, err := hex.DecodeString(peer.controlled)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.SQL().ExecContext(ctx, `
+INSERT INTO paperboat.peer_session_intents
+  (id, operation_key, request_hash, user_id, cli_client_session_id, environment_id,
+   purpose, edge_node_id, controlling_certificate_fingerprint, controlled_certificate_fingerprint,
+   attempt_generation, network_generation, expires_at, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, 'interactive', $7, $8, $9, 1, 1, $10, $11)`, peer.id, peer.operationKey, peer.requestHash[:], userID, peer.sessionID, environmentID, peerNodeID, []byte(controlling), []byte(controlled), now.Add(time.Hour), now); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := store.SQL().ExecContext(ctx, `
 INSERT INTO paperboat.machine_control_renewals
@@ -154,6 +238,20 @@ VALUES ($1, $2, $3, $4, $5, 'ciphertext', 'awaiting_approval', $6, $7, $8)`, enr
 	service := New(store, audit.NewWriter(store), Policy{}, testSeatAuthorizer{})
 	if err := service.Delete(ctx, userID, machineID); err != nil {
 		t.Fatal(err)
+	}
+	var targetPeerState, siblingPeerState string
+	if err := store.SQL().QueryRowContext(ctx, `
+SELECT state FROM paperboat.peer_session_intents
+WHERE id = $1`, "psi_cleanup_"+suffix).Scan(&targetPeerState); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SQL().QueryRowContext(ctx, `
+SELECT state FROM paperboat.peer_session_intents
+WHERE id = $1`, "psi_cleanup_sibling_"+suffix).Scan(&siblingPeerState); err != nil {
+		t.Fatal(err)
+	}
+	if targetPeerState != "revoked" || siblingPeerState != "active" {
+		t.Fatalf("peer intent states = %q/%q, want revoked/active", targetPeerState, siblingPeerState)
 	}
 
 	var machineState string

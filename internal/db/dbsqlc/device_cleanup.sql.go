@@ -528,8 +528,7 @@ WITH target_machine AS (
   WHERE intent.user_id = target_machine.user_id
     AND intent.state = 'active'
     AND (
-      intent.environment_id = target_machine.environment_id
-      OR intent.cli_client_session_id IN (SELECT id FROM machine_cli_sessions)
+      intent.cli_client_session_id IN (SELECT id FROM machine_cli_sessions)
       OR intent.controlling_certificate_fingerprint IN (SELECT fingerprint FROM machine_endpoints)
       OR intent.controlled_certificate_fingerprint IN (SELECT fingerprint FROM machine_endpoints)
     )
