@@ -181,7 +181,7 @@ func machineEndpointStatus(service machineEndpointStatusReader, verifier machine
 			writeError(w, r, http.StatusServiceUnavailable, "temporarily_unavailable", "Machine endpoint authority could not be retrieved.")
 			return
 		}
-		writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]any{"state": "approved", "root_public_key": base64.RawURLEncoding.EncodeToString(root.PublicKey), "certificate": certificateDocument(certificate)}})
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: map[string]any{"state": "approved", "trusted_keys": trustedKeyDocuments(root), "certificate": certificateDocument(certificate)}})
 	}
 }
 

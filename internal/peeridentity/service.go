@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"reflect"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/blake2s"
@@ -22,6 +23,7 @@ var (
 type RegisterRequest struct {
 	OperationID                    string
 	UserID                         string
+	KeyID                          string
 	Certificate                    []byte
 	Expected                       Expected
 	ExpectedRootFingerprint        [sha256.Size]byte
@@ -39,6 +41,11 @@ type BootstrapRequest struct {
 }
 
 type AccountRoot struct {
+	Keys []AccountKey
+}
+
+type AccountKey struct {
+	KeyID       string
 	PublicKey   ed25519.PublicKey
 	Fingerprint [sha256.Size]byte
 	Generation  uint64
@@ -172,13 +179,14 @@ func (s *Service) Bootstrap(ctx context.Context, request BootstrapRequest) (Cert
 		return Certificate{}, ErrInvalid
 	}
 	rootFingerprint := sha256.Sum256(request.RootPublicKey)
-	if request.ExpectedRootFingerprint != rootFingerprint {
+	if request.ExpectedRootFingerprint != rootFingerprint || request.KeyID != keyIDForFingerprint(rootFingerprint) {
 		return Certificate{}, ErrIdentity
 	}
 	certificate, err := validateRegistration(request.RegisterRequest, request.RootPublicKey)
 	if err != nil {
 		return Certificate{}, err
 	}
+	certificate.KeyID = keyIDForFingerprint(rootFingerprint)
 	certificate.RootFingerprint = rootFingerprint
 	if request.AllowRootReplacement {
 		fresh, ok := s.repository.(interface {
@@ -228,22 +236,24 @@ func (s *Service) Register(ctx context.Context, request RegisterRequest) (Certif
 	if err != nil {
 		return Certificate{}, err
 	}
-	if len(root.PublicKey) != ed25519.PublicKeySize || root.Generation == 0 || root.Fingerprint != sha256.Sum256(root.PublicKey) {
+	key, ok := root.key(request.ExpectedRootFingerprint)
+	if !ok || len(key.PublicKey) != ed25519.PublicKeySize || key.Generation == 0 || key.Fingerprint != sha256.Sum256(key.PublicKey) || key.KeyID != request.KeyID {
 		return Certificate{}, ErrUnavailable
 	}
-	certificate, err := validateRegistration(request, root.PublicKey)
+	certificate, err := validateRegistration(request, key.PublicKey)
 	if err != nil {
 		return Certificate{}, err
 	}
-	if request.ExpectedRootFingerprint != root.Fingerprint {
+	if request.ExpectedRootFingerprint != key.Fingerprint {
 		return Certificate{}, ErrIdentity
 	}
-	certificate.RootFingerprint = root.Fingerprint
+	certificate.KeyID = key.KeyID
+	certificate.RootFingerprint = key.Fingerprint
 	return s.repository.Register(ctx, request.OperationID, request.UserID, certificate)
 }
 
 func validateRegistration(request RegisterRequest, rootPublic ed25519.PublicKey) (Certificate, error) {
-	if len(request.OperationID) < 16 || len(request.OperationID) > 256 || !identifierExpr.MatchString(request.UserID) || request.Expected.AccountID != request.UserID || request.Expected.EndpointID == "" || request.Expected.Role.String() == "" || request.Expected.Generation == 0 || request.Now.IsZero() {
+	if len(request.OperationID) < 16 || len(request.OperationID) > 256 || !identifierExpr.MatchString(request.UserID) || !identifierExpr.MatchString(request.KeyID) || request.Expected.AccountID != request.UserID || request.Expected.EndpointID == "" || request.Expected.Role.String() == "" || request.Expected.Generation == 0 || request.Now.IsZero() {
 		return Certificate{}, ErrInvalid
 	}
 	certificate, err := Verify(request.Certificate, rootPublic, request.Expected, request.Now)
@@ -267,4 +277,47 @@ func nilRepository(repository Repository) bool {
 	default:
 		return false
 	}
+}
+
+func (root AccountRoot) key(fingerprint [sha256.Size]byte) (AccountKey, bool) {
+	for _, key := range root.Keys {
+		if key.Fingerprint == fingerprint {
+			return key, true
+		}
+	}
+	return AccountKey{}, false
+}
+
+func keyIDForFingerprint(fingerprint [sha256.Size]byte) string {
+	return "aek_" + hex.EncodeToString(fingerprint[:])
+}
+
+// KeyID deterministically names the trusted E2EE key represented by publicKey.
+// It is intentionally derived from the public material so enrollment requests
+// cannot smuggle an unrelated key identifier into a certificate document.
+func KeyID(publicKey ed25519.PublicKey) (string, error) {
+	if len(publicKey) != ed25519.PublicKeySize {
+		return "", ErrInvalid
+	}
+	return keyIDForFingerprint(sha256.Sum256(publicKey)), nil
+}
+
+// FingerprintForKeyID validates and decodes the canonical identifier for a
+// trusted E2EE public key. The identifier is content-addressed, so callers
+// can resolve the key by ID without accepting a second, unauthenticated
+// fingerprint field from the wire.
+func FingerprintForKeyID(keyID string) ([sha256.Size]byte, error) {
+	var fingerprint [sha256.Size]byte
+	if len(keyID) != len("aek_")+sha256.Size*2 || !identifierExpr.MatchString(keyID) || !strings.HasPrefix(keyID, "aek_") {
+		return fingerprint, ErrInvalid
+	}
+	decoded, err := hex.DecodeString(keyID[len("aek_"):])
+	if err != nil || len(decoded) != len(fingerprint) {
+		return fingerprint, ErrInvalid
+	}
+	copy(fingerprint[:], decoded)
+	if keyIDForFingerprint(fingerprint) != keyID {
+		return [sha256.Size]byte{}, ErrInvalid
+	}
+	return fingerprint, nil
 }

@@ -122,8 +122,9 @@ func TestMachineEndpointStatusReturnsOnlyApprovedPublicAuthority(t *testing.T) {
 	rootPublic, _, _ := ed25519.GenerateKey(nil)
 	raw := bytes.Repeat([]byte{7}, 172)
 	rootFingerprint := sha256.Sum256(rootPublic)
+	keyID, _ := peeridentity.KeyID(rootPublic)
 	fingerprint := sha256.Sum256(raw)
-	reader := machineStatusReader{root: peeridentity.AccountRoot{PublicKey: rootPublic, Fingerprint: rootFingerprint, Generation: 1}, certificate: peeridentity.Certificate{AccountID: "account_01", Role: peeridentity.RoleMachine, EndpointID: "machine_01", Generation: 3, Serial: 1, IssuedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour), RootFingerprint: rootFingerprint, Fingerprint: fingerprint, Raw: raw}}
+	reader := machineStatusReader{root: peeridentity.AccountRoot{Keys: []peeridentity.AccountKey{{KeyID: keyID, PublicKey: rootPublic, Fingerprint: rootFingerprint, Generation: 1}}}, certificate: peeridentity.Certificate{AccountID: "account_01", KeyID: keyID, Role: peeridentity.RoleMachine, EndpointID: "machine_01", Generation: 3, Serial: 1, IssuedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour), RootFingerprint: rootFingerprint, Fingerprint: fingerprint, Raw: raw}}
 	body := []byte(`{"operation_id":"operation_status_01","generation":3}`)
 	verifier := machineProofVerifierFunc(func(_ context.Context, credential string, proof []byte, method, path string, exactBody []byte) (controlplane.MachineRequestClaims, error) {
 		if credential != strings.Repeat("t", 32) || string(proof) != "proof" || method != http.MethodPost || path != "/v1/machine-peer-identity/status" || !bytes.Equal(exactBody, body) {
@@ -141,12 +142,12 @@ func TestMachineEndpointStatusReturnsOnlyApprovedPublicAuthority(t *testing.T) {
 	}
 	var envelope struct {
 		Data struct {
-			State         string                      `json:"state"`
-			RootPublicKey string                      `json:"root_public_key"`
-			Certificate   endpointCertificateDocument `json:"certificate"`
+			State       string                      `json:"state"`
+			TrustedKeys []trustedKeyDocument        `json:"trusted_keys"`
+			Certificate endpointCertificateDocument `json:"certificate"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil || envelope.Data.State != "approved" || envelope.Data.RootPublicKey != base64.RawURLEncoding.EncodeToString(rootPublic) || envelope.Data.Certificate.Certificate != base64.RawURLEncoding.EncodeToString(raw) {
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil || envelope.Data.State != "approved" || len(envelope.Data.TrustedKeys) != 1 || envelope.Data.TrustedKeys[0].KeyID != keyID || envelope.Data.Certificate.Certificate != base64.RawURLEncoding.EncodeToString(raw) {
 		t.Fatalf("envelope=%+v err=%v", envelope, err)
 	}
 }

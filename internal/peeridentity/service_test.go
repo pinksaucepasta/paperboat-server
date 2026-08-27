@@ -20,7 +20,8 @@ type recordingRepository struct {
 
 func (r *recordingRepository) Bootstrap(_ context.Context, operation, userID string, root ed25519.PublicKey, value Certificate) (Certificate, error) {
 	r.operation, r.userID, r.value = operation, userID, value
-	r.root = AccountRoot{PublicKey: append(ed25519.PublicKey(nil), root...), Fingerprint: sha256.Sum256(root), Generation: 1}
+	fingerprint := sha256.Sum256(root)
+	r.root = AccountRoot{Keys: []AccountKey{{KeyID: keyIDForFingerprint(fingerprint), PublicKey: append(ed25519.PublicKey(nil), root...), Fingerprint: fingerprint, Generation: 1}}}
 	return value, r.err
 }
 
@@ -57,14 +58,15 @@ func TestServiceRegistersOnlyVerifiedCertificateFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	rootPublic, rootPrivate, _ := ed25519.GenerateKey(nil)
-	repository.root = AccountRoot{PublicKey: rootPublic, Fingerprint: sha256.Sum256(rootPublic), Generation: 1}
+	rootFingerprint := sha256.Sum256(rootPublic)
+	repository.root = AccountRoot{Keys: []AccountKey{{KeyID: keyIDForFingerprint(rootFingerprint), PublicKey: rootPublic, Fingerprint: rootFingerprint, Generation: 1}}}
 	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
 	raw := signedFixture(t, rootPrivate, "account_01", RoleMachine, "machine_01", 3, 7, now.Add(-time.Minute), now.Add(time.Hour))
 	certificateFingerprint := sha256.Sum256(raw)
 	value, err := service.Register(context.Background(), RegisterRequest{
-		OperationID: "operation_endpoint_01", UserID: "account_01",
+		OperationID: "operation_endpoint_01", UserID: "account_01", KeyID: repository.root.Keys[0].KeyID,
 		Certificate: raw, Expected: Expected{AccountID: "account_01", Role: RoleMachine, EndpointID: "machine_01", Generation: 3, Serial: 7},
-		ExpectedRootFingerprint: repository.root.Fingerprint, ExpectedCertificateFingerprint: certificateFingerprint,
+		ExpectedRootFingerprint: repository.root.Keys[0].Fingerprint, ExpectedCertificateFingerprint: certificateFingerprint,
 		ExpectedIssuedAt: now.Add(-time.Minute), ExpectedExpiresAt: now.Add(time.Hour), Now: now,
 	})
 	if err != nil {
@@ -82,11 +84,13 @@ func TestServiceBootstrapsOnlySessionBoundCLIIdentity(t *testing.T) {
 	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
 	raw := signedFixture(t, rootPrivate, "account_01", RoleCLI, "cli_session_01", 1, 1, now, now.Add(time.Hour))
 	fingerprint := sha256.Sum256(raw)
-	value, err := service.Bootstrap(context.Background(), BootstrapRequest{RegisterRequest: RegisterRequest{OperationID: "operation_bootstrap_01", UserID: "account_01", Certificate: raw, Expected: Expected{AccountID: "account_01", Role: RoleCLI, EndpointID: "cli_session_01", Generation: 1, Serial: 1}, ExpectedRootFingerprint: sha256.Sum256(rootPublic), ExpectedCertificateFingerprint: fingerprint, ExpectedIssuedAt: now, ExpectedExpiresAt: now.Add(time.Hour), Now: now}, CLIClientSessionID: "cli_session_01", RootPublicKey: rootPublic})
-	if err != nil || value.EndpointID != "cli_session_01" || repository.root.Fingerprint != sha256.Sum256(rootPublic) {
+	rootFingerprint := sha256.Sum256(rootPublic)
+	keyID := keyIDForFingerprint(rootFingerprint)
+	value, err := service.Bootstrap(context.Background(), BootstrapRequest{RegisterRequest: RegisterRequest{OperationID: "operation_bootstrap_01", UserID: "account_01", KeyID: keyID, Certificate: raw, Expected: Expected{AccountID: "account_01", Role: RoleCLI, EndpointID: "cli_session_01", Generation: 1, Serial: 1}, ExpectedRootFingerprint: rootFingerprint, ExpectedCertificateFingerprint: fingerprint, ExpectedIssuedAt: now, ExpectedExpiresAt: now.Add(time.Hour), Now: now}, CLIClientSessionID: "cli_session_01", RootPublicKey: rootPublic})
+	if err != nil || value.EndpointID != "cli_session_01" || repository.root.Keys[0].Fingerprint != rootFingerprint {
 		t.Fatalf("value=%+v repository=%+v err=%v", value, repository, err)
 	}
-	request := BootstrapRequest{RegisterRequest: RegisterRequest{OperationID: "operation_bootstrap_02", UserID: "account_01", Certificate: raw, Expected: Expected{AccountID: "account_01", Role: RoleCLI, EndpointID: "other_cli", Generation: 1, Serial: 1}, ExpectedRootFingerprint: sha256.Sum256(rootPublic), ExpectedCertificateFingerprint: fingerprint, ExpectedIssuedAt: now, ExpectedExpiresAt: now.Add(time.Hour), Now: now}, CLIClientSessionID: "cli_session_01", RootPublicKey: rootPublic}
+	request := BootstrapRequest{RegisterRequest: RegisterRequest{OperationID: "operation_bootstrap_02", UserID: "account_01", KeyID: keyID, Certificate: raw, Expected: Expected{AccountID: "account_01", Role: RoleCLI, EndpointID: "other_cli", Generation: 1, Serial: 1}, ExpectedRootFingerprint: rootFingerprint, ExpectedCertificateFingerprint: fingerprint, ExpectedIssuedAt: now, ExpectedExpiresAt: now.Add(time.Hour), Now: now}, CLIClientSessionID: "cli_session_01", RootPublicKey: rootPublic}
 	if _, err := service.Bootstrap(context.Background(), request); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("session substitution error=%v", err)
 	}
@@ -96,15 +100,16 @@ func TestServiceRejectsBeforePersistence(t *testing.T) {
 	repository := &recordingRepository{}
 	service, _ := NewService(repository)
 	rootPublic, rootPrivate, _ := ed25519.GenerateKey(nil)
-	repository.root = AccountRoot{PublicKey: rootPublic, Fingerprint: sha256.Sum256(rootPublic), Generation: 1}
+	rootFingerprint := sha256.Sum256(rootPublic)
+	repository.root = AccountRoot{Keys: []AccountKey{{KeyID: keyIDForFingerprint(rootFingerprint), PublicKey: rootPublic, Fingerprint: rootFingerprint, Generation: 1}}}
 	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
 	raw := signedFixture(t, rootPrivate, "account_01", RoleCLI, "cli_01", 1, 1, now.Add(-time.Minute), now.Add(time.Hour))
 	raw[len(raw)-1] ^= 1
 	certificateFingerprint := sha256.Sum256(raw)
 	_, err := service.Register(context.Background(), RegisterRequest{
-		OperationID: "operation_endpoint_01", UserID: "account_01",
+		OperationID: "operation_endpoint_01", UserID: "account_01", KeyID: repository.root.Keys[0].KeyID,
 		Certificate: raw, Expected: Expected{AccountID: "account_01", Role: RoleCLI, EndpointID: "cli_01", Generation: 1},
-		ExpectedRootFingerprint: repository.root.Fingerprint, ExpectedCertificateFingerprint: certificateFingerprint,
+		ExpectedRootFingerprint: repository.root.Keys[0].Fingerprint, ExpectedCertificateFingerprint: certificateFingerprint,
 		ExpectedIssuedAt: now.Add(-time.Minute), ExpectedExpiresAt: now.Add(time.Hour), Now: now,
 	})
 	if !errors.Is(err, ErrSignature) || repository.operation != "" {

@@ -3961,26 +3961,30 @@ SELECT revoked.jti FROM (
   SELECT m.helper_file_session_id AS jti, m.revoked_at FROM user_machine_access_sessions m
   WHERE m.revoked_at IS NOT NULL AND m.expires_at > $1 AND m.helper_file_session_id IS NOT NULL
   UNION ALL
-  SELECT g.jti, coalesce(g.revoked_at, i.revoked_at, client.revoked_at, endpoint.revoked_at, root.revoked_at) AS revoked_at
+  SELECT g.jti, coalesce(g.revoked_at, i.revoked_at, client.revoked_at, endpoint.revoked_at, endpoint_key.revoked_at) AS revoked_at
   FROM peer_signaling_grants g
   JOIN peer_session_intents i ON i.id = g.intent_id
   JOIN cli_client_sessions client ON client.id = i.cli_client_session_id
   JOIN peer_endpoint_certificates endpoint ON endpoint.fingerprint = CASE g.role
     WHEN 'controlling' THEN i.controlling_certificate_fingerprint
     ELSE i.controlled_certificate_fingerprint END
-  JOIN account_e2ee_roots root ON root.user_id = i.user_id
+  LEFT JOIN account_e2ee_keys endpoint_key ON endpoint_key.key_id = endpoint.key_id
+    AND endpoint_key.user_id = endpoint.user_id
   WHERE g.expires_at > $1 AND
-    (g.revoked_at IS NOT NULL OR i.revoked_at IS NOT NULL OR client.state = 'revoked' OR endpoint.revoked_at IS NOT NULL OR root.revoked_at IS NOT NULL)
+    (g.revoked_at IS NOT NULL OR i.revoked_at IS NOT NULL OR client.state = 'revoked' OR endpoint.revoked_at IS NOT NULL OR endpoint_key.revoked_at IS NOT NULL)
   UNION ALL
-  SELECT relay.jti, coalesce(relay.revoked_at, i.revoked_at, client.revoked_at, controlling.revoked_at, controlled.revoked_at, root.revoked_at) AS revoked_at
+  SELECT relay.jti, coalesce(relay.revoked_at, i.revoked_at, client.revoked_at, controlling.revoked_at, controlled.revoked_at, controlling_key.revoked_at, controlled_key.revoked_at) AS revoked_at
   FROM peer_relay_allocations relay
   JOIN peer_session_intents i ON i.id = relay.intent_id
   JOIN cli_client_sessions client ON client.id = i.cli_client_session_id
   JOIN peer_endpoint_certificates controlling ON controlling.fingerprint = i.controlling_certificate_fingerprint
   JOIN peer_endpoint_certificates controlled ON controlled.fingerprint = i.controlled_certificate_fingerprint
-  JOIN account_e2ee_roots root ON root.user_id = i.user_id
+  LEFT JOIN account_e2ee_keys controlling_key ON controlling_key.key_id = controlling.key_id
+    AND controlling_key.user_id = controlling.user_id
+  LEFT JOIN account_e2ee_keys controlled_key ON controlled_key.key_id = controlled.key_id
+    AND controlled_key.user_id = controlled.user_id
   WHERE relay.expires_at > $1 AND
-    (relay.revoked_at IS NOT NULL OR i.revoked_at IS NOT NULL OR client.state = 'revoked' OR controlling.revoked_at IS NOT NULL OR controlled.revoked_at IS NOT NULL OR root.revoked_at IS NOT NULL)
+    (relay.revoked_at IS NOT NULL OR i.revoked_at IS NOT NULL OR client.state = 'revoked' OR controlling.revoked_at IS NOT NULL OR controlled.revoked_at IS NOT NULL OR controlling_key.revoked_at IS NOT NULL OR controlled_key.revoked_at IS NOT NULL)
 ) revoked
 ORDER BY revoked.revoked_at, revoked.jti
 LIMIT $2

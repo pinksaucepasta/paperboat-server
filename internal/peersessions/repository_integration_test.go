@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -60,13 +61,16 @@ func TestSQLRepositoryIssuesReplaysConflictsAndRevokesAtomicPair(t *testing.T) {
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.account_e2ee_roots (user_id,public_key,fingerprint) VALUES ($1,$2,$3)`, userID, rootKey[:], rootFingerprint[:]); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.account_e2ee_keys (key_id,user_id,public_key,fingerprint,generation) VALUES ($1,$2,$3,$4,1)`, "aek_"+fmt.Sprintf("%x", rootFingerprint[:]), userID, rootKey[:], rootFingerprint[:]); err != nil {
+		t.Fatal(err)
+	}
 	for _, endpoint := range []struct {
 		fingerprint [32]byte
 		id          string
 		role        string
 		seed        byte
 	}{{controllingFingerprint, clientID, "cli", 3}, {controlledFingerprint, "endpoint_machine_" + suffix, "machine", 4}} {
-		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.peer_endpoint_certificates (fingerprint,user_id,endpoint_id,role,generation,serial,certificate,noise_public_key,quic_public_key,issued_at,expires_at) VALUES ($1,$2,$3,$4,1,1,$5,$6,$7,$8,$9)`, endpoint.fingerprint[:], userID, endpoint.id, endpoint.role, []byte(strings.Repeat(string(endpoint.seed), 172)), []byte(strings.Repeat(string(endpoint.seed+10), 32)), []byte(strings.Repeat(string(endpoint.seed+20), 32)), now.Add(-time.Minute), now.Add(time.Hour)); err != nil {
+		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.peer_endpoint_certificates (fingerprint,user_id,key_id,endpoint_id,role,generation,serial,certificate,noise_public_key,quic_public_key,issued_at,expires_at) VALUES ($1,$2,$3,$4,$5,1,1,$6,$7,$8,$9,$10)`, endpoint.fingerprint[:], userID, "aek_"+fmt.Sprintf("%x", rootFingerprint[:]), endpoint.id, endpoint.role, []byte(strings.Repeat(string(endpoint.seed), 172)), []byte(strings.Repeat(string(endpoint.seed+10), 32)), []byte(strings.Repeat(string(endpoint.seed+20), 32)), now.Add(-time.Minute), now.Add(time.Hour)); err != nil {
 			t.Fatal(err)
 		}
 	}

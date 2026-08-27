@@ -48,6 +48,7 @@ func (r Role) String() string {
 
 type Certificate struct {
 	AccountID       string
+	KeyID           string
 	Role            Role
 	EndpointID      string
 	NoisePublicKey  [32]byte

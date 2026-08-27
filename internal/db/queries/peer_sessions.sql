@@ -66,14 +66,19 @@ SELECT controlling.endpoint_id AS controlling_endpoint_id,
        machine.relay_latency_observed_at,
        machine.relay_latency_vector
 FROM cli_client_sessions client
-JOIN account_e2ee_roots root ON root.user_id = client.user_id
 JOIN peer_endpoint_certificates controlling
   ON controlling.fingerprint = sqlc.arg(controlling_certificate_fingerprint)
   AND controlling.user_id = client.user_id AND controlling.role = 'cli'
   AND controlling.endpoint_id = client.id
+JOIN account_e2ee_keys controlling_key
+  ON controlling_key.key_id = controlling.key_id
+  AND controlling_key.user_id = controlling.user_id AND controlling_key.revoked_at IS NULL
 JOIN peer_endpoint_certificates controlled
   ON controlled.fingerprint = sqlc.arg(controlled_certificate_fingerprint)
   AND controlled.user_id = client.user_id AND controlled.role = 'machine'
+JOIN account_e2ee_keys controlled_key
+  ON controlled_key.key_id = controlled.key_id
+  AND controlled_key.user_id = controlled.user_id AND controlled_key.revoked_at IS NULL
 JOIN control_environments environment
   ON environment.id = sqlc.arg(environment_id) AND environment.owner_user_id = client.user_id
 JOIN user_machines machine
@@ -84,7 +89,6 @@ JOIN control_connector_generations connector
 JOIN control_tunnel_nodes node ON node.id = connector.edge_node_id
 WHERE client.id = sqlc.arg(cli_client_session_id)
   AND client.user_id = sqlc.arg(user_id) AND client.state = 'active'
-  AND root.revoked_at IS NULL
   AND controlling.revoked_at IS NULL AND controlling.issued_at <= sqlc.arg(now)
   AND controlling.expires_at > sqlc.arg(now)
   AND controlled.revoked_at IS NULL AND controlled.issued_at <= sqlc.arg(now)
@@ -95,7 +99,7 @@ WHERE client.id = sqlc.arg(cli_client_session_id)
   AND node.relay_region IS NOT NULL AND trim(node.relay_region) <> ''
   AND node.signaling_host IS NOT NULL AND node.stun_host IS NOT NULL AND node.stun_port IS NOT NULL
   AND node.last_heartbeat_at > sqlc.arg(node_stale_after)::timestamptz
-FOR UPDATE OF client, root, controlling, controlled, environment, node;
+FOR UPDATE OF client, controlling, controlled, controlling_key, controlled_key, environment, node;
 
 -- name: ListReadyPeerRelayNodes :many
 SELECT DISTINCT ON (relay_region)
@@ -177,8 +181,14 @@ SELECT intent.*,
 FROM peer_session_intents intent
 JOIN peer_endpoint_certificates controlling
   ON controlling.fingerprint = intent.controlling_certificate_fingerprint
+JOIN account_e2ee_keys controlling_key
+  ON controlling_key.key_id = controlling.key_id
+  AND controlling_key.user_id = controlling.user_id AND controlling_key.revoked_at IS NULL
 JOIN peer_endpoint_certificates controlled
   ON controlled.fingerprint = intent.controlled_certificate_fingerprint
+JOIN account_e2ee_keys controlled_key
+  ON controlled_key.key_id = controlled.key_id
+  AND controlled_key.user_id = controlled.user_id AND controlled_key.revoked_at IS NULL
 JOIN peer_signaling_grants controlling_grant
   ON controlling_grant.intent_id = intent.id AND controlling_grant.role = 'controlling'
 JOIN peer_signaling_grants controlled_grant
@@ -190,7 +200,6 @@ JOIN control_connector_generations connector
   ON connector.environment_id = intent.environment_id AND connector.machine_id = machine.id
   AND connector.connector_id = 'runtime'
 JOIN control_tunnel_nodes node ON node.id = intent.edge_node_id
-JOIN account_e2ee_roots root ON root.user_id = intent.user_id
 JOIN cli_client_sessions client ON client.id = intent.cli_client_session_id
 WHERE intent.user_id = sqlc.arg(user_id) AND machine.id = sqlc.arg(machine_id)
   AND machine.installation_generation = sqlc.arg(host_generation)
@@ -204,7 +213,7 @@ WHERE intent.user_id = sqlc.arg(user_id) AND machine.id = sqlc.arg(machine_id)
   AND relay.revoked_at IS NULL AND relay.expires_at > sqlc.arg(now)
   AND connector.revoked_at IS NULL AND connector.state = 'admitted'
   AND machine.revoked_at IS NULL AND machine.deleted_at IS NULL
-  AND root.revoked_at IS NULL AND client.state = 'active'
+  AND client.state = 'active'
   AND node.state = 'ready' AND node.ready = true
   AND node.last_heartbeat_at > sqlc.arg(node_stale_after)::timestamptz
 ORDER BY intent.created_at, intent.id
@@ -276,11 +285,12 @@ JOIN cli_client_sessions client ON client.id = intent.cli_client_session_id
 JOIN peer_endpoint_certificates endpoint ON endpoint.fingerprint = CASE g.role
   WHEN 'controlling' THEN intent.controlling_certificate_fingerprint
   ELSE intent.controlled_certificate_fingerprint END
-JOIN account_e2ee_roots root ON root.user_id = intent.user_id
+JOIN account_e2ee_keys endpoint_key
+  ON endpoint_key.key_id = endpoint.key_id
+  AND endpoint_key.user_id = endpoint.user_id AND endpoint_key.revoked_at IS NULL
 WHERE intent.edge_node_id = sqlc.arg(edge_node_id)
   AND intent.state = 'active' AND intent.expires_at > sqlc.arg(now)
   AND g.revoked_at IS NULL AND g.expires_at > sqlc.arg(now)
   AND client.state = 'active'
   AND endpoint.revoked_at IS NULL AND endpoint.expires_at > sqlc.arg(now)
-  AND root.revoked_at IS NULL
 ORDER BY g.jti;

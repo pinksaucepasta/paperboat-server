@@ -97,6 +97,15 @@ func (q *Queries) ConsumeDeviceGrant(ctx context.Context, arg ConsumeDeviceGrant
 	return result.RowsAffected(), nil
 }
 
+const consumeFreshE2EEBootstrapSession = `-- name: ConsumeFreshE2EEBootstrapSession :exec
+UPDATE cli_client_sessions SET fresh_e2ee_bootstrap=false WHERE id=$1
+`
+
+func (q *Queries) ConsumeFreshE2EEBootstrapSession(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, consumeFreshE2EEBootstrapSession, id)
+	return err
+}
+
 const countClientSessions = `-- name: CountClientSessions :one
 SELECT count(*) FROM cli_client_sessions WHERE user_id=$1 AND ($2::text='' OR state=$2)
 `
@@ -360,24 +369,6 @@ func (q *Queries) GetClientSessionIdentity(ctx context.Context, id string) (GetC
 	return i, err
 }
 
-const markFreshE2EEBootstrapSession = `-- name: MarkFreshE2EEBootstrapSession :exec
-UPDATE cli_client_sessions SET fresh_e2ee_bootstrap=true WHERE id=$1 AND state='active'
-`
-
-func (q *Queries) MarkFreshE2EEBootstrapSession(ctx context.Context, id string) error {
-	_, err := q.db.Exec(ctx, markFreshE2EEBootstrapSession, id)
-	return err
-}
-
-const consumeFreshE2EEBootstrapSession = `-- name: ConsumeFreshE2EEBootstrapSession :exec
-UPDATE cli_client_sessions SET fresh_e2ee_bootstrap=false WHERE id=$1
-`
-
-func (q *Queries) ConsumeFreshE2EEBootstrapSession(ctx context.Context, id string) error {
-	_, err := q.db.Exec(ctx, consumeFreshE2EEBootstrapSession, id)
-	return err
-}
-
 const getClientSessionOwnerForUpdate = `-- name: GetClientSessionOwnerForUpdate :one
 SELECT user_id FROM cli_client_sessions WHERE id=$1 FOR UPDATE
 `
@@ -589,6 +580,15 @@ type MarkClientRefreshTokenRotatedParams struct {
 
 func (q *Queries) MarkClientRefreshTokenRotated(ctx context.Context, arg MarkClientRefreshTokenRotatedParams) error {
 	_, err := q.db.Exec(ctx, markClientRefreshTokenRotated, arg.TokenHash, arg.RotatedAt)
+	return err
+}
+
+const markFreshE2EEBootstrapSession = `-- name: MarkFreshE2EEBootstrapSession :exec
+UPDATE cli_client_sessions SET fresh_e2ee_bootstrap=true WHERE id=$1 AND state='active'
+`
+
+func (q *Queries) MarkFreshE2EEBootstrapSession(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, markFreshE2EEBootstrapSession, id)
 	return err
 }
 

@@ -39,10 +39,33 @@ func (r *SQLRepository) Bootstrap(ctx context.Context, operationID, userID strin
 		if err != nil {
 			return err
 		}
-		if root.RevokedAt.Valid || !bytes.Equal(root.PublicKey, rootPublic) || !bytes.Equal(root.Fingerprint, rootFingerprint[:]) || root.Generation != 1 {
+		if root.RevokedAt.Valid || root.Generation != 1 {
 			return ErrConflict
 		}
-		result, err = r.registerTx(ctx, tx, operationID, userID, proposed, root, false)
+		key, err := q.GetAccountE2EEKeyByFingerprintForUpdate(ctx, dbsqlc.GetAccountE2EEKeyByFingerprintForUpdateParams{UserID: userID, Fingerprint: rootFingerprint[:]})
+		if errors.Is(err, sql.ErrNoRows) {
+			keys, listErr := q.ListAccountE2EEKeys(ctx, userID)
+			if listErr != nil {
+				return listErr
+			}
+			if len(keys) != 0 {
+				return ErrConflict
+			}
+			key, err = q.CreateAccountE2EEKey(ctx, dbsqlc.CreateAccountE2EEKeyParams{
+				KeyID: keyIDForFingerprint(rootFingerprint), UserID: userID, PublicKey: rootPublic,
+				Fingerprint: rootFingerprint[:], Generation: 1, CreatedAt: proposed.IssuedAt, UpdatedAt: proposed.IssuedAt,
+			})
+			if errors.Is(err, sql.ErrNoRows) {
+				key, err = q.GetAccountE2EEKeyByFingerprintForUpdate(ctx, dbsqlc.GetAccountE2EEKeyByFingerprintForUpdateParams{UserID: userID, Fingerprint: rootFingerprint[:]})
+			}
+		}
+		if err != nil {
+			return err
+		}
+		if key.RevokedAt.Valid || !bytes.Equal(key.PublicKey, rootPublic) || !bytes.Equal(key.Fingerprint, rootFingerprint[:]) {
+			return ErrConflict
+		}
+		result, err = r.registerTx(ctx, tx, operationID, userID, proposed, key, false)
 		if err != nil {
 			return err
 		}
@@ -57,9 +80,10 @@ func (r *SQLRepository) Bootstrap(ctx context.Context, operationID, userID strin
 
 // BootstrapFresh is the one-shot dashboard enrollment ceremony. The CLI
 // session is created transactionally with installation material and is marked
-// by its enrollment label, so only that short-lived session can replace the
-// account root after a machine wipe. Existing endpoint certificates are
-// revoked before the new root is installed.
+// by its enrollment label, so only that short-lived session can add a trusted
+// device key after a machine wipe. Existing endpoint certificates remain
+// valid because the account trust set is append-only until a device is
+// explicitly removed.
 func (r *SQLRepository) BootstrapFresh(ctx context.Context, operationID, userID, cliSessionID string, rootPublic ed25519.PublicKey, proposed Certificate) (Certificate, error) {
 	if r == nil || ctx == nil || len(operationID) < 16 || len(operationID) > 256 || !identifierExpr.MatchString(userID) || !identifierExpr.MatchString(cliSessionID) || len(rootPublic) != ed25519.PublicKeySize || proposed.Role != RoleCLI || proposed.EndpointID != cliSessionID || proposed.AccountID != userID {
 		return Certificate{}, ErrInvalid
@@ -71,7 +95,7 @@ func (r *SQLRepository) BootstrapFresh(ctx context.Context, operationID, userID,
 	var result Certificate
 	err := r.store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		q := tx.Queries()
-		if _, err := q.GetFreshEnrollmentClientSession(ctx, cliSessionID, userID); err != nil {
+		if _, err := q.GetFreshEnrollmentClientSession(ctx, dbsqlc.GetFreshEnrollmentClientSessionParams{ID: cliSessionID, UserID: userID}); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrConflict
 			}
@@ -87,16 +111,32 @@ func (r *SQLRepository) BootstrapFresh(ctx context.Context, operationID, userID,
 		if root.RevokedAt.Valid || root.Generation != 1 {
 			return ErrConflict
 		}
-		if !bytes.Equal(root.PublicKey, rootPublic) {
-			if _, err := q.RevokeAllPeerEndpointCertificates(ctx, sql.NullTime{Time: proposed.IssuedAt, Valid: true}, userID); err != nil {
-				return err
+		key, err := q.GetAccountE2EEKeyByFingerprintForUpdate(ctx, dbsqlc.GetAccountE2EEKeyByFingerprintForUpdateParams{UserID: userID, Fingerprint: rootFingerprint[:]})
+		if errors.Is(err, sql.ErrNoRows) {
+			var machineID sql.NullString
+			machineRow, machineErr := q.GetFreshEnrollmentMachineID(ctx, cliSessionID)
+			if machineErr == nil {
+				machineID = machineRow
+			} else if !errors.Is(machineErr, sql.ErrNoRows) {
+				return machineErr
 			}
-			root, err = q.ReplaceAccountE2EERoot(ctx, dbsqlc.ReplaceAccountE2EERootParams{PublicKey: rootPublic, Fingerprint: rootFingerprint[:], Now: proposed.IssuedAt, UserID: userID})
-			if err != nil {
-				return err
+			key, err = q.CreateAccountE2EEKey(ctx, dbsqlc.CreateAccountE2EEKeyParams{
+				KeyID: keyIDForFingerprint(rootFingerprint), UserID: userID, PublicKey: rootPublic,
+				Fingerprint: rootFingerprint[:], Generation: 1,
+				CLIClientSessionID: sql.NullString{String: cliSessionID, Valid: true}, UserMachineID: machineID,
+				CreatedAt: proposed.IssuedAt, UpdatedAt: proposed.IssuedAt,
+			})
+			if errors.Is(err, sql.ErrNoRows) {
+				key, err = q.GetAccountE2EEKeyByFingerprintForUpdate(ctx, dbsqlc.GetAccountE2EEKeyByFingerprintForUpdateParams{UserID: userID, Fingerprint: rootFingerprint[:]})
 			}
 		}
-		result, err = r.registerTx(ctx, tx, operationID, userID, proposed, root, false)
+		if err != nil {
+			return err
+		}
+		if key.RevokedAt.Valid || !bytes.Equal(key.PublicKey, rootPublic) || !bytes.Equal(key.Fingerprint, rootFingerprint[:]) || key.CLIClientSessionID.Valid && key.CLIClientSessionID.String != cliSessionID {
+			return ErrConflict
+		}
+		result, err = r.registerTx(ctx, tx, operationID, userID, proposed, key, false)
 		if err != nil {
 			return err
 		}
@@ -120,15 +160,28 @@ func (r *SQLRepository) ResolveAccountRoot(ctx context.Context, userID string) (
 	if errors.Is(err, sql.ErrNoRows) {
 		return AccountRoot{}, ErrUnavailable
 	}
-	if err != nil || len(row.PublicKey) != ed25519.PublicKeySize || len(row.Fingerprint) != sha256.Size || row.Generation <= 0 {
+	if err != nil || row.Generation <= 0 {
 		if err != nil {
 			return AccountRoot{}, err
 		}
 		return AccountRoot{}, ErrUnavailable
 	}
-	var fingerprint [sha256.Size]byte
-	copy(fingerprint[:], row.Fingerprint)
-	return AccountRoot{PublicKey: append(ed25519.PublicKey(nil), row.PublicKey...), Fingerprint: fingerprint, Generation: uint64(row.Generation)}, nil
+	rows, err := r.store.Queries().ListActiveAccountE2EEKeys(ctx, userID)
+	if err != nil || len(rows) == 0 {
+		if err != nil {
+			return AccountRoot{}, err
+		}
+		return AccountRoot{}, ErrUnavailable
+	}
+	keys := make([]AccountKey, 0, len(rows))
+	for _, row := range rows {
+		key, err := accountKeyFromRow(row)
+		if err != nil {
+			return AccountRoot{}, err
+		}
+		keys = append(keys, key)
+	}
+	return AccountRoot{Keys: keys}, nil
 }
 
 func (r *SQLRepository) RequestMachineEndpoint(ctx context.Context, request MachineEndpointRequest, id string, hash [sha256.Size]byte, expiresAt time.Time) (EndpointEnrollmentRequest, error) {
@@ -316,7 +369,14 @@ func requireActiveAccountRoot(ctx context.Context, q *dbsqlc.Queries, userID str
 	if err != nil {
 		return err
 	}
-	if root.RevokedAt.Valid || len(root.PublicKey) != ed25519.PublicKeySize || len(root.Fingerprint) != sha256.Size || root.Generation != 1 {
+	if root.RevokedAt.Valid || root.Generation != 1 {
+		return ErrUnavailable
+	}
+	keys, err := q.ListActiveAccountE2EEKeys(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if len(keys) == 0 {
 		return ErrUnavailable
 	}
 	return nil
@@ -369,16 +429,23 @@ func (r *SQLRepository) Register(ctx context.Context, operationID, userID string
 		if err != nil {
 			return err
 		}
-		if !bytes.Equal(root.Fingerprint, proposed.RootFingerprint[:]) || len(root.PublicKey) != ed25519.PublicKeySize {
+		key, err := q.GetAccountE2EEKeyByFingerprintForUpdate(ctx, dbsqlc.GetAccountE2EEKeyByFingerprintForUpdateParams{UserID: userID, Fingerprint: proposed.RootFingerprint[:]})
+		if errors.Is(err, sql.ErrNoRows) {
 			return ErrConflict
 		}
-		result, err = r.registerTx(ctx, tx, operationID, userID, proposed, root, true)
+		if err != nil {
+			return err
+		}
+		if key.RevokedAt.Valid || len(key.PublicKey) != ed25519.PublicKeySize || len(key.Fingerprint) != sha256.Size || key.KeyID != proposed.KeyID {
+			return ErrConflict
+		}
+		result, err = r.registerTx(ctx, tx, operationID, userID, proposed, key, true)
 		return err
 	})
 	return result, err
 }
 
-func (r *SQLRepository) registerTx(ctx context.Context, tx *db.Tx, operationID, userID string, proposed Certificate, root dbsqlc.AccountE2eeRoot, requireEnrollment bool) (Certificate, error) {
+func (r *SQLRepository) registerTx(ctx context.Context, tx *db.Tx, operationID, userID string, proposed Certificate, key dbsqlc.AccountE2eeKey, requireEnrollment bool) (Certificate, error) {
 	q := tx.Queries()
 	requestHash := sha256.Sum256(proposed.Raw)
 	var result Certificate
@@ -391,7 +458,7 @@ func (r *SQLRepository) registerTx(ctx context.Context, tx *db.Tx, operationID, 
 		if getErr != nil {
 			return Certificate{}, getErr
 		}
-		return certificateFromRow(row, root.PublicKey, proposed.RootFingerprint, proposed.IssuedAt)
+		return certificateFromRow(row, key, proposed.IssuedAt)
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Certificate{}, err
@@ -413,7 +480,7 @@ func (r *SQLRepository) registerTx(ctx context.Context, tx *db.Tx, operationID, 
 		return Certificate{}, err
 	}
 	row, err := q.CreatePeerEndpointCertificate(ctx, dbsqlc.CreatePeerEndpointCertificateParams{
-		Fingerprint: proposed.Fingerprint[:], UserID: userID, EndpointID: proposed.EndpointID,
+		Fingerprint: proposed.Fingerprint[:], UserID: userID, KeyID: key.KeyID, EndpointID: proposed.EndpointID,
 		Role: proposed.Role.String(), Generation: int64(proposed.Generation), Serial: int64(proposed.Serial),
 		Certificate: proposed.Raw, NoisePublicKey: proposed.NoisePublicKey[:], QuicPublicKey: proposed.QUICPublicKey[:],
 		IssuedAt: proposed.IssuedAt, ExpiresAt: proposed.ExpiresAt,
@@ -432,7 +499,7 @@ func (r *SQLRepository) registerTx(ctx context.Context, tx *db.Tx, operationID, 
 			return Certificate{}, err
 		}
 	}
-	result, err = certificateFromRow(row, root.PublicKey, proposed.RootFingerprint, proposed.IssuedAt)
+	result, err = certificateFromRow(row, key, proposed.IssuedAt)
 	if err != nil {
 		return Certificate{}, err
 	}
@@ -469,18 +536,23 @@ func (r *SQLRepository) Get(ctx context.Context, userID, endpointID string, gene
 	if r == nil || ctx == nil || !identifierExpr.MatchString(userID) || !identifierExpr.MatchString(endpointID) || generation == 0 || generation > maximumInteger || now.IsZero() {
 		return Certificate{}, ErrInvalid
 	}
-	root, err := r.ResolveAccountRoot(ctx, userID)
-	if err != nil {
-		return Certificate{}, err
-	}
-	row, err := r.store.Queries().GetPeerEndpointCertificateByIdentity(ctx, dbsqlc.GetPeerEndpointCertificateByIdentityParams{UserID: userID, EndpointID: endpointID, Generation: int64(generation)})
-	if errors.Is(err, sql.ErrNoRows) || err == nil && row.RevokedAt.Valid {
-		return Certificate{}, ErrUnavailable
-	}
-	if err != nil {
-		return Certificate{}, err
-	}
-	return certificateFromRow(row, root.PublicKey, root.Fingerprint, now)
+	var result Certificate
+	err := r.store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		row, err := tx.Queries().GetActivePeerEndpointCertificateForUpdate(ctx, dbsqlc.GetActivePeerEndpointCertificateForUpdateParams{UserID: userID, EndpointID: endpointID, Generation: int64(generation), Now: now.UTC()})
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrUnavailable
+		}
+		if err != nil {
+			return err
+		}
+		key, err := tx.Queries().GetAccountE2EEKeyByIDForUpdate(ctx, dbsqlc.GetAccountE2EEKeyByIDForUpdateParams{UserID: userID, KeyID: row.KeyID})
+		if err != nil {
+			return err
+		}
+		result, err = certificateFromRow(row, key, now)
+		return err
+	})
+	return result, err
 }
 
 func (r *SQLRepository) Revoke(ctx context.Context, operationID, userID, endpointID string, generation, serial uint64, reason string, now time.Time) (Certificate, error) {
@@ -494,14 +566,12 @@ func (r *SQLRepository) Revoke(ctx context.Context, operationID, userID, endpoin
 		if errors.Is(err, sql.ErrNoRows) || err == nil && root.RevokedAt.Valid {
 			return ErrUnavailable
 		}
-		if err != nil || len(root.PublicKey) != ed25519.PublicKeySize || len(root.Fingerprint) != sha256.Size {
+		if err != nil || root.Generation != 1 {
 			if err != nil {
 				return err
 			}
 			return ErrUnavailable
 		}
-		var rootFingerprint [sha256.Size]byte
-		copy(rootFingerprint[:], root.Fingerprint)
 		replay, err := q.GetPeerEndpointCertificateRevocationForUpdate(ctx, operationID)
 		if err == nil {
 			if replay.UserID != userID || replay.Serial != int64(serial) || replay.Reason != reason {
@@ -511,7 +581,11 @@ func (r *SQLRepository) Revoke(ctx context.Context, operationID, userID, endpoin
 			if getErr != nil || row.EndpointID != endpointID || row.Generation != int64(generation) {
 				return ErrConflict
 			}
-			result, err = certificateFromRow(row, root.PublicKey, rootFingerprint, row.IssuedAt)
+			key, keyErr := q.GetAccountE2EEKeyByIDForUpdate(ctx, dbsqlc.GetAccountE2EEKeyByIDForUpdateParams{UserID: userID, KeyID: row.KeyID})
+			if keyErr != nil {
+				return keyErr
+			}
+			result, err = certificateFromRow(row, key, row.IssuedAt)
 			return err
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
@@ -534,7 +608,14 @@ func (r *SQLRepository) Revoke(ctx context.Context, operationID, userID, endpoin
 		if err != nil {
 			return err
 		}
-		result, err = certificateFromRow(row, root.PublicKey, rootFingerprint, row.IssuedAt)
+		key, err := q.GetAccountE2EEKeyByIDForUpdate(ctx, dbsqlc.GetAccountE2EEKeyByIDForUpdateParams{UserID: userID, KeyID: row.KeyID})
+		if err != nil || key.RevokedAt.Valid {
+			if err != nil {
+				return err
+			}
+			return ErrUnavailable
+		}
+		result, err = certificateFromRow(row, key, row.IssuedAt)
 		if err != nil {
 			return err
 		}
@@ -543,16 +624,34 @@ func (r *SQLRepository) Revoke(ctx context.Context, operationID, userID, endpoin
 	return result, err
 }
 
-func certificateFromRow(row dbsqlc.PeerEndpointCertificate, rootPublic ed25519.PublicKey, rootFingerprint [sha256.Size]byte, now time.Time) (Certificate, error) {
-	certificate, err := Verify(row.Certificate, rootPublic, Expected{AccountID: row.UserID, EndpointID: row.EndpointID, Role: roleFromString(row.Role), Generation: uint64(row.Generation), Serial: uint64(row.Serial)}, now)
+func certificateFromRow(row dbsqlc.PeerEndpointCertificate, key dbsqlc.AccountE2eeKey, now time.Time) (Certificate, error) {
+	if key.RevokedAt.Valid || len(key.PublicKey) != ed25519.PublicKeySize || len(key.Fingerprint) != sha256.Size || key.KeyID != row.KeyID {
+		return Certificate{}, ErrUnavailable
+	}
+	var keyFingerprint [sha256.Size]byte
+	copy(keyFingerprint[:], key.Fingerprint)
+	certificate, err := Verify(row.Certificate, key.PublicKey, Expected{AccountID: row.UserID, EndpointID: row.EndpointID, Role: roleFromString(row.Role), Generation: uint64(row.Generation), Serial: uint64(row.Serial)}, now)
 	if err != nil {
 		return Certificate{}, err
 	}
 	if !bytes.Equal(row.Fingerprint, certificate.Fingerprint[:]) || !bytes.Equal(row.NoisePublicKey, certificate.NoisePublicKey[:]) || !bytes.Equal(row.QuicPublicKey, certificate.QUICPublicKey[:]) || !row.IssuedAt.Equal(certificate.IssuedAt) || !row.ExpiresAt.Equal(certificate.ExpiresAt) {
 		return Certificate{}, ErrConflict
 	}
-	certificate.RootFingerprint = rootFingerprint
+	certificate.KeyID = key.KeyID
+	certificate.RootFingerprint = keyFingerprint
 	return certificate, nil
+}
+
+func accountKeyFromRow(row dbsqlc.AccountE2eeKey) (AccountKey, error) {
+	if len(row.PublicKey) != ed25519.PublicKeySize || len(row.Fingerprint) != sha256.Size || row.KeyID == "" || row.Generation <= 0 || row.RevokedAt.Valid {
+		return AccountKey{}, ErrUnavailable
+	}
+	var fingerprint [sha256.Size]byte
+	copy(fingerprint[:], row.Fingerprint)
+	if fingerprint != sha256.Sum256(row.PublicKey) || row.KeyID != keyIDForFingerprint(fingerprint) {
+		return AccountKey{}, ErrConflict
+	}
+	return AccountKey{KeyID: row.KeyID, PublicKey: append(ed25519.PublicKey(nil), row.PublicKey...), Fingerprint: fingerprint, Generation: uint64(row.Generation)}, nil
 }
 
 func roleFromString(value string) Role {

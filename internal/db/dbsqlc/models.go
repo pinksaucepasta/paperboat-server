@@ -29,6 +29,20 @@ type AccessSession struct {
 	HttpBaseUrl             string
 }
 
+type AccountE2eeKey struct {
+	KeyID              string
+	UserID             string
+	PublicKey          []byte
+	Fingerprint        []byte
+	Generation         int64
+	CLIClientSessionID sql.NullString
+	UserMachineID      sql.NullString
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	RevokedAt          sql.NullTime
+	RevocationReason   sql.NullString
+}
+
 type AccountE2eeRoot struct {
 	UserID      string
 	PublicKey   []byte
@@ -126,20 +140,22 @@ type CLIAccessToken struct {
 }
 
 type CLIClientSession struct {
-	ID               string
-	UserID           string
-	ClientID         string
-	ClientLabel      string
-	DeviceType       string
-	Os               string
-	Scopes           []string
-	State            string
-	CreatedAt        time.Time
-	ApprovedAt       time.Time
-	LastUsedAt       sql.NullTime
-	RevokedAt        sql.NullTime
-	RevocationReason sql.NullString
-	Version          int64
+	ID                 string
+	UserID             string
+	ClientID           string
+	ClientLabel        string
+	DeviceType         string
+	Os                 string
+	Scopes             []string
+	State              string
+	CreatedAt          time.Time
+	ApprovedAt         time.Time
+	LastUsedAt         sql.NullTime
+	RevokedAt          sql.NullTime
+	RevocationReason   sql.NullString
+	Version            int64
+	FreshE2eeBootstrap bool
+	UserMachineID      sql.NullString
 }
 
 type CLIRefreshToken struct {
@@ -1006,6 +1022,7 @@ type PeerEndpointCertificate struct {
 	CreatedAt        time.Time
 	RevokedAt        sql.NullTime
 	RevocationReason sql.NullString
+	KeyID            string
 }
 
 type PeerEndpointCertificateOperation struct {

@@ -11,6 +11,59 @@ import (
 	"time"
 )
 
+const createAccountE2EEKey = `-- name: CreateAccountE2EEKey :one
+INSERT INTO account_e2ee_keys
+  (key_id, user_id, public_key, fingerprint, generation, cli_client_session_id,
+   user_machine_id, created_at, updated_at)
+VALUES
+  ($1, $2, $3, $4,
+   $5, $6, $7,
+   $8, $9)
+ON CONFLICT DO NOTHING
+RETURNING key_id, user_id, public_key, fingerprint, generation, cli_client_session_id, user_machine_id, created_at, updated_at, revoked_at, revocation_reason
+`
+
+type CreateAccountE2EEKeyParams struct {
+	KeyID              string
+	UserID             string
+	PublicKey          []byte
+	Fingerprint        []byte
+	Generation         int64
+	CLIClientSessionID sql.NullString
+	UserMachineID      sql.NullString
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+}
+
+func (q *Queries) CreateAccountE2EEKey(ctx context.Context, arg CreateAccountE2EEKeyParams) (AccountE2eeKey, error) {
+	row := q.db.QueryRow(ctx, createAccountE2EEKey,
+		arg.KeyID,
+		arg.UserID,
+		arg.PublicKey,
+		arg.Fingerprint,
+		arg.Generation,
+		arg.CLIClientSessionID,
+		arg.UserMachineID,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	var i AccountE2eeKey
+	err := row.Scan(
+		&i.KeyID,
+		&i.UserID,
+		&i.PublicKey,
+		&i.Fingerprint,
+		&i.Generation,
+		&i.CLIClientSessionID,
+		&i.UserMachineID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.RevokedAt,
+		&i.RevocationReason,
+	)
+	return i, err
+}
+
 const createAccountE2EERoot = `-- name: CreateAccountE2EERoot :one
 INSERT INTO account_e2ee_roots (user_id, public_key, fingerprint)
 VALUES ($1, $2, $3)
@@ -99,19 +152,20 @@ func (q *Queries) CreateCLIPeerEndpointEnrollmentRequest(ctx context.Context, ar
 
 const createPeerEndpointCertificate = `-- name: CreatePeerEndpointCertificate :one
 INSERT INTO peer_endpoint_certificates
-  (fingerprint, user_id, endpoint_id, role, generation, serial, certificate,
+  (fingerprint, user_id, key_id, endpoint_id, role, generation, serial, certificate,
    noise_public_key, quic_public_key, issued_at, expires_at)
 VALUES
-  ($1, $2, $3, $4,
-   $5, $6, $7,
-   $8, $9, $10, $11)
+  ($1, $2, $3, $4, $5,
+   $6, $7, $8,
+   $9, $10, $11, $12)
 ON CONFLICT DO NOTHING
-RETURNING fingerprint, user_id, endpoint_id, role, generation, serial, certificate, noise_public_key, quic_public_key, issued_at, expires_at, created_at, revoked_at, revocation_reason
+RETURNING fingerprint, user_id, endpoint_id, role, generation, serial, certificate, noise_public_key, quic_public_key, issued_at, expires_at, created_at, revoked_at, revocation_reason, key_id
 `
 
 type CreatePeerEndpointCertificateParams struct {
 	Fingerprint    []byte
 	UserID         string
+	KeyID          string
 	EndpointID     string
 	Role           string
 	Generation     int64
@@ -127,6 +181,7 @@ func (q *Queries) CreatePeerEndpointCertificate(ctx context.Context, arg CreateP
 	row := q.db.QueryRow(ctx, createPeerEndpointCertificate,
 		arg.Fingerprint,
 		arg.UserID,
+		arg.KeyID,
 		arg.EndpointID,
 		arg.Role,
 		arg.Generation,
@@ -153,6 +208,7 @@ func (q *Queries) CreatePeerEndpointCertificate(ctx context.Context, arg CreateP
 		&i.CreatedAt,
 		&i.RevokedAt,
 		&i.RevocationReason,
+		&i.KeyID,
 	)
 	return i, err
 }
@@ -343,6 +399,66 @@ func (q *Queries) FulfillPeerEndpointEnrollmentRequest(ctx context.Context, arg 
 	return i, err
 }
 
+const getAccountE2EEKeyByFingerprintForUpdate = `-- name: GetAccountE2EEKeyByFingerprintForUpdate :one
+SELECT key_id, user_id, public_key, fingerprint, generation, cli_client_session_id, user_machine_id, created_at, updated_at, revoked_at, revocation_reason FROM account_e2ee_keys
+WHERE user_id = $1 AND fingerprint = $2
+FOR UPDATE
+`
+
+type GetAccountE2EEKeyByFingerprintForUpdateParams struct {
+	UserID      string
+	Fingerprint []byte
+}
+
+func (q *Queries) GetAccountE2EEKeyByFingerprintForUpdate(ctx context.Context, arg GetAccountE2EEKeyByFingerprintForUpdateParams) (AccountE2eeKey, error) {
+	row := q.db.QueryRow(ctx, getAccountE2EEKeyByFingerprintForUpdate, arg.UserID, arg.Fingerprint)
+	var i AccountE2eeKey
+	err := row.Scan(
+		&i.KeyID,
+		&i.UserID,
+		&i.PublicKey,
+		&i.Fingerprint,
+		&i.Generation,
+		&i.CLIClientSessionID,
+		&i.UserMachineID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.RevokedAt,
+		&i.RevocationReason,
+	)
+	return i, err
+}
+
+const getAccountE2EEKeyByIDForUpdate = `-- name: GetAccountE2EEKeyByIDForUpdate :one
+SELECT key_id, user_id, public_key, fingerprint, generation, cli_client_session_id, user_machine_id, created_at, updated_at, revoked_at, revocation_reason FROM account_e2ee_keys
+WHERE user_id = $1 AND key_id = $2
+FOR UPDATE
+`
+
+type GetAccountE2EEKeyByIDForUpdateParams struct {
+	UserID string
+	KeyID  string
+}
+
+func (q *Queries) GetAccountE2EEKeyByIDForUpdate(ctx context.Context, arg GetAccountE2EEKeyByIDForUpdateParams) (AccountE2eeKey, error) {
+	row := q.db.QueryRow(ctx, getAccountE2EEKeyByIDForUpdate, arg.UserID, arg.KeyID)
+	var i AccountE2eeKey
+	err := row.Scan(
+		&i.KeyID,
+		&i.UserID,
+		&i.PublicKey,
+		&i.Fingerprint,
+		&i.Generation,
+		&i.CLIClientSessionID,
+		&i.UserMachineID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.RevokedAt,
+		&i.RevocationReason,
+	)
+	return i, err
+}
+
 const getAccountE2EERootForUpdate = `-- name: GetAccountE2EERootForUpdate :one
 SELECT user_id, public_key, fingerprint, generation, created_at, updated_at, revoked_at FROM account_e2ee_roots
 WHERE user_id = $1
@@ -384,65 +500,17 @@ func (q *Queries) GetActiveAccountE2EERoot(ctx context.Context, userID string) (
 	return i, err
 }
 
-const getFreshEnrollmentClientSession = `-- name: GetFreshEnrollmentClientSession :one
-SELECT user_id FROM cli_client_sessions
-WHERE id = $1 AND user_id = $2
-  AND state = 'active' AND client_label LIKE 'Paperboat enrollment:%'
-`
-
-func (q *Queries) GetFreshEnrollmentClientSession(ctx context.Context, id, userID string) (string, error) {
-	row := q.db.QueryRow(ctx, getFreshEnrollmentClientSession, id, userID)
-	var value string
-	err := row.Scan(&value)
-	return value, err
-}
-
-const replaceAccountE2EERoot = `-- name: ReplaceAccountE2EERoot :one
-UPDATE account_e2ee_roots
-SET public_key = $1, fingerprint = $2, generation = 1, updated_at = $3, revoked_at = NULL
-WHERE user_id = $4
-RETURNING user_id, public_key, fingerprint, generation, created_at, updated_at, revoked_at
-`
-
-type ReplaceAccountE2EERootParams struct {
-	PublicKey   []byte
-	Fingerprint []byte
-	Now         time.Time
-	UserID      string
-}
-
-func (q *Queries) ReplaceAccountE2EERoot(ctx context.Context, arg ReplaceAccountE2EERootParams) (AccountE2eeRoot, error) {
-	row := q.db.QueryRow(ctx, replaceAccountE2EERoot, arg.PublicKey, arg.Fingerprint, arg.Now, arg.UserID)
-	var i AccountE2eeRoot
-	err := row.Scan(&i.UserID, &i.PublicKey, &i.Fingerprint, &i.Generation, &i.CreatedAt, &i.UpdatedAt, &i.RevokedAt)
-	return i, err
-}
-
-const revokeAllPeerEndpointCertificates = `-- name: RevokeAllPeerEndpointCertificates :execrows
-UPDATE peer_endpoint_certificates
-SET revoked_at = $1, revocation_reason = 'account_revoked'
-WHERE user_id = $2 AND revoked_at IS NULL
-`
-
-func (q *Queries) RevokeAllPeerEndpointCertificates(ctx context.Context, now sql.NullTime, userID string) (int64, error) {
-	result, err := q.db.Exec(ctx, revokeAllPeerEndpointCertificates, now, userID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
 const getActivePeerEndpointCertificateForUpdate = `-- name: GetActivePeerEndpointCertificateForUpdate :one
-SELECT certificate.fingerprint, certificate.user_id, certificate.endpoint_id, certificate.role, certificate.generation, certificate.serial, certificate.certificate, certificate.noise_public_key, certificate.quic_public_key, certificate.issued_at, certificate.expires_at, certificate.created_at, certificate.revoked_at, certificate.revocation_reason FROM peer_endpoint_certificates certificate
-JOIN account_e2ee_roots root ON root.user_id = certificate.user_id
+SELECT certificate.fingerprint, certificate.user_id, certificate.endpoint_id, certificate.role, certificate.generation, certificate.serial, certificate.certificate, certificate.noise_public_key, certificate.quic_public_key, certificate.issued_at, certificate.expires_at, certificate.created_at, certificate.revoked_at, certificate.revocation_reason, certificate.key_id FROM peer_endpoint_certificates certificate
+JOIN account_e2ee_keys trusted_key ON trusted_key.key_id = certificate.key_id
+  AND trusted_key.user_id = certificate.user_id AND trusted_key.revoked_at IS NULL
 WHERE certificate.user_id = $1
   AND certificate.endpoint_id = $2
   AND certificate.generation = $3
   AND certificate.revoked_at IS NULL
   AND certificate.issued_at <= $4
   AND certificate.expires_at > $4
-  AND root.revoked_at IS NULL
-FOR UPDATE OF certificate, root
+FOR UPDATE OF certificate, trusted_key
 `
 
 type GetActivePeerEndpointCertificateForUpdateParams struct {
@@ -475,8 +543,48 @@ func (q *Queries) GetActivePeerEndpointCertificateForUpdate(ctx context.Context,
 		&i.CreatedAt,
 		&i.RevokedAt,
 		&i.RevocationReason,
+		&i.KeyID,
 	)
 	return i, err
+}
+
+const getFreshEnrollmentClientSession = `-- name: GetFreshEnrollmentClientSession :one
+SELECT user_id FROM cli_client_sessions
+WHERE id = $1 AND user_id = $2
+  AND state = 'active' AND fresh_e2ee_bootstrap = true
+`
+
+type GetFreshEnrollmentClientSessionParams struct {
+	ID     string
+	UserID string
+}
+
+func (q *Queries) GetFreshEnrollmentClientSession(ctx context.Context, arg GetFreshEnrollmentClientSessionParams) (string, error) {
+	row := q.db.QueryRow(ctx, getFreshEnrollmentClientSession, arg.ID, arg.UserID)
+	var user_id string
+	err := row.Scan(&user_id)
+	return user_id, err
+}
+
+const getFreshEnrollmentMachineID = `-- name: GetFreshEnrollmentMachineID :one
+SELECT client_session.user_machine_id
+FROM cli_client_sessions client_session
+WHERE client_session.id = $1
+  AND client_session.user_machine_id IS NOT NULL
+UNION ALL
+SELECT pairing.user_machine_id
+FROM user_machine_pairings pairing
+WHERE pairing.authenticated_setup_cli_session_id = $1
+  AND pairing.user_machine_id IS NOT NULL
+ORDER BY user_machine_id
+LIMIT 1
+`
+
+func (q *Queries) GetFreshEnrollmentMachineID(ctx context.Context, cliClientSessionID string) (sql.NullString, error) {
+	row := q.db.QueryRow(ctx, getFreshEnrollmentMachineID, cliClientSessionID)
+	var user_machine_id sql.NullString
+	err := row.Scan(&user_machine_id)
+	return user_machine_id, err
 }
 
 const getMatchingPeerEndpointEnrollmentRequestForUpdate = `-- name: GetMatchingPeerEndpointEnrollmentRequestForUpdate :one
@@ -522,7 +630,7 @@ func (q *Queries) GetMatchingPeerEndpointEnrollmentRequestForUpdate(ctx context.
 }
 
 const getPeerEndpointCertificateByFingerprint = `-- name: GetPeerEndpointCertificateByFingerprint :one
-SELECT fingerprint, user_id, endpoint_id, role, generation, serial, certificate, noise_public_key, quic_public_key, issued_at, expires_at, created_at, revoked_at, revocation_reason FROM peer_endpoint_certificates
+SELECT fingerprint, user_id, endpoint_id, role, generation, serial, certificate, noise_public_key, quic_public_key, issued_at, expires_at, created_at, revoked_at, revocation_reason, key_id FROM peer_endpoint_certificates
 WHERE fingerprint = $1
 `
 
@@ -544,12 +652,13 @@ func (q *Queries) GetPeerEndpointCertificateByFingerprint(ctx context.Context, f
 		&i.CreatedAt,
 		&i.RevokedAt,
 		&i.RevocationReason,
+		&i.KeyID,
 	)
 	return i, err
 }
 
 const getPeerEndpointCertificateByIdentity = `-- name: GetPeerEndpointCertificateByIdentity :one
-SELECT fingerprint, user_id, endpoint_id, role, generation, serial, certificate, noise_public_key, quic_public_key, issued_at, expires_at, created_at, revoked_at, revocation_reason FROM peer_endpoint_certificates
+SELECT fingerprint, user_id, endpoint_id, role, generation, serial, certificate, noise_public_key, quic_public_key, issued_at, expires_at, created_at, revoked_at, revocation_reason, key_id FROM peer_endpoint_certificates
 WHERE user_id = $1 AND endpoint_id = $2
   AND generation = $3
 `
@@ -578,6 +687,7 @@ func (q *Queries) GetPeerEndpointCertificateByIdentity(ctx context.Context, arg 
 		&i.CreatedAt,
 		&i.RevokedAt,
 		&i.RevocationReason,
+		&i.KeyID,
 	)
 	return i, err
 }
@@ -646,6 +756,82 @@ func (q *Queries) GetPeerEndpointEnrollmentRequestByOperation(ctx context.Contex
 		&i.FulfilledAt,
 	)
 	return i, err
+}
+
+const listAccountE2EEKeys = `-- name: ListAccountE2EEKeys :many
+SELECT key_id, user_id, public_key, fingerprint, generation, cli_client_session_id, user_machine_id, created_at, updated_at, revoked_at, revocation_reason FROM account_e2ee_keys
+WHERE user_id = $1
+ORDER BY created_at, key_id
+`
+
+func (q *Queries) ListAccountE2EEKeys(ctx context.Context, userID string) ([]AccountE2eeKey, error) {
+	rows, err := q.db.Query(ctx, listAccountE2EEKeys, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AccountE2eeKey
+	for rows.Next() {
+		var i AccountE2eeKey
+		if err := rows.Scan(
+			&i.KeyID,
+			&i.UserID,
+			&i.PublicKey,
+			&i.Fingerprint,
+			&i.Generation,
+			&i.CLIClientSessionID,
+			&i.UserMachineID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.RevokedAt,
+			&i.RevocationReason,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listActiveAccountE2EEKeys = `-- name: ListActiveAccountE2EEKeys :many
+SELECT key_id, user_id, public_key, fingerprint, generation, cli_client_session_id, user_machine_id, created_at, updated_at, revoked_at, revocation_reason FROM account_e2ee_keys
+WHERE user_id = $1 AND revoked_at IS NULL
+ORDER BY created_at, key_id
+`
+
+func (q *Queries) ListActiveAccountE2EEKeys(ctx context.Context, userID string) ([]AccountE2eeKey, error) {
+	rows, err := q.db.Query(ctx, listActiveAccountE2EEKeys, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AccountE2eeKey
+	for rows.Next() {
+		var i AccountE2eeKey
+		if err := rows.Scan(
+			&i.KeyID,
+			&i.UserID,
+			&i.PublicKey,
+			&i.Fingerprint,
+			&i.Generation,
+			&i.CLIClientSessionID,
+			&i.UserMachineID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.RevokedAt,
+			&i.RevocationReason,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listPendingPeerEndpointEnrollmentRequests = `-- name: ListPendingPeerEndpointEnrollmentRequests :many
@@ -817,6 +1003,81 @@ func (q *Queries) RenewExpiredPeerEndpointEnrollmentRequest(ctx context.Context,
 	return i, err
 }
 
+const replaceAccountE2EERoot = `-- name: ReplaceAccountE2EERoot :one
+UPDATE account_e2ee_roots
+SET public_key = $1, fingerprint = $2,
+    generation = 1, updated_at = $3, revoked_at = NULL
+WHERE user_id = $4
+RETURNING user_id, public_key, fingerprint, generation, created_at, updated_at, revoked_at
+`
+
+type ReplaceAccountE2EERootParams struct {
+	PublicKey   []byte
+	Fingerprint []byte
+	Now         time.Time
+	UserID      string
+}
+
+func (q *Queries) ReplaceAccountE2EERoot(ctx context.Context, arg ReplaceAccountE2EERootParams) (AccountE2eeRoot, error) {
+	row := q.db.QueryRow(ctx, replaceAccountE2EERoot,
+		arg.PublicKey,
+		arg.Fingerprint,
+		arg.Now,
+		arg.UserID,
+	)
+	var i AccountE2eeRoot
+	err := row.Scan(
+		&i.UserID,
+		&i.PublicKey,
+		&i.Fingerprint,
+		&i.Generation,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
+const revokeAccountE2EEKey = `-- name: RevokeAccountE2EEKey :one
+UPDATE account_e2ee_keys
+SET revoked_at = coalesce(revoked_at, $1),
+    revocation_reason = coalesce(revocation_reason, $2),
+    updated_at = $1
+WHERE user_id = $3 AND key_id = $4
+RETURNING key_id, user_id, public_key, fingerprint, generation, cli_client_session_id, user_machine_id, created_at, updated_at, revoked_at, revocation_reason
+`
+
+type RevokeAccountE2EEKeyParams struct {
+	RevokedAt time.Time
+	Reason    sql.NullString
+	UserID    string
+	KeyID     string
+}
+
+func (q *Queries) RevokeAccountE2EEKey(ctx context.Context, arg RevokeAccountE2EEKeyParams) (AccountE2eeKey, error) {
+	row := q.db.QueryRow(ctx, revokeAccountE2EEKey,
+		arg.RevokedAt,
+		arg.Reason,
+		arg.UserID,
+		arg.KeyID,
+	)
+	var i AccountE2eeKey
+	err := row.Scan(
+		&i.KeyID,
+		&i.UserID,
+		&i.PublicKey,
+		&i.Fingerprint,
+		&i.Generation,
+		&i.CLIClientSessionID,
+		&i.UserMachineID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.RevokedAt,
+		&i.RevocationReason,
+	)
+	return i, err
+}
+
 const revokeAccountE2EERoot = `-- name: RevokeAccountE2EERoot :one
 UPDATE account_e2ee_roots
 SET revoked_at = $1, generation = generation + 1, updated_at = $1
@@ -844,11 +1105,30 @@ func (q *Queries) RevokeAccountE2EERoot(ctx context.Context, arg RevokeAccountE2
 	return i, err
 }
 
+const revokeAllPeerEndpointCertificates = `-- name: RevokeAllPeerEndpointCertificates :execrows
+UPDATE peer_endpoint_certificates
+SET revoked_at = $1, revocation_reason = 'account_revoked'
+WHERE user_id = $2 AND revoked_at IS NULL
+`
+
+type RevokeAllPeerEndpointCertificatesParams struct {
+	Now    sql.NullTime
+	UserID string
+}
+
+func (q *Queries) RevokeAllPeerEndpointCertificates(ctx context.Context, arg RevokeAllPeerEndpointCertificatesParams) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeAllPeerEndpointCertificates, arg.Now, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const revokePeerEndpointCertificate = `-- name: RevokePeerEndpointCertificate :one
 UPDATE peer_endpoint_certificates
 SET revoked_at = $1, revocation_reason = $2
 WHERE fingerprint = $3 AND revoked_at IS NULL
-RETURNING fingerprint, user_id, endpoint_id, role, generation, serial, certificate, noise_public_key, quic_public_key, issued_at, expires_at, created_at, revoked_at, revocation_reason
+RETURNING fingerprint, user_id, endpoint_id, role, generation, serial, certificate, noise_public_key, quic_public_key, issued_at, expires_at, created_at, revoked_at, revocation_reason, key_id
 `
 
 type RevokePeerEndpointCertificateParams struct {
@@ -875,6 +1155,7 @@ func (q *Queries) RevokePeerEndpointCertificate(ctx context.Context, arg RevokeP
 		&i.CreatedAt,
 		&i.RevokedAt,
 		&i.RevocationReason,
+		&i.KeyID,
 	)
 	return i, err
 }

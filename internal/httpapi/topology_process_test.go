@@ -295,6 +295,7 @@ func seedTopologyPeerAuthority(t *testing.T, ctx context.Context, store *db.DB, 
 	t.Helper()
 	localFingerprint, machineFingerprint := sha256.Sum256(localRaw), sha256.Sum256(machineRaw)
 	rootFingerprint := sha256.Sum256(rootRaw)
+	rootKeyID := "aek_" + fmt.Sprintf("%x", rootFingerprint[:])
 	relayPort := os.Getenv("PAPERBOAT_TOPOLOGY_RELAY_PORT")
 	if relayPort == "" {
 		relayPort = "9444"
@@ -312,8 +313,9 @@ func seedTopologyPeerAuthority(t *testing.T, ctx context.Context, store *db.DB, 
 		{`INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id) VALUES ($1,$2,$3)`, []any{"environment-topology", "workspace-topology", "account-topology"}},
 		{`INSERT INTO paperboat.control_tunnel_nodes (id,edge_pool,protocol_version,process_epoch,state,ready,last_heartbeat_at,signaling_host,stun_host,stun_port) VALUES ($1,'relay-topology','v1','epoch-topology','ready',true,$2,$3,'relay.paperboat.test',3478)`, []any{"edge-topology", now, signalingHost}},
 		{`INSERT INTO paperboat.account_e2ee_roots (user_id,public_key,fingerprint) VALUES ($1,$2,$3)`, []any{"account-topology", rootRaw, rootFingerprint[:]}},
-		{`INSERT INTO paperboat.peer_endpoint_certificates (fingerprint,user_id,endpoint_id,role,generation,serial,certificate,noise_public_key,quic_public_key,issued_at,expires_at) VALUES ($1,$2,$3,'cli',1,1,$4,$5,$6,$7,$8)`, []any{localFingerprint[:], "account-topology", "endpoint-cli", localRaw, localNoise, localQUIC, now.Add(-time.Minute), now.Add(time.Hour)}},
-		{`INSERT INTO paperboat.peer_endpoint_certificates (fingerprint,user_id,endpoint_id,role,generation,serial,certificate,noise_public_key,quic_public_key,issued_at,expires_at) VALUES ($1,$2,$3,'machine',1,2,$4,$5,$6,$7,$8)`, []any{machineFingerprint[:], "account-topology", "endpoint-host", machineRaw, machineNoise, machineQUIC, now.Add(-time.Minute), now.Add(time.Hour)}},
+		{`INSERT INTO paperboat.account_e2ee_keys (key_id,user_id,public_key,fingerprint,generation) VALUES ($1,$2,$3,$4,1)`, []any{rootKeyID, "account-topology", rootRaw, rootFingerprint[:]}},
+		{`INSERT INTO paperboat.peer_endpoint_certificates (fingerprint,user_id,key_id,endpoint_id,role,generation,serial,certificate,noise_public_key,quic_public_key,issued_at,expires_at) VALUES ($1,$2,$3,$4,'cli',1,1,$5,$6,$7,$8,$9)`, []any{localFingerprint[:], "account-topology", rootKeyID, "endpoint-cli", localRaw, localNoise, localQUIC, now.Add(-time.Minute), now.Add(time.Hour)}},
+		{`INSERT INTO paperboat.peer_endpoint_certificates (fingerprint,user_id,key_id,endpoint_id,role,generation,serial,certificate,noise_public_key,quic_public_key,issued_at,expires_at) VALUES ($1,$2,$3,$4,'machine',1,2,$5,$6,$7,$8,$9)`, []any{machineFingerprint[:], "account-topology", rootKeyID, "endpoint-host", machineRaw, machineNoise, machineQUIC, now.Add(-time.Minute), now.Add(time.Hour)}},
 		{`INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,installation_generation) VALUES ($1,$2,$3,'Topology host','linux','amd64','/workspace','online','occupied',1)`, []any{"endpoint-host", "account-topology", "environment-topology"}},
 		{`INSERT INTO paperboat.control_connector_generations (environment_id,machine_id,generation,edge_pool,edge_node_id,state) VALUES ($1,$2,1,'relay-topology',$3,'admitted')`, []any{"environment-topology", "endpoint-host", "edge-topology"}},
 	}

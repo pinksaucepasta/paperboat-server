@@ -448,13 +448,14 @@ JOIN cli_client_sessions client ON client.id = intent.cli_client_session_id
 JOIN peer_endpoint_certificates endpoint ON endpoint.fingerprint = CASE g.role
   WHEN 'controlling' THEN intent.controlling_certificate_fingerprint
   ELSE intent.controlled_certificate_fingerprint END
-JOIN account_e2ee_roots root ON root.user_id = intent.user_id
+JOIN account_e2ee_keys endpoint_key
+  ON endpoint_key.key_id = endpoint.key_id
+  AND endpoint_key.user_id = endpoint.user_id AND endpoint_key.revoked_at IS NULL
 WHERE intent.edge_node_id = $1
   AND intent.state = 'active' AND intent.expires_at > $2
   AND g.revoked_at IS NULL AND g.expires_at > $2
   AND client.state = 'active'
   AND endpoint.revoked_at IS NULL AND endpoint.expires_at > $2
-  AND root.revoked_at IS NULL
 ORDER BY g.jti
 `
 
@@ -678,8 +679,14 @@ SELECT intent.id, intent.operation_key, intent.request_hash, intent.user_id, int
 FROM peer_session_intents intent
 JOIN peer_endpoint_certificates controlling
   ON controlling.fingerprint = intent.controlling_certificate_fingerprint
+JOIN account_e2ee_keys controlling_key
+  ON controlling_key.key_id = controlling.key_id
+  AND controlling_key.user_id = controlling.user_id AND controlling_key.revoked_at IS NULL
 JOIN peer_endpoint_certificates controlled
   ON controlled.fingerprint = intent.controlled_certificate_fingerprint
+JOIN account_e2ee_keys controlled_key
+  ON controlled_key.key_id = controlled.key_id
+  AND controlled_key.user_id = controlled.user_id AND controlled_key.revoked_at IS NULL
 JOIN peer_signaling_grants controlling_grant
   ON controlling_grant.intent_id = intent.id AND controlling_grant.role = 'controlling'
 JOIN peer_signaling_grants controlled_grant
@@ -691,7 +698,6 @@ JOIN control_connector_generations connector
   ON connector.environment_id = intent.environment_id AND connector.machine_id = machine.id
   AND connector.connector_id = 'runtime'
 JOIN control_tunnel_nodes node ON node.id = intent.edge_node_id
-JOIN account_e2ee_roots root ON root.user_id = intent.user_id
 JOIN cli_client_sessions client ON client.id = intent.cli_client_session_id
 WHERE intent.user_id = $1 AND machine.id = $2
   AND machine.installation_generation = $3
@@ -705,7 +711,7 @@ WHERE intent.user_id = $1 AND machine.id = $2
   AND relay.revoked_at IS NULL AND relay.expires_at > $4
   AND connector.revoked_at IS NULL AND connector.state = 'admitted'
   AND machine.revoked_at IS NULL AND machine.deleted_at IS NULL
-  AND root.revoked_at IS NULL AND client.state = 'active'
+  AND client.state = 'active'
   AND node.state = 'ready' AND node.ready = true
   AND node.last_heartbeat_at > $5::timestamptz
 ORDER BY intent.created_at, intent.id
@@ -829,14 +835,19 @@ SELECT controlling.endpoint_id AS controlling_endpoint_id,
        machine.relay_latency_observed_at,
        machine.relay_latency_vector
 FROM cli_client_sessions client
-JOIN account_e2ee_roots root ON root.user_id = client.user_id
 JOIN peer_endpoint_certificates controlling
   ON controlling.fingerprint = $1
   AND controlling.user_id = client.user_id AND controlling.role = 'cli'
   AND controlling.endpoint_id = client.id
+JOIN account_e2ee_keys controlling_key
+  ON controlling_key.key_id = controlling.key_id
+  AND controlling_key.user_id = controlling.user_id AND controlling_key.revoked_at IS NULL
 JOIN peer_endpoint_certificates controlled
   ON controlled.fingerprint = $2
   AND controlled.user_id = client.user_id AND controlled.role = 'machine'
+JOIN account_e2ee_keys controlled_key
+  ON controlled_key.key_id = controlled.key_id
+  AND controlled_key.user_id = controlled.user_id AND controlled_key.revoked_at IS NULL
 JOIN control_environments environment
   ON environment.id = $3 AND environment.owner_user_id = client.user_id
 JOIN user_machines machine
@@ -847,7 +858,6 @@ JOIN control_connector_generations connector
 JOIN control_tunnel_nodes node ON node.id = connector.edge_node_id
 WHERE client.id = $4
   AND client.user_id = $5 AND client.state = 'active'
-  AND root.revoked_at IS NULL
   AND controlling.revoked_at IS NULL AND controlling.issued_at <= $6
   AND controlling.expires_at > $6
   AND controlled.revoked_at IS NULL AND controlled.issued_at <= $6
@@ -858,7 +868,7 @@ WHERE client.id = $4
   AND node.relay_region IS NOT NULL AND trim(node.relay_region) <> ''
   AND node.signaling_host IS NOT NULL AND node.stun_host IS NOT NULL AND node.stun_port IS NOT NULL
   AND node.last_heartbeat_at > $7::timestamptz
-FOR UPDATE OF client, root, controlling, controlled, environment, node
+FOR UPDATE OF client, controlling, controlled, controlling_key, controlled_key, environment, node
 `
 
 type ResolvePeerSessionAuthorityForUpdateParams struct {

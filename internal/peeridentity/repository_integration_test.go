@@ -45,7 +45,8 @@ func TestSQLRepositoryBootstrapsRootAndCertificateAtomically(t *testing.T) {
 	service, _ := NewService(repository)
 	rootPublic, rootPrivate, _ := ed25519.GenerateKey(nil)
 	raw := signedFixture(t, rootPrivate, userID, RoleCLI, clientID, 1, 1, now, now.Add(time.Hour))
-	request := BootstrapRequest{RegisterRequest: RegisterRequest{OperationID: "operation_bootstrap_" + suffix, UserID: userID, Certificate: raw, Expected: Expected{AccountID: userID, Role: RoleCLI, EndpointID: clientID, Generation: 1, Serial: 1}, ExpectedRootFingerprint: sha256.Sum256(rootPublic), ExpectedCertificateFingerprint: sha256.Sum256(raw), ExpectedIssuedAt: now, ExpectedExpiresAt: now.Add(time.Hour), Now: now}, CLIClientSessionID: clientID, RootPublicKey: rootPublic}
+	rootFingerprint := sha256.Sum256(rootPublic)
+	request := BootstrapRequest{RegisterRequest: RegisterRequest{OperationID: "operation_bootstrap_" + suffix, UserID: userID, KeyID: keyIDForFingerprint(rootFingerprint), Certificate: raw, Expected: Expected{AccountID: userID, Role: RoleCLI, EndpointID: clientID, Generation: 1, Serial: 1}, ExpectedRootFingerprint: rootFingerprint, ExpectedCertificateFingerprint: sha256.Sum256(raw), ExpectedIssuedAt: now, ExpectedExpiresAt: now.Add(time.Hour), Now: now}, CLIClientSessionID: clientID, RootPublicKey: rootPublic}
 	first, err := service.Bootstrap(ctx, request)
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +61,9 @@ func TestSQLRepositoryBootstrapsRootAndCertificateAtomically(t *testing.T) {
 	conflict.OperationID = "operation_bootstrap_conflict_" + suffix
 	conflict.RootPublicKey = otherPublic
 	conflict.Certificate = otherRaw
-	conflict.ExpectedRootFingerprint = sha256.Sum256(otherPublic)
+	otherFingerprint := sha256.Sum256(otherPublic)
+	conflict.ExpectedRootFingerprint = otherFingerprint
+	conflict.KeyID = keyIDForFingerprint(otherFingerprint)
 	conflict.ExpectedCertificateFingerprint = sha256.Sum256(otherRaw)
 	if _, err := service.Bootstrap(ctx, conflict); !errors.Is(err, ErrConflict) {
 		t.Fatalf("conflicting root error=%v", err)
@@ -114,6 +117,9 @@ func TestSQLRepositoryCLIEndpointEnrollmentReplaysOnlyBoundActiveRequests(t *tes
 		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.account_e2ee_roots (user_id,public_key,fingerprint) VALUES ($1,$2,$3)`, value.userID, value.public, fingerprint[:]); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.account_e2ee_keys (key_id,user_id,public_key,fingerprint,generation) VALUES ($1,$2,$3,$4,1)`, keyIDForFingerprint(fingerprint), value.userID, value.public, fingerprint[:]); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.account_e2ee_roots SET revoked_at=GREATEST(now(),created_at),updated_at=GREATEST(now(),created_at) WHERE user_id=$1`, revokedUserID); err != nil {
 		t.Fatal(err)
@@ -149,7 +155,7 @@ func TestSQLRepositoryCLIEndpointEnrollmentReplaysOnlyBoundActiveRequests(t *tes
 	raw := signedFixture(t, rootPrivate, userID, RoleCLI, request.EndpointID, 1, 1, now, now.Add(time.Hour))
 	fingerprint := sha256.Sum256(raw)
 	rootFingerprint := sha256.Sum256(rootPublic)
-	if _, err := service.Register(ctx, RegisterRequest{OperationID: "operation_cli_certificate_" + suffix, UserID: userID, Certificate: raw, Expected: Expected{AccountID: userID, Role: RoleCLI, EndpointID: request.EndpointID, Generation: 1, Serial: 1}, ExpectedRootFingerprint: rootFingerprint, ExpectedCertificateFingerprint: fingerprint, ExpectedIssuedAt: now, ExpectedExpiresAt: now.Add(time.Hour), Now: now}); err != nil {
+	if _, err := service.Register(ctx, RegisterRequest{OperationID: "operation_cli_certificate_" + suffix, UserID: userID, KeyID: keyIDForFingerprint(rootFingerprint), Certificate: raw, Expected: Expected{AccountID: userID, Role: RoleCLI, EndpointID: request.EndpointID, Generation: 1, Serial: 1}, ExpectedRootFingerprint: rootFingerprint, ExpectedCertificateFingerprint: fingerprint, ExpectedIssuedAt: now, ExpectedExpiresAt: now.Add(time.Hour), Now: now}); err != nil {
 		t.Fatal(err)
 	}
 	fulfilledReplay, err := service.RequestCLIEndpoint(ctx, request)

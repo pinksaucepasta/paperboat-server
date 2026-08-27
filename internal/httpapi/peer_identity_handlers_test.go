@@ -41,9 +41,10 @@ func TestE2EEBootstrapBindsAuthenticatedCLISession(t *testing.T) {
 	certificateFingerprint := sha256.Sum256(raw)
 	issued := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
 	expires := issued.Add(time.Hour)
-	document := e2eeBootstrapDocument{RootPublicKey: base64.RawURLEncoding.EncodeToString(rootPublic), Certificate: endpointCertificateDocument{Version: 1, AccountID: "account_01", RootFingerprint: hex.EncodeToString(rootFingerprint[:]), EndpointID: "cli_session_01", Role: "cli", Generation: 1, Serial: 1, IssuedAt: issued.Format(time.RFC3339), ExpiresAt: expires.Format(time.RFC3339), Certificate: base64.RawURLEncoding.EncodeToString(raw), CertificateFingerprint: hex.EncodeToString(certificateFingerprint[:])}}
+	keyID, _ := peeridentity.KeyID(rootPublic)
+	document := e2eeBootstrapRequestDocument{RootPublicKey: base64.RawURLEncoding.EncodeToString(rootPublic), Certificate: endpointCertificateDocument{Version: 1, AccountID: "account_01", KeyID: keyID, EndpointID: "cli_session_01", Role: "cli", Generation: 1, Serial: 1, IssuedAt: issued.Format(time.RFC3339), ExpiresAt: expires.Format(time.RFC3339), Certificate: base64.RawURLEncoding.EncodeToString(raw), CertificateFingerprint: hex.EncodeToString(certificateFingerprint[:])}}
 	body, _ := json.Marshal(document)
-	bootstrapper := &recordingBootstrapper{result: peeridentity.Certificate{AccountID: "account_01", Role: peeridentity.RoleCLI, EndpointID: "cli_session_01", Generation: 1, Serial: 1, IssuedAt: issued, ExpiresAt: expires, RootFingerprint: rootFingerprint, Fingerprint: certificateFingerprint, Raw: raw}}
+	bootstrapper := &recordingBootstrapper{result: peeridentity.Certificate{AccountID: "account_01", KeyID: keyID, Role: peeridentity.RoleCLI, EndpointID: "cli_session_01", Generation: 1, Serial: 1, IssuedAt: issued, ExpiresAt: expires, RootFingerprint: rootFingerprint, Fingerprint: certificateFingerprint, Raw: raw}}
 	request := httptest.NewRequest(http.MethodPost, "/v1/e2ee/bootstrap", bytes.NewReader(body))
 	request.Header.Set("Idempotency-Key", "operation_bootstrap_01")
 	request = request.WithContext(context.WithValue(request.Context(), authContextKey{}, principal{User: auth.User{ID: "account_01"}, Client: &auth.ClientPrincipal{SessionID: "cli_session_01"}}))
@@ -62,15 +63,16 @@ func (r *recordingCertificateRegistrar) Register(_ context.Context, request peer
 func TestEndpointCertificateRegisterMapsCanonicalDocument(t *testing.T) {
 	raw := bytes.Repeat([]byte{1}, 172)
 	rootFingerprint := sha256.Sum256([]byte("root"))
+	keyID := "aek_" + hex.EncodeToString(rootFingerprint[:])
 	certificateFingerprint := sha256.Sum256(raw)
 	issued := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
 	expires := issued.Add(time.Hour)
 	registrar := &recordingCertificateRegistrar{result: peeridentity.Certificate{
-		AccountID: "account_01", Role: peeridentity.RoleCLI, EndpointID: "cli_01", Generation: 2, Serial: 7,
+		AccountID: "account_01", KeyID: keyID, Role: peeridentity.RoleCLI, EndpointID: "cli_01", Generation: 2, Serial: 7,
 		IssuedAt: issued, ExpiresAt: expires, RootFingerprint: rootFingerprint, Fingerprint: certificateFingerprint, Raw: raw,
 	}}
 	document := endpointCertificateDocument{
-		Version: 1, AccountID: "account_01", RootFingerprint: hex.EncodeToString(rootFingerprint[:]), EndpointID: "cli_01",
+		Version: 1, AccountID: "account_01", KeyID: keyID, EndpointID: "cli_01",
 		Role: "cli", Generation: 2, Serial: 7, IssuedAt: issued.Format(time.RFC3339), ExpiresAt: expires.Format(time.RFC3339),
 		Certificate: base64.RawURLEncoding.EncodeToString(raw), CertificateFingerprint: hex.EncodeToString(certificateFingerprint[:]),
 	}
@@ -102,7 +104,7 @@ func TestEndpointCertificateRegisterRejectsNonCanonicalAndMapsConflicts(t *testi
 
 	raw := bytes.Repeat([]byte{1}, 172)
 	fingerprint := sha256.Sum256(raw)
-	document := endpointCertificateDocument{Version: 1, AccountID: "account_01", RootFingerprint: hex.EncodeToString(fingerprint[:]), EndpointID: "cli_01", Role: "cli", Generation: 1, Serial: 1, IssuedAt: "2026-08-03T12:00:00Z", ExpiresAt: "2026-08-03T13:00:00Z", Certificate: base64.RawURLEncoding.EncodeToString(raw), CertificateFingerprint: hex.EncodeToString(fingerprint[:])}
+	document := endpointCertificateDocument{Version: 1, AccountID: "account_01", KeyID: "aek_" + hex.EncodeToString(fingerprint[:]), EndpointID: "cli_01", Role: "cli", Generation: 1, Serial: 1, IssuedAt: "2026-08-03T12:00:00Z", ExpiresAt: "2026-08-03T13:00:00Z", Certificate: base64.RawURLEncoding.EncodeToString(raw), CertificateFingerprint: hex.EncodeToString(fingerprint[:])}
 	body, _ := json.Marshal(document)
 	registrar.err = peeridentity.ErrConflict
 	request = httptest.NewRequest(http.MethodPut, "/v1/endpoints/cli_01/certificates/1", bytes.NewReader(body))

@@ -37,7 +37,7 @@ type endpointCertificateRevoker interface {
 type endpointCertificateDocument struct {
 	Version                int    `json:"version"`
 	AccountID              string `json:"account_id"`
-	RootFingerprint        string `json:"root_fingerprint"`
+	KeyID                  string `json:"key_id"`
 	EndpointID             string `json:"endpoint_id"`
 	Role                   string `json:"role"`
 	Generation             uint64 `json:"generation"`
@@ -49,12 +49,23 @@ type endpointCertificateDocument struct {
 }
 
 type e2eeBootstrapDocument struct {
+	KeyID       string                      `json:"key_id"`
+	TrustedKeys []trustedKeyDocument        `json:"trusted_keys"`
+	Certificate endpointCertificateDocument `json:"certificate"`
+}
+
+type e2eeBootstrapRequestDocument struct {
 	RootPublicKey string                      `json:"root_public_key"`
 	Certificate   endpointCertificateDocument `json:"certificate"`
 }
 
 type e2eeRootDocument struct {
-	Version     int    `json:"version"`
+	Version     int                  `json:"version"`
+	TrustedKeys []trustedKeyDocument `json:"trusted_keys"`
+}
+
+type trustedKeyDocument struct {
+	KeyID       string `json:"key_id"`
 	PublicKey   string `json:"public_key"`
 	Fingerprint string `json:"fingerprint"`
 	Generation  uint64 `json:"generation"`
@@ -76,7 +87,7 @@ func e2eeRootGet(service e2eeRootReader) http.HandlerFunc {
 			writeError(w, r, status, code, "E2EE root could not be retrieved.")
 			return
 		}
-		writeJSON(w, http.StatusOK, SuccessResponse{Data: e2eeRootDocument{Version: 1, PublicKey: base64.RawURLEncoding.EncodeToString(root.PublicKey), Fingerprint: hex.EncodeToString(root.Fingerprint[:]), Generation: root.Generation}})
+		writeJSON(w, http.StatusOK, SuccessResponse{Data: e2eeRootDocument{Version: 1, TrustedKeys: trustedKeyDocuments(root)}})
 	}
 }
 
@@ -87,22 +98,23 @@ func e2eeBootstrap(service e2eeBootstrapper) http.HandlerFunc {
 			writeError(w, r, http.StatusUnauthorized, "authentication_required", "CLI authentication is required.")
 			return
 		}
-		var document e2eeBootstrapDocument
+		var document e2eeBootstrapRequestDocument
 		if !decodeStrictJSON(w, r, &document) {
 			return
 		}
 		operationID := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 		rootPublic, rootErr := decodeCanonicalBase64URL(document.RootPublicKey)
 		certificate, certificateErr := decodeCanonicalBase64URL(document.Certificate.Certificate)
-		rootFingerprint, rootFingerprintErr := decodeFingerprint(document.Certificate.RootFingerprint)
+		rootFingerprint, rootFingerprintErr := peeridentity.FingerprintForKeyID(document.Certificate.KeyID)
 		certificateFingerprint, fingerprintErr := decodeFingerprint(document.Certificate.CertificateFingerprint)
+		rootKeyID, rootKeyIDErr := peeridentity.KeyID(rootPublic)
 		issuedAt, issuedErr := parseCanonicalTime(document.Certificate.IssuedAt)
 		expiresAt, expiresErr := parseCanonicalTime(document.Certificate.ExpiresAt)
-		if operationID == "" || len(rootPublic) != 32 || rootErr != nil || certificateErr != nil || rootFingerprintErr != nil || fingerprintErr != nil || issuedErr != nil || expiresErr != nil || document.Certificate.Version != 1 || document.Certificate.AccountID != principal.User.ID || document.Certificate.EndpointID != principal.Client.SessionID || document.Certificate.Role != "cli" || document.Certificate.Generation != 1 || document.Certificate.Serial == 0 {
+		if operationID == "" || len(rootPublic) != 32 || rootErr != nil || rootKeyIDErr != nil || rootKeyID != document.Certificate.KeyID || certificateErr != nil || rootFingerprintErr != nil || fingerprintErr != nil || issuedErr != nil || expiresErr != nil || document.Certificate.Version != 1 || document.Certificate.AccountID != principal.User.ID || document.Certificate.EndpointID != principal.Client.SessionID || document.Certificate.Role != "cli" || document.Certificate.Generation != 1 || document.Certificate.Serial == 0 {
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "E2EE bootstrap request is invalid.")
 			return
 		}
-		value, err := service.Bootstrap(r.Context(), peeridentity.BootstrapRequest{RegisterRequest: peeridentity.RegisterRequest{OperationID: operationID, UserID: principal.User.ID, Certificate: certificate, Expected: peeridentity.Expected{AccountID: principal.User.ID, Role: peeridentity.RoleCLI, EndpointID: principal.Client.SessionID, Generation: 1, Serial: document.Certificate.Serial}, ExpectedRootFingerprint: rootFingerprint, ExpectedCertificateFingerprint: certificateFingerprint, ExpectedIssuedAt: issuedAt, ExpectedExpiresAt: expiresAt, Now: time.Now().UTC()}, CLIClientSessionID: principal.Client.SessionID, RootPublicKey: rootPublic, AllowRootReplacement: r.Header.Get("X-Paperboat-Fresh-Enrollment") == "1"})
+		value, err := service.Bootstrap(r.Context(), peeridentity.BootstrapRequest{RegisterRequest: peeridentity.RegisterRequest{OperationID: operationID, UserID: principal.User.ID, KeyID: document.Certificate.KeyID, Certificate: certificate, Expected: peeridentity.Expected{AccountID: principal.User.ID, Role: peeridentity.RoleCLI, EndpointID: principal.Client.SessionID, Generation: 1, Serial: document.Certificate.Serial}, ExpectedRootFingerprint: rootFingerprint, ExpectedCertificateFingerprint: certificateFingerprint, ExpectedIssuedAt: issuedAt, ExpectedExpiresAt: expiresAt, Now: time.Now().UTC()}, CLIClientSessionID: principal.Client.SessionID, RootPublicKey: rootPublic, AllowRootReplacement: r.Header.Get("X-Paperboat-Fresh-Enrollment") == "1"})
 		if err != nil {
 			status, code := http.StatusBadRequest, "invalid_identity"
 			switch {
@@ -116,7 +128,13 @@ func e2eeBootstrap(service e2eeBootstrapper) http.HandlerFunc {
 			writeError(w, r, status, code, "E2EE identity could not be bootstrapped.")
 			return
 		}
-		writeJSON(w, http.StatusCreated, SuccessResponse{Data: e2eeBootstrapDocument{RootPublicKey: base64.RawURLEncoding.EncodeToString(rootPublic), Certificate: certificateDocument(value)}})
+		trustedKeys := []trustedKeyDocument{{KeyID: value.KeyID, PublicKey: base64.RawURLEncoding.EncodeToString(rootPublic), Fingerprint: hex.EncodeToString(rootFingerprint[:]), Generation: 1}}
+		if reader, ok := service.(e2eeRootReader); ok {
+			if root, rootErr := reader.Root(r.Context(), principal.User.ID); rootErr == nil {
+				trustedKeys = trustedKeyDocuments(root)
+			}
+		}
+		writeJSON(w, http.StatusCreated, SuccessResponse{Data: e2eeBootstrapDocument{KeyID: value.KeyID, TrustedKeys: trustedKeys, Certificate: certificateDocument(value)}})
 	}
 }
 
@@ -135,7 +153,7 @@ func endpointCertificateRegister(service endpointCertificateRegistrar) http.Hand
 		generation, generationErr := strconv.ParseUint(r.PathValue("generation"), 10, 64)
 		role := endpointRole(document.Role)
 		certificate, certificateErr := decodeCanonicalBase64URL(document.Certificate)
-		rootFingerprint, rootErr := decodeFingerprint(document.RootFingerprint)
+		rootFingerprint, rootErr := peeridentity.FingerprintForKeyID(document.KeyID)
 		certificateFingerprint, fingerprintErr := decodeFingerprint(document.CertificateFingerprint)
 		issuedAt, issuedErr := parseCanonicalTime(document.IssuedAt)
 		expiresAt, expiresErr := parseCanonicalTime(document.ExpiresAt)
@@ -146,7 +164,7 @@ func endpointCertificateRegister(service endpointCertificateRegistrar) http.Hand
 			return
 		}
 		value, err := service.Register(r.Context(), peeridentity.RegisterRequest{
-			OperationID: operationID, UserID: principal.User.ID, Certificate: certificate,
+			OperationID: operationID, UserID: principal.User.ID, KeyID: document.KeyID, Certificate: certificate,
 			Expected:                peeridentity.Expected{AccountID: document.AccountID, Role: role, EndpointID: document.EndpointID, Generation: document.Generation, Serial: document.Serial},
 			ExpectedRootFingerprint: rootFingerprint, ExpectedCertificateFingerprint: certificateFingerprint,
 			ExpectedIssuedAt: issuedAt, ExpectedExpiresAt: expiresAt, Now: time.Now().UTC(),
@@ -217,11 +235,22 @@ func endpointCertificateRevoke(service endpointCertificateRevoker) http.HandlerF
 
 func certificateDocument(value peeridentity.Certificate) endpointCertificateDocument {
 	return endpointCertificateDocument{
-		Version: 1, AccountID: value.AccountID, RootFingerprint: hex.EncodeToString(value.RootFingerprint[:]),
+		Version: 1, AccountID: value.AccountID, KeyID: value.KeyID,
 		EndpointID: value.EndpointID, Role: value.Role.String(), Generation: value.Generation, Serial: value.Serial,
 		IssuedAt: value.IssuedAt.UTC().Format(time.RFC3339), ExpiresAt: value.ExpiresAt.UTC().Format(time.RFC3339),
 		Certificate: base64.RawURLEncoding.EncodeToString(value.Raw), CertificateFingerprint: hex.EncodeToString(value.Fingerprint[:]),
 	}
+}
+
+func trustedKeyDocuments(root peeridentity.AccountRoot) []trustedKeyDocument {
+	documents := make([]trustedKeyDocument, 0, len(root.Keys))
+	for _, key := range root.Keys {
+		documents = append(documents, trustedKeyDocument{
+			KeyID: key.KeyID, PublicKey: base64.RawURLEncoding.EncodeToString(key.PublicKey),
+			Fingerprint: hex.EncodeToString(key.Fingerprint[:]), Generation: key.Generation,
+		})
+	}
+	return documents
 }
 
 func endpointRole(value string) peeridentity.Role {
