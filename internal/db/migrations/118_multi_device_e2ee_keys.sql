@@ -59,6 +59,12 @@ ALTER TABLE peer_endpoint_certificates
   ADD CONSTRAINT peer_endpoint_certificates_key_id_fkey
     FOREIGN KEY (key_id) REFERENCES account_e2ee_keys(key_id) ON DELETE RESTRICT;
 
+-- Older development rows used a client-specific tombstone reason. Normalize
+-- those rows before tightening the v1 reason set below.
+UPDATE peer_endpoint_certificates
+SET revocation_reason = 'endpoint_removed'
+WHERE revocation_reason = 'client_revoked';
+
 -- Device-key revocation is distinct from revoking one endpoint certificate.
 -- Preserve that reason on the dependent certificate tombstones so operators
 -- can distinguish a removed device from an account-wide shutdown.
