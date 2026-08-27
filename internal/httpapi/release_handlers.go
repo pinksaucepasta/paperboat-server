@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -134,7 +135,12 @@ func serveEnrollmentScript(w http.ResponseWriter, r *http.Request, files http.Ha
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	_, _ = w.Write(append(preamble, bytes.TrimPrefix(recorder.Body.Bytes(), []byte("\xef\xbb\xbf"))...))
+	body := append(preamble, bytes.TrimPrefix(recorder.Body.Bytes(), []byte("\xef\xbb\xbf"))...)
+	// PowerShell 5.1's Invoke-RestMethod can return $null for a chunked
+	// text/plain response. Advertise the exact size so the minimal dashboard
+	// command `powershell -c "iex (irm 'URL')"` is deterministic.
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	_, _ = w.Write(body)
 }
 
 func splitEnrollmentParameter(value string) (string, string, bool) {
