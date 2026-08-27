@@ -84,6 +84,34 @@ UPDATE user_machine_enrollments
 SET state = 'approved', user_machine_id = sqlc.arg(user_machine_id), updated_at = now()
 WHERE pairing_id = sqlc.arg(pairing_id) AND user_id = sqlc.arg(user_id) AND state = 'awaiting_approval';
 
+-- A dashboard token claims an enrollment before automatic approval runs. If
+-- approval cannot complete, release that claim into the dashboard retry path
+-- instead of leaving the enrollment permanently awaiting approval.
+-- name: FailUserMachineEnrollmentApproval :execrows
+WITH expired_pairing AS (
+  UPDATE user_machine_pairings AS pairing
+  SET state = 'expired',
+      expires_at = LEAST(pairing.expires_at, sqlc.arg(failed_at)),
+      installation_config_ciphertext = NULL,
+      installation_config_nonce = NULL,
+      installation_config_consumed_at = NULL,
+      installation_recovery_operation_key = NULL,
+      updated_at = sqlc.arg(failed_at)
+  FROM user_machine_enrollments AS enrollment
+  WHERE enrollment.id = sqlc.arg(enrollment_id)
+    AND enrollment.user_id = sqlc.arg(user_id)
+    AND enrollment.state = 'awaiting_approval'
+    AND enrollment.pairing_id = pairing.id
+    AND pairing.state = 'pending'
+  RETURNING pairing.id
+)
+UPDATE user_machine_enrollments AS enrollment
+SET state = 'failed_retryable', updated_at = sqlc.arg(failed_at)
+WHERE enrollment.id = sqlc.arg(enrollment_id)
+  AND enrollment.user_id = sqlc.arg(user_id)
+  AND enrollment.state = 'awaiting_approval'
+  AND enrollment.pairing_id IN (SELECT id FROM expired_pairing);
+
 -- name: DenyUserMachineEnrollment :execrows
 UPDATE user_machine_enrollments
 SET state = 'denied', updated_at = now()

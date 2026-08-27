@@ -1056,6 +1056,7 @@ func (s *Service) CreatePairing(ctx context.Context, in PairingInput) (Pairing, 
 	}
 	var row dbsqlc.UserMachinePairing
 	var enrollmentUserID string
+	var enrollmentID string
 	setupMode := "host"
 	if strings.TrimSpace(in.EnrollmentToken) == "" {
 		row, err = s.db.Queries().CreateUserMachinePairing(ctx, params)
@@ -1083,6 +1084,7 @@ func (s *Service) CreatePairing(ctx context.Context, in PairingInput) (Pairing, 
 				return ErrEnrollmentState
 			}
 			enrollmentUserID = enrollment.UserID
+			enrollmentID = enrollment.ID
 			if enrollment.ExpiresAt.Before(params.ExpiresAt) {
 				params.ExpiresAt = enrollment.ExpiresAt
 			}
@@ -1109,6 +1111,24 @@ func (s *Service) CreatePairing(ctx context.Context, in PairingInput) (Pairing, 
 	// for legacy pairing requests that did not carry an enrollment token.
 	if enrollmentUserID != "" {
 		if _, err := s.approve(ctx, enrollmentUserID, row.UserCode, setupMode); err != nil {
+			// CreatePairing has already claimed the one-shot enrollment before
+			// automatic approval. Approval runs in its own transaction because it
+			// also serves the explicit dashboard approval endpoint; if it rolls
+			// back, release the claim into the retryable state instead of leaving
+			// the dashboard stuck at awaiting_approval.
+			failedAt := s.now().UTC()
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cleanupCancel()
+			if n, cleanupErr := s.db.Queries().FailUserMachineEnrollmentApproval(cleanupCtx, dbsqlc.FailUserMachineEnrollmentApprovalParams{
+				EnrollmentID: enrollmentID,
+				UserID:       enrollmentUserID,
+				FailedAt:     failedAt,
+			}); cleanupErr != nil || n != 1 {
+				if cleanupErr == nil {
+					cleanupErr = fmt.Errorf("updated %d rows, want 1", n)
+				}
+				return Pairing{}, errors.Join(err, fmt.Errorf("release failed machine enrollment: %w", cleanupErr))
+			}
 			return Pairing{}, err
 		}
 	}

@@ -1491,6 +1491,49 @@ func (q *Queries) ExpireUserMachinePairing(ctx context.Context, id string) (int6
 	return result.RowsAffected(), nil
 }
 
+const failUserMachineEnrollmentApproval = `-- name: FailUserMachineEnrollmentApproval :execrows
+WITH expired_pairing AS (
+  UPDATE user_machine_pairings AS pairing
+  SET state = 'expired',
+      expires_at = LEAST(pairing.expires_at, $1),
+      installation_config_ciphertext = NULL,
+      installation_config_nonce = NULL,
+      installation_config_consumed_at = NULL,
+      installation_recovery_operation_key = NULL,
+      updated_at = $1
+  FROM user_machine_enrollments AS enrollment
+  WHERE enrollment.id = $2
+    AND enrollment.user_id = $3
+    AND enrollment.state = 'awaiting_approval'
+    AND enrollment.pairing_id = pairing.id
+    AND pairing.state = 'pending'
+  RETURNING pairing.id
+)
+UPDATE user_machine_enrollments AS enrollment
+SET state = 'failed_retryable', updated_at = $1
+WHERE enrollment.id = $2
+  AND enrollment.user_id = $3
+  AND enrollment.state = 'awaiting_approval'
+  AND enrollment.pairing_id IN (SELECT id FROM expired_pairing)
+`
+
+type FailUserMachineEnrollmentApprovalParams struct {
+	FailedAt     time.Time
+	EnrollmentID string
+	UserID       string
+}
+
+// A dashboard token claims an enrollment before automatic approval runs. If
+// approval cannot complete, release that claim into the dashboard retry path
+// instead of leaving the enrollment permanently awaiting approval.
+func (q *Queries) FailUserMachineEnrollmentApproval(ctx context.Context, arg FailUserMachineEnrollmentApprovalParams) (int64, error) {
+	result, err := q.db.Exec(ctx, failUserMachineEnrollmentApproval, arg.FailedAt, arg.EnrollmentID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const failUserMachineEnrollmentForHelper = `-- name: FailUserMachineEnrollmentForHelper :one
 WITH target AS MATERIALIZED (
   SELECT e.id AS enrollment_id, m.id AS machine_id, h.id AS helper_id

@@ -1434,6 +1434,69 @@ func TestDashboardEnrollmentIsIdempotentSingleClaimAndRetrySafe(t *testing.T) {
 	}
 }
 
+func TestDashboardEnrollmentApprovalFailureIsRetryable(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID := "usr_enrollment_approval_failure_" + suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id, workos_subject, primary_email, status) VALUES ($1,$2,$3,'active')`, userID, "workos_approval_failure_"+suffix, "enrollment-approval-failure-"+suffix+"@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `
+INSERT INTO paperboat.user_machines
+  (id, user_id, environment_id, display_name, alias, platform, architecture, workspace_root, state, seat_state)
+VALUES ($1,$2,$3,'Studio','studio','linux','amd64','/workspace','offline','released')`, "mch_enrollment_approval_failure_"+suffix, userID, "env_enrollment_approval_failure_"+suffix); err != nil {
+		t.Fatal(err)
+	}
+
+	service := New(store, audit.NewWriter(store), Policy{PairingLifetime: 10 * time.Minute, AllowedPlatforms: []string{"linux"}}, testSeatAuthorizer{})
+	service.ConfigureProvisioning(nil, "test-enrollment-key")
+	first, err := service.StartEnrollment(ctx, userID, "idem-approval-failure-"+suffix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.CreatePairing(ctx, PairingInput{
+		EnrollmentToken:   first.BootstrapToken,
+		Verifier:          "verifier-approval-failure-" + suffix,
+		DisplayName:       "Studio",
+		Platform:          "linux",
+		Architecture:      "amd64",
+		WorkspaceRoot:     "/workspace",
+		RuntimeVersions:   json.RawMessage(`{"pb":"test"}`),
+		PublicIdentityKey: base64.RawURLEncoding.EncodeToString(public),
+	})
+	if !errors.Is(err, ErrMachineNameConflict) {
+		t.Fatalf("automatic approval error = %v, want ErrMachineNameConflict", err)
+	}
+
+	status, err := service.Enrollment(ctx, userID, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State != "failed_retryable" || status.PairingID == "" {
+		t.Fatalf("failed enrollment status = %+v, want failed_retryable with pairing", status)
+	}
+	var pairingState string
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state FROM paperboat.user_machine_pairings WHERE id=$1`, status.PairingID).Scan(&pairingState); err != nil {
+		t.Fatal(err)
+	}
+	if pairingState != "expired" {
+		t.Fatalf("failed enrollment pairing state = %q, want expired", pairingState)
+	}
+
+	retried, err := service.RetryEnrollment(ctx, userID, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.State != "awaiting_bootstrap" || retried.Generation != first.Generation+1 || retried.PairingID != "" || retried.BootstrapToken == first.BootstrapToken {
+		t.Fatalf("retry = %+v, want fresh awaiting_bootstrap enrollment", retried)
+	}
+}
+
 func TestDashboardEnrollmentDenialIsAtomicAndNonRetryable(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
