@@ -104,17 +104,7 @@ if (-not (Assert-InstalledVersion $download $version)) {
 function Test-Administrator {
   $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
   $principal = [Security.Principal.WindowsPrincipal]::new($identity)
-  if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { return $false }
-  $probe = Join-Path $trustedBootstrapDirectory ('.elevation-' + [guid]::NewGuid().ToString('N'))
-  try {
-    New-Item -ItemType Directory -Force -Path $trustedBootstrapDirectory | Out-Null
-    New-Item -ItemType File -Path $probe -Force | Out-Null
-    Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
-    return $true
-  } catch {
-    Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
-    return $false
-  }
+  return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
 if ($freshEnrollment -or -not (Assert-InstalledVersion $installedPb $version) -or (Get-FileHash -Algorithm SHA256 -LiteralPath $installedPb -ErrorAction SilentlyContinue).Hash.ToLowerInvariant() -ne $actual) {
