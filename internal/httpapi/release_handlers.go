@@ -89,11 +89,10 @@ func installScript(files http.Handler) http.HandlerFunc {
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		// Windows PowerShell 5.1 does not consistently identify itself in the
-		// default User-Agent. Dashboard commands therefore carry an explicit
-		// shell=powershell query marker; retain User-Agent detection for older
-		// commands and direct callers.
-		shell := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("shell")))
-		powershell := shell == "powershell" || strings.Contains(strings.ToLower(r.UserAgent()), "powershell")
+		// default User-Agent. Dashboard enrollment tokens already carry shell
+		// metadata in their second character, so use that before the legacy
+		// User-Agent fallback and keep the URL minimal.
+		powershell := strings.Contains(strings.ToLower(r.UserAgent()), "powershell")
 		path := "/install"
 		if powershell {
 			path = "/windows"
@@ -102,12 +101,20 @@ func installScript(files http.Handler) http.HandlerFunc {
 	}
 }
 
+func enrollmentTokenUsesPowerShell(token string) bool {
+	return len(token) == 26 && strings.Contains("13579ACEGIKMOQSUWY", token[1:2])
+}
+
 func serveEnrollmentScript(w http.ResponseWriter, r *http.Request, files http.Handler, path string, powershell bool) {
 	p := r.URL.Query().Get("p")
 	token, hostname, ok := splitEnrollmentParameter(p)
 	if !ok {
 		http.Error(w, "invalid enrollment parameter", http.StatusBadRequest)
 		return
+	}
+	powershell = powershell || enrollmentTokenUsesPowerShell(token)
+	if powershell {
+		path = "/windows"
 	}
 	recorder := httptest.NewRecorder()
 	clone := r.Clone(r.Context())

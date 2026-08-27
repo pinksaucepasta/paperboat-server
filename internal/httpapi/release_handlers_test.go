@@ -63,7 +63,7 @@ func TestReleaseEndpointsServeInstallAndTUF(t *testing.T) {
 	router := NewRouter(Options{OverrideHandler: nil, ReleaseFiles: files})
 
 	install := httptest.NewRecorder()
-	router.ServeHTTP(install, httptest.NewRequest(http.MethodGet, "/install?p=4K7M9Q2V8X4N6P5R1T0W8Y2ZAB", nil))
+	router.ServeHTTP(install, httptest.NewRequest(http.MethodGet, "/install?p=4J7M9Q2V8X4N6P5R1T0W8Y2ZAB", nil))
 	if install.Code != http.StatusOK || !strings.Contains(install.Body.String(), "echo paperboat") || !strings.Contains(install.Body.String(), "PAPERBOAT_ENROLLMENT_TOKEN") {
 		t.Fatalf("install response = %d %q", install.Code, install.Body.String())
 	}
@@ -78,7 +78,7 @@ func TestReleaseEndpointsServeInstallAndTUF(t *testing.T) {
 		t.Fatalf("windows response = %d %q", windows.Code, windows.Body.String())
 	}
 	legacyWindows := httptest.NewRecorder()
-	legacyWindowsRequest := httptest.NewRequest(http.MethodGet, "/install?p=4K7M9Q2V8X4N6P5R1T0W8Y2ZAB&shell=powershell", nil)
+	legacyWindowsRequest := httptest.NewRequest(http.MethodGet, "/install?p=4K7M9Q2V8X4N6P5R1T0W8Y2ZAB", nil)
 	legacyWindowsRequest.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT; Windows NT 10.0; en-US)")
 	router.ServeHTTP(legacyWindows, legacyWindowsRequest)
 	if legacyWindows.Code != http.StatusOK || !strings.Contains(legacyWindows.Body.String(), "Write-Output paperboat-windows") {
