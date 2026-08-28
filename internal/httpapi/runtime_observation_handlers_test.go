@@ -30,6 +30,16 @@ type fakeUpdateObservationRepository struct {
 	err      error
 }
 
+type fakeAvailabilityObservationRepository struct {
+	recorded *usermachines.AvailabilityObservation
+	err      error
+}
+
+func (f *fakeAvailabilityObservationRepository) RecordAvailabilityObservation(_ context.Context, _, _ string, observation usermachines.AvailabilityObservation) error {
+	f.recorded = &observation
+	return f.err
+}
+
 func (f *fakeUpdateObservationRepository) RecordUpdateObservation(_ context.Context, _, _ string, observation usermachines.UpdateObservation) error {
 	f.recorded = &observation
 	return f.err
@@ -120,8 +130,56 @@ func TestRuntimeObservationIgnoresStaleUpdateObservation(t *testing.T) {
 	request.Header.Set("Authorization", "Bearer machine-token")
 	recorder := httptest.NewRecorder()
 	runtimeObservation(repository, nil, 10, updates).ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusAccepted || !strings.Contains(recorder.Body.String(), `"update_observation_recorded":false`) {
+	if recorder.Code != http.StatusAccepted || !strings.Contains(recorder.Body.String(), `"update_observation_recorded":false`) || !strings.Contains(recorder.Body.String(), `"code":"update_observation_stale"`) {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestRuntimeObservationRecordsPresenceWhenAuxiliaryObservationIsRejected(t *testing.T) {
+	const (
+		availabilityBody = `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-08-29T12:00:01Z","availability":{"schema":"paperboat.availability-policy/v1","mode":"allow_sleep","version":1,"status":"applied","observed_at":"2026-08-29T12:00:00Z","host_service_version":"2026.08.29.1","host_service_scope":"system","update_rollbacks":0,"update_health":"healthy"}}`
+		updateBody       = `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-08-28T12:00:01Z","update":{"schema":"paperboat.update-observation/v1","state":"healthy","current_version":"2026.08.29.1","channel":"stable","operation_id":"update-op-0001","installation_generation":2,"worker_generation":4,"os_boot_id":"boot-1","rollback_count":0,"observed_at":"2026-08-28T12:00:00Z"}}`
+		invalidUpdate    = `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-08-28T12:00:01Z","update":{"schema":"paperboat.update-observation/v1","state":"healthy","current_version":"2026.08.29.1","channel":"stable","operation_id":"update-op-0001","installation_generation":0,"worker_generation":4,"os_boot_id":"boot-1","rollback_count":0,"observed_at":"2026-08-28T12:00:00Z"}}`
+	)
+	tests := []struct {
+		name     string
+		body     string
+		sink     any
+		wantCode string
+	}{
+		{name: "stale availability", body: availabilityBody, sink: &fakeAvailabilityObservationRepository{err: usermachines.ErrAvailabilityObservationStale}, wantCode: "availability_observation_stale"},
+		{name: "invalid availability", body: availabilityBody, sink: &fakeAvailabilityObservationRepository{err: usermachines.ErrAvailabilityInvalid}, wantCode: "availability_observation_invalid"},
+		{name: "stale update", body: updateBody, sink: &fakeUpdateObservationRepository{err: usermachines.ErrUpdateObservationStale}, wantCode: "update_observation_stale"},
+		{name: "invalid update", body: invalidUpdate, wantCode: "update_observation_invalid"},
+		{name: "conflicting update", body: updateBody, sink: &fakeUpdateObservationRepository{err: usermachines.ErrUpdateObservationConflict}, wantCode: "update_observation_conflict"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository := &fakeRuntimeObservationRepository{}
+			request := httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(test.body))
+			request.Header.Set("Authorization", "Bearer machine-token")
+			recorder := httptest.NewRecorder()
+			if test.sink == nil {
+				runtimeObservation(repository, nil, 10).ServeHTTP(recorder, request)
+			} else {
+				runtimeObservation(repository, nil, 10, test.sink).ServeHTTP(recorder, request)
+			}
+			if recorder.Code != http.StatusAccepted || repository.recorded == nil || !strings.Contains(recorder.Body.String(), `"accepted":true`) || !strings.Contains(recorder.Body.String(), `"code":"`+test.wantCode+`"`) {
+				t.Fatalf("status=%d observation=%#v body=%s", recorder.Code, repository.recorded, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestRuntimeObservationDoesNotRecordUnauthenticatedInvalidAuxiliaryObservation(t *testing.T) {
+	repository := &fakeRuntimeObservationRepository{verifyErr: metering.ErrInvalidHeartbeatCredential}
+	body := `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-08-28T12:00:01Z","update":{"schema":"paperboat.update-observation/v1","state":"healthy","current_version":"2026.08.29.1","channel":"stable","operation_id":"update-op-0001","installation_generation":0,"worker_generation":4,"os_boot_id":"boot-1","rollback_count":0,"observed_at":"2026-08-28T12:00:00Z"}}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer wrong-token")
+	recorder := httptest.NewRecorder()
+	runtimeObservation(repository, nil, 10).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized || repository.recorded != nil {
+		t.Fatalf("status=%d observation=%#v body=%s", recorder.Code, repository.recorded, recorder.Body.String())
 	}
 }
 

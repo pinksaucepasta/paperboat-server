@@ -33,6 +33,11 @@ type updateObservationRepository interface {
 	RecordUpdateObservation(context.Context, string, string, usermachines.UpdateObservation) error
 }
 
+type runtimeAuxiliaryRejection struct {
+	Observation string `json:"observation"`
+	Code        string `json:"code"`
+}
+
 func runtimeObservation(repo runtimeObservationRepository, identities runtimeIdentityVerifier, _ int, observationSinks ...any) http.HandlerFunc {
 	var availability availabilityObservationRepository
 	var updates updateObservationRepository
@@ -82,16 +87,6 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "Relay latency observation is invalid.")
 			return
 		}
-		if req.Update != nil {
-			if req.Update.Validate(time.Now().UTC()) != nil {
-				writeError(w, r, http.StatusBadRequest, "invalid_request", "Update observation is invalid.")
-				return
-			}
-			if updates == nil {
-				writeError(w, r, http.StatusServiceUnavailable, "update_observation_unavailable", "Update observation storage is temporarily unavailable.")
-				return
-			}
-		}
 		got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 		authErr := metering.ErrInvalidHeartbeatCredential
 		if identities != nil && r.Header.Get("X-Paperboat-Machine-Proof") != "" {
@@ -109,50 +104,6 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 			}
 			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
 			return
-		}
-		if req.Availability != nil {
-			if availability == nil {
-				writeError(w, r, http.StatusServiceUnavailable, "availability_unavailable", "Availability observation storage is unavailable.")
-				return
-			}
-			normalized, _, validOrder := normalizeStatusTimestamps(req.Availability.ObservedAt, req.SampledAt, time.Now().UTC())
-			if !validOrder {
-				writeError(w, r, http.StatusBadRequest, "invalid_request", "Availability observation timestamp is invalid.")
-				return
-			}
-			req.Availability.ObservedAt = normalized
-			if err := availability.RecordAvailabilityObservation(r.Context(), req.EnvironmentID, req.ResourceID, *req.Availability); err != nil {
-				if errors.Is(err, usermachines.ErrAvailabilityInvalid) {
-					writeError(w, r, http.StatusBadRequest, "invalid_request", "Availability observation is invalid.")
-				} else if errors.Is(err, usermachines.ErrAvailabilityObservationStale) {
-					writeError(w, r, http.StatusConflict, "availability_observation_stale", "Availability observation does not match the current policy version.")
-				} else {
-					writeError(w, r, http.StatusInternalServerError, "internal_error", "Unable to record availability observation.")
-				}
-				return
-			}
-		}
-		updateRecorded := false
-		if req.Update != nil {
-			if err := updates.RecordUpdateObservation(r.Context(), req.EnvironmentID, req.ResourceID, *req.Update); err != nil {
-				switch {
-				case errors.Is(err, usermachines.ErrUpdateObservationStale):
-					// A late update packet must not make the machine heartbeat fail.
-					// The durable status remains fenced by installation and worker
-					// generations; the next heartbeat will carry current state.
-				case errors.Is(err, usermachines.ErrUpdateObservationInvalid), errors.Is(err, usermachines.ErrUpdateObservationConflict):
-					writeError(w, r, http.StatusConflict, "update_observation_rejected", "Update observation was rejected as stale or conflicting.")
-					return
-				case errors.Is(err, usermachines.ErrNotFound):
-					writeError(w, r, http.StatusNotFound, "machine_not_found", "Machine was not found.")
-					return
-				default:
-					writeError(w, r, http.StatusInternalServerError, "internal_error", "Unable to record update observation.")
-					return
-				}
-			} else {
-				updateRecorded = true
-			}
 		}
 		observation := metering.RuntimeObservation{
 			ProjectID:       req.EnvironmentID,
@@ -178,7 +129,62 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
 			return
 		}
-		writeJSON(w, http.StatusAccepted, SuccessResponse{Data: map[string]any{"accepted": true, "update_observation_recorded": updateRecorded}})
+
+		auxiliaryRejections := make([]runtimeAuxiliaryRejection, 0, 2)
+		if req.Availability != nil {
+			if availability == nil {
+				writeError(w, r, http.StatusServiceUnavailable, "availability_unavailable", "Availability observation storage is unavailable.")
+				return
+			}
+			normalized, _, validOrder := normalizeStatusTimestamps(req.Availability.ObservedAt, req.SampledAt, time.Now().UTC())
+			if !validOrder {
+				auxiliaryRejections = append(auxiliaryRejections, runtimeAuxiliaryRejection{Observation: "availability", Code: "availability_observation_invalid"})
+			} else {
+				req.Availability.ObservedAt = normalized
+				if err := availability.RecordAvailabilityObservation(r.Context(), req.EnvironmentID, req.ResourceID, *req.Availability); err != nil {
+					switch {
+					case errors.Is(err, usermachines.ErrAvailabilityInvalid):
+						auxiliaryRejections = append(auxiliaryRejections, runtimeAuxiliaryRejection{Observation: "availability", Code: "availability_observation_invalid"})
+					case errors.Is(err, usermachines.ErrAvailabilityObservationStale):
+						auxiliaryRejections = append(auxiliaryRejections, runtimeAuxiliaryRejection{Observation: "availability", Code: "availability_observation_stale"})
+					default:
+						writeError(w, r, http.StatusInternalServerError, "internal_error", "Unable to record availability observation.")
+						return
+					}
+				}
+			}
+		}
+		updateRecorded := false
+		if req.Update != nil {
+			if req.Update.Validate(time.Now().UTC()) != nil {
+				auxiliaryRejections = append(auxiliaryRejections, runtimeAuxiliaryRejection{Observation: "update", Code: "update_observation_invalid"})
+			} else if updates == nil {
+				writeError(w, r, http.StatusServiceUnavailable, "update_observation_unavailable", "Update observation storage is temporarily unavailable.")
+				return
+			} else if err := updates.RecordUpdateObservation(r.Context(), req.EnvironmentID, req.ResourceID, *req.Update); err != nil {
+				switch {
+				case errors.Is(err, usermachines.ErrUpdateObservationStale):
+					auxiliaryRejections = append(auxiliaryRejections, runtimeAuxiliaryRejection{Observation: "update", Code: "update_observation_stale"})
+				case errors.Is(err, usermachines.ErrUpdateObservationInvalid):
+					auxiliaryRejections = append(auxiliaryRejections, runtimeAuxiliaryRejection{Observation: "update", Code: "update_observation_invalid"})
+				case errors.Is(err, usermachines.ErrUpdateObservationConflict):
+					auxiliaryRejections = append(auxiliaryRejections, runtimeAuxiliaryRejection{Observation: "update", Code: "update_observation_conflict"})
+				case errors.Is(err, usermachines.ErrNotFound):
+					writeError(w, r, http.StatusNotFound, "machine_not_found", "Machine was not found.")
+					return
+				default:
+					writeError(w, r, http.StatusInternalServerError, "internal_error", "Unable to record update observation.")
+					return
+				}
+			} else {
+				updateRecorded = true
+			}
+		}
+		response := map[string]any{"accepted": true, "update_observation_recorded": updateRecorded}
+		if len(auxiliaryRejections) > 0 {
+			response["auxiliary_rejections"] = auxiliaryRejections
+		}
+		writeJSON(w, http.StatusAccepted, SuccessResponse{Data: response})
 	}
 }
 

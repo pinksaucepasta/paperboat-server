@@ -28,6 +28,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/mint"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 	"github.com/pinksaucepasta/paperboat-server/internal/secrets"
+	"github.com/pinksaucepasta/paperboat-server/internal/usermachines"
 )
 
 func TestConnectionReadinessDoesNotRequireConfigRepoReadiness(t *testing.T) {
@@ -170,6 +171,40 @@ func TestRuntimeObservationRequiresProjectMachineCredential(t *testing.T) {
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("valid heartbeat status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRuntimeObservationAuxiliaryRejectionStillMarksMachineOnline(t *testing.T) {
+	store, _, projectID := newAccessIntegrationRouter(t, "heartbeat-auxiliary@example.com")
+	var machineID string
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT id FROM paperboat.user_machines WHERE environment_id=$1`, projectID).Scan(&machineID); err != nil {
+		t.Fatal(err)
+	}
+	const machineToken = "project-scoped-auxiliary-machine-token"
+	seedHeartbeatMachineCredential(t, store, projectID, machineID, machineToken)
+	if _, err := store.SQL().ExecContext(context.Background(), `UPDATE paperboat.user_machines SET state='offline',online=false,last_seen_at=now()-interval '1 hour' WHERE id=$1`, machineID); err != nil {
+		t.Fatal(err)
+	}
+
+	machines := usermachines.New(store, audit.NewWriter(store), usermachines.Policy{}, nil)
+	sampledAt := time.Now().UTC().Truncate(time.Second)
+	body := fmt.Sprintf(`{"environment_id":%q,"resource_id":%q,"sampled_at":%q,"availability":{"schema":"paperboat.availability-policy/v1","mode":"allow_sleep","version":1,"status":"applied","observed_at":%q,"host_service_version":"2026.08.29.1","host_service_scope":"system","update_rollbacks":0,"update_health":"healthy"}}`, projectID, machineID, sampledAt.Format(time.RFC3339), sampledAt.Add(-time.Second).Format(time.RFC3339))
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+machineToken)
+	started := time.Now().UTC().Add(-time.Second)
+	runtimeObservation(metering.NewRuntimeRepository(store, "test-access-encryption-key-for-access-tests"), nil, 2, machines).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted || !strings.Contains(recorder.Body.String(), `"code":"availability_observation_stale"`) {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var state string
+	var online bool
+	var lastSeen time.Time
+	if err := store.SQL().QueryRowContext(context.Background(), `SELECT state,online,last_seen_at FROM paperboat.user_machines WHERE id=$1`, machineID).Scan(&state, &online, &lastSeen); err != nil {
+		t.Fatal(err)
+	}
+	if state != "online" || !online || lastSeen.Before(started) {
+		t.Fatalf("heartbeat state=%s online=%v last_seen_at=%s", state, online, lastSeen)
 	}
 }
 

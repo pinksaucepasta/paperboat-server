@@ -7248,7 +7248,7 @@
         },
         "responses": {
           "202": {
-            "description": "Heartbeat accepted.",
+            "description": "Heartbeat accepted. Rejected optional availability or update observations are identified by stable code in data.auxiliary_rejections without suppressing authenticated runtime presence.",
             "content": {
               "application/json": {
                 "schema": {

@@ -153,6 +153,10 @@ CLI project reads and connects use scoped Paperboat bearer access tokens.
   `paperboat.update-observation/v1`. The server authenticates it with the machine proof and
   fences late or replayed state using installation generation, worker generation, operation ID,
   boot ID, timestamp, and a payload hash. Stale observations never replace newer status.
+  Authenticated runtime presence is recorded independently from optional availability and update
+  observations. A stale, invalid, or conflicting auxiliary observation is omitted from durable
+  status and reported by stable code in the accepted response's `auxiliary_rejections` list; it
+  never makes a live runtime appear offline.
 - `GET /v1/machines/{machine_id}/update-status` returns the latest durable update observation.
 - `GET /v1/machines/update-summary` returns a user-scoped fleet summary. Machines that have
   not reported update state are explicitly counted as `not_reporting`; they are never folded into
