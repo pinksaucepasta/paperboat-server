@@ -131,10 +131,14 @@ func TestWindowsReleaseTemplateUsesCanonicalModes(t *testing.T) {
 		t.Fatal("Windows enrollment pairs before the final installed executable is staged")
 	}
 	adminBranch := strings.Index(template, "if (test-administrator) {")
-	directStart := strings.Index(template, "$process = start-process -filepath $download -argumentlist $arguments -passthru")
-	runAsStart := strings.Index(template, "$process = start-process -filepath $download -argumentlist $arguments -verb runas -passthru")
+	directStart := strings.Index(template, "& $download @arguments")
+	runAsStart := strings.Index(template, "$process = start-process -filepath $runaspath -argumentlist $elevatedarguments -verb runas")
 	if adminBranch < 0 || directStart < adminBranch || runAsStart < directStart {
 		t.Fatal("Windows release template does not separate elevated direct execution from desktop UAC elevation")
+	}
+	pairStart := strings.Index(template, "& $installedpb pair --server")
+	if pairStart < 0 || strings.Contains(template[pairStart:], "-verb runas") || strings.Contains(template, "$pairprocess") {
+		t.Fatal("Windows enrollment does not pair in the original user process")
 	}
 	if strings.Contains(template, "clear-existingpaperboat") || strings.Contains(template, "sc.exe stop") {
 		t.Fatal("Windows release template eagerly deletes the existing enrollment before verified installation")

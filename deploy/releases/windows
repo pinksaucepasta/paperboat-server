@@ -163,12 +163,10 @@ if ($freshEnrollment) {
   $first = $token.Substring(0, 1)
   $setupMode = if ('02468BDFHJLNPRTVXZ'.Contains($first)) { 'host' } else { 'client' }
   Remove-Item Env:PAPERBOAT_ENROLLMENT_TOKEN -ErrorAction SilentlyContinue
-  $pairArguments = @('pair', '--server', $server, '--enrollment-token', $token, '--name', $name, "--setup-mode=$setupMode")
-  if (Test-Administrator) {
-    & $installedPb @pairArguments
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-  } else {
-    $pairProcess = Start-Process -FilePath $installedPb -ArgumentList $pairArguments -Verb RunAs -PassThru -Wait
-    if ($pairProcess.ExitCode -ne 0) { exit $pairProcess.ExitCode }
-  }
+  # Pair in the original user's process so the CLI profile, DPAPI credentials,
+  # endpoint identity, and daemon state belong to the user who pasted the
+  # dashboard command. The installed pb elevates only its machine-service
+  # commit after this user-owned state has been created.
+  & $installedPb pair --server $server --enrollment-token $token --name $name "--setup-mode=$setupMode"
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
