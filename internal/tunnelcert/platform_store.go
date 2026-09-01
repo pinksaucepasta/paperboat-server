@@ -23,6 +23,7 @@ import (
 const (
 	PlatformPreviewTargetID = "platform_cert_preview_v1"
 	PlatformTunnelTargetID  = "platform_cert_tunnel_v1"
+	PlatformRuntimeTargetID = "platform_cert_runtime_v1"
 
 	// PostgreSQL generations are BIGINTs. Keep the public uint64 contract
 	// explicit at the boundary so casts into sqlc's int64 parameters cannot
@@ -35,6 +36,7 @@ const (
 
 	PlatformPreviewChallengeReference = "platform_preview_dns01_v1"
 	PlatformTunnelChallengeReference  = "platform_tunnel_dns01_v1"
+	PlatformRuntimeChallengeReference = "platform_runtime_dns01_v1"
 )
 
 type PlatformCertificateTargetKind string
@@ -42,15 +44,17 @@ type PlatformCertificateTargetKind string
 const (
 	PlatformPreviewWildcardTarget PlatformCertificateTargetKind = "preview_wildcard"
 	PlatformTunnelWildcardTarget  PlatformCertificateTargetKind = "tunnel_wildcard"
+	PlatformRuntimeWildcardTarget PlatformCertificateTargetKind = "runtime_wildcard"
 )
 
-// PlatformCertificateBases are the two public, server-owned DNS bases. The
+// PlatformCertificateBases are the three public, server-owned DNS bases. The
 // values are expected to be the already configured bases (for example
-// preview.pprbt.dev and tunnels.pprbt.dev), not a root domain to which labels
-// should be appended.
+// preview.pprbt.dev, tunnels.pprbt.dev, and runtime.pprbt.dev), not a root
+// domain to which labels should be appended.
 type PlatformCertificateBases struct {
 	PreviewBaseDomain string
 	TunnelBaseDomain  string
+	RuntimeBaseDomain string
 }
 
 // PlatformCertificateTargetDefinition is the immutable identity used by the
@@ -76,6 +80,7 @@ func (d PlatformCertificateTargetDefinition) Validate() error {
 	switch {
 	case d.ID == PlatformPreviewTargetID && d.Kind == PlatformPreviewWildcardTarget && d.ChallengeReference == PlatformPreviewChallengeReference:
 	case d.ID == PlatformTunnelTargetID && d.Kind == PlatformTunnelWildcardTarget && d.ChallengeReference == PlatformTunnelChallengeReference:
+	case d.ID == PlatformRuntimeTargetID && d.Kind == PlatformRuntimeWildcardTarget && d.ChallengeReference == PlatformRuntimeChallengeReference:
 	default:
 		return fmt.Errorf("%w: platform certificate target kind is invalid", ErrInvalid)
 	}
@@ -124,10 +129,11 @@ func (t PlatformCertificateTarget) Validate() error {
 	return nil
 }
 
-// PlatformCertificateTargetDefinitions returns exactly the two built-in
+// PlatformCertificateTargetDefinitions returns exactly the three built-in
 // wildcard targets. It is safe to call on every worker start; the store
 // upsert preserves a previously revoked target instead of silently reviving
-// it.
+// it. The returned order is fixed so every worker replica reconciles targets
+// deterministically.
 func PlatformCertificateTargetDefinitions(bases PlatformCertificateBases) ([]PlatformCertificateTargetDefinition, error) {
 	previewBase, previewWildcard, err := normalizeHostname(bases.PreviewBaseDomain)
 	if err != nil || previewWildcard {
@@ -137,12 +143,17 @@ func PlatformCertificateTargetDefinitions(bases PlatformCertificateBases) ([]Pla
 	if err != nil || tunnelWildcard {
 		return nil, fmt.Errorf("%w: tunnel base domain is invalid", ErrInvalid)
 	}
-	if previewBase == tunnelBase {
-		return nil, fmt.Errorf("%w: preview and tunnel base domains must differ", ErrInvalid)
+	runtimeBase, runtimeWildcard, err := normalizeHostname(bases.RuntimeBaseDomain)
+	if err != nil || runtimeWildcard {
+		return nil, fmt.Errorf("%w: runtime base domain is invalid", ErrInvalid)
+	}
+	if previewBase == tunnelBase || previewBase == runtimeBase || tunnelBase == runtimeBase {
+		return nil, fmt.Errorf("%w: preview, tunnel, and runtime base domains must differ", ErrInvalid)
 	}
 	definitions := []PlatformCertificateTargetDefinition{
 		{ID: PlatformPreviewTargetID, Kind: PlatformPreviewWildcardTarget, Hostname: "*." + previewBase, AccountID: PlatformAccountID, ChallengeReference: PlatformPreviewChallengeReference, Generation: 1},
 		{ID: PlatformTunnelTargetID, Kind: PlatformTunnelWildcardTarget, Hostname: "*." + tunnelBase, AccountID: PlatformAccountID, ChallengeReference: PlatformTunnelChallengeReference, Generation: 1},
+		{ID: PlatformRuntimeTargetID, Kind: PlatformRuntimeWildcardTarget, Hostname: "*." + runtimeBase, AccountID: PlatformAccountID, ChallengeReference: PlatformRuntimeChallengeReference, Generation: 1},
 	}
 	for _, definition := range definitions {
 		if err := definition.Validate(); err != nil {
@@ -176,7 +187,7 @@ func NewPlatformCertificateStore(database *db.DB) (*PlatformCertificateStore, er
 }
 
 func (s *PlatformCertificateStore) EnsurePlatformTargets(ctx context.Context, definitions []PlatformCertificateTargetDefinition, now time.Time) error {
-	if s == nil || s.db == nil || len(definitions) != 2 || now.IsZero() {
+	if s == nil || s.db == nil || len(definitions) != 3 || now.IsZero() {
 		return ErrInvalid
 	}
 	now = now.UTC()
@@ -331,7 +342,7 @@ func platformStoredCertificateValid(value StoredCertificate) error {
 }
 
 func validPlatformCertificateTargetID(id string) bool {
-	return id == PlatformPreviewTargetID || id == PlatformTunnelTargetID
+	return id == PlatformPreviewTargetID || id == PlatformTunnelTargetID || id == PlatformRuntimeTargetID
 }
 
 func (s *PlatformCertificateStore) Current(ctx context.Context, domainID string) (StoredCertificate, bool, error) {

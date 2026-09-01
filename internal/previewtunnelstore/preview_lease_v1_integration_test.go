@@ -49,7 +49,7 @@ VALUES ($1, $2, $3, 'active')`, accountID, "workos_preview_"+suffix, "preview-"+
 		OperationID: "op_preview_" + suffix, LeaseID: "prv_preview_" + suffix, AuditEventID: "aud_preview_" + suffix,
 		AccountID: accountID, ActorID: accountID, ActorType: "user", OwnerDeviceID: "device_" + suffix, OwnerSessionID: "session_" + suffix,
 		TargetScheme: "http", TargetAddress: "127.0.0.1:3000", AccessMode: "public", EndpointID: "pep_preview_" + suffix,
-		Endpoint: "https://preview-" + suffix + ".preview.example.test", LeaseDeadline: now.Add(2 * time.Minute),
+		Endpoint: "https://" + suffix + ".preview.example.test", LeaseDeadline: now.Add(2 * time.Minute),
 		RequestHash: requestHash[:], IdempotencyKey: "preview-create:" + suffix, CorrelationID: "cor_preview_" + suffix,
 		RequestID: "req_preview_" + suffix, SourceDeviceID: "device_" + suffix, Now: now,
 	})
@@ -131,7 +131,7 @@ VALUES ($1, $2, $3, 'active')`, accountID, "workos_preview_"+suffix, "preview-"+
 		OperationID: "op_expire_" + suffix, LeaseID: "prv_expire_" + suffix, AuditEventID: "aud_expire_" + suffix,
 		AccountID: accountID, ActorID: accountID, ActorType: "user", OwnerDeviceID: "device_expire_" + suffix, OwnerSessionID: "session_expire_" + suffix,
 		TargetScheme: "http", TargetAddress: "localhost:3000", AccessMode: "private", EndpointID: "pep_expire_" + suffix,
-		Endpoint: "https://preview-expire-" + suffix + ".preview.example.test", LeaseDeadline: now.Add(5 * time.Second), RequestHash: expireHash,
+		Endpoint: "https://expire-" + suffix + ".preview.example.test", LeaseDeadline: now.Add(5 * time.Second), RequestHash: expireHash,
 		IdempotencyKey: "preview-expire:" + suffix, CorrelationID: "cor_expire_" + suffix, RequestID: "req_expire_" + suffix, Now: now,
 	})
 	if err != nil {
@@ -142,7 +142,7 @@ VALUES ($1, $2, $3, 'active')`, accountID, "workos_preview_"+suffix, "preview-"+
 		OperationID: "op_owner_" + suffix, LeaseID: "prv_owner_" + suffix, AuditEventID: "aud_owner_" + suffix,
 		AccountID: accountID, ActorID: accountID, ActorType: "user", OwnerDeviceID: "device_owner_" + suffix, OwnerSessionID: "session_owner_" + suffix,
 		TargetScheme: "http", TargetAddress: "127.0.0.1:4000", AccessMode: "public", EndpointID: "pep_owner_" + suffix,
-		Endpoint: "https://preview-owner-" + suffix + ".preview.example.test", LeaseDeadline: now.Add(time.Hour), RequestHash: ownerHash,
+		Endpoint: "https://owner-" + suffix + ".preview.example.test", LeaseDeadline: now.Add(time.Hour), RequestHash: ownerHash,
 		IdempotencyKey: "preview-owner:" + suffix, CorrelationID: "cor_owner_" + suffix, RequestID: "req_owner_" + suffix, Now: now,
 	})
 	if err != nil {

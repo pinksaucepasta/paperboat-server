@@ -30,7 +30,8 @@ import (
 )
 
 // TestPlatformCertificateLifecycleOnPostgres is the opt-in SQL acceptance
-// boundary for the server-owned preview/tunnel wildcard certificates.  It is
+// boundary for the server-owned preview, tunnel, and runtime wildcard
+// certificates. It is
 // deliberately external to tunnelcert so the same test exercises the worker,
 // SQL store, generated queries, and the migration catalog together.
 func TestPlatformCertificateLifecycleOnPostgres(t *testing.T) {
@@ -87,6 +88,7 @@ func TestPlatformCertificateLifecycleOnPostgres(t *testing.T) {
 	definitions, err := tunnelcert.PlatformCertificateTargetDefinitions(tunnelcert.PlatformCertificateBases{
 		PreviewBaseDomain: fixture.previewBase,
 		TunnelBaseDomain:  fixture.tunnelBase,
+		RuntimeBaseDomain: fixture.runtimeBase,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +109,7 @@ func TestPlatformCertificateLifecycleOnPostgres(t *testing.T) {
 
 	worker, err := tunnelv1.NewPlatformCertificateWorker(tunnelv1.PlatformCertificateWorkerConfig{
 		Database:            database,
-		Bases:               tunnelcert.PlatformCertificateBases{PreviewBaseDomain: fixture.previewBase, TunnelBaseDomain: fixture.tunnelBase},
+		Bases:               tunnelcert.PlatformCertificateBases{PreviewBaseDomain: fixture.previewBase, TunnelBaseDomain: fixture.tunnelBase, RuntimeBaseDomain: fixture.runtimeBase},
 		EdgeTargets:         resolver.Resolve,
 		Issuer:              issuer,
 		CAA:                 platformAcceptanceCAA{},
@@ -136,16 +138,16 @@ func TestPlatformCertificateLifecycleOnPostgres(t *testing.T) {
 		t.Fatalf("initial failed reconciliation changed=%d issuer_calls=%d", changed, issuer.calls)
 	}
 	failedCount := countRows(t, ctx, database.SQL(), `SELECT count(*) FROM paperboat.tunnel_certificate_records WHERE target_kind='platform_wildcard' AND state='failed' AND certificate_generation=1`)
-	if failedCount != 2 {
-		t.Fatalf("failed platform generation rows=%d, want 2", failedCount)
+	if failedCount != 3 {
+		t.Fatalf("failed platform generation rows=%d, want 3", failedCount)
 	}
 	assertFailedPlatformPayloadFence(t, ctx, database)
 	targets, err := platformStore.ListPlatformTargets(ctx, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(targets) != 2 {
-		t.Fatalf("platform target rows after failed pass=%d, want 2", len(targets))
+	if len(targets) != 3 {
+		t.Fatalf("platform target rows after failed pass=%d, want 3", len(targets))
 	}
 	for _, target := range targets {
 		if target.CertificateState != "failed" || target.RetryCount != 1 || !target.NextRetryAt.After(clock.Now()) {
@@ -159,8 +161,8 @@ func TestPlatformCertificateLifecycleOnPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatalf("platform retry reconciliation: %v", err)
 	}
-	if changed != 2 || issuer.calls != 4 {
-		t.Fatalf("platform retry changed=%d issuer_calls=%d, want changed=2 calls=4", changed, issuer.calls)
+	if changed != 3 || issuer.calls != 6 {
+		t.Fatalf("platform retry changed=%d issuer_calls=%d, want changed=3 calls=6", changed, issuer.calls)
 	}
 	assertPlatformTargetsReady(t, ctx, platformStore, fixture)
 	assertActivePlatformCertificates(t, ctx, database, platformStore, fixture, keys, distributor)
@@ -343,15 +345,17 @@ func TestPlatformCertificateLifecycleOnPostgres(t *testing.T) {
 		t.Fatalf("preview issuance lock=%v err=%v", locked, err)
 	}
 
-	// Migration 150 must refuse a rollback while platform certificates or
-	// platform locks remain, but it must leave preview/user certificate rows and
-	// the preview lock untouched once the platform rows are cleaned up.
+	// Migration 151 must refuse a rollback while the runtime target remains.
+	// Once that target and all platform certificate state are removed, migration
+	// 151 restores the original two-target constraints and migration 150 can
+	// remove the platform table. Preview/user certificate rows and the preview
+	// lock must survive both rollbacks.
 	configurePlatformGoose(t)
 	if err := goose.DownContext(ctx, database.SQL(), "migrations"); err == nil || !strings.Contains(strings.ToLower(err.Error()), "platform certificate") {
 		t.Fatalf("platform migration Down refusal=%v", err)
 	}
-	if got := countRows(t, ctx, database.SQL(), `SELECT count(*) FROM paperboat.tunnel_platform_certificate_targets`); got != 2 {
-		t.Fatalf("platform targets after guarded Down=%d, want 2", got)
+	if got := countRows(t, ctx, database.SQL(), `SELECT count(*) FROM paperboat.tunnel_platform_certificate_targets`); got != 3 {
+		t.Fatalf("platform targets after guarded Down=%d, want 3", got)
 	}
 	if _, err := database.SQL().ExecContext(ctx, `DELETE FROM paperboat.tunnel_certificate_edge_distributions WHERE certificate_id IN (SELECT id FROM paperboat.tunnel_certificate_records WHERE target_kind='platform_wildcard')`); err != nil {
 		t.Fatal(err)
@@ -359,11 +363,20 @@ func TestPlatformCertificateLifecycleOnPostgres(t *testing.T) {
 	if _, err := database.SQL().ExecContext(ctx, `DELETE FROM paperboat.tunnel_certificate_records WHERE target_kind='platform_wildcard'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.SQL().ExecContext(ctx, `DELETE FROM paperboat.tunnel_certificate_issuance_locks WHERE domain_id IN ($1,$2)`, definitions[0].ID, definitions[1].ID); err != nil {
+	if _, err := database.SQL().ExecContext(ctx, `DELETE FROM paperboat.tunnel_certificate_issuance_locks WHERE domain_id IN ($1,$2,$3)`, definitions[0].ID, definitions[1].ID, definitions[2].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.SQL().ExecContext(ctx, `DELETE FROM paperboat.tunnel_platform_certificate_targets WHERE id=$1`, definitions[2].ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := goose.DownContext(ctx, database.SQL(), "migrations"); err != nil {
-		t.Fatal(err)
+		t.Fatalf("rollback migration 151: %v", err)
+	}
+	if exists := tableExists(t, ctx, database.SQL(), "tunnel_platform_certificate_targets"); !exists {
+		t.Fatal("platform target table was removed by migration 151 Down")
+	}
+	if err := goose.DownContext(ctx, database.SQL(), "migrations"); err != nil {
+		t.Fatalf("rollback migration 150: %v", err)
 	}
 	rolledBack := true
 	t.Cleanup(func() {
@@ -399,8 +412,8 @@ func TestPlatformCertificateLifecycleOnPostgres(t *testing.T) {
 	if got := countRows(t, ctx, database.SQL(), `SELECT count(*) FROM paperboat.tunnel_certificate_records WHERE id=$1`, userStored.ID); got != 0 {
 		t.Fatalf("ordinary user certificate rows after account delete=%d, want 0", got)
 	}
-	if got := countRows(t, ctx, database.SQL(), `SELECT count(*) FROM paperboat.tunnel_platform_certificate_targets WHERE id IN ($1,$2)`, definitions[0].ID, definitions[1].ID); got != 2 {
-		t.Fatalf("platform targets after ordinary account delete=%d, want 2", got)
+	if got := countRows(t, ctx, database.SQL(), `SELECT count(*) FROM paperboat.tunnel_platform_certificate_targets WHERE id IN ($1,$2,$3)`, definitions[0].ID, definitions[1].ID, definitions[2].ID); got != 3 {
+		t.Fatalf("platform targets after ordinary account delete=%d, want 3", got)
 	}
 	assertNoPlaintextCertificateColumnsOrLogs(t, ctx, database)
 
@@ -604,6 +617,7 @@ type platformAcceptanceFixture struct {
 
 	previewBase string
 	tunnelBase  string
+	runtimeBase string
 	edgeA       string
 	edgeB       string
 	epochA      string
@@ -626,6 +640,7 @@ func newPlatformAcceptanceFixture(suffix string) platformAcceptanceFixture {
 		suffix:      suffix,
 		previewBase: "preview-" + suffix + ".platform.example.test",
 		tunnelBase:  "tunnels-" + suffix + ".platform.example.test",
+		runtimeBase: "runtime-" + suffix + ".platform.example.test",
 		edgeA:       "edge-platform-a-" + suffix, edgeB: "edge-platform-b-" + suffix,
 		epochA: "epoch-platform-a-" + suffix, epochB: "epoch-platform-b-" + suffix,
 		userAccountID: "usr-platform-user-" + suffix, userTunnelID: "tun-platform-user-" + suffix,
@@ -691,6 +706,7 @@ func assertPlatformDefinitions(t *testing.T, definitions []tunnelcert.PlatformCe
 	want := []tunnelcert.PlatformCertificateTargetDefinition{
 		{ID: tunnelcert.PlatformPreviewTargetID, Kind: tunnelcert.PlatformPreviewWildcardTarget, Hostname: "*." + f.previewBase, AccountID: tunnelcert.PlatformAccountID, ChallengeReference: tunnelcert.PlatformPreviewChallengeReference, Generation: 1},
 		{ID: tunnelcert.PlatformTunnelTargetID, Kind: tunnelcert.PlatformTunnelWildcardTarget, Hostname: "*." + f.tunnelBase, AccountID: tunnelcert.PlatformAccountID, ChallengeReference: tunnelcert.PlatformTunnelChallengeReference, Generation: 1},
+		{ID: tunnelcert.PlatformRuntimeTargetID, Kind: tunnelcert.PlatformRuntimeWildcardTarget, Hostname: "*." + f.runtimeBase, AccountID: tunnelcert.PlatformAccountID, ChallengeReference: tunnelcert.PlatformRuntimeChallengeReference, Generation: 1},
 	}
 	if fmt.Sprintf("%+v", definitions) != fmt.Sprintf("%+v", want) {
 		t.Fatalf("platform target definitions=%+v, want %+v", definitions, want)
@@ -732,19 +748,26 @@ func assertPlatformTargetsReady(t *testing.T, ctx context.Context, store *tunnel
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 2 {
-		t.Fatalf("platform targets=%d, want 2", len(rows))
+	if len(rows) != 3 {
+		t.Fatalf("platform targets=%d, want 3", len(rows))
+	}
+	want := map[string]tunnelcert.PlatformCertificateTargetDefinition{
+		tunnelcert.PlatformPreviewTargetID: {ID: tunnelcert.PlatformPreviewTargetID, Kind: tunnelcert.PlatformPreviewWildcardTarget, Hostname: "*." + f.previewBase, AccountID: tunnelcert.PlatformAccountID, ChallengeReference: tunnelcert.PlatformPreviewChallengeReference, Generation: 1},
+		tunnelcert.PlatformTunnelTargetID:  {ID: tunnelcert.PlatformTunnelTargetID, Kind: tunnelcert.PlatformTunnelWildcardTarget, Hostname: "*." + f.tunnelBase, AccountID: tunnelcert.PlatformAccountID, ChallengeReference: tunnelcert.PlatformTunnelChallengeReference, Generation: 1},
+		tunnelcert.PlatformRuntimeTargetID: {ID: tunnelcert.PlatformRuntimeTargetID, Kind: tunnelcert.PlatformRuntimeWildcardTarget, Hostname: "*." + f.runtimeBase, AccountID: tunnelcert.PlatformAccountID, ChallengeReference: tunnelcert.PlatformRuntimeChallengeReference, Generation: 1},
 	}
 	for index, row := range rows {
 		if row.AccountID != tunnelcert.PlatformAccountID || row.Generation != 1 || row.DesiredState != "active" || row.CertificateState != "ready" || row.CertificateReference == "" {
 			t.Fatalf("platform target row=%+v", row)
 		}
-		if index == 0 && (row.ID != tunnelcert.PlatformTunnelTargetID || row.Hostname != "*."+f.tunnelBase || row.Kind != tunnelcert.PlatformTunnelWildcardTarget || row.ChallengeReference != tunnelcert.PlatformTunnelChallengeReference) {
-			t.Fatalf("helper target row=%+v", row)
+		definition, ok := want[row.ID]
+		if !ok || row.Hostname != definition.Hostname || row.Kind != definition.Kind || row.ChallengeReference != definition.ChallengeReference {
+			t.Fatalf("platform target row[%d]=%+v", index, row)
 		}
-		if index == 1 && (row.ID != tunnelcert.PlatformPreviewTargetID || row.Hostname != "*."+f.previewBase || row.Kind != tunnelcert.PlatformPreviewWildcardTarget || row.ChallengeReference != tunnelcert.PlatformPreviewChallengeReference) {
-			t.Fatalf("preview target row=%+v", row)
-		}
+		delete(want, row.ID)
+	}
+	if len(want) != 0 {
+		t.Fatalf("platform targets missing=%v", want)
 	}
 }
 
@@ -754,19 +777,26 @@ func assertPlatformTargetsRecreated(t *testing.T, ctx context.Context, store *tu
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 2 {
-		t.Fatalf("recreated platform targets=%d, want 2", len(rows))
+	if len(rows) != 3 {
+		t.Fatalf("recreated platform targets=%d, want 3", len(rows))
+	}
+	want := map[string]tunnelcert.PlatformCertificateTargetDefinition{
+		tunnelcert.PlatformPreviewTargetID: {ID: tunnelcert.PlatformPreviewTargetID, Kind: tunnelcert.PlatformPreviewWildcardTarget, Hostname: "*." + f.previewBase, AccountID: tunnelcert.PlatformAccountID, ChallengeReference: tunnelcert.PlatformPreviewChallengeReference, Generation: 1},
+		tunnelcert.PlatformTunnelTargetID:  {ID: tunnelcert.PlatformTunnelTargetID, Kind: tunnelcert.PlatformTunnelWildcardTarget, Hostname: "*." + f.tunnelBase, AccountID: tunnelcert.PlatformAccountID, ChallengeReference: tunnelcert.PlatformTunnelChallengeReference, Generation: 1},
+		tunnelcert.PlatformRuntimeTargetID: {ID: tunnelcert.PlatformRuntimeTargetID, Kind: tunnelcert.PlatformRuntimeWildcardTarget, Hostname: "*." + f.runtimeBase, AccountID: tunnelcert.PlatformAccountID, ChallengeReference: tunnelcert.PlatformRuntimeChallengeReference, Generation: 1},
 	}
 	for index, row := range rows {
 		if row.AccountID != tunnelcert.PlatformAccountID || row.Generation != 1 || row.DesiredState != "active" || row.CertificateState != "pending" || row.CertificateReference != "" {
 			t.Fatalf("recreated platform target row=%+v", row)
 		}
-		if index == 0 && (row.ID != tunnelcert.PlatformTunnelTargetID || row.Hostname != "*."+f.tunnelBase || row.Kind != tunnelcert.PlatformTunnelWildcardTarget || row.ChallengeReference != tunnelcert.PlatformTunnelChallengeReference) {
-			t.Fatalf("recreated helper target row=%+v", row)
+		definition, ok := want[row.ID]
+		if !ok || row.Hostname != definition.Hostname || row.Kind != definition.Kind || row.ChallengeReference != definition.ChallengeReference {
+			t.Fatalf("recreated platform target row[%d]=%+v", index, row)
 		}
-		if index == 1 && (row.ID != tunnelcert.PlatformPreviewTargetID || row.Hostname != "*."+f.previewBase || row.Kind != tunnelcert.PlatformPreviewWildcardTarget || row.ChallengeReference != tunnelcert.PlatformPreviewChallengeReference) {
-			t.Fatalf("recreated preview target row=%+v", row)
-		}
+		delete(want, row.ID)
+	}
+	if len(want) != 0 {
+		t.Fatalf("recreated platform targets missing=%v", want)
 	}
 }
 
@@ -779,10 +809,10 @@ func assertActivePlatformCertificates(t *testing.T, ctx context.Context, databas
 	if !distributor.sawStaged {
 		t.Fatal("distributor never observed an encrypted staged platform record")
 	}
-	// The first pass reaches one edge before each injected failure (2 calls),
-	// and the retry stages both edges for both targets (4 more calls).
-	if distributor.stageCount != 6 {
-		t.Fatalf("platform stage calls across failure and retry=%d, want 6", distributor.stageCount)
+	// The first pass reaches one edge before each injected failure (3 calls),
+	// and the retry stages both edges for all three targets (6 more calls).
+	if distributor.stageCount != 9 {
+		t.Fatalf("platform stage calls across failure and retry=%d, want 9", distributor.stageCount)
 	}
 	for _, target := range rows {
 		current, found, err := store.Current(ctx, target.ID)
@@ -1049,11 +1079,11 @@ func cleanupPlatformAcceptanceFixture(database *db.DB, fixture platformAcceptanc
 		return
 	}
 	ctx := context.Background()
-	_, _ = database.SQL().ExecContext(ctx, `DELETE FROM paperboat.tunnel_certificate_edge_distributions WHERE certificate_id IN (SELECT id FROM paperboat.tunnel_certificate_records WHERE domain_id IN ($1,$2,$3))`, definitions[0].ID, definitions[1].ID, fixture.previewDomainID)
+	_, _ = database.SQL().ExecContext(ctx, `DELETE FROM paperboat.tunnel_certificate_edge_distributions WHERE certificate_id IN (SELECT id FROM paperboat.tunnel_certificate_records WHERE domain_id IN ($1,$2,$3,$4))`, definitions[0].ID, definitions[1].ID, definitions[2].ID, fixture.previewDomainID)
 	_, _ = database.SQL().ExecContext(ctx, `DELETE FROM paperboat.tunnel_certificate_records WHERE target_kind='platform_wildcard' OR id=$1`, previewCertificate.ID)
-	_, _ = database.SQL().ExecContext(ctx, `DELETE FROM paperboat.tunnel_certificate_issuance_locks WHERE domain_id IN ($1,$2,$3) OR owner_id=$4`, definitions[0].ID, definitions[1].ID, fixture.previewDomainID, previewLockOwner)
+	_, _ = database.SQL().ExecContext(ctx, `DELETE FROM paperboat.tunnel_certificate_issuance_locks WHERE domain_id IN ($1,$2,$3,$4) OR owner_id=$5`, definitions[0].ID, definitions[1].ID, definitions[2].ID, fixture.previewDomainID, previewLockOwner)
 	if tableExistsQuiet(ctx, database.SQL(), "tunnel_platform_certificate_targets") {
-		_, _ = database.SQL().ExecContext(ctx, `DELETE FROM paperboat.tunnel_platform_certificate_targets WHERE id IN ($1,$2)`, definitions[0].ID, definitions[1].ID)
+		_, _ = database.SQL().ExecContext(ctx, `DELETE FROM paperboat.tunnel_platform_certificate_targets WHERE id IN ($1,$2,$3)`, definitions[0].ID, definitions[1].ID, definitions[2].ID)
 	}
 	_, _ = database.SQL().ExecContext(ctx, `DELETE FROM paperboat.preview_domains WHERE id=$1`, fixture.previewDomainID)
 	_, _ = database.SQL().ExecContext(ctx, `DELETE FROM paperboat.preview_leases WHERE id=$1`, fixture.previewLeaseID)

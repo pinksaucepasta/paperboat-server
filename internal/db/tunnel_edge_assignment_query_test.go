@@ -42,10 +42,49 @@ func TestTunnelEdgeAssignmentQueriesSerializeAndFenceGeneration(t *testing.T) {
 		[]byte("prior.assignment_generation >= sqlc.arg(assignment_generation)"),
 		[]byte("state = 'staged'"),
 		[]byte("config.content_hash = sqlc.arg(config_content_hash)"),
+		[]byte("session.state IN ('authenticating','ready')"),
+		[]byte("session.applied_config_generation = config.generation"),
 	} {
 		if !bytes.Contains(stageQuery, required) {
 			t.Fatalf("stage query is missing %q", required)
 		}
+	}
+}
+
+func TestTunnelEdgeAssignmentQueriesStageAfterConfigAckBeforeConnectorReady(t *testing.T) {
+	body, err := os.ReadFile("queries/control_plane.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := func(name string) []byte {
+		start := bytes.Index(body, []byte("-- name: "+name))
+		if start < 0 {
+			t.Fatalf("query %s is missing", name)
+		}
+		end := bytes.Index(body[start+1:], []byte("-- name:"))
+		if end < 0 {
+			return body[start:]
+		}
+		return body[start : start+1+end]
+	}
+	for _, name := range []string{"StageTunnelEdgeRouteAssignmentV1", "ListReadyTunnelEdgeRouteCandidatesV1"} {
+		queryText := query(name)
+		if !bytes.Contains(queryText, []byte("session.state IN ('authenticating','ready')")) {
+			t.Fatalf("%s must admit an authenticated pre-ready session: %s", name, queryText)
+		}
+		if !bytes.Contains(queryText, []byte("session.applied_config_generation = config.generation")) {
+			t.Fatalf("%s must require the exact acknowledged config generation: %s", name, queryText)
+		}
+		if !bytes.Contains(queryText, []byte("c.last_applied_config_generation = config.generation")) {
+			t.Fatalf("%s must require the connector's exact acknowledged config generation: %s", name, queryText)
+		}
+		if !bytes.Contains(queryText, []byte("session.last_heartbeat_at >")) {
+			t.Fatalf("%s must require a live session heartbeat: %s", name, queryText)
+		}
+	}
+	activation := query("ApplyTunnelEdgeRouteObservationV1")
+	if !bytes.Contains(activation, []byte("session.state = 'ready'")) {
+		t.Fatalf("ready activation must remain connector-ready gated: %s", activation)
 	}
 }
 

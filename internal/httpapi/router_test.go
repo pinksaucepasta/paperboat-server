@@ -33,6 +33,23 @@ func (f readinessFunc) Ready(ctx context.Context) error {
 	return f(ctx)
 }
 
+func TestTunnelCreateAuthBypassesClientAuthForMachineRequest(t *testing.T) {
+	called := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+	request := httptest.NewRequest(http.MethodPost, "/v1/tunnels", strings.NewReader(`{"name":"demo"}`))
+	request.Header.Set("Authorization", "Bearer machine-control")
+	request.Header.Set("X-Paperboat-Machine-Identity", "machine-control")
+	request.Header.Set("X-Paperboat-Machine-Proof", "proof")
+	recorder := httptest.NewRecorder()
+	tunnelCreateAuth(nil, nil, next).ServeHTTP(recorder, request)
+	if !called || recorder.Code != http.StatusNoContent {
+		t.Fatalf("machine create wrapper status=%d called=%v", recorder.Code, called)
+	}
+}
+
 func TestHealthDoesNotRequireReadiness(t *testing.T) {
 	router := NewRouter(Options{
 		Config: config.Default(),
@@ -416,6 +433,25 @@ func TestTimeoutBypassesStreamingRequestDeadline(t *testing.T) {
 	req.Header.Set("Accept", "text/event-stream")
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestTimeoutBypassesWebSocketControlLifetime(t *testing.T) {
+	handler := requestID(timeout(time.Nanosecond, slog.New(slog.NewTextHandler(io.Discard, nil)), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+			t.Fatal("websocket request context was canceled by ordinary request timeout")
+		default:
+		}
+		w.WriteHeader(http.StatusSwitchingProtocols)
+	})))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/tunnels/tunnel_01/connectors/connector_01/control", nil)
+	req.Header.Set("Connection", "keep-alive, Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSwitchingProtocols {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }

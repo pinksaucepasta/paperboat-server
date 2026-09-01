@@ -68,6 +68,21 @@ func TestPlatformCertificateWorkerBackoffRestoresTypedFailure(t *testing.T) {
 	}
 }
 
+func TestPlatformCertificateWorkerAcceptsEveryBuiltInTarget(t *testing.T) {
+	for _, targetID := range []string{
+		tunnelcert.PlatformPreviewTargetID,
+		tunnelcert.PlatformTunnelTargetID,
+		tunnelcert.PlatformRuntimeTargetID,
+	} {
+		if !validPlatformTargetID(targetID) {
+			t.Fatalf("built-in platform target %q was rejected", targetID)
+		}
+	}
+	if validPlatformTargetID("platform_cert_unknown_v1") {
+		t.Fatal("unknown platform target was accepted")
+	}
+}
+
 func TestPlatformRetryDelayIsBoundedAndExponential(t *testing.T) {
 	if got := platformRetryDelay(1); got != time.Minute {
 		t.Fatalf("first retry delay = %s", got)

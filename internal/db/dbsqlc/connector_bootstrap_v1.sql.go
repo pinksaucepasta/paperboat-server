@@ -8,6 +8,7 @@ package dbsqlc
 import (
 	"context"
 	"database/sql"
+	"time"
 )
 
 const getTunnelManagedEndpointForConnectorBootstrapV1 = `-- name: GetTunnelManagedEndpointForConnectorBootstrapV1 :one
@@ -48,7 +49,7 @@ SELECT id AS edge_node_id,
 FROM control_tunnel_nodes
 WHERE state = 'ready'
   AND ready = true
-  AND last_heartbeat_at > $1 - interval '2 minutes'
+  AND last_heartbeat_at > $1::timestamptz - interval '2 minutes'
   AND carrier_endpoint_host IS NOT NULL
   AND carrier_endpoint_tcp_port IS NOT NULL
   AND carrier_endpoint_quic_port IS NOT NULL
@@ -59,7 +60,7 @@ LIMIT $2
 `
 
 type ListReadyConnectorCarrierNodesV1Params struct {
-	Now      interface{}
+	Now      time.Time
 	RowLimit int32
 }
 

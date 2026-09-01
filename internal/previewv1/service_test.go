@@ -30,6 +30,7 @@ type previewLeaseFake struct {
 	renewKeys      map[string]previewtunnelstore.RenewPreviewLeaseV1Result
 	readyCalls     int
 	uncertainCalls int
+	readyInputs    []previewtunnelstore.MarkPreviewLeaseReadyV1Input
 	reconcile      previewtunnelstore.ReconcilePreviewLeasesV1Result
 	createInput    []previewtunnelstore.CreatePreviewLeaseV1Input
 	createErrors   []error
@@ -160,6 +161,7 @@ func (f *previewLeaseFake) StopPreviewLeaseV1(_ context.Context, input previewtu
 
 func (f *previewLeaseFake) MarkPreviewLeaseReadyV1(_ context.Context, input previewtunnelstore.MarkPreviewLeaseReadyV1Input) (previewtunnelstore.PreviewLeaseRecord, error) {
 	f.readyCalls++
+	f.readyInputs = append(f.readyInputs, input)
 	key := input.AccountID + ":" + input.PreviewID
 	lease, ok := f.leases[key]
 	if !ok {
@@ -300,7 +302,7 @@ func TestCreateDefaultsPublicAndAllocatesRandomEndpoint(t *testing.T) {
 	if result.Preview.AccessMode != "public" || result.Preview.Persistent {
 		t.Fatalf("default preview policy = %#v", result.Preview)
 	}
-	if !strings.HasPrefix(result.Preview.Endpoint, "https://preview-") || !strings.HasSuffix(result.Preview.Endpoint, ".preview.example.test") {
+	if !strings.HasPrefix(result.Preview.Endpoint, "https://") || strings.HasPrefix(result.Preview.Endpoint, "https://preview-") || !strings.HasSuffix(result.Preview.Endpoint, ".preview.example.test") {
 		t.Fatalf("endpoint = %q", result.Preview.Endpoint)
 	}
 	if result.Preview.State != "allocating" || result.Operation.State != "running" {
@@ -347,13 +349,13 @@ func TestPreviewResourceProjectsReleasedDomainSummaryWithoutTunnelFields(t *test
 	fake.leases["acct_1:prv_1"] = previewtunnelstore.PreviewLeaseRecord{PreviewLease: dbsqlc.PreviewLease{
 		ID: "prv_1", AccountID: "acct_1", ActorID: "user_1", OwnerDeviceID: "machine_1", OwnerSessionID: "owner_1",
 		TargetScheme: "http", TargetAddress: "127.0.0.1:3000", AccessMode: "public", EndpointID: "pep_1",
-		Endpoint: "https://preview-a.preview.example.test", LeaseDeadline: now, AllocationState: "released",
+		Endpoint: "https://a.preview.example.test", LeaseDeadline: now, AllocationState: "released",
 		EdgeState: "released", OriginState: "down", TerminalState: "stopped", Generation: 3, CreatedAt: now.Add(-time.Hour), LastRenewedAt: now,
 	}}
 	service, err := NewService(fake, Config{
 		EndpointDomain: "preview.example.test", CursorKey: []byte(strings.Repeat("k", 32)), PreviewDomains: previewDomainProjectionFake{rows: []dbsqlc.PreviewDomain{{
 			ID: "pdom_1", AccountID: "acct_1", PreviewID: "prv_1", PreviewGeneration: 2, Hostname: "*.apps.example.test",
-			MatchType: "one_label_wildcard", OwnershipState: "expired", DnsTarget: "preview-a.preview.example.test",
+			MatchType: "one_label_wildcard", OwnershipState: "expired", DnsTarget: "a.preview.example.test",
 			ObservedRecords: []byte(`[]`), DnsProvider: "generic", ExpectedRecords: []byte(`[]`), DnsNextCheckAt: now,
 			CertificateStrategy: "managed", CertificateState: "revoked", CaaState: "ready", ConflictState: "quarantined",
 			Generation: 5, CreatedAt: now.Add(-time.Hour), UpdatedAt: now,
@@ -570,6 +572,25 @@ func TestCreateRetriesSameLeaseAfterUncertainDispatchAndRejectsHashMismatch(t *t
 	}
 }
 
+func TestCreateKnownDispatchFailureUsesPersistedOriginDownState(t *testing.T) {
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	fake := newPreviewLeaseFake()
+	fake.owners["acct_1:machine_1"] = true
+	dispatcher := &recordingDispatcher{nextError: errors.New("remote_invalid_response")}
+	service := testPreviewLeaseService(t, fake, now)
+	service.ConfigureDispatcher(dispatcher)
+
+	if _, err := service.Create(context.Background(), browserRequest(), createInput("machine_1")); err == nil {
+		t.Fatal("known dispatch failure returned nil")
+	}
+	if len(fake.readyInputs) != 1 {
+		t.Fatalf("known dispatch failure readiness updates = %d, want one", len(fake.readyInputs))
+	}
+	if got := fake.readyInputs[0].OriginState; got != "down" {
+		t.Fatalf("persisted origin state = %q, want internal down state", got)
+	}
+}
+
 func TestCreateRetriesOnlyTypedEndpointConflict(t *testing.T) {
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
 	fake := newPreviewLeaseFake()
@@ -672,8 +693,8 @@ func TestObserveReadinessCompletesProjectionAndReconcileMapsTerminalStates(t *te
 		t.Fatalf("ready projection = %#v calls=%d", ready.Preview, fake.readyCalls)
 	}
 	fake.reconcile = previewtunnelstore.ReconcilePreviewLeasesV1Result{
-		Expired:   []previewtunnelstore.PreviewLeaseRecord{{PreviewLease: dbsqlc.PreviewLease{ID: "prv_exp", AccountID: "acct_1", ActorID: "user_1", OwnerDeviceID: "m", OwnerSessionID: "s", TargetScheme: "http", TargetAddress: "127.0.0.1:3000", AccessMode: "public", Endpoint: "https://preview-exp.preview.example.test", LeaseDeadline: now.Add(-time.Minute), AllocationState: "released", EdgeState: "released", OriginState: "unknown", TerminalState: "expired", CreatedAt: now.Add(-time.Hour), LastRenewedAt: now.Add(-time.Hour), Generation: 2, OwnerLastSeenAt: now.Add(-time.Hour)}}},
-		OwnerLost: []previewtunnelstore.PreviewLeaseRecord{{PreviewLease: dbsqlc.PreviewLease{ID: "prv_lost", AccountID: "acct_1", ActorID: "user_1", OwnerDeviceID: "m", OwnerSessionID: "s", TargetScheme: "http", TargetAddress: "127.0.0.1:3000", AccessMode: "private", Endpoint: "https://preview-lost.preview.example.test", LeaseDeadline: now.Add(time.Hour), AllocationState: "released", EdgeState: "released", OriginState: "down", TerminalState: "owner_lost", CreatedAt: now.Add(-time.Hour), LastRenewedAt: now.Add(-time.Hour), Generation: 3, OwnerLastSeenAt: now.Add(-time.Hour)}}},
+		Expired:   []previewtunnelstore.PreviewLeaseRecord{{PreviewLease: dbsqlc.PreviewLease{ID: "prv_exp", AccountID: "acct_1", ActorID: "user_1", OwnerDeviceID: "m", OwnerSessionID: "s", TargetScheme: "http", TargetAddress: "127.0.0.1:3000", AccessMode: "public", Endpoint: "https://exp.preview.example.test", LeaseDeadline: now.Add(-time.Minute), AllocationState: "released", EdgeState: "released", OriginState: "unknown", TerminalState: "expired", CreatedAt: now.Add(-time.Hour), LastRenewedAt: now.Add(-time.Hour), Generation: 2, OwnerLastSeenAt: now.Add(-time.Hour)}}},
+		OwnerLost: []previewtunnelstore.PreviewLeaseRecord{{PreviewLease: dbsqlc.PreviewLease{ID: "prv_lost", AccountID: "acct_1", ActorID: "user_1", OwnerDeviceID: "m", OwnerSessionID: "s", TargetScheme: "http", TargetAddress: "127.0.0.1:3000", AccessMode: "private", Endpoint: "https://lost.preview.example.test", LeaseDeadline: now.Add(time.Hour), AllocationState: "released", EdgeState: "released", OriginState: "down", TerminalState: "owner_lost", CreatedAt: now.Add(-time.Hour), LastRenewedAt: now.Add(-time.Hour), Generation: 3, OwnerLastSeenAt: now.Add(-time.Hour)}}},
 	}
 	reconciled, err := service.Reconcile(context.Background(), "worker_1", "cor_reconcile", "req_reconcile")
 	if err != nil {

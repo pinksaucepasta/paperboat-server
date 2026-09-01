@@ -775,7 +775,7 @@ func New(opts Options) (*App, error) {
 		serverWorkers = append(serverWorkers, opts.CertificateWorker.Worker(opts.Config.TerminalSessions.WorkerInterval, 100))
 	}
 	if certificateRuntime != nil && certificateRuntime.PlatformWorker != nil {
-		serverWorkers = append(serverWorkers, certificateRuntime.PlatformWorker.Worker(opts.Config.TerminalSessions.WorkerInterval, 2))
+		serverWorkers = append(serverWorkers, certificateRuntime.PlatformWorker.Worker(opts.Config.TerminalSessions.WorkerInterval, 3))
 	}
 	application := &App{
 		cfg:    opts.Config,

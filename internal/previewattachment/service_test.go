@@ -179,11 +179,14 @@ func TestServiceUsesSQLRepositoryBoundaryAndKeepsEdgeAuthoritySeparate(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	ready, err := service.ObserveOrigin(context.Background(), proof, req, edge.Binding, edge.AttachmentGeneration, true)
+	// The host can start its origin probe from the admitted projection while
+	// the edge independently commits readiness. Its callback must consume that
+	// exact one-generation advance rather than fail a valid race.
+	ready, err := service.ObserveOrigin(context.Background(), proof, req, edge.Binding, admitted.AttachmentGeneration, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ready.State != StateReady || !ready.EdgeReady || !ready.OriginReady {
+	if ready.State != StateReady || !ready.EdgeReady || !ready.OriginReady || ready.AttachmentGeneration != edge.AttachmentGeneration+1 {
 		t.Fatalf("ready = %#v", ready)
 	}
 	if _, err := service.ObserveEdge(context.Background(), req, edge.Binding, edge.AttachmentGeneration); err != nil {

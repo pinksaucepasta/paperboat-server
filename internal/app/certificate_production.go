@@ -105,6 +105,7 @@ func newCertificateRuntime(ctx context.Context, database *db.DB, cfg config.Conf
 		PlatformBases: tunnelcert.PlatformCertificateBases{
 			PreviewBaseDomain: cfg.Preview.BaseDomain,
 			TunnelBaseDomain:  cfg.Tunnel.BaseDomain,
+			RuntimeBaseDomain: cfg.RuntimeBaseDomain,
 		},
 		PlatformEdgeTargets: platformEdges.Resolve,
 	})

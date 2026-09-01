@@ -842,7 +842,7 @@ func validPreviewEndpoint(raw string) bool {
 	}
 	host := parsed.Hostname()
 	labels := strings.Split(host, ".")
-	if len(labels) < 2 || !strings.HasPrefix(labels[0], "preview-") {
+	if len(labels) < 2 || strings.HasPrefix(labels[0], "preview-") {
 		return false
 	}
 	for _, label := range labels {

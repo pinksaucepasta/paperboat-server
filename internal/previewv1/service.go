@@ -459,7 +459,10 @@ func (s *Service) recordDispatchFailure(ctx context.Context, request previewtunn
 	}
 	_, markErr := s.repository.MarkPreviewLeaseReadyV1(ctx, previewtunnelstore.MarkPreviewLeaseReadyV1Input{
 		AuditEventID: auditID, AccountID: created.Preview.AccountID, ActorID: created.Preview.ActorID, ActorType: actorType(request.Actor),
-		PreviewID: created.Preview.ID, ExpectedGeneration: generationFromETag(created.ETag), AllocationState: "failed", EdgeState: "down", OriginState: "unavailable",
+		// "unavailable" is the public preview projection. Persistence stores
+		// the internal origin state "down" and previewView maps it back to
+		// "unavailable" for clients.
+		PreviewID: created.Preview.ID, ExpectedGeneration: generationFromETag(created.ETag), AllocationState: "failed", EdgeState: "down", OriginState: "down",
 		CorrelationID: request.CorrelationID, RequestID: request.RequestID, SourceDeviceID: request.Actor.DeviceID, Now: s.now().UTC(),
 	})
 	if markErr != nil {
@@ -880,7 +883,7 @@ func (s *Service) randomEndpoint() (string, error) {
 		return "", fmt.Errorf("allocate preview endpoint randomness: %w", err)
 	}
 	label := strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(bytes[:]))
-	return "https://preview-" + label + "." + s.endpointDomain, nil
+	return "https://" + label + "." + s.endpointDomain, nil
 }
 
 func previewView(row previewtunnelstore.PreviewLeaseRecord) Preview {

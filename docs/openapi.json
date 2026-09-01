@@ -11098,14 +11098,10 @@
       ],
       "post": {
         "summary": "Issue a single-use connector enrollment",
-        "description": "Returns a short-lived secret once to an authorized host. Only its hash and scope are persisted; browsers must not model or consume the token.",
+        "description": "Host-only machine enrollment. Requires the renewable machine_control bearer credential, X-Paperboat-Machine-Identity, X-Paperboat-Machine-Proof, and Idempotency-Key. The proof is verified over the exact POST path, body, and idempotency key; the verified machine claims supply the account, user, host, and device actor and must match host_id. Browser sessions, cookies, CSRF tokens, and client-session bearers are not accepted. Returns a short-lived single-use secret once; only its hash and scope are persisted.",
         "security": [
           {
-            "cookieSession": [],
-            "csrfHeader": []
-          },
-          {
-            "bearerAccess": []
+            "bearerMachineControl": []
           }
         ],
         "x-required-bearer-scopes": [
@@ -11114,6 +11110,12 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/MachineIdentity"
+          },
+          {
+            "$ref": "#/components/parameters/MachineProof"
           }
         ],
         "requestBody": {
@@ -11172,14 +11174,10 @@
       ],
       "post": {
         "summary": "Exchange a connector enrollment",
-        "description": "Host-only exchange requiring the signed machine proof bound to the exact body and idempotency key. Returns the secret-free, server-reserved credential and process generations for the first signed Hello. Both are immutable and bound to the running connector operation; the host must never guess either value. An exact idempotent replay returns identical activation data. The obsolete operation-only response is not returned.",
+        "description": "Host-only exchange requiring the renewable machine_control bearer credential, X-Paperboat-Machine-Identity, and signed machine proof bound to the exact POST path, body, and idempotency key. The verified machine claims must match host_id and the enrollment's account and host binding. Browser sessions, cookies, CSRF tokens, and client-session bearers are not accepted. Returns the secret-free, server-reserved credential and process generations for the first signed Hello. Both are immutable and bound to the running connector operation; the host must never guess either value. An exact idempotent replay returns identical activation data. The obsolete operation-only response is not returned.",
         "security": [
           {
-            "bearerHelperIdentity": []
-          },
-          {
-            "cookieSession": [],
-            "csrfHeader": []
+            "bearerMachineControl": []
           }
         ],
         "x-required-bearer-scopes": [

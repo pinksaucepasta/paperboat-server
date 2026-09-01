@@ -49,7 +49,7 @@ type CarrierBootstrapNode struct {
 }
 
 func (n CarrierBootstrapNode) Validate() error {
-	if ValidateIdentifier(n.EdgeNodeID) != nil || ValidateIdentifier(n.EdgeProcessEpoch) != nil || ValidateIdentifier(n.FailureDomain) != nil || len(n.Endpoints) != 2 || !spkiHashPattern.MatchString(n.ServerSPKISHA256) || !validCertificateChainPEM(n.ServerCertificateChainPEM) {
+	if ValidateIdentifier(n.EdgeNodeID) != nil || ValidateOpaqueEpoch(n.EdgeProcessEpoch) != nil || ValidateIdentifier(n.FailureDomain) != nil || len(n.Endpoints) != 2 || !spkiHashPattern.MatchString(n.ServerSPKISHA256) || !validCertificateChainPEM(n.ServerCertificateChainPEM) {
 		return ErrInvalidInput
 	}
 	seen := map[string]bool{}

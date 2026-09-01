@@ -10,16 +10,18 @@ func TestPlatformCertificateTargetDefinitionsAreDeterministic(t *testing.T) {
 	definitions, err := PlatformCertificateTargetDefinitions(PlatformCertificateBases{
 		PreviewBaseDomain: "Preview.Pprbt.dev.",
 		TunnelBaseDomain:  "tunnels.pprbt.dev",
+		RuntimeBaseDomain: "Runtime.Pprbt.dev.",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(definitions) != 2 {
-		t.Fatalf("platform definitions = %d, want 2", len(definitions))
+	if len(definitions) != 3 {
+		t.Fatalf("platform definitions = %d, want 3", len(definitions))
 	}
 	want := []PlatformCertificateTargetDefinition{
 		{ID: PlatformPreviewTargetID, Kind: PlatformPreviewWildcardTarget, Hostname: "*.preview.pprbt.dev", AccountID: PlatformAccountID, ChallengeReference: PlatformPreviewChallengeReference, Generation: 1},
 		{ID: PlatformTunnelTargetID, Kind: PlatformTunnelWildcardTarget, Hostname: "*.tunnels.pprbt.dev", AccountID: PlatformAccountID, ChallengeReference: PlatformTunnelChallengeReference, Generation: 1},
+		{ID: PlatformRuntimeTargetID, Kind: PlatformRuntimeWildcardTarget, Hostname: "*.runtime.pprbt.dev", AccountID: PlatformAccountID, ChallengeReference: PlatformRuntimeChallengeReference, Generation: 1},
 	}
 	for index := range want {
 		if definitions[index] != want[index] {
@@ -29,7 +31,8 @@ func TestPlatformCertificateTargetDefinitionsAreDeterministic(t *testing.T) {
 	for _, bases := range []PlatformCertificateBases{
 		{PreviewBaseDomain: "*.preview.pprbt.dev", TunnelBaseDomain: "tunnels.pprbt.dev"},
 		{PreviewBaseDomain: "preview.pprbt.dev", TunnelBaseDomain: "127.0.0.1"},
-		{PreviewBaseDomain: "preview.pprbt.dev", TunnelBaseDomain: ""},
+		{PreviewBaseDomain: "preview.pprbt.dev", TunnelBaseDomain: "tunnels.pprbt.dev", RuntimeBaseDomain: "*.runtime.pprbt.dev"},
+		{PreviewBaseDomain: "preview.pprbt.dev", TunnelBaseDomain: "tunnels.pprbt.dev"},
 	} {
 		if _, err := PlatformCertificateTargetDefinitions(bases); !errors.Is(err, ErrInvalid) {
 			t.Fatalf("invalid platform bases %+v error = %v", bases, err)
@@ -75,10 +78,22 @@ func TestPlatformCertificateTargetDefinitionFencesBuiltInIdentity(t *testing.T) 
 }
 
 func TestPlatformCertificateTargetDefinitionsRejectDuplicateBases(t *testing.T) {
-	if _, err := PlatformCertificateTargetDefinitions(PlatformCertificateBases{
-		PreviewBaseDomain: "shared.pprbt.dev", TunnelBaseDomain: "shared.pprbt.dev",
-	}); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("duplicate platform bases error = %v", err)
+	for name, bases := range map[string]PlatformCertificateBases{
+		"preview and tunnel": {
+			PreviewBaseDomain: "shared.pprbt.dev", TunnelBaseDomain: "shared.pprbt.dev", RuntimeBaseDomain: "runtime.pprbt.dev",
+		},
+		"preview and runtime": {
+			PreviewBaseDomain: "shared.pprbt.dev", TunnelBaseDomain: "tunnels.pprbt.dev", RuntimeBaseDomain: "shared.pprbt.dev",
+		},
+		"tunnel and runtime": {
+			PreviewBaseDomain: "preview.pprbt.dev", TunnelBaseDomain: "shared.pprbt.dev", RuntimeBaseDomain: "shared.pprbt.dev",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := PlatformCertificateTargetDefinitions(bases); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("duplicate platform bases error = %v", err)
+			}
+		})
 	}
 }
 

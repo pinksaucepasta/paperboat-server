@@ -93,6 +93,13 @@ func tunnelHandlerRequest(method, path string, body []byte) *http.Request {
 	return request.WithContext(ctx)
 }
 
+func tunnelMachineHandlerRequest(method, path string, body []byte) *http.Request {
+	request := httptest.NewRequest(method, path, bytes.NewReader(body))
+	ctx := observability.WithRequestID(request.Context(), "req_1")
+	ctx = observability.WithCorrelationID(ctx, "corr_1")
+	return request.WithContext(ctx)
+}
+
 func tunnelMutationResult(state, phase string) tunnelv1.MutationResult {
 	now := time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC)
 	return tunnelv1.MutationResult{
@@ -131,8 +138,9 @@ func TestTunnelCreateUsesSignedMachineIdentityAndOperationBinding(t *testing.T) 
 	verifier := &tunnelIdentityVerifier{claims: controlplane.MachineRequestClaims{
 		UserID: "acct_1", MachineID: "machine_1", InstallationGeneration: 3, OperationID: "op_create_1",
 	}}
-	request := tunnelHandlerRequest(http.MethodPost, "/v1/tunnels", body)
+	request := tunnelMachineHandlerRequest(http.MethodPost, "/v1/tunnels", body)
 	request.Header.Set("Idempotency-Key", "op_create_1")
+	request.Header.Set("Authorization", "Bearer signed-machine-identity")
 	request.Header.Set("X-Paperboat-Machine-Identity", "signed-machine-identity")
 	request.Header.Set("X-Paperboat-Machine-Proof", base64.RawURLEncoding.EncodeToString([]byte("signed-proof")))
 	response := httptest.NewRecorder()
@@ -140,7 +148,7 @@ func TestTunnelCreateUsesSignedMachineIdentityAndOperationBinding(t *testing.T) 
 	if response.Code != http.StatusAccepted || !verifier.called {
 		t.Fatalf("status=%d verifier_called=%v body=%s", response.Code, verifier.called, response.Body.String())
 	}
-	if service.createReq.Actor.HostID != "machine_1" || service.createReq.Actor.DeviceID != "machine_1" {
+	if service.createReq.Actor.AccountID != "acct_1" || service.createReq.Actor.ActorID != "acct_1" || service.createReq.Actor.DeviceID != "machine_1" || service.createReq.Actor.HostID != "machine_1" || service.createReq.Actor.Role != "user" || len(service.createReq.Actor.Scopes) != 1 || service.createReq.Actor.Scopes[0] != "tunnels:write" {
 		t.Fatalf("host identity was not derived from signed claims: %+v", service.createReq.Actor)
 	}
 	data := decodeTunnelHandlerBody(t, response)
@@ -159,8 +167,9 @@ func TestTunnelCreateRejectsProofReplayUnderDifferentIdempotencyKey(t *testing.T
 	verifier := &tunnelIdentityVerifier{claims: controlplane.MachineRequestClaims{
 		UserID: "acct_1", MachineID: "machine_1", InstallationGeneration: 3, OperationID: "op_signed",
 	}}
-	request := tunnelHandlerRequest(http.MethodPost, "/v1/tunnels", body)
+	request := tunnelMachineHandlerRequest(http.MethodPost, "/v1/tunnels", body)
 	request.Header.Set("Idempotency-Key", "op_different")
+	request.Header.Set("Authorization", "Bearer signed-machine-identity")
 	request.Header.Set("X-Paperboat-Machine-Identity", "signed-machine-identity")
 	request.Header.Set("X-Paperboat-Machine-Proof", base64.RawURLEncoding.EncodeToString([]byte("signed-proof")))
 	response := httptest.NewRecorder()
@@ -171,6 +180,55 @@ func TestTunnelCreateRejectsProofReplayUnderDifferentIdempotencyKey(t *testing.T
 	var payload ErrorResponse
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil || payload.Error.Code != "machine_identity_invalid" {
 		t.Fatalf("replay error=%+v body=%s", payload.Error, response.Body.String())
+	}
+}
+
+func TestTunnelCreateRejectsMissingOrInvalidMachineProof(t *testing.T) {
+	body := []byte(`{"name":"demo","origin":{"scheme":"http","address":"127.0.0.1:3000"}}`)
+	for _, test := range []struct {
+		name  string
+		proof string
+	}{
+		{name: "missing", proof: ""},
+		{name: "invalid encoding", proof: "not-base64"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service := &tunnelAPIStub{createResult: tunnelMutationResult("running", "connecting")}
+			verifier := &tunnelIdentityVerifier{claims: controlplane.MachineRequestClaims{
+				UserID: "acct_1", MachineID: "machine_1", InstallationGeneration: 3, OperationID: "op_create_1",
+			}}
+			request := tunnelMachineHandlerRequest(http.MethodPost, "/v1/tunnels", body)
+			request.Header.Set("Idempotency-Key", "op_create_1")
+			request.Header.Set("Authorization", "Bearer signed-machine-identity")
+			request.Header.Set("X-Paperboat-Machine-Identity", "signed-machine-identity")
+			if test.proof != "" {
+				request.Header.Set("X-Paperboat-Machine-Proof", test.proof)
+			}
+			response := httptest.NewRecorder()
+			tunnelCreate(service, verifier).ServeHTTP(response, request)
+			if response.Code != http.StatusUnauthorized || verifier.called || service.createReq.Actor.AccountID != "" {
+				t.Fatalf("status=%d verifier_called=%v request=%+v body=%s", response.Code, verifier.called, service.createReq, response.Body.String())
+			}
+			var payload ErrorResponse
+			if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil || payload.Error.Code != "machine_identity_invalid" {
+				t.Fatalf("error=%+v body=%s", payload.Error, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestTunnelCreateRejectsAuthenticatedClientWithoutMachineProof(t *testing.T) {
+	service := &tunnelAPIStub{createResult: tunnelMutationResult("running", "connecting")}
+	request := tunnelHandlerRequest(http.MethodPost, "/v1/tunnels", []byte(`{"name":"demo","origin":{"scheme":"http","address":"127.0.0.1:3000"}}`))
+	request.Header.Set("Idempotency-Key", "op_create_1")
+	response := httptest.NewRecorder()
+	tunnelCreate(service, &tunnelIdentityVerifier{}).ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized || service.createReq.Actor.AccountID != "" {
+		t.Fatalf("status=%d request=%+v body=%s", response.Code, service.createReq, response.Body.String())
+	}
+	var payload ErrorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil || payload.Error.Code != "machine_identity_required" {
+		t.Fatalf("error=%+v body=%s", payload.Error, response.Body.String())
 	}
 }
 

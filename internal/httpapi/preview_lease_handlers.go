@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -78,7 +79,7 @@ func previewLeaseCreate(service PreviewLeaseAPI, machineIdentities ...machineReq
 			writePreviewLeaseError(w, r, err)
 			return
 		}
-		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Cache-Control", "no-store, no-transform")
 		w.Header().Set("ETag", result.ETag)
 		// The operation ID is durable server metadata needed by a host to
 		// resume its local carrier after an exact 200 replay. Keep it out of
@@ -96,12 +97,12 @@ func previewLeaseCreate(service PreviewLeaseAPI, machineIdentities ...machineReq
 	}
 }
 
-// previewLeaseCreateAuth keeps the browser/CLI create contract while allowing
-// a host with only its renewable machine identity to create its own lease.
-// Machine-authenticated requests are verified by previewLeaseRequestContext;
-// this wrapper only avoids forcing them through DeviceService, which has no
-// production host session to authenticate.
-func previewLeaseCreateAuth(user *auth.Service, devices *auth.DeviceService, identities machineRequestVerifier, next http.Handler) http.Handler {
+// previewLeaseMutationAuth keeps the browser/CLI mutation contract while
+// allowing a host with only its renewable machine identity to mutate its own
+// lease. Machine-authenticated requests are verified by the handler after it
+// has read the exact bounded body; this wrapper only avoids forcing them
+// through DeviceService, which has no production host session to authenticate.
+func previewLeaseMutationAuth(user *auth.Service, devices *auth.DeviceService, identities machineRequestVerifier, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.TrimSpace(r.Header.Get("X-Paperboat-Machine-Identity")) != "" || strings.TrimSpace(r.Header.Get("X-Paperboat-Machine-Proof")) != "" {
 			next.ServeHTTP(w, r)
@@ -109,6 +110,13 @@ func previewLeaseCreateAuth(user *auth.Service, devices *auth.DeviceService, ide
 		}
 		requireAnyAuth(user, devices, requireScope("previews:write", requireCSRF(user, next))).ServeHTTP(w, r)
 	})
+}
+
+// previewLeaseCreateAuth is retained as the named create wrapper used by
+// focused handler tests and callers; all preview mutations share the same
+// machine-auth bypass and ordinary-auth fallback.
+func previewLeaseCreateAuth(user *auth.Service, devices *auth.DeviceService, identities machineRequestVerifier, next http.Handler) http.Handler {
+	return previewLeaseMutationAuth(user, devices, identities, next)
 }
 
 // previewLeaseRequestContext derives a host actor only from a verified proof.
@@ -176,7 +184,7 @@ func previewLeaseList(service PreviewLeaseAPI) http.HandlerFunc {
 			writePreviewLeaseError(w, r, err)
 			return
 		}
-		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Cache-Control", "no-store, no-transform")
 		writeJSON(w, http.StatusOK, SuccessResponse{Data: page})
 	}
 }
@@ -192,7 +200,7 @@ func previewLeaseGet(service PreviewLeaseAPI) http.HandlerFunc {
 			writePreviewLeaseError(w, r, err)
 			return
 		}
-		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Cache-Control", "no-store, no-transform")
 		w.Header().Set("ETag", result.ETag)
 		writeJSON(w, http.StatusOK, SuccessResponse{Data: result.Preview})
 	}
@@ -276,18 +284,14 @@ func previewLeaseReadiness(service PreviewReadinessAPI, identities machineReques
 			writePreviewLeaseError(w, r, err)
 			return
 		}
-		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Cache-Control", "no-store, no-transform")
 		w.Header().Set("ETag", result.ETag)
 		writeJSON(w, http.StatusOK, SuccessResponse{Data: result.Preview})
 	}
 }
 
-func previewLeaseRenew(service PreviewLeaseAPI) http.HandlerFunc {
+func previewLeaseRenew(service PreviewLeaseAPI, machineIdentities ...machineRequestVerifier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		requestContext, ok := previewTunnelRequestContext(w, r)
-		if !ok {
-			return
-		}
 		previewID := r.PathValue("preview_id")
 		generation, err := previewtunnelapi.ParseIfMatch(r.Header, "preview_lease", previewID)
 		if err != nil {
@@ -299,7 +303,7 @@ func previewLeaseRenew(service PreviewLeaseAPI) http.HandlerFunc {
 			writePreviewLeaseError(w, r, err)
 			return
 		}
-		raw, hash, err := readPreviewLeaseJSON(r, false)
+		raw, hash, err := readPreviewLeaseMutationJSON(r)
 		if err != nil {
 			writePreviewLeaseError(w, r, err)
 			return
@@ -313,6 +317,10 @@ func previewLeaseRenew(service PreviewLeaseAPI) http.HandlerFunc {
 				return
 			}
 		}
+		requestContext, ok := previewLeaseRequestContext(w, r, raw, key, machineIdentities...)
+		if !ok {
+			return
+		}
 		result, err := service.Renew(r.Context(), requestContext, previewID, previewv1.MutationRequest{
 			ExpectedGeneration: generation, OwnerSessionID: body.OwnerSessionID, IdempotencyKey: key, RequestHash: hash,
 		})
@@ -320,18 +328,14 @@ func previewLeaseRenew(service PreviewLeaseAPI) http.HandlerFunc {
 			writePreviewLeaseError(w, r, err)
 			return
 		}
-		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Cache-Control", "no-store, no-transform")
 		w.Header().Set("ETag", result.ETag)
 		writeJSON(w, http.StatusOK, SuccessResponse{Data: result.Preview})
 	}
 }
 
-func previewLeaseStop(service PreviewLeaseAPI) http.HandlerFunc {
+func previewLeaseStop(service PreviewLeaseAPI, machineIdentities ...machineRequestVerifier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		requestContext, ok := previewTunnelRequestContext(w, r)
-		if !ok {
-			return
-		}
 		previewID := r.PathValue("preview_id")
 		generation, err := previewtunnelapi.ParseIfMatch(r.Header, "preview_lease", previewID)
 		if err != nil {
@@ -343,7 +347,7 @@ func previewLeaseStop(service PreviewLeaseAPI) http.HandlerFunc {
 			writePreviewLeaseError(w, r, err)
 			return
 		}
-		raw, hash, err := readPreviewLeaseJSON(r, false)
+		raw, hash, err := readPreviewLeaseMutationJSON(r)
 		if err != nil {
 			writePreviewLeaseError(w, r, err)
 			return
@@ -355,6 +359,10 @@ func previewLeaseStop(service PreviewLeaseAPI) http.HandlerFunc {
 				return
 			}
 		}
+		requestContext, ok := previewLeaseRequestContext(w, r, raw, key, machineIdentities...)
+		if !ok {
+			return
+		}
 		result, err := service.Stop(r.Context(), requestContext, previewID, previewv1.MutationRequest{
 			ExpectedGeneration: generation, IdempotencyKey: key, RequestHash: hash,
 		})
@@ -362,10 +370,29 @@ func previewLeaseStop(service PreviewLeaseAPI) http.HandlerFunc {
 			writePreviewLeaseError(w, r, err)
 			return
 		}
-		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Cache-Control", "no-store, no-transform")
 		w.Header().Set("ETag", result.ETag)
 		writeJSON(w, http.StatusOK, SuccessResponse{Data: result.Preview})
 	}
+}
+
+// readPreviewLeaseMutationJSON returns the exact bytes received on the wire
+// for machine-proof verification while retaining the existing idempotency
+// rule that an omitted body and an explicit {} have the same request hash.
+func readPreviewLeaseMutationJSON(r *http.Request) ([]byte, [32]byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 64<<10+1))
+	if err != nil || len(raw) > 64<<10 {
+		return nil, [32]byte{}, fmt.Errorf("%w: request body is too large or unreadable", previewv1.ErrInvalidInput)
+	}
+	hashBody := raw
+	if len(bytes.TrimSpace(hashBody)) == 0 {
+		hashBody = []byte("{}")
+	}
+	hash, err := previewtunnelapi.RequestHash(hashBody)
+	if err != nil {
+		return raw, [32]byte{}, fmt.Errorf("%w: request JSON is invalid", previewv1.ErrInvalidInput)
+	}
+	return raw, hash, nil
 }
 
 func readPreviewLeaseJSON(r *http.Request, required bool) ([]byte, [32]byte, error) {
@@ -407,6 +434,7 @@ func decodePreviewLeaseBody(raw []byte, target any) error {
 }
 
 func writePreviewLeaseError(w http.ResponseWriter, r *http.Request, err error) {
+	slog.Warn("preview request failed", "request_id", requestIDFromContext(r.Context()), "error", err)
 	status := http.StatusInternalServerError
 	code := "internal_error"
 	message := "Internal server error."

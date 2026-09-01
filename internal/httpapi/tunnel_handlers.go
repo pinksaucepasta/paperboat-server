@@ -43,31 +43,22 @@ func tunnelCreate(service tunnelv1.API, identities machineRequestVerifier) http.
 			writeTunnelError(w, r, err)
 			return
 		}
-		principal, ok := principalFromContext(r.Context())
-		if !ok {
-			writePreviewTunnelError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.", "unchanged", false, "authenticate")
-			return
-		}
-		if identities == nil {
+		var request previewtunnelapi.RequestContext
+		if tunnelMachineHeadersPresent(r) {
+			var valid bool
+			request, valid = tunnelMachineRequestContext(w, r, body, idempotencyKey, identities)
+			if !valid {
+				return
+			}
+		} else {
+			_, authenticated := principalFromContext(r.Context())
+			if !authenticated {
+				writePreviewTunnelError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.", "unchanged", false, "authenticate")
+				return
+			}
 			writePreviewTunnelError(w, r, http.StatusUnauthorized, "machine_identity_required", "A signed host identity is required to create a tunnel.", "unchanged", false, "run_on_authorized_host")
 			return
 		}
-		proof, err := base64.RawURLEncoding.Strict().DecodeString(strings.TrimSpace(r.Header.Get("X-Paperboat-Machine-Proof")))
-		if err != nil || len(proof) == 0 {
-			writePreviewTunnelError(w, r, http.StatusUnauthorized, "machine_identity_invalid", "The signed host identity could not be verified.", "unchanged", false, "run_on_authorized_host")
-			return
-		}
-		claims, err := identities.VerifyMachineRequest(r.Context(), strings.TrimSpace(r.Header.Get("X-Paperboat-Machine-Identity")), proof, r.Method, r.URL.Path, body)
-		if err != nil || claims.UserID == "" || claims.MachineID == "" || claims.InstallationGeneration <= 0 || claims.UserID != principal.User.ID || claims.OperationID != idempotencyKey {
-			writePreviewTunnelError(w, r, http.StatusUnauthorized, "machine_identity_invalid", "The signed host identity could not be verified.", "unchanged", false, "run_on_authorized_host")
-			return
-		}
-		request := tunnelRequestContext(principal, r)
-		// A machine proof is the structural identity. DeviceID and HostID are
-		// both derived from the verified machine ID so RequireHost cannot be
-		// satisfied by a CLI session ID or a caller header.
-		request.Actor.DeviceID = claims.MachineID
-		request.Actor.HostID = claims.MachineID
 		result, err := service.CreateTunnel(r.Context(), request, tunnelv1.CreateTunnelRequest{
 			Name: document.Name, AccessMode: document.AccessMode,
 			Origin: tunnelv1.OriginRequest{
@@ -83,6 +74,55 @@ func tunnelCreate(service tunnelv1.API, identities machineRequestVerifier) http.
 		}
 		writeTunnelMutation(w, result, result.Replayed, true)
 	}
+}
+
+// tunnelMachineHeadersPresent identifies the machine-auth path without
+// attempting to authenticate it. The handler must receive requests carrying
+// either machine header so malformed or incomplete proofs fail closed there,
+// instead of being consumed as ordinary DeviceService bearer tokens.
+func tunnelMachineHeadersPresent(r *http.Request) bool {
+	return strings.TrimSpace(r.Header.Get("X-Paperboat-Machine-Identity")) != "" || strings.TrimSpace(r.Header.Get("X-Paperboat-Machine-Proof")) != ""
+}
+
+// tunnelMachineRequestContext verifies the canonical host request and derives
+// every actor identity from the verified claims. It deliberately does not
+// manufacture a browser principal or use a CLI client-session ID as HostID.
+func tunnelMachineRequestContext(w http.ResponseWriter, r *http.Request, body []byte, idempotencyKey string, identities machineRequestVerifier) (previewtunnelapi.RequestContext, bool) {
+	if identities == nil {
+		writePreviewTunnelError(w, r, http.StatusUnauthorized, "machine_identity_required", "A signed host identity is required to create a tunnel.", "unchanged", false, "run_on_authorized_host")
+		return previewtunnelapi.RequestContext{}, false
+	}
+	bearer, bearerOK := bearerToken(r)
+	if !bearerOK {
+		writePreviewTunnelError(w, r, http.StatusUnauthorized, "unauthenticated", "A machine identity is required.", "unchanged", false, "run_on_authorized_host")
+		return previewtunnelapi.RequestContext{}, false
+	}
+	identity := strings.TrimSpace(r.Header.Get("X-Paperboat-Machine-Identity"))
+	if identity == "" || identity != bearer {
+		writePreviewTunnelError(w, r, http.StatusUnauthorized, "machine_identity_invalid", "The signed host identity could not be verified.", "unchanged", false, "run_on_authorized_host")
+		return previewtunnelapi.RequestContext{}, false
+	}
+	proof, err := base64.RawURLEncoding.Strict().DecodeString(strings.TrimSpace(r.Header.Get("X-Paperboat-Machine-Proof")))
+	if err != nil || len(proof) == 0 {
+		writePreviewTunnelError(w, r, http.StatusUnauthorized, "machine_identity_invalid", "The signed host identity could not be verified.", "unchanged", false, "run_on_authorized_host")
+		return previewtunnelapi.RequestContext{}, false
+	}
+	claims, err := identities.VerifyMachineRequest(r.Context(), identity, proof, r.Method, r.URL.Path, body)
+	if err != nil || claims.UserID == "" || claims.MachineID == "" || claims.InstallationGeneration <= 0 || claims.OperationID != idempotencyKey {
+		writePreviewTunnelError(w, r, http.StatusUnauthorized, "machine_identity_invalid", "The signed host identity could not be verified.", "unchanged", false, "run_on_authorized_host")
+		return previewtunnelapi.RequestContext{}, false
+	}
+	if principal, ok := principalFromContext(r.Context()); ok && principal.User.ID != "" && principal.User.ID != claims.UserID {
+		writePreviewTunnelError(w, r, http.StatusForbidden, "forbidden", "You are not allowed to access this tunnel.", "unchanged", false, "authenticate_with_required_scope")
+		return previewtunnelapi.RequestContext{}, false
+	}
+	return previewtunnelapi.RequestContext{
+		Actor: previewtunnelapi.Actor{
+			AccountID: claims.UserID, ActorID: claims.UserID, DeviceID: claims.MachineID, HostID: claims.MachineID,
+			Role: "user", Scopes: []string{"tunnels:write"},
+		},
+		RequestID: requestIDFromContext(r.Context()), CorrelationID: observability.CorrelationID(r.Context()),
+	}, true
 }
 
 func tunnelList(service tunnelv1.API) http.HandlerFunc {

@@ -65,7 +65,7 @@ func TestConnectorCarrierBootstrapRequiresExactMachineAndSessionBinding(t *testi
 		SessionID:        active.SessionID, ProcessGeneration: active.ProcessGeneration, CredentialGeneration: active.CredentialGeneration,
 		ConfigGeneration: active.ConfigGeneration, ConfigContentHash: active.ConfigContentHash,
 		Carriers: []connectorprotocol.CarrierBootstrapNode{{
-			EdgeNodeID: "edge_01", EdgeProcessEpoch: "edge_epoch_01", FailureDomain: "region_a",
+			EdgeNodeID: "edge_01", EdgeProcessEpoch: "_edge_epoch_01", FailureDomain: "region_a",
 			Endpoints:                 []string{"tls://edge.example.test:8443", "quic://edge.example.test:8444"},
 			ServerSPKISHA256:          "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 			ServerCertificateChainPEM: bootstrapTestCertificate(t),

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -93,11 +94,49 @@ func (s *ActiveControlSessions) Lookup(tunnelID, connectorID, sessionID string, 
 
 func controlSessionKey(tunnelID, connectorID string) string { return tunnelID + "\x00" + connectorID }
 
+// ControlTerminationKind identifies why the server stopped serving one
+// connector control stream. It deliberately describes the transport boundary
+// only: payloads and raw errors are never included in the event.
+type ControlTerminationKind string
+
+const (
+	ControlTerminationUnknown         ControlTerminationKind = "unknown"
+	ControlTerminationInvalidRequest  ControlTerminationKind = "invalid_request"
+	ControlTerminationPeerEOF         ControlTerminationKind = "peer_eof"
+	ControlTerminationPeerCanceled    ControlTerminationKind = "peer_canceled"
+	ControlTerminationPeerDisconnect  ControlTerminationKind = "peer_disconnect"
+	ControlTerminationPeerReadError   ControlTerminationKind = "peer_read_error"
+	ControlTerminationPeerWriteError  ControlTerminationKind = "peer_write_error"
+	ControlTerminationAuthentication  ControlTerminationKind = "authentication_error"
+	ControlTerminationSessionExpired  ControlTerminationKind = "session_expired"
+	ControlTerminationSessionReplaced ControlTerminationKind = "session_replaced"
+	ControlTerminationProtocolError   ControlTerminationKind = "protocol_error"
+	ControlTerminationServerShutdown  ControlTerminationKind = "server_shutdown"
+	ControlTerminationServerError     ControlTerminationKind = "server_error"
+)
+
+// ControlTerminationEvent is a bounded, secret-free diagnostic projection of
+// one served stream. The observer is called after the session cleanup path has
+// run, so SessionID and the protocol disconnect reason are stable.
+type ControlTerminationEvent struct {
+	TunnelID          string
+	ConnectorID       string
+	SessionID         string
+	ProcessGeneration uint64
+	Kind              ControlTerminationKind
+	ProtocolReason    DisconnectReason
+	Code              Code
+	Retryable         bool
+}
+
 type ControlTransport struct {
 	server   *PersistentServer
 	sessions *ActiveControlSessions
 	rotation *RotationDispatcher
 	drain    *DrainDispatcher
+
+	terminationMu       sync.RWMutex
+	terminationObserver func(ControlTerminationEvent)
 }
 
 func NewControlTransport(server *PersistentServer, sessions *ActiveControlSessions) (*ControlTransport, error) {
@@ -125,33 +164,153 @@ func (t *ControlTransport) Sessions() *ActiveControlSessions {
 	return t.sessions
 }
 
+// SetTerminationObserver installs an optional bounded diagnostic callback. It
+// is intended to be set during application construction, before Serve is
+// called. The transport also emits a structured slog record by default, so a
+// caller does not need to install an observer to distinguish peer EOF,
+// explicit disconnect, protocol failure, and server shutdown.
+func (t *ControlTransport) SetTerminationObserver(observer func(ControlTerminationEvent)) {
+	if t == nil {
+		return
+	}
+	t.terminationMu.Lock()
+	t.terminationObserver = observer
+	t.terminationMu.Unlock()
+}
+
+func (t *ControlTransport) reportTermination(event ControlTerminationEvent) {
+	if t == nil {
+		return
+	}
+	t.terminationMu.RLock()
+	observer := t.terminationObserver
+	t.terminationMu.RUnlock()
+	if observer != nil {
+		observer(event)
+	}
+	slog.Info("connector control stream terminated",
+		"tunnel_id", event.TunnelID,
+		"connector_id", event.ConnectorID,
+		"session_id", event.SessionID,
+		"process_generation", event.ProcessGeneration,
+		"termination_kind", event.Kind,
+		"protocol_reason", event.ProtocolReason,
+		"code", event.Code,
+		"retryable", event.Retryable,
+	)
+}
+
+func populateTermination(event *ControlTerminationEvent, cause error) {
+	if event == nil {
+		return
+	}
+	event.Code = CodeOf(cause)
+	event.ProtocolReason = ReasonOf(cause)
+	var typed *Error
+	if errors.As(cause, &typed) && typed != nil {
+		event.Retryable = typed.Retryable
+	}
+}
+
+func classifyControlError(cause error) ControlTerminationKind {
+	switch ReasonOf(cause) {
+	case ReasonAuthentication:
+		return ControlTerminationAuthentication
+	case ReasonCredentialExpired, ReasonLeaseExpired, ReasonHeartbeatTimeout:
+		return ControlTerminationSessionExpired
+	case ReasonSessionReplaced, ReasonStaleGeneration:
+		return ControlTerminationSessionReplaced
+	case ReasonServerShutdown:
+		return ControlTerminationServerShutdown
+	default:
+		return ControlTerminationProtocolError
+	}
+}
+
+func classifyReadTermination(ctx context.Context, cause error) ControlTerminationKind {
+	if ctx != nil && ctx.Err() != nil {
+		return ControlTerminationServerShutdown
+	}
+	if errors.Is(cause, io.EOF) {
+		return ControlTerminationPeerEOF
+	}
+	if errors.Is(cause, context.Canceled) {
+		return ControlTerminationPeerCanceled
+	}
+	return ControlTerminationPeerReadError
+}
+
+func classifyWriteTermination(ctx context.Context) ControlTerminationKind {
+	if ctx != nil && ctx.Err() != nil {
+		return ControlTerminationServerShutdown
+	}
+	return ControlTerminationPeerWriteError
+}
+
 // Serve runs one connector-v1 control stream. The first frame must be Hello;
 // the path-provided tunnel and connector are checked before durable auth. All
 // writes share one bounded serializer so responses and asynchronous rotation
 // frames cannot interleave on the byte stream.
 func (t *ControlTransport) Serve(ctx context.Context, stream io.ReadWriteCloser, expectedTunnelID, expectedConnectorID string) (serveErr error) {
+	event := ControlTerminationEvent{
+		TunnelID: expectedTunnelID, ConnectorID: expectedConnectorID,
+		Kind: ControlTerminationUnknown,
+	}
+	finish := func(kind ControlTerminationKind, cause error) error {
+		event.Kind = kind
+		if kind != ControlTerminationPeerEOF && kind != ControlTerminationPeerCanceled {
+			populateTermination(&event, cause)
+		}
+		return cause
+	}
+	defer func() {
+		if event.Kind == ControlTerminationUnknown {
+			event.Kind = ControlTerminationServerError
+			populateTermination(&event, serveErr)
+		}
+		t.reportTermination(event)
+	}()
 	if t == nil || t.server == nil || t.sessions == nil || ctx == nil || stream == nil || ValidateIdentifier(expectedTunnelID) != nil || ValidateIdentifier(expectedConnectorID) != nil {
-		return ErrInvalidInput
+		return finish(ControlTerminationInvalidRequest, ErrInvalidInput)
 	}
 	defer stream.Close()
+	streamDone := make(chan struct{})
+	defer close(streamDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			// ReadFrame may be blocked in a WebSocket or net.Pipe read. Closing
+			// the stream here makes server shutdown/cancellation interrupt that
+			// read instead of leaking the handler until the peer notices.
+			_ = stream.Close()
+		case <-streamDone:
+		}
+	}()
 	writer := newSerializedFrameWriter(stream)
 	first, err := ReadFrame(stream)
 	if err != nil {
-		return err
+		kind := classifyReadTermination(ctx, err)
+		if kind == ControlTerminationPeerEOF || kind == ControlTerminationPeerCanceled || kind == ControlTerminationServerShutdown {
+			_ = finish(kind, err)
+			return nil
+		}
+		return finish(kind, err)
 	}
 	if first.Type != MessageHello {
-		return codeError(ErrUnsupportedMessage, ReasonProtocolMismatch, false, nil)
+		err = codeError(ErrUnsupportedMessage, ReasonProtocolMismatch, false, nil)
+		return finish(ControlTerminationProtocolError, err)
 	}
 	var hello Hello
 	if err = first.DecodePayload(&hello); err != nil {
-		return err
+		return finish(ControlTerminationProtocolError, err)
 	}
 	if hello.TunnelID != expectedTunnelID || hello.ConnectorID != expectedConnectorID {
-		return codeError(ErrIdentityMismatch, ReasonAuthentication, false, nil)
+		err = codeError(ErrIdentityMismatch, ReasonAuthentication, false, nil)
+		return finish(ControlTerminationAuthentication, err)
 	}
 	session, welcome, snapshot, err := t.server.Accept(ctx, hello)
 	if err != nil {
-		return err
+		return finish(classifyControlError(err), err)
 	}
 	projection := ActiveControlSession{
 		AccountID: hello.AccountID, TunnelID: hello.TunnelID, ConnectorID: hello.ConnectorID,
@@ -160,9 +319,11 @@ func (t *ControlTransport) Serve(ctx context.Context, stream io.ReadWriteCloser,
 		CredentialGeneration: hello.Auth.CredentialGeneration, ConfigGeneration: snapshot.Generation,
 		ConfigContentHash: snapshot.ContentHash,
 	}
+	event.SessionID = welcome.SessionID
+	event.ProcessGeneration = hello.ProcessGeneration
 	if err = t.sessions.attach(projection, session); err != nil {
 		_ = session.Close(context.Background(), ReasonSessionReplaced)
-		return err
+		return finish(ControlTerminationSessionReplaced, err)
 	}
 	defer t.sessions.detach(projection)
 	closeReason := ReasonProtocolClosed
@@ -178,21 +339,21 @@ func (t *ControlTransport) Serve(ctx context.Context, stream io.ReadWriteCloser,
 
 	welcomeFrame, err := NewFrame(MessageWelcome, first.RequestID, welcome)
 	if err != nil {
-		return err
+		return finish(ControlTerminationProtocolError, err)
 	}
 	if err = writer.Send(ctx, welcomeFrame); err != nil {
-		return err
+		return finish(classifyWriteTermination(ctx), err)
 	}
 	snapshotRequestID, err := newOpaqueID("snapshot")
 	if err != nil {
-		return err
+		return finish(ControlTerminationServerError, err)
 	}
 	snapshotFrame, err := NewFrame(MessageSnapshot, snapshotRequestID, snapshot)
 	if err != nil {
-		return err
+		return finish(ControlTerminationProtocolError, err)
 	}
 	if err = writer.Send(ctx, snapshotFrame); err != nil {
-		return err
+		return finish(classifyWriteTermination(ctx), err)
 	}
 	if t.rotation != nil {
 		live := RotationLiveSession{
@@ -202,7 +363,7 @@ func (t *ControlTransport) Serve(ctx context.Context, stream io.ReadWriteCloser,
 			NegotiatedCapabilities: append([]string(nil), welcome.Capabilities...), Send: writer.Send,
 		}
 		if err = t.rotation.RegisterSession(ctx, live); err != nil {
-			return err
+			return finish(ControlTerminationServerError, err)
 		}
 		defer t.rotation.DetachSession(session.Reference())
 	}
@@ -212,7 +373,7 @@ func (t *ControlTransport) Serve(ctx context.Context, stream io.ReadWriteCloser,
 			NegotiatedCapabilities: append([]string(nil), welcome.Capabilities...), Send: writer.Send,
 		}
 		if err = t.drain.RegisterSession(ctx, live); err != nil {
-			return err
+			return finish(ControlTerminationServerError, err)
 		}
 		defer t.drain.DetachSession(session.Reference())
 	}
@@ -220,19 +381,25 @@ func (t *ControlTransport) Serve(ctx context.Context, stream io.ReadWriteCloser,
 	for {
 		frame, readErr := ReadFrame(stream)
 		if readErr != nil {
-			if errors.Is(readErr, io.EOF) || errors.Is(readErr, context.Canceled) || ctx.Err() != nil {
+			if ctx.Err() != nil {
+				_ = finish(ControlTerminationServerShutdown, ctx.Err())
 				return nil
 			}
-			return readErr
+			kind := classifyReadTermination(ctx, readErr)
+			if kind == ControlTerminationPeerEOF || kind == ControlTerminationPeerCanceled {
+				_ = finish(kind, readErr)
+				return nil
+			}
+			return finish(kind, readErr)
 		}
 		response, terminal, handleErr := handleControlFrame(ctx, session, t.rotation, frame)
 		if handleErr != nil {
 			_ = writeControlReject(ctx, writer, session.Reference(), hello.AccountID, frame.RequestID, handleErr)
-			return handleErr
+			return finish(classifyControlError(handleErr), handleErr)
 		}
 		if response != nil {
 			if err = writer.Send(ctx, *response); err != nil {
-				return err
+				return finish(classifyWriteTermination(ctx), err)
 			}
 		}
 		if terminal {
@@ -241,6 +408,10 @@ func (t *ControlTransport) Serve(ctx context.Context, stream io.ReadWriteCloser,
 				if frame.DecodePayload(&disconnect) == nil {
 					closeReason = disconnect.Reason
 				}
+			}
+			if frame.Type == MessageDisconnect {
+				event.Kind = ControlTerminationPeerDisconnect
+				event.ProtocolReason = closeReason
 			}
 			return nil
 		}

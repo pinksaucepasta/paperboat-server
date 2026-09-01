@@ -3678,7 +3678,21 @@ func (q *Queries) ListControlRoutesForEnvironmentAdmission(ctx context.Context, 
 const listControlRoutesForNode = `-- name: ListControlRoutesForNode :many
 SELECT r.id AS route_id, r.desired_revision AS route_revision, r.environment_id, c.connector_id,
        c.generation AS connector_generation, c.edge_node_id, r.kind, r.public_host,
-       r.target_host, r.target_port
+       r.target_host, r.target_port,
+       CASE
+         WHEN r.applied_revision = r.desired_revision
+          AND r.applied_node_id = c.edge_node_id
+          AND r.applied_generation = c.generation
+         THEN 'ready'::text
+         ELSE 'pending'::text
+       END AS preview_state,
+       CASE
+         WHEN r.applied_revision = r.desired_revision
+          AND r.applied_node_id = c.edge_node_id
+          AND r.applied_generation = c.generation
+         THEN ''::text
+         ELSE 'route_not_applied'::text
+       END AS preview_reason
 FROM control_routes r
 JOIN control_connector_generations c ON c.environment_id = r.environment_id AND c.connector_id = r.connector_id
 JOIN user_machines m ON m.id = c.machine_id AND m.environment_id = c.environment_id
@@ -3700,6 +3714,8 @@ type ListControlRoutesForNodeRow struct {
 	PublicHost          string
 	TargetHost          string
 	TargetPort          int32
+	PreviewState        string
+	PreviewReason       string
 }
 
 func (q *Queries) ListControlRoutesForNode(ctx context.Context, edgeNodeID sql.NullString) ([]ListControlRoutesForNodeRow, error) {
@@ -3722,6 +3738,8 @@ func (q *Queries) ListControlRoutesForNode(ctx context.Context, edgeNodeID sql.N
 			&i.PublicHost,
 			&i.TargetHost,
 			&i.TargetPort,
+			&i.PreviewState,
+			&i.PreviewReason,
 		); err != nil {
 			return nil, err
 		}
@@ -4026,6 +4044,8 @@ SELECT t.account_id,
        t.id AS tunnel_id,
        r.id AS route_id,
        r.generation AS route_generation,
+       r.generation AS route_revision,
+       t.access_mode,
        c.id AS connector_id,
        c.host_id,
        m.public_identity_key AS machine_identity_public_key,
@@ -4035,7 +4055,8 @@ SELECT t.account_id,
        config.generation AS config_generation,
        config.content_hash AS config_content_hash,
        node.id AS edge_node_id,
-       node.process_epoch AS edge_process_epoch
+       node.process_epoch AS edge_process_epoch,
+       node.edge_pool AS edge_failure_domain
 FROM tunnels AS t
 JOIN tunnel_routes AS r ON r.tunnel_id = t.id
 JOIN tunnel_connectors AS c ON c.tunnel_id = t.id
@@ -4063,8 +4084,11 @@ WHERE t.desired_state = 'active'
   AND c.desired_state = 'active'
   AND c.drain_state = 'accepting'
   AND c.last_session_id IS NOT NULL
-  AND session.state = 'ready'
+  AND session.state IN ('authenticating','ready')
+  AND session.last_heartbeat_at IS NOT NULL
+  AND session.last_heartbeat_at > $1::timestamptz - interval '2 minutes'
   AND session.lease_deadline > $1::timestamptz
+  AND session.applied_config_generation = config.generation
   AND c.last_applied_config_generation = config.generation
   AND config.activation_state = 'active'
 ORDER BY r.id, c.id
@@ -4081,6 +4105,8 @@ type ListReadyTunnelEdgeRouteCandidatesV1Row struct {
 	TunnelID                   string
 	RouteID                    string
 	RouteGeneration            int64
+	RouteRevision              int64
+	AccessMode                 string
 	ConnectorID                string
 	HostID                     string
 	MachineIdentityPublicKey   sql.NullString
@@ -4091,11 +4117,12 @@ type ListReadyTunnelEdgeRouteCandidatesV1Row struct {
 	ConfigContentHash          []byte
 	EdgeNodeID                 string
 	EdgeProcessEpoch           string
+	EdgeFailureDomain          string
 }
 
-// Pick every ready connector replica and one ready edge process for each active
-// HTTP route. Each tuple is only a candidate; Stage performs the
-// same exact readiness checks in the write statement.
+// Pick authenticated, config-applied connector sessions and one ready edge
+// process. A staged assignment bootstraps the data carrier; it cannot become
+// active until connector readiness and an exact edge ready observation.
 func (q *Queries) ListReadyTunnelEdgeRouteCandidatesV1(ctx context.Context, arg ListReadyTunnelEdgeRouteCandidatesV1Params) ([]ListReadyTunnelEdgeRouteCandidatesV1Row, error) {
 	rows, err := q.db.Query(ctx, listReadyTunnelEdgeRouteCandidatesV1, arg.Now, arg.RowLimit)
 	if err != nil {
@@ -4110,6 +4137,8 @@ func (q *Queries) ListReadyTunnelEdgeRouteCandidatesV1(ctx context.Context, arg 
 			&i.TunnelID,
 			&i.RouteID,
 			&i.RouteGeneration,
+			&i.RouteRevision,
+			&i.AccessMode,
 			&i.ConnectorID,
 			&i.HostID,
 			&i.MachineIdentityPublicKey,
@@ -4120,6 +4149,7 @@ func (q *Queries) ListReadyTunnelEdgeRouteCandidatesV1(ctx context.Context, arg 
 			&i.ConfigContentHash,
 			&i.EdgeNodeID,
 			&i.EdgeProcessEpoch,
+			&i.EdgeFailureDomain,
 		); err != nil {
 			return nil, err
 		}
@@ -4423,7 +4453,12 @@ WHERE a.edge_node_id = $1
       AND c.last_session_id = session.id
       AND c.last_applied_config_generation = a.config_generation
       AND session.process_generation = a.connector_process_generation
-      AND session.state = 'ready'
+      AND (
+        (a.state = 'staged' AND session.state IN ('authenticating','ready'))
+        OR (a.state = 'active' AND session.state = 'ready')
+      )
+      AND session.last_heartbeat_at IS NOT NULL
+      AND session.last_heartbeat_at > $3 - interval '2 minutes'
       AND session.lease_deadline > $3
       AND session.applied_config_generation = a.config_generation
       AND config.activation_state = 'active'
@@ -6112,7 +6147,9 @@ WHERE r.id = $11
   AND c.last_session_id = session.id
   AND c.last_applied_config_generation = config.generation
   AND session.process_generation = $14
-  AND session.state = 'ready'
+  AND session.state IN ('authenticating','ready')
+  AND session.last_heartbeat_at IS NOT NULL
+  AND session.last_heartbeat_at > $4 - interval '2 minutes'
   AND session.lease_deadline > $4
   AND session.applied_config_generation = config.generation
   AND config.activation_state = 'active'
@@ -6165,9 +6202,10 @@ type StageTunnelEdgeRouteAssignmentV1Params struct {
 	ConfigContentHash          []byte
 }
 
-// Publish only after the connector session and the edge process have both
-// reported readiness for the exact immutable config generation.  The edge
-// receives route identity and policy, never the host-local origin address.
+// Publish a staged admission after the authenticated control session has
+// applied the exact config. The carrier needs this admission to complete its
+// readiness handshake; public activation still requires the later exact
+// ready observation. The edge receives policy, never the local origin.
 func (q *Queries) StageTunnelEdgeRouteAssignmentV1(ctx context.Context, arg StageTunnelEdgeRouteAssignmentV1Params) (TunnelEdgeRouteAssignment, error) {
 	row := q.db.QueryRow(ctx, stageTunnelEdgeRouteAssignmentV1,
 		arg.AssignmentID,
@@ -6217,6 +6255,87 @@ func (q *Queries) StageTunnelEdgeRouteAssignmentV1(ctx context.Context, arg Stag
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const supersedeStaleStagedTunnelEdgeRouteAssignmentV1 = `-- name: SupersedeStaleStagedTunnelEdgeRouteAssignmentV1 :execrows
+UPDATE tunnel_edge_route_assignments AS stale
+SET state = 'draining', observed_state = 'draining', updated_at = $1
+WHERE stale.route_id = $2
+  AND stale.connector_id = $3
+  AND stale.state = 'staged'
+  AND (
+    stale.account_id IS DISTINCT FROM $4
+    OR stale.tunnel_id IS DISTINCT FROM $5
+    OR stale.host_id IS DISTINCT FROM $6
+    OR stale.machine_identity_public_key IS DISTINCT FROM $7
+    OR stale.machine_identity_thumbprint IS DISTINCT FROM $8
+    OR stale.connector_generation IS DISTINCT FROM $9
+    OR stale.connector_session_id IS DISTINCT FROM $10
+    OR stale.connector_process_generation IS DISTINCT FROM $11
+    OR stale.config_generation IS DISTINCT FROM $12
+    OR stale.config_content_hash IS DISTINCT FROM $13
+    OR stale.access_mode IS DISTINCT FROM $14
+    OR stale.route_generation IS DISTINCT FROM $15
+    OR stale.route_revision IS DISTINCT FROM $16
+    OR stale.edge_node_id IS DISTINCT FROM $17
+    OR stale.edge_process_epoch IS DISTINCT FROM $18
+    OR stale.edge_failure_domain IS DISTINCT FROM $19
+  )
+`
+
+type SupersedeStaleStagedTunnelEdgeRouteAssignmentV1Params struct {
+	Now                        time.Time
+	RouteID                    string
+	ConnectorID                string
+	AccountID                  string
+	TunnelID                   string
+	HostID                     string
+	MachineIdentityPublicKey   string
+	MachineIdentityThumbprint  string
+	ConnectorGeneration        int64
+	ConnectorSessionID         string
+	ConnectorProcessGeneration int64
+	ConfigGeneration           int64
+	ConfigContentHash          []byte
+	AccessMode                 string
+	RouteGeneration            int64
+	RouteRevision              int64
+	EdgeNodeID                 string
+	EdgeProcessEpoch           string
+	EdgeFailureDomain          string
+}
+
+// A connector process replacement must not be blocked by a staged row from
+// the previous process. Keep the old row in assignment history and mark it
+// draining so an edge that received it can remove it with the normal exact
+// detached observation. Reconciliation holds the route lock while running
+// this transition, so it is serialized with a concurrent stage.
+func (q *Queries) SupersedeStaleStagedTunnelEdgeRouteAssignmentV1(ctx context.Context, arg SupersedeStaleStagedTunnelEdgeRouteAssignmentV1Params) (int64, error) {
+	result, err := q.db.Exec(ctx, supersedeStaleStagedTunnelEdgeRouteAssignmentV1,
+		arg.Now,
+		arg.RouteID,
+		arg.ConnectorID,
+		arg.AccountID,
+		arg.TunnelID,
+		arg.HostID,
+		arg.MachineIdentityPublicKey,
+		arg.MachineIdentityThumbprint,
+		arg.ConnectorGeneration,
+		arg.ConnectorSessionID,
+		arg.ConnectorProcessGeneration,
+		arg.ConfigGeneration,
+		arg.ConfigContentHash,
+		arg.AccessMode,
+		arg.RouteGeneration,
+		arg.RouteRevision,
+		arg.EdgeNodeID,
+		arg.EdgeProcessEpoch,
+		arg.EdgeFailureDomain,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const suspendControlEnvironmentForQuota = `-- name: SuspendControlEnvironmentForQuota :execrows

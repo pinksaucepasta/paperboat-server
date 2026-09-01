@@ -212,7 +212,7 @@ func validDispatchEndpoint(raw string) bool {
 		return false
 	}
 	labels := strings.Split(parsed.Hostname(), ".")
-	if len(labels) < 2 || !strings.HasPrefix(labels[0], "preview-") {
+	if len(labels) < 2 || strings.HasPrefix(labels[0], "preview-") {
 		return false
 	}
 	for _, label := range labels {

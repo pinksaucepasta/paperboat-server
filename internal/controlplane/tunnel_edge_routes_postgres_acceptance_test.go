@@ -59,6 +59,12 @@ func TestTunnelEdgeRouteAssignmentsOnPostgres(t *testing.T) {
 	fixture.insertBase(t, database)
 	fixture.insertConnector(t, database, fixture.connectorOne, fixture.hostOne, fixture.sessionOne, 11)
 	fixture.insertConnector(t, database, fixture.connectorTwo, fixture.hostTwo, fixture.sessionTwo, 22)
+	// The connector has authenticated and ACKed the exact snapshot, but the
+	// carrier cannot report readiness until this staged assignment is visible
+	// at the edge. This is the bootstrap state that prevents the assignment /
+	// carrier readiness cycle from deadlocking.
+	fixture.markConnectorPreReady(t, database, fixture.connectorOne, fixture.sessionOne)
+	fixture.markConnectorPreReady(t, database, fixture.connectorTwo, fixture.sessionTwo)
 
 	service := &EdgeService{store: database, clock: func() time.Time { return now }}
 	if staged, err := service.ReconcileTunnelEdgeRouteAssignments(ctx, 10); err != nil || staged != 2 {
@@ -80,6 +86,8 @@ func TestTunnelEdgeRouteAssignmentsOnPostgres(t *testing.T) {
 	if replayedFirst.assignmentID != first.assignmentID || !replayedFirst.assignedAt.Equal(first.assignedAt) || replayedSecond.assignmentID != second.assignmentID || !replayedSecond.assignedAt.Equal(second.assignedAt) {
 		t.Fatalf("replay changed replica identity/assigned_at: before=%+v/%+v after=%+v/%+v", first, second, replayedFirst, replayedSecond)
 	}
+	fixture.markConnectorReady(t, database, fixture.connectorOne, fixture.sessionOne)
+	fixture.markConnectorReady(t, database, fixture.connectorTwo, fixture.sessionTwo)
 
 	observation := fixture.observation(first, "ready")
 	for name, mutate := range map[string]func(*RouteObservation){
@@ -154,6 +162,71 @@ func TestTunnelEdgeRouteAssignmentsOnPostgres(t *testing.T) {
 	}
 }
 
+// TestStagedTunnelEdgeAssignmentIsReplacedAfterConnectorProcessRestart
+// guards the recovery path used when a connector dies after the server has
+// staged its assignment but before the edge acknowledges it. The old staged
+// row must remain in history for exact detach fencing while no longer
+// occupying the per-route/per-connector staged slot.
+func TestStagedTunnelEdgeAssignmentIsReplacedAfterConnectorProcessRestart(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("PAPERBOAT_TEST_DATABASE_DSN"))
+	if dsn == "" {
+		t.Skip("set PAPERBOAT_TEST_DATABASE_DSN to run TRK-15 PostgreSQL acceptance")
+	}
+	if err := db.ValidateIsolatedTestDSN(dsn, os.Getenv("PAPERBOAT_DATABASE_DSN")); err != nil {
+		t.Fatal(err)
+	}
+	if !safeTunnelEdgeAcceptanceDSN(dsn) {
+		t.Fatal("PAPERBOAT_TEST_DATABASE_DSN must name an isolated *_test database")
+	}
+	if production := strings.TrimSpace(os.Getenv("PAPERBOAT_DATABASE_DSN")); production != "" && sameTunnelEdgeAcceptanceDatabase(dsn, production) {
+		t.Fatal("refusing to run TRK-15 acceptance against PAPERBOAT_DATABASE_DSN")
+	}
+
+	ctx := context.Background()
+	database, err := db.Open(config.Database{Driver: "postgres", DSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	fixture := newTunnelEdgeAcceptanceFixture(fmt.Sprintf("restart-%d", time.Now().UnixNano()), now)
+	t.Cleanup(func() {
+		_, _ = database.SQL().ExecContext(ctx, `DELETE FROM paperboat.users WHERE id=$1`, fixture.accountID)
+		_, _ = database.SQL().ExecContext(ctx, `DELETE FROM paperboat.control_tunnel_nodes WHERE id=$1`, fixture.nodeID)
+		_ = database.Close()
+	})
+	if err := db.Migrate(ctx, database); err != nil {
+		t.Fatal(err)
+	}
+	fixture.insertBase(t, database)
+	fixture.insertConnector(t, database, fixture.connectorOne, fixture.hostOne, fixture.sessionOne, 5)
+
+	service := &EdgeService{store: database, clock: func() time.Time { return now }}
+	if staged, err := service.ReconcileTunnelEdgeRouteAssignments(ctx, 10); err != nil || staged != 1 {
+		t.Fatalf("initial reconcile = %d, %v; want one staged assignment", staged, err)
+	}
+	old := fixture.loadAssignment(t, database, 1)
+	if old.state != "staged" || old.observedState != "pending" || old.sessionID != fixture.sessionOne || old.processGeneration != 5 {
+		t.Fatalf("initial staged assignment = %+v", old)
+	}
+
+	replacementSession := "ses_trk15_restart_" + fixture.suffix
+	fixture.replaceConnectorSession(t, database, fixture.connectorOne, replacementSession, 10)
+	if staged, err := service.ReconcileTunnelEdgeRouteAssignments(ctx, 10); err != nil || staged != 1 {
+		t.Fatalf("replacement reconcile = %d, %v; want one staged assignment", staged, err)
+	}
+	replaced := fixture.loadAssignment(t, database, 1)
+	current := fixture.loadAssignment(t, database, 2)
+	if replaced.state != "draining" || replaced.observedState != "draining" {
+		t.Fatalf("stale staged assignment = %+v; want draining history", replaced)
+	}
+	if current.state != "staged" || current.observedState != "pending" || current.sessionID != replacementSession || current.processGeneration != 10 {
+		t.Fatalf("replacement staged assignment = %+v", current)
+	}
+	if staged, err := service.ReconcileTunnelEdgeRouteAssignments(ctx, 10); err != nil || staged != 0 {
+		t.Fatalf("replacement replay = %d, %v; want idempotent no-op", staged, err)
+	}
+}
+
 type tunnelEdgeAcceptanceFixture struct {
 	suffix, accountID, tunnelID, routeID, nodeID, epoch string
 	hostOne, hostTwo, connectorOne, connectorTwo        string
@@ -224,6 +297,28 @@ func (f tunnelEdgeAcceptanceFixture) insertConnector(t *testing.T, database *db.
 		t.Fatal(err)
 	}
 	if _, err := database.SQL().ExecContext(ctx, `UPDATE paperboat.tunnel_connectors SET last_session_id=$1 WHERE id=$2`, sessionID, connectorID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f tunnelEdgeAcceptanceFixture) markConnectorPreReady(t *testing.T, database *db.DB, connectorID, sessionID string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := database.SQL().ExecContext(ctx, `UPDATE paperboat.tunnel_connector_sessions SET state='authenticating', ready_at=NULL WHERE id=$1 AND connector_id=$2`, sessionID, connectorID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.SQL().ExecContext(ctx, `UPDATE paperboat.tunnel_connectors SET ready_at=NULL WHERE id=$1`, connectorID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f tunnelEdgeAcceptanceFixture) markConnectorReady(t *testing.T, database *db.DB, connectorID, sessionID string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := database.SQL().ExecContext(ctx, `UPDATE paperboat.tunnel_connector_sessions SET state='ready', ready_at=$3 WHERE id=$1 AND connector_id=$2`, sessionID, connectorID, f.now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.SQL().ExecContext(ctx, `UPDATE paperboat.tunnel_connectors SET ready_at=$2 WHERE id=$1`, connectorID, f.now); err != nil {
 		t.Fatal(err)
 	}
 }

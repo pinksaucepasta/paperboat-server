@@ -121,7 +121,7 @@ func validPreviewMachineVerifier() *fakePreviewMachineVerifier {
 func TestPreviewLeaseCreateHandlerReturnsCanonicalOperationForPendingWork(t *testing.T) {
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
 	service := &fakePreviewLeaseAPI{create: previewv1.CreateResult{
-		Preview:   previewv1.Preview{Schema: previewv1.Schema, Kind: previewv1.Kind, ID: "prv_1", AccountID: "acct_1", ActorID: "user_1", OwnerDeviceID: "device_1", OwnerSessionID: "session_1", Target: previewv1.Target{Scheme: "http", Address: "127.0.0.1:3000"}, AccessMode: "public", Persistent: false, Endpoint: "https://preview-abc.preview.example.test", LeaseDeadline: now.Add(time.Hour), State: "allocating", AllocationState: "pending", EdgeState: "pending", OriginState: "unknown", CreatedAt: now, LastRenewedAt: now},
+		Preview:   previewv1.Preview{Schema: previewv1.Schema, Kind: previewv1.Kind, ID: "prv_1", AccountID: "acct_1", ActorID: "user_1", OwnerDeviceID: "device_1", OwnerSessionID: "session_1", Target: previewv1.Target{Scheme: "http", Address: "127.0.0.1:3000"}, AccessMode: "public", Persistent: false, Endpoint: "https://abc.preview.example.test", LeaseDeadline: now.Add(time.Hour), State: "allocating", AllocationState: "pending", EdgeState: "pending", OriginState: "unknown", CreatedAt: now, LastRenewedAt: now},
 		Operation: previewtunnelapi.Operation{Schema: previewv1.Schema, Kind: "operation", ID: "op_1", ResourceKind: "preview_lease", ResourceID: "prv_1", Phase: "connecting", State: "running", Progress: 60, CorrelationID: "cor_1", CreatedAt: now, UpdatedAt: now}, ETag: `"ptv1:preview_lease:prHZMQ:1"`,
 	}}
 	request := previewLeaseHandlerRequest(http.MethodPost, "/v1/previews", `{"owner_device_id":"device_1","owner_session_id":"session_1","target":{"scheme":"http","address":"127.0.0.1:3000"},"domains":[]}`)
@@ -133,6 +133,9 @@ func TestPreviewLeaseCreateHandlerReturnsCanonicalOperationForPendingWork(t *tes
 	}
 	if recorder.Header().Get("ETag") == "" || recorder.Header().Get("If-Match") != "" {
 		t.Fatalf("response concurrency headers = %#v", recorder.Header())
+	}
+	if got := recorder.Header().Get("Cache-Control"); got != "no-store, no-transform" {
+		t.Fatalf("cache control = %q", got)
 	}
 	if recorder.Header().Get("Location") != "/v1/operations/op_1" {
 		t.Fatalf("location = %q", recorder.Header().Get("Location"))
@@ -171,7 +174,7 @@ func TestPreviewLeaseCreateHandlerRequiresExplicitDomainsArray(t *testing.T) {
 func TestPreviewLeaseCreateHandlerReturnsOperationHeaderForReadyReplay(t *testing.T) {
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
 	service := &fakePreviewLeaseAPI{create: previewv1.CreateResult{
-		Preview:   previewv1.Preview{Schema: previewv1.Schema, Kind: previewv1.Kind, ID: "prv_1", AccountID: "acct_1", ActorID: "user_1", OwnerDeviceID: "device_1", OwnerSessionID: "session_1", Target: previewv1.Target{Scheme: "http", Address: "127.0.0.1:3000"}, AccessMode: "public", Persistent: false, Endpoint: "https://preview-abc.preview.example.test", LeaseDeadline: now.Add(time.Hour), State: "ready", AllocationState: "ready", EdgeState: "ready", OriginState: "ready", CreatedAt: now, LastRenewedAt: now},
+		Preview:   previewv1.Preview{Schema: previewv1.Schema, Kind: previewv1.Kind, ID: "prv_1", AccountID: "acct_1", ActorID: "user_1", OwnerDeviceID: "device_1", OwnerSessionID: "session_1", Target: previewv1.Target{Scheme: "http", Address: "127.0.0.1:3000"}, AccessMode: "public", Persistent: false, Endpoint: "https://abc.preview.example.test", LeaseDeadline: now.Add(time.Hour), State: "ready", AllocationState: "ready", EdgeState: "ready", OriginState: "ready", CreatedAt: now, LastRenewedAt: now},
 		Operation: previewtunnelapi.Operation{Schema: previewv1.Schema, Kind: "operation", ID: "op_1", ResourceKind: "preview_lease", ResourceID: "prv_1", Phase: "ready", State: "succeeded", Progress: 100, CorrelationID: "cor_1", CreatedAt: now, UpdatedAt: now}, ETag: `"ptv1:preview_lease:prHZMQ:2"`,
 	}}
 	request := previewLeaseHandlerRequest(http.MethodPost, "/v1/previews", `{"owner_device_id":"device_1","owner_session_id":"session_1","target":{"scheme":"http","address":"127.0.0.1:3000"},"domains":[]}`)
@@ -319,6 +322,110 @@ func TestPreviewLeaseMutationHandlerParsesStrongETagAndIdempotency(t *testing.T)
 	previewLeaseRenew(service).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK || service.mutation.ExpectedGeneration != 1 || service.mutation.OwnerSessionID != "session_1" || recorder.Header().Get("ETag") == "" {
 		t.Fatalf("valid ETag status=%d mutation=%#v body=%s", recorder.Code, service.mutation, recorder.Body.String())
+	}
+}
+
+func machinePreviewMutationRequest(method, target, body string) *http.Request {
+	request := previewLeaseHandlerRequest(method, target, body)
+	request.Header.Set("Authorization", "Bearer machine-identity")
+	request.Header.Set("X-Paperboat-Machine-Identity", "machine-identity")
+	request.Header.Set("X-Paperboat-Machine-Proof", base64.RawURLEncoding.EncodeToString([]byte("proof")))
+	request.Header.Set("If-Match", `"ptv1:preview_lease:cHJ2XzE:1"`)
+	request.Header.Set("Idempotency-Key", "op_1")
+	return request
+}
+
+func TestPreviewLeaseRenewAndStopAcceptMachineProof(t *testing.T) {
+	service := &fakePreviewLeaseAPI{
+		renew: previewv1.RenewResult{Preview: previewv1.Preview{ID: "prv_1"}, ETag: `"ptv1:preview_lease:cHJ2XzE:2"`},
+		stop:  previewv1.StopResult{Preview: previewv1.Preview{ID: "prv_1"}, ETag: `"ptv1:preview_lease:cHJ2XzE:2"`},
+	}
+	verifier := validPreviewMachineVerifier()
+
+	renewRequest := machinePreviewMutationRequest(http.MethodPost, "/v1/previews/prv_1/lease/renew", `{"owner_session_id":"session_1"}`)
+	renewResponse := httptest.NewRecorder()
+	previewLeaseRenew(service, verifier).ServeHTTP(renewResponse, renewRequest)
+	if renewResponse.Code != http.StatusOK {
+		t.Fatalf("machine renew status = %d, body = %s", renewResponse.Code, renewResponse.Body.String())
+	}
+	if verifier.method != http.MethodPost || verifier.path != "/v1/previews/prv_1/lease/renew" || string(verifier.body) != `{"owner_session_id":"session_1"}` {
+		t.Fatalf("machine renew proof binding = method %q path %q body %q", verifier.method, verifier.path, verifier.body)
+	}
+	if service.mutation.ExpectedGeneration != 1 || service.mutation.OwnerSessionID != "session_1" {
+		t.Fatalf("machine renew mutation = %#v", service.mutation)
+	}
+
+	verifier.method, verifier.path, verifier.body = "", "", nil
+	stopRequest := machinePreviewMutationRequest(http.MethodDelete, "/v1/previews/prv_1", "")
+	stopResponse := httptest.NewRecorder()
+	previewLeaseStop(service, verifier).ServeHTTP(stopResponse, stopRequest)
+	if stopResponse.Code != http.StatusOK {
+		t.Fatalf("machine stop status = %d, body = %s", stopResponse.Code, stopResponse.Body.String())
+	}
+	if verifier.method != http.MethodDelete || verifier.path != "/v1/previews/prv_1" || len(verifier.body) != 0 {
+		t.Fatalf("machine stop proof binding = method %q path %q body %q", verifier.method, verifier.path, verifier.body)
+	}
+}
+
+func TestPreviewLeaseMachineMutationRejectsInvalidProofBeforeService(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		method  string
+		handler func(*fakePreviewLeaseAPI, machineRequestVerifier) http.Handler
+		target  string
+		body    string
+	}{
+		{name: "renew", method: http.MethodPost, handler: func(service *fakePreviewLeaseAPI, verifier machineRequestVerifier) http.Handler {
+			return previewLeaseRenew(service, verifier)
+		}, target: "/v1/previews/prv_1/lease/renew", body: `{"owner_session_id":"session_1"}`},
+		{name: "stop", method: http.MethodDelete, handler: func(service *fakePreviewLeaseAPI, verifier machineRequestVerifier) http.Handler {
+			return previewLeaseStop(service, verifier)
+		}, target: "/v1/previews/prv_1", body: ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, invalid := range []struct {
+				name     string
+				mutate   func(*http.Request)
+				verifier *fakePreviewMachineVerifier
+			}{
+				{name: "malformed", mutate: func(request *http.Request) {
+					request.Header.Set("X-Paperboat-Machine-Proof", "not-base64")
+				}, verifier: validPreviewMachineVerifier()},
+				{name: "wrong-operation", mutate: func(*http.Request) {}, verifier: &fakePreviewMachineVerifier{claims: controlplane.MachineRequestClaims{
+					UserID: "acct_1", MachineID: "machine_1", InstallationGeneration: 1, OperationID: "other-operation",
+				}}},
+			} {
+				t.Run(invalid.name, func(t *testing.T) {
+					service := &fakePreviewLeaseAPI{}
+					request := machinePreviewMutationRequest(test.method, test.target, test.body)
+					invalid.mutate(request)
+					recorder := httptest.NewRecorder()
+					test.handler(service, invalid.verifier).ServeHTTP(recorder, request)
+					if recorder.Code != http.StatusUnauthorized {
+						t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+					}
+					if service.mutation.RequestHash != ([32]byte{}) {
+						t.Fatal("service was called for invalid machine proof")
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestPreviewLeaseMutationAuthBypassesClientAuthForMachineProof(t *testing.T) {
+	called := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+	request := httptest.NewRequest(http.MethodDelete, "/v1/previews/prv_1", strings.NewReader("{}"))
+	request.Header.Set("X-Paperboat-Machine-Identity", "machine-identity")
+	request.Header.Set("X-Paperboat-Machine-Proof", "proof")
+	recorder := httptest.NewRecorder()
+	previewLeaseMutationAuth(nil, nil, nil, next).ServeHTTP(recorder, request)
+	if !called || recorder.Code != http.StatusNoContent {
+		t.Fatalf("machine mutation wrapper status=%d called=%v", recorder.Code, called)
 	}
 }
 

@@ -555,7 +555,7 @@ func tunnelResourceConnectorGet(service tunnelv1.ResourceAPI) http.HandlerFunc {
 	}
 }
 
-func tunnelResourceIssueEnrollment(service tunnelv1.ResourceAPI) http.HandlerFunc {
+func tunnelResourceIssueEnrollment(service tunnelv1.ResourceAPI, machineIdentities ...machineRequestVerifier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, hash, ok := resourceMutationBody(w, r, false)
 		if !ok {
@@ -575,7 +575,11 @@ func tunnelResourceIssueEnrollment(service tunnelv1.ResourceAPI) http.HandlerFun
 			writeTunnelResourceError(w, r, fmt.Errorf("%w: ttl_seconds is out of range", tunnelv1.ErrInvalidInput))
 			return
 		}
-		request, ok := resourceRequestContext(w, r)
+		var identities machineRequestVerifier
+		if len(machineIdentities) > 0 {
+			identities = machineIdentities[0]
+		}
+		request, ok := tunnelEnrollmentRequestContext(w, r, body, input.IdempotencyKey, document.HostID, identities)
 		if !ok {
 			return
 		}
@@ -587,6 +591,36 @@ func tunnelResourceIssueEnrollment(service tunnelv1.ResourceAPI) http.HandlerFun
 		w.Header().Set("Cache-Control", "no-store")
 		writeJSON(w, http.StatusCreated, SuccessResponse{Data: value})
 	}
+}
+
+// tunnelEnrollmentRequestContext is shared by enrollment issue and exchange.
+// Both operations are host-owned and require the renewable machine identity
+// to be authenticated over the exact request body and idempotency key.
+func tunnelEnrollmentRequestContext(w http.ResponseWriter, r *http.Request, body []byte, idempotencyKey, hostID string, identities machineRequestVerifier) (previewtunnelapi.RequestContext, bool) {
+	if !tunnelMachineHeadersPresent(r) {
+		writePreviewTunnelError(w, r, http.StatusUnauthorized, "machine_identity_required", "A signed host identity is required for connector enrollment.", "unchanged", false, "run_on_authorized_host")
+		return previewtunnelapi.RequestContext{}, false
+	}
+	authorizationValues := r.Header.Values("Authorization")
+	identityValues := r.Header.Values("X-Paperboat-Machine-Identity")
+	proofValues := r.Header.Values("X-Paperboat-Machine-Proof")
+	if len(authorizationValues) != 1 || len(identityValues) != 1 || len(proofValues) != 1 {
+		code := "machine_identity_invalid"
+		if len(authorizationValues) == 0 || len(identityValues) == 0 || len(proofValues) == 0 {
+			code = "machine_identity_required"
+		}
+		writePreviewTunnelError(w, r, http.StatusUnauthorized, code, "The signed host identity could not be verified.", "unchanged", false, "run_on_authorized_host")
+		return previewtunnelapi.RequestContext{}, false
+	}
+	request, ok := tunnelMachineRequestContext(w, r, body, idempotencyKey, identities)
+	if !ok {
+		return previewtunnelapi.RequestContext{}, false
+	}
+	if hostID == "" || strings.TrimSpace(hostID) != hostID || request.Actor.HostID != hostID {
+		writePreviewTunnelError(w, r, http.StatusForbidden, "connector_access_forbidden", "This host is not authorized for connector enrollment.", "unchanged", false, "use_authorized_host")
+		return previewtunnelapi.RequestContext{}, false
+	}
+	return request, true
 }
 
 func tunnelResourceExchangeEnrollment(service tunnelv1.ResourceAPI, identities machineRequestVerifier) http.HandlerFunc {
@@ -605,23 +639,8 @@ func tunnelResourceExchangeEnrollment(service tunnelv1.ResourceAPI, identities m
 			writeTunnelResourceError(w, r, err)
 			return
 		}
-		principal, ok := principalFromContext(r.Context())
+		request, ok := tunnelEnrollmentRequestContext(w, r, body, idempotencyKey, document.HostID, identities)
 		if !ok {
-			writePreviewTunnelError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.", "unchanged", false, "authenticate")
-			return
-		}
-		if identities == nil {
-			writePreviewTunnelError(w, r, http.StatusUnauthorized, "machine_identity_required", "A signed host identity is required to enroll a connector.", "unchanged", false, "run_on_authorized_host")
-			return
-		}
-		proof, decodeErr := base64.RawURLEncoding.Strict().DecodeString(strings.TrimSpace(r.Header.Get("X-Paperboat-Machine-Proof")))
-		if decodeErr != nil || len(proof) == 0 {
-			writePreviewTunnelError(w, r, http.StatusUnauthorized, "machine_identity_invalid", "The signed host identity could not be verified.", "unchanged", false, "run_on_authorized_host")
-			return
-		}
-		claims, verifyErr := identities.VerifyMachineRequest(r.Context(), strings.TrimSpace(r.Header.Get("X-Paperboat-Machine-Identity")), proof, r.Method, r.URL.Path, body)
-		if verifyErr != nil || claims.UserID == "" || claims.MachineID == "" || claims.InstallationGeneration <= 0 || claims.UserID != principal.User.ID || claims.MachineID != document.HostID || claims.OperationID != idempotencyKey {
-			writePreviewTunnelError(w, r, http.StatusUnauthorized, "machine_identity_invalid", "The signed host identity could not be verified.", "unchanged", false, "run_on_authorized_host")
 			return
 		}
 		credentialPublicKey, publicKeyErr := base64.RawURLEncoding.Strict().DecodeString(strings.TrimSpace(document.CredentialVerifierPublicKey))
@@ -631,9 +650,6 @@ func tunnelResourceExchangeEnrollment(service tunnelv1.ResourceAPI, identities m
 			writePreviewTunnelError(w, r, http.StatusUnauthorized, "connector_credential_proof_invalid", "The connector credential proof could not be verified.", "unchanged", false, "retry_with_new_connector_key")
 			return
 		}
-		request := tunnelRequestContext(principal, r)
-		request.Actor.DeviceID = claims.MachineID
-		request.Actor.HostID = claims.MachineID
 		value, err := service.ExchangeEnrollment(r.Context(), request, tunnelv1.EnrollmentExchangeRequest{
 			TunnelID: tunnelIDFromPath(r), Token: document.Token, HostID: document.HostID, ProtocolVersion: document.ProtocolVersion,
 			SoftwareVersion: document.SoftwareVersion, CredentialReference: document.CredentialReference, CredentialThumbprint: document.CredentialThumbprint,

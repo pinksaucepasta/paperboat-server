@@ -35,7 +35,7 @@ func testDispatchRequest() previewv1.DispatchRequest {
 		PreviewID: "prv_1", OperationID: "operation_1", AccountID: "acct_1", ActorID: "user_1",
 		OwnerDeviceID: "machine_1", OwnerSessionID: "session_1",
 		Target: previewv1.Target{Scheme: "http", Address: "127.0.0.1:3000"}, AccessMode: "public",
-		Endpoint: "https://preview-abc.preview.example.test", LeaseDeadline: now.Add(time.Hour),
+		Endpoint: "https://abc.preview.example.test", LeaseDeadline: now.Add(time.Hour),
 		LeaseETag: previewtunnelapi.ETag(previewv1.Kind, "prv_1", 1), State: "allocating",
 		AllocationState: "pending", EdgeState: "pending", OriginState: "unknown",
 		CreatedAt: now, LastRenewedAt: now, ExpectedGeneration: 1,

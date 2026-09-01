@@ -205,7 +205,7 @@ func TestPreviewLaunchCredentialBindsLeaseAndTraceFields(t *testing.T) {
 		EnvironmentID: "env_1", AccountID: "acct_1", MachineID: "machine_1", UserID: "user_1", ActorID: "user_1",
 		OperationID: "operation_1", PreviewID: "prv_1", OwnerSessionID: "session_1", IdempotencyKey: "create_1",
 		RequestID: "request_1", CorrelationID: "correlation_1", TargetScheme: "http", TargetAddress: "127.0.0.1:3000", AccessMode: "public",
-		Endpoint: "https://preview-abc.preview.example.test", LeaseDeadline: now.Add(time.Hour), LeaseETag: `"ptv1:preview_lease:cHJ2XzE:1"`,
+		Endpoint: "https://abc.preview.example.test", LeaseDeadline: now.Add(time.Hour), LeaseETag: `"ptv1:preview_lease:cHJ2XzE:1"`,
 		State: "allocating", AllocationState: "pending", EdgeState: "pending", OriginState: "unknown", CreatedAt: now, LastRenewedAt: now,
 		ExpectedGeneration: 1, RequestHash: strings.Repeat("a", 64),
 	}

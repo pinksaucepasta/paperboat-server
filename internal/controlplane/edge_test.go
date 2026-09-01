@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
 	"github.com/pinksaucepasta/paperboat-server/internal/observability"
 )
 
@@ -220,5 +222,23 @@ func TestEdgeHandlerReturnsCompleteCanonicalSnapshotForProcess(t *testing.T) {
 	}
 	if !envelope.Complete || envelope.Routes == nil || len(envelope.Routes) != 0 {
 		t.Fatalf("canonical snapshot = %+v", envelope)
+	}
+}
+
+func TestLegacyEdgeRouteJSONProjectsAppliedReadiness(t *testing.T) {
+	got := legacyEdgeRouteJSON(dbsqlc.ListControlRoutesForNodeRow{
+		RouteID: "rte_runtime_01", RouteRevision: 2, EnvironmentID: "env_01",
+		ConnectorID: "runtime", ConnectorGeneration: 4,
+		EdgeNodeID: sql.NullString{String: "edge_01", Valid: true},
+		Kind:       "runtime_https_wss", PublicHost: "machine.runtime.pprbt.dev",
+		TargetHost: "127.0.0.1", TargetPort: 38080,
+		PreviewState: "ready", PreviewReason: "",
+	})
+	if got["preview_state"] != "ready" || got["preview_reason"] != "" {
+		t.Fatalf("readiness projection = %#v", got)
+	}
+	target, ok := got["target"].(map[string]any)
+	if !ok || target["host"] != "127.0.0.1" || target["port"] != int32(38080) {
+		t.Fatalf("target projection = %#v", got["target"])
 	}
 }

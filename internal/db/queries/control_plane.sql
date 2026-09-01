@@ -1002,7 +1002,21 @@ RETURNING *;
 -- name: ListControlRoutesForNode :many
 SELECT r.id AS route_id, r.desired_revision AS route_revision, r.environment_id, c.connector_id,
        c.generation AS connector_generation, c.edge_node_id, r.kind, r.public_host,
-       r.target_host, r.target_port
+       r.target_host, r.target_port,
+       CASE
+         WHEN r.applied_revision = r.desired_revision
+          AND r.applied_node_id = c.edge_node_id
+          AND r.applied_generation = c.generation
+         THEN 'ready'::text
+         ELSE 'pending'::text
+       END AS preview_state,
+       CASE
+         WHEN r.applied_revision = r.desired_revision
+          AND r.applied_node_id = c.edge_node_id
+          AND r.applied_generation = c.generation
+         THEN ''::text
+         ELSE 'route_not_applied'::text
+       END AS preview_reason
 FROM control_routes r
 JOIN control_connector_generations c ON c.environment_id = r.environment_id AND c.connector_id = r.connector_id
 JOIN user_machines m ON m.id = c.machine_id AND m.environment_id = c.environment_id
@@ -1081,9 +1095,10 @@ WHERE applied_node_id = sqlc.arg(edge_node_id) AND desired_state IN ('attached',
 SELECT * FROM control_routes WHERE id = $1 FOR UPDATE;
 
 -- name: StageTunnelEdgeRouteAssignmentV1 :one
--- Publish only after the connector session and the edge process have both
--- reported readiness for the exact immutable config generation.  The edge
--- receives route identity and policy, never the host-local origin address.
+-- Publish a staged admission after the authenticated control session has
+-- applied the exact config. The carrier needs this admission to complete its
+-- readiness handshake; public activation still requires the later exact
+-- ready observation. The edge receives policy, never the local origin.
 INSERT INTO tunnel_edge_route_assignments
   (assignment_id, route_id, assignment_generation, account_id, tunnel_id,
    connector_id, host_id, machine_identity_public_key, machine_identity_thumbprint,
@@ -1125,7 +1140,9 @@ WHERE r.id = sqlc.arg(route_id)
   AND c.last_session_id = session.id
   AND c.last_applied_config_generation = config.generation
   AND session.process_generation = sqlc.arg(connector_process_generation)
-  AND session.state = 'ready'
+  AND session.state IN ('authenticating','ready')
+  AND session.last_heartbeat_at IS NOT NULL
+  AND session.last_heartbeat_at > sqlc.arg(now) - interval '2 minutes'
   AND session.lease_deadline > sqlc.arg(now)
   AND session.applied_config_generation = config.generation
   AND config.activation_state = 'active'
@@ -1160,13 +1177,15 @@ WHERE tunnel_edge_route_assignments.route_id = EXCLUDED.route_id
 RETURNING *;
 
 -- name: ListReadyTunnelEdgeRouteCandidatesV1 :many
--- Pick every ready connector replica and one ready edge process for each active
--- HTTP route. Each tuple is only a candidate; Stage performs the
--- same exact readiness checks in the write statement.
+-- Pick authenticated, config-applied connector sessions and one ready edge
+-- process. A staged assignment bootstraps the data carrier; it cannot become
+-- active until connector readiness and an exact edge ready observation.
 SELECT t.account_id,
        t.id AS tunnel_id,
        r.id AS route_id,
        r.generation AS route_generation,
+       r.generation AS route_revision,
+       t.access_mode,
        c.id AS connector_id,
        c.host_id,
        m.public_identity_key AS machine_identity_public_key,
@@ -1176,7 +1195,8 @@ SELECT t.account_id,
        config.generation AS config_generation,
        config.content_hash AS config_content_hash,
        node.id AS edge_node_id,
-       node.process_epoch AS edge_process_epoch
+       node.process_epoch AS edge_process_epoch,
+       node.edge_pool AS edge_failure_domain
 FROM tunnels AS t
 JOIN tunnel_routes AS r ON r.tunnel_id = t.id
 JOIN tunnel_connectors AS c ON c.tunnel_id = t.id
@@ -1204,12 +1224,45 @@ WHERE t.desired_state = 'active'
   AND c.desired_state = 'active'
   AND c.drain_state = 'accepting'
   AND c.last_session_id IS NOT NULL
-  AND session.state = 'ready'
+  AND session.state IN ('authenticating','ready')
+  AND session.last_heartbeat_at IS NOT NULL
+  AND session.last_heartbeat_at > sqlc.arg(now)::timestamptz - interval '2 minutes'
   AND session.lease_deadline > sqlc.arg(now)::timestamptz
+  AND session.applied_config_generation = config.generation
   AND c.last_applied_config_generation = config.generation
   AND config.activation_state = 'active'
 ORDER BY r.id, c.id
 LIMIT sqlc.arg(row_limit);
+
+-- name: SupersedeStaleStagedTunnelEdgeRouteAssignmentV1 :execrows
+-- A connector process replacement must not be blocked by a staged row from
+-- the previous process. Keep the old row in assignment history and mark it
+-- draining so an edge that received it can remove it with the normal exact
+-- detached observation. Reconciliation holds the route lock while running
+-- this transition, so it is serialized with a concurrent stage.
+UPDATE tunnel_edge_route_assignments AS stale
+SET state = 'draining', observed_state = 'draining', updated_at = sqlc.arg(now)
+WHERE stale.route_id = sqlc.arg(route_id)
+  AND stale.connector_id = sqlc.arg(connector_id)
+  AND stale.state = 'staged'
+  AND (
+    stale.account_id IS DISTINCT FROM sqlc.arg(account_id)
+    OR stale.tunnel_id IS DISTINCT FROM sqlc.arg(tunnel_id)
+    OR stale.host_id IS DISTINCT FROM sqlc.arg(host_id)
+    OR stale.machine_identity_public_key IS DISTINCT FROM sqlc.arg(machine_identity_public_key)
+    OR stale.machine_identity_thumbprint IS DISTINCT FROM sqlc.arg(machine_identity_thumbprint)
+    OR stale.connector_generation IS DISTINCT FROM sqlc.arg(connector_generation)
+    OR stale.connector_session_id IS DISTINCT FROM sqlc.arg(connector_session_id)
+    OR stale.connector_process_generation IS DISTINCT FROM sqlc.arg(connector_process_generation)
+    OR stale.config_generation IS DISTINCT FROM sqlc.arg(config_generation)
+    OR stale.config_content_hash IS DISTINCT FROM sqlc.arg(config_content_hash)
+    OR stale.access_mode IS DISTINCT FROM sqlc.arg(access_mode)
+    OR stale.route_generation IS DISTINCT FROM sqlc.arg(route_generation)
+    OR stale.route_revision IS DISTINCT FROM sqlc.arg(route_revision)
+    OR stale.edge_node_id IS DISTINCT FROM sqlc.arg(edge_node_id)
+    OR stale.edge_process_epoch IS DISTINCT FROM sqlc.arg(edge_process_epoch)
+    OR stale.edge_failure_domain IS DISTINCT FROM sqlc.arg(edge_failure_domain)
+  );
 
 -- name: GetTunnelEdgeRouteAssignmentBindingV1 :one
 -- Existing staged/active bindings are the idempotent reconciliation result.
@@ -1355,7 +1408,12 @@ WHERE a.edge_node_id = sqlc.arg(edge_node_id)
       AND c.last_session_id = session.id
       AND c.last_applied_config_generation = a.config_generation
       AND session.process_generation = a.connector_process_generation
-      AND session.state = 'ready'
+      AND (
+        (a.state = 'staged' AND session.state IN ('authenticating','ready'))
+        OR (a.state = 'active' AND session.state = 'ready')
+      )
+      AND session.last_heartbeat_at IS NOT NULL
+      AND session.last_heartbeat_at > sqlc.arg(now) - interval '2 minutes'
       AND session.lease_deadline > sqlc.arg(now)
       AND session.applied_config_generation = a.config_generation
       AND config.activation_state = 'active'

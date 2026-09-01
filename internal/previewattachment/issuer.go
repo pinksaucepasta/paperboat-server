@@ -217,8 +217,8 @@ WHERE node.id = $1
   AND node.carrier_endpoint_quic_port IS NOT NULL
 	AND node.carrier_server_spki_sha256 IS NOT NULL
 	AND node.carrier_server_certificate_chain_pem IS NOT NULL
-  AND (node.last_heartbeat_at IS NULL OR node.last_heartbeat_at > $2 - interval '2 minutes')
-  AND (node.drain_deadline IS NULL OR node.drain_deadline > $2)
+  AND (node.last_heartbeat_at IS NULL OR node.last_heartbeat_at > $2::timestamptz - interval '2 minutes')
+  AND (node.drain_deadline IS NULL OR node.drain_deadline > $2::timestamptz)
   AND machine.installation_generation = $5
   AND machine.state = 'online'
   AND machine.online

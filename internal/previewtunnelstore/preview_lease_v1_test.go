@@ -50,19 +50,19 @@ func TestPreviewLeaseTargetAndEndpointValidation(t *testing.T) {
 		}
 	}
 	for _, endpoint := range []string{
-		"https://preview-abc.preview.example.test",
-		"https://preview-7abc.preview.example.test",
+		"https://abc.preview.example.test",
+		"https://7abc.preview.example.test",
 	} {
 		if !validPreviewEndpoint(endpoint) {
 			t.Errorf("rejected valid endpoint %q", endpoint)
 		}
 	}
 	for _, endpoint := range []string{
-		"https://custom.preview.example.test",
-		"https://preview-abc.preview.example.test:443",
-		"https://preview-abc.preview.example.test/path",
-		"https://user:pass@preview-abc.preview.example.test",
-		"https://preview_abc.preview.example.test",
+		"https://preview-abc.preview.example.test",
+		"https://abc.preview.example.test:443",
+		"https://abc.preview.example.test/path",
+		"https://user:pass@abc.preview.example.test",
+		"https://abc_preview.preview.example.test",
 	} {
 		if validPreviewEndpoint(endpoint) {
 			t.Errorf("accepted invalid or vanity endpoint %q", endpoint)
@@ -75,7 +75,7 @@ func TestValidatePreviewLeaseRequiresAuditRequestIdentity(t *testing.T) {
 	input := CreatePreviewLeaseV1Input{
 		OperationID: "op_1", LeaseID: "prv_1", AuditEventID: "aud_1", AccountID: "acct_1", ActorID: "user_1", ActorType: "user",
 		OwnerDeviceID: "device_1", OwnerSessionID: "session_1", TargetScheme: "http", TargetAddress: "127.0.0.1:3000",
-		AccessMode: "public", EndpointID: "pep_1", Endpoint: "https://preview-abc.preview.example.test", LeaseDeadline: now.Add(time.Hour),
+		AccessMode: "public", EndpointID: "pep_1", Endpoint: "https://abc.preview.example.test", LeaseDeadline: now.Add(time.Hour),
 		RequestHash: []byte(strings.Repeat("a", 32)), IdempotencyKey: "create_1", CorrelationID: "cor_1", Now: now,
 	}
 	if err := validateCreatePreviewLeaseV1(input); !errors.Is(err, ErrInvalidInput) {

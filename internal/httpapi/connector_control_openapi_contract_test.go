@@ -121,7 +121,30 @@ func TestOpenAPIFreezesConnectorEnrollmentActivation(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	issue := objectValue(t, doc.Paths["/v1/tunnels/{tunnel_id}/connectors/enrollments"]["post"], "connector enrollment issue")
+	assertMachineControlSecurity(t, issue, "connector enrollment issue")
+	assertParameterRefs(t, issue,
+		"#/components/parameters/IdempotencyKey",
+		"#/components/parameters/MachineIdentity",
+		"#/components/parameters/MachineProof",
+	)
+	assertRequestSchema(t, issue, "#/components/schemas/ConnectorEnrollmentRequest")
+	assertResponseSchema(t, issue, "201", "#/components/schemas/ConnectorEnrollmentResponse")
+	assertExactResponseStatuses(t, issue, "connector enrollment issue", "201", "400", "401", "403", "409")
+	issueDescription, _ := issue["description"].(string)
+	for _, required := range []string{"machine_control bearer", "X-Paperboat-Machine-Identity", "X-Paperboat-Machine-Proof", "Idempotency-Key", "exact POST path", "Browser sessions", "CSRF tokens", "client-session bearers"} {
+		if !strings.Contains(issueDescription, required) {
+			t.Fatalf("connector enrollment issue does not freeze %q", required)
+		}
+	}
+
 	exchange := objectValue(t, doc.Paths["/v1/tunnels/{tunnel_id}/connectors/enrollments/exchange"]["post"], "connector enrollment exchange")
+	assertMachineControlSecurity(t, exchange, "connector enrollment exchange")
+	assertParameterRefs(t, exchange,
+		"#/components/parameters/IdempotencyKey",
+		"#/components/parameters/MachineIdentity",
+		"#/components/parameters/MachineProof",
+	)
 	assertExactResponseStatuses(t, exchange, "connector enrollment exchange", "202", "400", "401", "403", "409")
 	assertResponseSchema(t, exchange, "202", "#/components/schemas/ConnectorActivationResponse")
 	description, _ := exchange["description"].(string)
@@ -175,6 +198,22 @@ func assertEmptySecurity(t *testing.T, operation map[string]any, label string) {
 	security := arrayValue(t, operation["security"], label+".security")
 	if len(security) != 0 {
 		t.Fatalf("%s security = %#v, want no HTTP authentication fallback", label, security)
+	}
+}
+
+func assertMachineControlSecurity(t *testing.T, operation map[string]any, label string) {
+	t.Helper()
+	security := arrayValue(t, operation["security"], label+".security")
+	if len(security) != 1 {
+		t.Fatalf("%s security = %#v, want machine-control bearer only", label, security)
+	}
+	requirement := objectValue(t, security[0], label+".security[0]")
+	if len(requirement) != 1 {
+		t.Fatalf("%s security = %#v, want no browser or generic bearer fallback", label, security)
+	}
+	scopes, ok := requirement["bearerMachineControl"].([]any)
+	if !ok || len(scopes) != 0 {
+		t.Fatalf("%s security = %#v, want bearerMachineControl with no alternate scheme", label, security)
 	}
 }
 

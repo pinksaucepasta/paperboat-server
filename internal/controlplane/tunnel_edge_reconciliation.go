@@ -56,6 +56,17 @@ func (s *EdgeService) ReconcileTunnelEdgeRouteAssignments(ctx context.Context, b
 			if err != nil {
 				continue
 			}
+			// Lock the route and all of its assignment history before checking
+			// the exact binding. Without this post-lock check, two concurrent
+			// reconcilers can both miss a staged row and the later one can
+			// retire the row inserted by the first.
+			nextGeneration, err := tx.Queries().NextTunnelEdgeRouteAssignmentGenerationV1(ctx, candidate.RouteID)
+			if err != nil {
+				return err
+			}
+			if nextGeneration < 1 {
+				return fmt.Errorf("invalid next tunnel edge assignment generation %d", nextGeneration)
+			}
 			binding, err := tx.Queries().GetTunnelEdgeRouteAssignmentBindingV1(ctx, dbsqlc.GetTunnelEdgeRouteAssignmentBindingV1Params{
 				RouteID: candidate.RouteID, AccountID: candidate.AccountID, TunnelID: candidate.TunnelID,
 				ConnectorID: candidate.ConnectorID, HostID: candidate.HostID, ConnectorGeneration: candidate.ConnectorGeneration,
@@ -72,13 +83,19 @@ func (s *EdgeService) ReconcileTunnelEdgeRouteAssignments(ctx context.Context, b
 			if !errors.Is(err, sql.ErrNoRows) {
 				return err
 			}
-
-			nextGeneration, err := tx.Queries().NextTunnelEdgeRouteAssignmentGenerationV1(ctx, candidate.RouteID)
+			_, err = tx.Queries().SupersedeStaleStagedTunnelEdgeRouteAssignmentV1(ctx, dbsqlc.SupersedeStaleStagedTunnelEdgeRouteAssignmentV1Params{
+				RouteID: candidate.RouteID, ConnectorID: candidate.ConnectorID,
+				AccountID: candidate.AccountID, TunnelID: candidate.TunnelID, HostID: candidate.HostID,
+				MachineIdentityPublicKey: candidate.MachineIdentityPublicKey.String, MachineIdentityThumbprint: machineThumbprint,
+				ConnectorGeneration: candidate.ConnectorGeneration, ConnectorSessionID: candidate.ConnectorSessionID.String,
+				ConnectorProcessGeneration: candidate.ConnectorProcessGeneration, ConfigGeneration: candidate.ConfigGeneration,
+				ConfigContentHash: append([]byte(nil), candidate.ConfigContentHash...), AccessMode: candidate.AccessMode,
+				RouteGeneration: candidate.RouteGeneration, RouteRevision: candidate.RouteRevision,
+				EdgeNodeID: candidate.EdgeNodeID, EdgeProcessEpoch: candidate.EdgeProcessEpoch,
+				EdgeFailureDomain: candidate.EdgeFailureDomain, Now: now,
+			})
 			if err != nil {
 				return err
-			}
-			if nextGeneration < 1 {
-				return fmt.Errorf("invalid next tunnel edge assignment generation %d", nextGeneration)
 			}
 			assignmentID := tunnelEdgeRouteAssignmentID(candidate, nextGeneration)
 			_, err = tx.Queries().StageTunnelEdgeRouteAssignmentV1(ctx, dbsqlc.StageTunnelEdgeRouteAssignmentV1Params{

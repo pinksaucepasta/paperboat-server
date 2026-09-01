@@ -104,7 +104,7 @@ func TestPreviewCustomDomainsHTTPIntegration(t *testing.T) {
 	}
 	var previewResource previewv1.Preview
 	decodePreviewCustomDomainJSON(t, response, &previewResource)
-	if !strings.HasPrefix(previewResource.Endpoint, "https://preview-") || previewResource.Endpoint == "https://www.example.com" || previewResource.Target.Address != "127.0.0.1:3000" {
+	if !strings.HasPrefix(previewResource.Endpoint, "https://") || strings.HasPrefix(previewResource.Endpoint, "https://preview-") || previewResource.Endpoint == "https://www.example.com" || previewResource.Target.Address != "127.0.0.1:3000" {
 		t.Fatalf("managed preview endpoint=%q target=%#v", previewResource.Endpoint, previewResource.Target)
 	}
 	if previewResource.State != "allocating" || len(previewResource.Domains) != 3 {
@@ -224,7 +224,7 @@ func TestPreviewCustomDomainsHTTPIntegration(t *testing.T) {
 	}
 	var stoppedPreview previewv1.Preview
 	decodePreviewCustomDomainJSON(t, response, &stoppedPreview)
-	if stoppedPreview.State != "stopped" || !strings.HasPrefix(stoppedPreview.Endpoint, "https://preview-") || len(stoppedPreview.Domains) != 3 {
+	if stoppedPreview.State != "stopped" || !strings.HasPrefix(stoppedPreview.Endpoint, "https://") || strings.HasPrefix(stoppedPreview.Endpoint, "https://preview-") || len(stoppedPreview.Domains) != 3 {
 		t.Fatalf("stopped preview=%#v", stoppedPreview)
 	}
 	for _, summary := range stoppedPreview.Domains {

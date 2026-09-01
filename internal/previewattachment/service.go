@@ -251,6 +251,18 @@ func (s *Service) ObserveOrigin(ctx context.Context, proof MachineProof, req Req
 		return Attachment{}, fmt.Errorf("%w: attachment binding differs from current binding", ErrStaleBinding)
 	}
 	if current.AttachmentGeneration != generation {
+		// Edge readiness is reported independently from the host origin probe.
+		// It may commit after the host reads an admitted attachment but before
+		// this callback arrives. Consume that single, exact edge-ready advance
+		// instead of forcing the host to race a second poll. Binding equality
+		// above still fences every session, process, route, and certificate
+		// field, and no larger generation gap is accepted.
+		if current.AttachmentGeneration == generation+1 && current.State == StateEdgeReady && current.EdgeReady && !current.OriginReady {
+			if !originReady {
+				return current, nil
+			}
+			return s.repository.ObserveOrigin(ctx, current, true, now)
+		}
 		postState := StateEdgeReady
 		if originReady {
 			postState = StateReady

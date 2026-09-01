@@ -327,6 +327,17 @@ CLI APIs:
   connector credential. It contains no provider credential or internal alternate port.
   Exact retries replay the encrypted recorded document; changed body or proof bindings
   fail before a new admission is minted.
+- `POST /v1/tunnels/{tunnel_id}/connectors/enrollments` and
+  `POST /v1/tunnels/{tunnel_id}/connectors/enrollments/exchange` are stable-host-only
+  mutations. Both require the renewable `machine_control` bearer credential,
+  `X-Paperboat-Machine-Identity`, `X-Paperboat-Machine-Proof`, and `Idempotency-Key`.
+  The proof covers the exact method, path, body, and idempotency key. The verified machine
+  claims provide the account, user, host, and device actor; `host_id` must match those
+  claims. Browser sessions, cookies, CSRF tokens, and client-session bearers are rejected.
+  Issue returns the short-lived single-use enrollment secret only at issuance; exchange
+  additionally requires the enrollment credential's signed Ed25519 proof of possession and
+  returns only the server-reserved, secret-free activation projection. Exact retries replay
+  the original result, while changed bindings fail closed.
 - `POST /v1/hosted-helper-enrollments` accepts only a short-lived Fly OIDC workload identity
   obtained through the Machine-local `/.fly/api` socket and the helper's Ed25519 public
   key. The server verifies signature, issuer, audience, expiry, configured Fly app, and

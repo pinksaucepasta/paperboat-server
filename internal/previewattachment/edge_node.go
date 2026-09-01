@@ -73,8 +73,8 @@ WHERE node.state = 'ready'
   AND node.carrier_endpoint_host IS NOT NULL
   AND node.carrier_endpoint_tcp_port IS NOT NULL
   AND node.carrier_endpoint_quic_port IS NOT NULL
-  AND (node.last_heartbeat_at IS NULL OR node.last_heartbeat_at > $1 - interval '2 minutes')
-  AND (node.drain_deadline IS NULL OR node.drain_deadline > $1)
+  AND (node.last_heartbeat_at IS NULL OR node.last_heartbeat_at > $1::timestamptz - interval '2 minutes')
+  AND (node.drain_deadline IS NULL OR node.drain_deadline > $1::timestamptz)
 ORDER BY md5(node.id || ':' || $2), node.id
 LIMIT 1
 FOR UPDATE SKIP LOCKED`

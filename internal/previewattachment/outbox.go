@@ -534,7 +534,7 @@ FOR UPDATE SKIP LOCKED`
 const claimPreviewCarrierOutboxSQL = `
 UPDATE preview_carrier_attachment_outbox
 SET state = 'in_flight', attempts = attempts + 1,
-    next_attempt_at = $6 + interval '30 seconds', updated_at = $6
+    next_attempt_at = $6::timestamptz + interval '30 seconds', updated_at = $6::timestamptz
 WHERE binding->>'edge_node_id' = $1
   AND binding->>'edge_process_epoch' = $7
   AND account_id = $2 AND operation_id = $3

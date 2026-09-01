@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 )
@@ -292,6 +293,7 @@ func writeAttachmentError(w http.ResponseWriter, status int, code, message strin
 }
 
 func writeAttachmentServiceError(w http.ResponseWriter, err error) {
+	slog.Warn("preview carrier attachment failed", "error", err)
 	status, code, message, retryable := http.StatusInternalServerError, "internal_error", "Preview carrier attachment could not be completed.", true
 	switch {
 	case errors.Is(err, ErrInvalid):

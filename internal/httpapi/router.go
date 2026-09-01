@@ -132,6 +132,34 @@ func registerEnvironmentTransitionRoutes(mux *http.ServeMux, service environment
 	mux.Handle("PUT /v1/environment-authority/transitions/{transition_id}/scopes/machines/{machine_id}", write(environmentTransitionStage(service, true)))
 }
 
+// tunnelCreateAuth mirrors the preview machine-auth boundary: machine
+// requests reach the handler for exact proof verification, while ordinary
+// browser and client-session requests retain bearer scope and CSRF checks.
+func tunnelCreateAuth(user *auth.Service, devices *auth.DeviceService, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if tunnelMachineHeadersPresent(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		requireAnyAuth(user, devices, requireScope("tunnels:write", requireCSRF(user, next))).ServeHTTP(w, r)
+	})
+}
+
+// tunnelConnectorEnrollmentAuth is deliberately machine-only. Issuing an
+// enrollment creates a one-time connector credential for a host, and
+// exchanging it installs that credential on the same host. A browser or CLI
+// client-session bearer must never be able to select or impersonate host_id;
+// the handler verifies the renewable machine proof over the exact body.
+func tunnelConnectorEnrollmentAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !tunnelMachineHeadersPresent(r) {
+			writePreviewTunnelError(w, r, http.StatusUnauthorized, "machine_identity_required", "A signed host identity is required for connector enrollment.", "unchanged", false, "run_on_authorized_host")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func NewRouter(opts Options) http.Handler {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
@@ -170,11 +198,14 @@ func NewRouter(opts Options) http.Handler {
 			previewWrite := func(next http.Handler) http.Handler {
 				return requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope("previews:write", requireCSRF(opts.Auth, next)))
 			}
+			previewMutation := func(next http.Handler) http.Handler {
+				return previewLeaseMutationAuth(opts.Auth, opts.DeviceAuth, opts.RuntimeIdentity, next)
+			}
 			mux.Handle("POST /v1/previews", previewLeaseCreateAuth(opts.Auth, opts.DeviceAuth, opts.RuntimeIdentity, previewLeaseCreate(opts.PreviewLeases, opts.RuntimeIdentity)))
 			mux.Handle("GET /v1/previews", previewRead(previewLeaseList(opts.PreviewLeases)))
 			mux.Handle("GET /v1/previews/{preview_id}", previewRead(previewLeaseGet(opts.PreviewLeases)))
-			mux.Handle("DELETE /v1/previews/{preview_id}", previewWrite(previewLeaseStop(opts.PreviewLeases)))
-			mux.Handle("POST /v1/previews/{preview_id}/lease/renew", previewWrite(previewLeaseRenew(opts.PreviewLeases)))
+			mux.Handle("DELETE /v1/previews/{preview_id}", previewMutation(previewLeaseStop(opts.PreviewLeases, opts.RuntimeIdentity)))
+			mux.Handle("POST /v1/previews/{preview_id}/lease/renew", previewMutation(previewLeaseRenew(opts.PreviewLeases, opts.RuntimeIdentity)))
 			mux.Handle("GET /v1/previews/{preview_id}/events", previewRead(previewTunnelEvents(opts.PreviewTunnelAPI, "preview_lease", "preview_id")))
 			if opts.PreviewLogs != nil {
 				mux.Handle("GET /v1/previews/{preview_id}/logs", previewRead(tunnelResourcePreviewLogs(opts.PreviewLogs)))
@@ -203,7 +234,11 @@ func NewRouter(opts Options) http.Handler {
 			tunnelWrite := func(next http.Handler) http.Handler {
 				return requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope("tunnels:write", requireCSRF(opts.Auth, next)))
 			}
-			mux.Handle("POST /v1/tunnels", tunnelWrite(tunnelCreate(opts.Tunnels, opts.Enrollment)))
+			// Tunnel creation is the one host-only tunnel mutation. A production
+			// host has a renewable machine-control credential, not a DeviceService
+			// client session, so let the handler verify its exact machine proof
+			// before constructing the host actor.
+			mux.Handle("POST /v1/tunnels", tunnelCreateAuth(opts.Auth, opts.DeviceAuth, tunnelCreate(opts.Tunnels, opts.Enrollment)))
 			mux.Handle("GET /v1/tunnels", tunnelRead(tunnelList(opts.Tunnels)))
 			mux.Handle("GET /v1/tunnels/{tunnel_id}", tunnelRead(tunnelGet(opts.Tunnels)))
 			mux.Handle("PATCH /v1/tunnels/{tunnel_id}", tunnelWrite(tunnelPatch(opts.Tunnels)))
@@ -213,6 +248,12 @@ func NewRouter(opts Options) http.Handler {
 			mux.Handle("GET /v1/tunnels/{tunnel_id}/status", tunnelRead(tunnelStatus(opts.Tunnels)))
 			mux.Handle("GET /v1/tunnels/{tunnel_id}/events", tunnelRead(previewTunnelEvents(opts.PreviewTunnelAPI, "tunnel", "tunnel_id")))
 			if opts.TunnelResources != nil {
+				var connectorIdentity machineRequestVerifier
+				if opts.Enrollment != nil {
+					connectorIdentity = opts.Enrollment
+				} else if opts.RuntimeIdentity != nil {
+					connectorIdentity = opts.RuntimeIdentity
+				}
 				mux.Handle("POST /v1/tunnels/{tunnel_id}/routes", tunnelWrite(tunnelResourceRouteCreate(opts.TunnelResources)))
 				mux.Handle("GET /v1/tunnels/{tunnel_id}/routes", tunnelRead(tunnelResourceRouteList(opts.TunnelResources)))
 				mux.Handle("GET /v1/tunnels/{tunnel_id}/routes/{route_id}", tunnelRead(tunnelResourceRouteGet(opts.TunnelResources)))
@@ -226,8 +267,8 @@ func NewRouter(opts Options) http.Handler {
 				mux.Handle("GET /v1/tunnels/{tunnel_id}/domains/{domain_id}/instructions", tunnelRead(tunnelResourceDomainInstructions(opts.TunnelResources)))
 				mux.Handle("GET /v1/tunnels/{tunnel_id}/connectors", tunnelRead(tunnelResourceConnectorList(opts.TunnelResources)))
 				mux.Handle("GET /v1/tunnels/{tunnel_id}/connectors/{connector_id}", tunnelRead(tunnelResourceConnectorGet(opts.TunnelResources)))
-				mux.Handle("POST /v1/tunnels/{tunnel_id}/connectors/enrollments", tunnelWrite(tunnelResourceIssueEnrollment(opts.TunnelResources)))
-				mux.Handle("POST /v1/tunnels/{tunnel_id}/connectors/enrollments/exchange", tunnelWrite(tunnelResourceExchangeEnrollment(opts.TunnelResources, opts.Enrollment)))
+				mux.Handle("POST /v1/tunnels/{tunnel_id}/connectors/enrollments", tunnelConnectorEnrollmentAuth(tunnelResourceIssueEnrollment(opts.TunnelResources, connectorIdentity)))
+				mux.Handle("POST /v1/tunnels/{tunnel_id}/connectors/enrollments/exchange", tunnelConnectorEnrollmentAuth(tunnelResourceExchangeEnrollment(opts.TunnelResources, connectorIdentity)))
 				mux.Handle("POST /v1/tunnels/{tunnel_id}/connectors/{connector_id}/drain", tunnelWrite(tunnelResourceConnectorDrain(opts.TunnelResources)))
 				mux.Handle("DELETE /v1/tunnels/{tunnel_id}/connectors/{connector_id}", tunnelWrite(tunnelResourceConnectorRevoke(opts.TunnelResources)))
 				mux.Handle("POST /v1/tunnels/{tunnel_id}/credentials/rotate", tunnelWrite(tunnelResourceRotateCredentials(opts.TunnelResources)))
@@ -878,6 +919,15 @@ func isReleaseDownload(r *http.Request) bool {
 }
 
 func isStreamingRequest(r *http.Request) bool {
+	if r != nil && strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), "websocket") {
+		for _, value := range r.Header.Values("Connection") {
+			for _, token := range strings.Split(value, ",") {
+				if strings.EqualFold(strings.TrimSpace(token), "upgrade") {
+					return true
+				}
+			}
+		}
+	}
 	for _, accept := range r.Header.Values("Accept") {
 		for _, part := range strings.Split(accept, ",") {
 			mediaType := strings.TrimSpace(strings.SplitN(part, ";", 2)[0])

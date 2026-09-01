@@ -872,6 +872,14 @@ func (s *EdgeService) handleRoutes(w http.ResponseWriter, r *http.Request) {
 		for _, row := range rows {
 			items = append(items, tunnelEdgeRouteJSON(row))
 		}
+		legacyRows, err := s.Routes(r.Context(), input.NodeID)
+		if err != nil {
+			writeEdgeError(w, r, http.StatusServiceUnavailable, "control_unavailable", true, 1000)
+			return
+		}
+		for _, row := range legacyRows {
+			items = append(items, legacyEdgeRouteJSON(row))
+		}
 		writeEdgeJSON(w, http.StatusOK, map[string]any{"complete": true, "routes": items})
 		return
 	}
@@ -885,9 +893,28 @@ func (s *EdgeService) handleRoutes(w http.ResponseWriter, r *http.Request) {
 	// edge runtimes and deliberately carries an explicit completion marker.
 	items := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, map[string]any{"route_id": row.RouteID, "route_revision": row.RouteRevision, "environment_id": row.EnvironmentID, "connector_id": row.ConnectorID, "connector_generation": row.ConnectorGeneration, "edge_node_id": row.EdgeNodeID.String, "kind": row.Kind, "public_host": row.PublicHost, "target": map[string]any{"host": row.TargetHost, "port": row.TargetPort}})
+		items = append(items, legacyEdgeRouteJSON(row))
 	}
 	writeEdgeJSON(w, http.StatusOK, map[string]any{"routes": items})
+}
+
+func legacyEdgeRouteJSON(row dbsqlc.ListControlRoutesForNodeRow) map[string]any {
+	return map[string]any{
+		"route_id":             row.RouteID,
+		"route_revision":       row.RouteRevision,
+		"environment_id":       row.EnvironmentID,
+		"connector_id":         row.ConnectorID,
+		"connector_generation": row.ConnectorGeneration,
+		"edge_node_id":         row.EdgeNodeID.String,
+		"kind":                 row.Kind,
+		"public_host":          row.PublicHost,
+		"preview_state":        row.PreviewState,
+		"preview_reason":       row.PreviewReason,
+		"target": map[string]any{
+			"host": row.TargetHost,
+			"port": row.TargetPort,
+		},
+	}
 }
 
 func (s *EdgeService) handleUsage(w http.ResponseWriter, r *http.Request) {

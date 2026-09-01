@@ -18,7 +18,7 @@ SELECT id AS edge_node_id,
 FROM control_tunnel_nodes
 WHERE state = 'ready'
   AND ready = true
-  AND last_heartbeat_at > sqlc.arg(now) - interval '2 minutes'
+  AND last_heartbeat_at > sqlc.arg(now)::timestamptz - interval '2 minutes'
   AND carrier_endpoint_host IS NOT NULL
   AND carrier_endpoint_tcp_port IS NOT NULL
   AND carrier_endpoint_quic_port IS NOT NULL

@@ -226,7 +226,7 @@ VALUES ($1, $2, $3, 'active')`, accountID, "workos_"+suffix, "trk03-"+suffix+"@e
 
 	preview, err := store.CreatePreviewLease(ctx, dbsqlc.CreatePreviewLeaseParams{
 		ID: "prv_" + suffix, EndpointID: "pep_" + suffix,
-		Endpoint: "https://preview-" + suffix + ".preview.example.test", AccountID: accountID,
+		Endpoint: "https://" + suffix + ".preview.example.test", AccountID: accountID,
 		ActorID: accountID, OwnerDeviceID: "dev_" + suffix, OwnerSessionID: "ses_" + suffix,
 		TargetScheme: "http", TargetAddress: "127.0.0.1:3000", AccessMode: "public",
 		LeaseDeadline: now.Add(time.Minute), AllocationState: "pending", EdgeState: "pending",

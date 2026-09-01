@@ -1,6 +1,7 @@
 package connectorprotocol
 
 import (
+	"log/slog"
 	"net/http"
 
 	"github.com/coder/websocket"
@@ -46,6 +47,7 @@ func (h *WebSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	connection.SetReadLimit(MaxFrameBytes + 4)
 	stream := websocket.NetConn(r.Context(), connection, websocket.MessageBinary)
 	if err = h.transport.Serve(r.Context(), stream, tunnelID, connectorID); err != nil {
+		slog.WarnContext(r.Context(), "connector control stream closed with protocol error", "tunnel_id", tunnelID, "connector_id", connectorID, "code", CodeOf(err), "reason", ReasonOf(err), "error", err)
 		_ = connection.Close(websocket.StatusPolicyViolation, "connector control rejected")
 		return
 	}
