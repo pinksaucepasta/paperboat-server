@@ -2,7 +2,7 @@ package app
 
 import (
 	"context"
-	"encoding/base64"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -19,9 +19,11 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/catalog"
 	"github.com/pinksaucepasta/paperboat-server/internal/codexsessions"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
+	"github.com/pinksaucepasta/paperboat-server/internal/connectorprotocol"
 	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/diagnosticuploads"
+	"github.com/pinksaucepasta/paperboat-server/internal/environment"
 	"github.com/pinksaucepasta/paperboat-server/internal/favorites"
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
@@ -33,10 +35,20 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/orchestrator"
 	"github.com/pinksaucepasta/paperboat-server/internal/peeridentity"
 	"github.com/pinksaucepasta/paperboat-server/internal/peersessions"
+	"github.com/pinksaucepasta/paperboat-server/internal/previewattachment"
+	"github.com/pinksaucepasta/paperboat-server/internal/previewdispatch"
+	"github.com/pinksaucepasta/paperboat-server/internal/previewdomain"
+	"github.com/pinksaucepasta/paperboat-server/internal/previewtunnelapi"
+	"github.com/pinksaucepasta/paperboat-server/internal/previewtunnelstore"
+	"github.com/pinksaucepasta/paperboat-server/internal/previewv1"
+	"github.com/pinksaucepasta/paperboat-server/internal/privateaccess"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 	"github.com/pinksaucepasta/paperboat-server/internal/releaseauthority"
 	"github.com/pinksaucepasta/paperboat-server/internal/releases"
+	"github.com/pinksaucepasta/paperboat-server/internal/telemetry"
 	"github.com/pinksaucepasta/paperboat-server/internal/terminalsessions"
+	"github.com/pinksaucepasta/paperboat-server/internal/tunnelcert"
+	"github.com/pinksaucepasta/paperboat-server/internal/tunnelv1"
 	"github.com/pinksaucepasta/paperboat-server/internal/usermachines"
 	"github.com/pinksaucepasta/paperboat-server/internal/workers"
 )
@@ -44,25 +56,150 @@ import (
 type Options struct {
 	Config config.Config
 	Logger *slog.Logger
+	// CertificateRuntime is a fully composed managed-certificate lifecycle.
+	// App owns it after New succeeds and closes it before the database on
+	// shutdown. Supplying this is mutually exclusive with the legacy worker
+	// and handler fields below.
+	CertificateRuntime *tunnelv1.CertificateRuntime
+	// CertificateWorker is supplied only by deployment composition that has
+	// configured a real issuer, CAA policy, envelope-key resolver, and
+	// authenticated edge distributor.  Nil keeps startup fail-closed without
+	// inventing certificate material or provider credentials.
+	CertificateWorker *tunnelv1.CertificateWorker
+	// CertificateDistribution is the internal authenticated server-to-edge
+	// transport used by the certificate worker's distributor. It is mounted
+	// only on the edge-control handler and never exposed by the public API.
+	CertificateDistribution http.Handler
 }
 
 type App struct {
-	cfg    config.Config
-	logger *slog.Logger
-	db     *db.DB
-	server *http.Server
-	worker *workers.Supervisor
+	cfg                  config.Config
+	logger               *slog.Logger
+	db                   *db.DB
+	server               *http.Server
+	worker               *workers.Supervisor
+	certificateRuntime   *tunnelv1.CertificateRuntime
+	telemetryEvents      *telemetry.EventLog
+	telemetryMetrics     *telemetry.Metrics
+	telemetryHealth      *telemetry.HealthTracker
+	telemetryHTTP        *telemetry.HTTPObserver
+	telemetryDiagnostics *telemetry.Diagnostics
+	telemetryProducer    *telemetry.Producer
+	telemetryStartedAt   time.Time
 }
 
 func New(opts Options) (*App, error) {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
+	certificateRuntime := opts.CertificateRuntime
+	runtimeTransferred := false
+	defer func() {
+		if !runtimeTransferred && certificateRuntime != nil {
+			_ = certificateRuntime.Close()
+		}
+	}()
+	if certificateRuntime != nil && !opts.Config.Certificates.Enabled {
+		return nil, fmt.Errorf("%w: injected runtime requires managed certificates to be enabled", tunnelv1.ErrCertificateRuntimeUnavailable)
+	}
+	if certificateRuntime != nil && (opts.CertificateWorker != nil || opts.CertificateDistribution != nil) {
+		return nil, fmt.Errorf("certificate runtime cannot be combined with legacy certificate options")
+	}
 	store, err := db.Open(opts.Config.Database)
 	if err != nil {
 		return nil, err
 	}
+	if certificateRuntime == nil && opts.Config.Certificates.Enabled {
+		certificateRuntime, err = newCertificateRuntime(context.Background(), store, opts.Config)
+		if err != nil {
+			_ = store.Close()
+			return nil, err
+		}
+	}
+	if certificateRuntime != nil {
+		opts.CertificateRuntime = certificateRuntime
+		opts.CertificateWorker = certificateRuntime.Worker
+		opts.CertificateDistribution = certificateRuntime.Distribution.Handler()
+	}
 	auditWriter := audit.NewWriter(store)
+	previewTunnelStore, err := previewtunnelstore.New(store)
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure preview tunnel store: %w", err)
+	}
+	previewDomainRepository, err := previewdomain.NewSQLRepository(store, previewdomain.Config{})
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure preview domain repository: %w", err)
+	}
+	if err := previewTunnelStore.ConfigurePreviewDomains(previewDomainBatchCreatorAdapter{repository: previewDomainRepository}); err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure atomic preview domains: %w", err)
+	}
+	previewAttachmentProduction, err := previewattachment.NewProduction(store)
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure preview carrier attachment: %w", err)
+	}
+	cursorKey := sha256.Sum256([]byte("paperboat.preview-tunnel.cursor\x00" + opts.Config.Secrets.EncryptionKey))
+	previewDomainService, err := previewdomain.NewService(previewDomainRepository, previewdomain.Config{
+		CursorKey:     cursorKey[:],
+		ChallengeZone: opts.Config.Certificates.ChallengeZone,
+	})
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure preview domain service: %w", err)
+	}
+	previewTunnelAPI, err := previewtunnelapi.NewService(previewTunnelStore, cursorKey[:])
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure preview tunnel API: %w", err)
+	}
+	previewLeaseService, err := previewv1.NewService(previewTunnelStore, previewv1.Config{
+		EndpointDomain:      opts.Config.Preview.BaseDomain,
+		CursorKey:           cursorKey[:],
+		AttachmentReadiness: previewAttachmentProduction.Service,
+		PreviewDomains:      previewDomainRepository,
+	})
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure preview lease service: %w", err)
+	}
+	tunnelRepository, err := tunnelv1.NewRepository(store)
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure tunnel repository: %w", err)
+	}
+	tunnelEndpointBuilder, err := tunnelv1.NewEndpointBuilder("https://" + opts.Config.Tunnel.BaseDomain)
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure tunnel endpoint builder: %w", err)
+	}
+	tunnelService, err := tunnelv1.NewService(tunnelRepository, tunnelv1.Config{
+		EndpointBuilder: tunnelEndpointBuilder,
+		CursorKey:       cursorKey[:],
+	})
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure tunnel service: %w", err)
+	}
+	tunnelResourceService, err := tunnelv1.NewResourceService(tunnelRepository, tunnelv1.ResourceConfig{
+		CursorKey: cursorKey[:], ChallengeZone: opts.Config.Certificates.ChallengeZone, AllowInsecureDevelopment: opts.Config.Environment == config.EnvironmentDevelopment,
+	})
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure tunnel resource service: %w", err)
+	}
+	domainReconciler, err := tunnelv1.NewDomainReconciler(store, tunnelv1.NetDomainDNSResolver{}, nil)
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure tunnel domain reconciler: %w", err)
+	}
+	previewDomainReconciler, err := previewdomain.NewDNSReconciler(previewDomainRepository, tunnelv1.NetDomainDNSResolver{}, previewdomain.ReconcilerConfig{})
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure preview domain reconciler: %w", err)
+	}
 	billingRepo := billing.NewRepository(store)
 	catalogRepo := catalog.NewRepository(store)
 	flyProvider := flyClient(opts.Config)
@@ -99,6 +236,18 @@ func New(opts Options) (*App, error) {
 		_ = store.Close()
 		return nil, err
 	}
+	previewDispatcher, err := previewdispatch.New(previewdispatch.Config{
+		Resolver: previewdispatch.DBMachineRouteResolver{DB: store},
+		Signer:   mintKeys,
+		Issuer:   normalizeHelperIssuer(opts.Config.HTTP.PublicBaseURL),
+		Client:   providerHTTPClient("helper", opts.Config.HTTP.RequestTimeout),
+		Timeout:  opts.Config.HTTP.RequestTimeout,
+	})
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure preview dispatcher: %w", err)
+	}
+	previewLeaseService.ConfigureDispatcher(previewDispatcher)
 	credentialIssuer := access.CredentialIssuer(access.DisabledCredentialIssuer{})
 	codexSessionService := codexsessions.New(store, mintKeys, normalizeHelperIssuer(opts.Config.HTTP.PublicBaseURL), 4)
 	if opts.Config.Providers.FakeMode {
@@ -180,6 +329,55 @@ func New(opts Options) (*App, error) {
 	}
 	billingService.SetUserMachineSessionRevoker(userMachineService)
 	enrollmentService := controlplane.NewEnrollmentService(store, mintKeys, auditWriter, config.NormalizeIssuer(opts.Config.HTTP.PublicBaseURL), opts.Config.Secrets.EncryptionKey)
+	connectorControlStore, err := connectorprotocol.NewSQLControlStore(store, connectorprotocol.SQLControlStoreConfig{})
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure connector control store: %w", err)
+	}
+	connectorPersistentServer, err := connectorprotocol.NewPersistentServer(connectorControlStore, connectorControlStore, connectorprotocol.ServerConfig{Capabilities: connectorprotocol.ProductionCapabilities()})
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure connector control server: %w", err)
+	}
+	connectorRotationDispatcher, err := connectorprotocol.NewRotationDispatcher(connectorprotocol.RotationDispatcherConfig{
+		Store: connectorControlStore, VerifyOldProof: connectorControlStore.VerifyRotationOldProof,
+		ReportError: func(dispatchErr error) {
+			opts.Logger.Error("connector credential rotation reconciliation failed", "error", dispatchErr)
+		},
+	})
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure connector rotation dispatcher: %w", err)
+	}
+	connectorDrainDispatcher, err := connectorprotocol.NewDrainDispatcher(connectorprotocol.DrainDispatcherConfig{
+		Store: connectorControlStore,
+		ReportError: func(dispatchErr error) {
+			opts.Logger.Error("connector drain reconciliation failed", "error", dispatchErr)
+		},
+	})
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure connector drain dispatcher: %w", err)
+	}
+	connectorControlTransport, err := connectorprotocol.NewControlTransportWithDispatchers(connectorPersistentServer, nil, connectorRotationDispatcher, connectorDrainDispatcher)
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure connector control transport: %w", err)
+	}
+	connectorControlHandler, err := connectorprotocol.NewWebSocketHandler(connectorControlTransport)
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure connector control websocket: %w", err)
+	}
+	connectorCarrierBootstrapHandler, err := httpapi.NewConnectorCarrierBootstrapHandler(
+		connectorControlTransport.Sessions(),
+		connectorprotocol.SQLCarrierBootstrapSource{DB: store},
+		enrollmentService,
+	)
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure connector carrier bootstrap: %w", err)
+	}
 	hostedBootstrapService := controlplane.NewHostedBootstrapService(store, enrollmentService, opts.Config.Secrets.EncryptionKey)
 	hostedBootstrapService.SetSourceCredentialIssuer(controlplane.HostedSourceCredentialIssuerFunc(
 		func(ctx context.Context, userID, sourceURL string) (controlplane.HostedSourceCredential, error) {
@@ -307,23 +505,6 @@ func New(opts Options) (*App, error) {
 	configRuntimeService := controlplane.NewConfigRuntimeService(store, configLeaseService, opts.Config.ConfigSync)
 	configConflictService := controlplane.NewConfigConflictService(store, configLeaseService, auditWriter)
 	routeService := controlplane.NewRouteService(store, auditWriter)
-	var previewService *controlplane.PreviewService
-	if opts.Config.Preview.BaseDomain != "" || opts.Config.Secrets.PreviewIdentityKey != "" {
-		if opts.Config.Preview.BaseDomain == "" || opts.Config.Secrets.PreviewIdentityKey == "" {
-			_ = store.Close()
-			return nil, errors.New("preview base domain and identity key must be configured together")
-		}
-		previewKey, decodeErr := base64.StdEncoding.DecodeString(opts.Config.Secrets.PreviewIdentityKey)
-		if decodeErr != nil {
-			_ = store.Close()
-			return nil, fmt.Errorf("decode preview identity key: %w", decodeErr)
-		}
-		previewService, err = controlplane.NewPreviewService(store, auditWriter, previewKey, opts.Config.Preview.BaseDomain)
-		if err != nil {
-			_ = store.Close()
-			return nil, fmt.Errorf("configure previews: %w", err)
-		}
-	}
 	orchestratorService.SetHostedRouteEnsurer(func(ctx context.Context, actorID, operationKey, environmentID, publicHost string) error {
 		_, err := routeService.Create(ctx, actorID, operationKey, environmentID, "runtime_https_wss", publicHost, "127.0.0.1", 8080)
 		return err
@@ -344,6 +525,9 @@ func New(opts Options) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	// ENV Injection reuses only the public account-root resolver. The general
+	// server encryption key is deliberately never passed to ENV code.
+	environmentVariableService := environment.NewService(store, auditWriter, peerIdentityService)
 	peerSessionRepository, err := peersessions.NewSQLRepository(store, auditWriter, controlplane.ControlTunnelNodeStaleAfter(), opts.Config.Secrets.EncryptionKey)
 	if err != nil {
 		return nil, err
@@ -388,56 +572,179 @@ func New(opts Options) (*App, error) {
 	var edgeControlService *controlplane.EdgeService
 	if opts.Config.Secrets.EdgeControlCredential != "" {
 		edgeControlService = controlplane.NewEdgeService(store, opts.Config.Secrets.EdgeControlCredential)
+		edgeControlService.SetCertificateDistribution(opts.CertificateDistribution)
 		edgeControlService.SetBandwidthDebiter(userMachineService)
 		edgeControlService.SetAuditWriter(auditWriter)
 		edgeControlService.SetCredentialIssuer(mintKeys, config.NormalizeIssuer(opts.Config.HTTP.PublicBaseURL), opts.Config.Secrets.EncryptionKey)
 		edgeControlService.SetFileTransferPolicy(mint.FileTransferPolicy{Revision: opts.Config.Access.FileTransfer.Revision, MaxFileBytes: opts.Config.Access.FileTransfer.MaxFileBytes, MaxBatchFiles: opts.Config.Access.FileTransfer.MaxBatchFiles, MaxBatchBytes: opts.Config.Access.FileTransfer.MaxBatchBytes, MaxConcurrentTransfers: opts.Config.Access.FileTransfer.MaxConcurrentTransfers, RetentionSeconds: int64(opts.Config.Access.FileTransfer.Retention / time.Second), DeliveryTimeoutSeconds: int64(opts.Config.Access.FileTransfer.DeliveryTimeout / time.Second), MaxPendingSpoolBytes: opts.Config.Access.FileTransfer.MaxPendingSpoolBytes})
 		edgeControlHandler = edgeControlService.Handler()
 	}
+	previewAttachmentMachineVerifier, err := httpapi.NewPreviewAttachmentMachineProofVerifier(enrollmentService)
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure preview carrier machine verifier: %w", err)
+	}
+	previewAttachmentLeasePrecondition, err := httpapi.NewPreviewAttachmentLeasePreconditionChecker(previewTunnelStore)
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure preview carrier lease precondition: %w", err)
+	}
+	previewAttachmentHandler, err := previewattachment.NewHTTPHandler(previewAttachmentProduction.Service, previewAttachmentMachineVerifier, previewAttachmentLeasePrecondition)
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure preview carrier host handler: %w", err)
+	}
+	var previewEdgeAttachmentHandler http.Handler
+	var privateAccessAuthorizeHandler http.Handler
+	var privateAccessGrantHandler http.Handler
+	var privateAccessRoutesHandler http.Handler
+	if opts.Config.Secrets.EdgeControlCredential != "" {
+		previewEdgeVerifier, verifierErr := previewattachment.NewDBPreviewEdgeRequestVerifier(store, opts.Config.Secrets.EdgeControlCredential)
+		if verifierErr != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("configure preview carrier edge verifier: %w", verifierErr)
+		}
+		previewEdgeHandler, edgeHandlerErr := previewattachment.NewEdgeHTTPHandler(previewAttachmentProduction.Service, previewAttachmentProduction.Repository, previewEdgeVerifier)
+		err = edgeHandlerErr
+		if err != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("configure preview carrier edge handler: %w", err)
+		}
+		previewCertificateReadiness, readinessErr := tunnelcert.NewSQLStore(store)
+		if readinessErr != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("configure preview certificate readiness: %w", readinessErr)
+		}
+		previewAliasProjector, projectorErr := previewdomain.NewPreviewCarrierAliasProjector(previewDomainRepository, previewCertificateReadiness, nil)
+		if projectorErr != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("configure preview carrier aliases: %w", projectorErr)
+		}
+		if err = previewEdgeHandler.SetAliasProjector(previewAliasProjector); err != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("attach preview carrier aliases: %w", err)
+		}
+		previewEdgeAttachmentHandler = previewEdgeHandler
+		privateAccessProduction, productionErr := privateaccess.NewProduction(
+			store, previewAttachmentProduction.Repository, mintKeys,
+			config.NormalizeIssuer(opts.Config.HTTP.PublicBaseURL), enrollmentService,
+			privateaccess.PreviewEdgeVerifierAdapter{Verifier: previewEdgeVerifier},
+			privateaccess.AuditWriterSink{Writer: auditWriter},
+		)
+		if productionErr != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("configure private access: %w", productionErr)
+		}
+		privateAccessAuthorizeHandler = privateAccessProduction.AuthorizeHTTP
+		privateAccessGrantHandler = privateAccessProduction.GrantIssueHTTP
+		privateAccessRoutesHandler = privateAccessProduction.AccessorRoutes
+	}
+	telemetryMetrics := telemetry.NewMetrics()
+	telemetryHealth, telemetryErr := telemetry.NewHealthTracker(time.Now)
+	if telemetryErr != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure telemetry health: %w", telemetryErr)
+	}
+	telemetryHTTP := &telemetry.HTTPObserver{
+		Metrics: telemetryMetrics,
+		Identity: func(ctx context.Context) (string, string) {
+			return observability.RequestID(ctx), observability.CorrelationID(ctx)
+		},
+	}
+	telemetryProducer := &telemetry.Producer{Metrics: telemetryMetrics, Health: telemetryHealth, Now: time.Now}
+	// Connector protocol persistence owns the live session lifecycle. Attach
+	// telemetry after the producer is composed; the adapter is best-effort and
+	// never changes protocol persistence outcomes.
+	connectorPersistentServer.SetTelemetryProducer(telemetryProducer)
+	telemetryDiagnostics, telemetryErr := telemetry.NewDiagnostics(telemetry.DiagnosticsConfig{
+		Metrics: telemetryMetrics,
+		Health:  telemetryHealth,
+		Now:     time.Now,
+	})
+	if telemetryErr != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure telemetry diagnostics: %w", telemetryErr)
+	}
+	if err = previewDomainReconciler.SetEventSink(previewDNSReconcileTelemetry(telemetryProducer)); err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure preview DNS telemetry: %w", err)
+	}
+	if err = domainReconciler.SetTelemetryObserver(tunnelDNSReconcileTelemetry(telemetryProducer)); err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure tunnel DNS telemetry: %w", err)
+	}
+	if opts.CertificateWorker != nil {
+		if err = opts.CertificateWorker.SetTelemetryObserver(certificateTelemetry(telemetryProducer)); err != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("configure certificate telemetry: %w", err)
+		}
+	}
+	if certificateRuntime != nil && certificateRuntime.PlatformWorker != nil {
+		if err = certificateRuntime.PlatformWorker.SetTelemetryObserver(certificateTelemetry(telemetryProducer)); err != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("configure platform certificate telemetry: %w", err)
+		}
+	}
 	router := httpapi.NewRouter(httpapi.Options{
-		Config:                 opts.Config,
-		Logger:                 opts.Logger,
-		ReadinessChecker:       checker,
-		Auth:                   authService,
-		DeviceAuth:             deviceAuthService,
-		Billing:                billingService,
-		BillingRecovery:        billingRecovery,
-		Catalog:                catalogRepo,
-		CatalogWriter:          catalogRepo,
-		Fly:                    flyProvider,
-		GitHub:                 githubService,
-		Projects:               projectService,
-		TerminalSessions:       terminalSessionService,
-		CodexSessions:          codexSessionService,
-		EnvironmentAccess:      accessService,
-		MeteringRepo:           metering.NewRuntimeRepository(store, opts.Config.Secrets.EncryptionKey, opts.Config.ConfigSync.StaleHeartbeatAfter),
-		RuntimeIdentity:        enrollmentService,
-		Machines:               userMachineService,
-		MintKeys:               mintKeys,
-		EdgeControl:            edgeControlHandler,
-		EdgeControlAdmin:       edgeControlService,
-		ProbeRegions:           edgeControlService,
-		Enrollment:             enrollmentService,
-		HostedBootstrap:        hostedBootstrapService,
-		ConfigAssignments:      configAssignmentService,
-		ConfigCredentials:      configCredentialService,
-		ConfigLeases:           configLeaseService,
-		ConfigStatuses:         configStatusService,
-		ConfigRepositoryAccess: configRepositoryAccessService,
-		ConfigRuntime:          configRuntimeService,
-		ConfigConflicts:        configConflictService,
-		Routes:                 routeService,
-		Previews:               previewService,
-		Favorites:              favorites.NewService(store),
-		ControlDiagnostics:     controlDiagnostics,
-		OperationRecovery:      operationRecovery,
-		PeerIdentity:           peerIdentityService,
-		PeerSessions:           peerSessionService,
-		ManagedSSH:             managedSSHService,
-		DiagnosticUploads:      diagnosticUploadService,
-		HostedProviderRecovery: hostedProviderRecovery,
-		ReleaseFiles:           releaseFileHandler,
-		ReleaseAuthority:       releaseAuthorityService,
+		Config:                    opts.Config,
+		Logger:                    opts.Logger,
+		ReadinessChecker:          checker,
+		Auth:                      authService,
+		DeviceAuth:                deviceAuthService,
+		Billing:                   billingService,
+		BillingRecovery:           billingRecovery,
+		Catalog:                   catalogRepo,
+		CatalogWriter:             catalogRepo,
+		Fly:                       flyProvider,
+		GitHub:                    githubService,
+		Projects:                  projectService,
+		EnvironmentVariables:      environmentVariableService,
+		TerminalSessions:          terminalSessionService,
+		CodexSessions:             codexSessionService,
+		EnvironmentAccess:         accessService,
+		MeteringRepo:              metering.NewRuntimeRepository(store, opts.Config.Secrets.EncryptionKey, opts.Config.ConfigSync.StaleHeartbeatAfter),
+		RuntimeIdentity:           enrollmentService,
+		Machines:                  userMachineService,
+		MintKeys:                  mintKeys,
+		EdgeControl:               edgeControlHandler,
+		EdgeControlAdmin:          edgeControlService,
+		ProbeRegions:              edgeControlService,
+		Enrollment:                enrollmentService,
+		HostedBootstrap:           hostedBootstrapService,
+		ConfigAssignments:         configAssignmentService,
+		ConfigCredentials:         configCredentialService,
+		ConfigLeases:              configLeaseService,
+		ConfigStatuses:            configStatusService,
+		ConfigRepositoryAccess:    configRepositoryAccessService,
+		ConfigRuntime:             configRuntimeService,
+		ConfigConflicts:           configConflictService,
+		Routes:                    routeService,
+		Favorites:                 favorites.NewService(store),
+		ControlDiagnostics:        controlDiagnostics,
+		OperationRecovery:         operationRecovery,
+		PeerIdentity:              peerIdentityService,
+		PeerSessions:              peerSessionService,
+		ManagedSSH:                managedSSHService,
+		DiagnosticUploads:         diagnosticUploadService,
+		HostedProviderRecovery:    hostedProviderRecovery,
+		ReleaseFiles:              releaseFileHandler,
+		ReleaseAuthority:          releaseAuthorityService,
+		PreviewTunnelAPI:          previewTunnelAPI,
+		PreviewLeases:             previewLeaseService,
+		PreviewDomains:            previewDomainService,
+		Tunnels:                   tunnelService,
+		TunnelResources:           tunnelResourceService,
+		PreviewLogs:               tunnelResourceService,
+		PreviewCarrierAttachment:  previewAttachmentHandler,
+		PreviewCarrierEdge:        previewEdgeAttachmentHandler,
+		PrivateAccessAuthorize:    privateAccessAuthorizeHandler,
+		PrivateAccessGrant:        privateAccessGrantHandler,
+		PrivateAccessRoutes:       privateAccessRoutesHandler,
+		ConnectorControl:          connectorControlHandler,
+		ConnectorCarrierBootstrap: connectorCarrierBootstrapHandler,
+		TelemetryHTTP:             telemetryHTTP,
+		TelemetryMetrics:          telemetryMetrics,
+		TelemetryDiagnostics:      telemetryDiagnostics,
 	})
 	serverWorkers := []workers.Worker{
 		peerSessionService.ExpiryWorker(opts.Config.TerminalSessions.WorkerInterval),
@@ -449,14 +756,28 @@ func New(opts Options) (*App, error) {
 		configAssignmentService.WarningReconciliationWorker(opts.Config.TerminalSessions.WorkerInterval),
 		configRepositoryAccessService.RevocationWorker(opts.Config.TerminalSessions.WorkerInterval, 25),
 		codexSessionService.Worker(time.Minute),
+		previewLeaseReconciliationWorker(previewLeaseService, opts.Config.TerminalSessions.WorkerInterval, telemetryProducer),
+		tunnelExpiryReconciliationWorker(tunnelService, opts.Config.TerminalSessions.WorkerInterval),
+		connectorRotationDispatcher.Run,
+		connectorDrainDispatcher.Run,
+		domainReconciler.Worker(opts.Config.TerminalSessions.WorkerInterval, 100),
+		previewDomainReconciler.Worker(opts.Config.TerminalSessions.WorkerInterval, 100),
+		previewAttachmentProduction.Repository.OutboxWorker(opts.Config.TerminalSessions.WorkerInterval),
 	}
 	if edgeControlService != nil {
+		serverWorkers = append(serverWorkers, edgeControlService.TunnelEdgeAssignmentWorker(opts.Config.TerminalSessions.WorkerInterval, 100))
 		serverWorkers = append(serverWorkers, edgeControlService.StaleNodeWorker(opts.Config.TerminalSessions.WorkerInterval, controlplane.ControlTunnelNodeStaleAfter()))
 	}
 	if diagnosticUploadService != nil {
 		serverWorkers = append(serverWorkers, diagnosticUploadService.Worker(time.Minute, opts.Logger))
 	}
-	return &App{
+	if opts.CertificateWorker != nil {
+		serverWorkers = append(serverWorkers, opts.CertificateWorker.Worker(opts.Config.TerminalSessions.WorkerInterval, 100))
+	}
+	if certificateRuntime != nil && certificateRuntime.PlatformWorker != nil {
+		serverWorkers = append(serverWorkers, certificateRuntime.PlatformWorker.Worker(opts.Config.TerminalSessions.WorkerInterval, 2))
+	}
+	application := &App{
 		cfg:    opts.Config,
 		logger: opts.Logger,
 		db:     store,
@@ -465,8 +786,16 @@ func New(opts Options) (*App, error) {
 			Handler:           router,
 			ReadHeaderTimeout: opts.Config.HTTP.ReadHeaderTimeout,
 		},
-		worker: workers.NewSupervisor(serverWorkers...),
-	}, nil
+		worker:               workers.NewSupervisor(serverWorkers...),
+		certificateRuntime:   certificateRuntime,
+		telemetryMetrics:     telemetryMetrics,
+		telemetryHealth:      telemetryHealth,
+		telemetryHTTP:        telemetryHTTP,
+		telemetryDiagnostics: telemetryDiagnostics,
+		telemetryProducer:    telemetryProducer,
+	}
+	runtimeTransferred = true
+	return application, nil
 }
 
 func normalizeHelperIssuer(raw string) string {
@@ -545,38 +874,147 @@ func publicURLSecure(raw string) bool {
 }
 
 func (a *App) Run(ctx context.Context) error {
-	errs := make(chan error, 2)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	runContext, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+	telemetryEvents, telemetryErr := telemetry.NewEventLog(1024)
+	if telemetryErr != nil {
+		return fmt.Errorf("start telemetry event log: %w", telemetryErr)
+	}
+	a.telemetryEvents = telemetryEvents
+	a.telemetryHTTP.Events = telemetryEvents
+	if a.telemetryDiagnostics != nil {
+		a.telemetryDiagnostics.SetEventLog(telemetryEvents)
+	}
+	a.telemetryProducer.Events = telemetryEvents
+	defer telemetryEvents.Close()
+	a.telemetryStartedAt = time.Now().UTC()
+	if a.telemetryMetrics != nil {
+		_ = a.telemetryMetrics.IncCounter(telemetry.MetricServiceRestarts, telemetry.MetricLabels{"outcome": "success"})
+	}
+	a.updateServiceTelemetry(telemetry.StatusReady, "running", "Control-plane service is running.", "", telemetry.RetryNone, time.Time{})
+	serverErrors := make(chan error, 1)
+	workerErrors := make(chan error, 1)
 	go func() {
 		a.logger.Info("http server starting", "address", a.cfg.HTTP.Address)
 		if err := a.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errs <- err
+			serverErrors <- err
 			return
 		}
-		errs <- nil
+		serverErrors <- nil
 	}()
 	go func() {
-		errs <- a.worker.Run(ctx)
+		workerErrors <- a.worker.Run(runContext)
 	}()
 
 	var runErr error
+	var workerErr error
+	workerDone := false
 	select {
 	case <-ctx.Done():
 		runErr = ctx.Err()
-	case err := <-errs:
+	case err := <-serverErrors:
 		if err != nil {
 			runErr = err
+			a.updateServiceTelemetry(telemetry.StatusDown, "http_server_failed", "The control-plane HTTP server stopped unexpectedly.", "Restart paperboat-server and inspect correlated telemetry.", telemetry.RetryScheduled, time.Now().UTC().Add(time.Second))
+		}
+	case err := <-workerErrors:
+		workerDone = true
+		workerErr = err
+		if err != nil && !errors.Is(err, context.Canceled) {
+			runErr = err
+			a.updateServiceTelemetry(telemetry.StatusDown, "worker_failed", "A required control-plane worker stopped unexpectedly.", "Restart paperboat-server and inspect correlated telemetry.", telemetry.RetryScheduled, time.Now().UTC().Add(time.Second))
 		}
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), a.cfg.HTTP.ShutdownTimeout)
-	defer cancel()
-	if err := a.server.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("shutdown http server: %w", err)
+	// Stop and join workers before closing the certificate hub or database. A
+	// worker may still be holding an issuance/distribution reference after the
+	// HTTP server has failed, so closing those components first creates a race
+	// and can lose a terminal cleanup operation.
+	cancelRun()
+	workerShutdownCtx, cancelWorkerShutdown := context.WithTimeout(context.Background(), a.cfg.HTTP.ShutdownTimeout)
+	if !workerDone {
+		select {
+		case workerErr = <-workerErrors:
+			workerDone = true
+		case <-workerShutdownCtx.Done():
+			runErr = errors.Join(runErr, fmt.Errorf("stop workers: %w", workerShutdownCtx.Err()))
+		}
 	}
-	if err := a.db.Close(); err != nil {
-		return fmt.Errorf("close database: %w", err)
+	workerJoinErr := a.worker.Wait(workerShutdownCtx)
+	if workerJoinErr != nil {
+		runErr = errors.Join(runErr, fmt.Errorf("join workers: %w", workerJoinErr))
+	}
+	cancelWorkerShutdown()
+	if workerErr != nil && !errors.Is(workerErr, context.Canceled) && runErr == nil {
+		runErr = workerErr
+	}
+
+	serverShutdownCtx, cancelServerShutdown := context.WithTimeout(context.Background(), a.cfg.HTTP.ShutdownTimeout)
+	serverShutdownErr := a.server.Shutdown(serverShutdownCtx)
+	cancelServerShutdown()
+	if workerJoinErr != nil || serverShutdownErr != nil {
+		// A child worker or HTTP handler may still hold the certificate hub or
+		// database. Returning without closing those shared dependencies is safer
+		// than racing live work; process teardown remains the final containment
+		// boundary after a bounded graceful shutdown fails.
+		return errors.Join(runErr, serverShutdownErr)
+	}
+	var runtimeCloseErr error
+	if a.certificateRuntime != nil {
+		runtimeCloseErr = a.certificateRuntime.Close()
+	}
+	if runErr == nil || errors.Is(runErr, context.Canceled) {
+		a.updateServiceTelemetry(telemetry.StatusNotApplicable, "stopped", "Control-plane service stopped.", "", telemetry.RetryNone, time.Time{})
+	}
+	databaseCloseErr := a.db.Close()
+	if runtimeCloseErr != nil {
+		return fmt.Errorf("close certificate runtime: %w", runtimeCloseErr)
+	}
+	if databaseCloseErr != nil {
+		return fmt.Errorf("close database: %w", databaseCloseErr)
 	}
 	return runErr
+}
+
+func (a *App) updateServiceTelemetry(status telemetry.HealthStatus, code, summary, repair string, retry telemetry.RetryDecision, nextRetryAt time.Time) {
+	if a == nil {
+		return
+	}
+	if a.telemetryHealth != nil {
+		_ = a.telemetryHealth.Update(telemetry.HealthUpdate{Dimension: telemetry.DimensionService, Status: status, Code: code, Summary: summary, RepairAction: repair, CorrelationID: "cor_server_lifecycle", Retry: retry, NextRetryAt: nextRetryAt})
+	}
+	if a.telemetryMetrics != nil {
+		selected := "stopped"
+		if status == telemetry.StatusReady {
+			selected = "running"
+		} else if status == telemetry.StatusDegraded || status == telemetry.StatusDown {
+			selected = "degraded"
+		}
+		uptime := uint64(0)
+		if !a.telemetryStartedAt.IsZero() {
+			elapsed := time.Since(a.telemetryStartedAt)
+			if elapsed > 0 {
+				uptime = uint64(elapsed.Seconds())
+			}
+		}
+		for _, state := range []string{"running", "degraded", "stopped"} {
+			value := uint64(0)
+			if state == selected {
+				value = uptime
+			}
+			_ = a.telemetryMetrics.SetGauge(telemetry.MetricServiceUptime, telemetry.MetricLabels{"state": state}, value)
+		}
+	}
+	if a.telemetryEvents != nil {
+		severity, outcome := telemetry.SeverityInfo, telemetry.OutcomeStateChange
+		if status == telemetry.StatusDegraded || status == telemetry.StatusDown {
+			severity, outcome = telemetry.SeverityError, telemetry.OutcomeFailed
+		}
+		_, _ = a.telemetryEvents.Record(telemetry.EventInput{At: time.Now().UTC(), Severity: severity, Component: telemetry.DimensionService, Name: "service_lifecycle", Code: code, Outcome: outcome, Message: summary, CorrelationID: "cor_server_lifecycle", Retry: retry, NextRetryAt: nextRetryAt})
+	}
 }
 
 type readinessChecker struct {

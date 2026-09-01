@@ -199,8 +199,67 @@ CLI project reads and connects use scoped Paperboat bearer access tokens.
 - `POST /v1/projects/{project_id}/connection-descriptor`
 - `GET /v1/projects/{project_id}/connection-readiness?terminal_session_id=pts_...`
 
+### Preview Leases
+
+- `POST /v1/previews` creates one durable `preview_lease` plus a resumable create
+  operation. A dashboard request may select any currently online owner machine in the
+  account. A request made by the owner host must carry its renewable machine identity
+  and exact request proof; the server derives the machine actor from that proof and
+  does not use a CLI client-session ID as a machine identity. Every 202 operation and
+  exact 200 replay also returns `X-Paperboat-Operation-ID` with the durable server
+  create operation ID. Hosts use this safe header to resume local carrier work; the
+  operation ID is never added to the preview resource. The response is an operation
+  while dispatch or readiness is pending; it never publishes a usable preview before
+  readiness.
+  The request always includes `domains`, which may be an empty array and may
+  contain at most eight normalized exact, apex, or one-label wildcard hostnames.
+  Domain rows are created in the same transaction as the lease. The managed
+  Paperboat preview endpoint remains immediately usable while DNS and TLS for
+  custom aliases reconcile independently.
+- `GET|POST /v1/previews/{preview_id}/domains`,
+  `GET|DELETE /v1/previews/{preview_id}/domains/{domain_id}`,
+  `POST /v1/previews/{preview_id}/domains/{domain_id}/verify`, and
+  `GET /v1/previews/{preview_id}/domains/{domain_id}/instructions` expose the
+  account-scoped domain lifecycle. Mutations require idempotency and, after
+  creation, the exact domain ETag. A binding targets only the preview lease and
+  never creates a durable tunnel or route. Lease renewal advances the alias
+  target generation atomically; stop, expiry, or owner loss withdraws aliases
+  immediately while retaining user-owned DNS and enforcing the reuse quarantine.
+- Every `preview_lease` response includes a bounded `domains` summary array. It
+  contains no tunnel or route identifiers. Edge admission publishes only DNS-
+  verified, certificate-ready aliases for the exact preview generation.
+- `POST /v1/previews/{preview_id}/readiness` is machine-authenticated only. It requires
+  `Authorization: Bearer <machine-identity>`, the same value in
+  `X-Paperboat-Machine-Identity` when that header is sent, a strict unpadded
+  base64url `X-Paperboat-Machine-Proof`, `Idempotency-Key` equal to the server create
+  operation ID, and the exact current strong `If-Match` lease ETag. The proof binds
+  method, path, body, machine, installation generation, and operation ID. The strict
+  body is `{owner_device_id, owner_session_id, allocation_state, edge_state,
+  origin_state}`; all three readiness dimensions must be `ready`.
+- A successful readiness call returns the updated `preview_lease` and its new strong
+  ETag. If a host retries after an uncertain response, reusing the same operation key,
+  proof, body, and original ETag returns the already-ready lease/ETag. A different
+  owner, session, operation key, proof, body, or generation remains unauthorized or a
+  precondition conflict. Browser authentication cannot complete this CAS.
+
 `GET /v1/projects` supports `limit`, `offset`, `state`, and `sort`. Sort fields are
 `created_at`, `updated_at`, `name`, and `state`; prefix with `-` for descending order.
+
+### Tunnel Origin TLS
+
+- HTTPS origins use system CA and hostname verification by default. `custom_ca` requires
+  an opaque Paperboat credential reference. Optional mTLS is a separate client credential
+  reference and works with either system or custom CA verification.
+- `tls.server_name` controls SNI and certificate hostname verification. `preserve_host` and
+  `host_override` independently control the HTTP Host header. Changing one never changes the
+  other implicitly.
+- Credential reference fields accept only bounded `keychain`, `credential-manager`,
+  `secret-service`, `protected-file`, or `tpm` Paperboat references. Request and response JSON,
+  logs, audit metadata, and errors never contain resolved CA, certificate, or private-key bytes.
+- `insecure_development` is accepted only under explicit development policy. Every accepted
+  change emits a safe warning audit event. It is never a production default.
+- Origin probes and live streams use the same policy. HTTPS, h2c, and mTLS failures keep the
+  previous ready generation active; generation replacement closes old idle origin connections.
 
 ### Admin
 
@@ -279,13 +338,14 @@ CLI APIs:
   body, and `X-Paperboat-Machine-Proof`; it returns a short-lived `config_sync` credential
   bound to the active machine assignment, installation generation, and warning revision. Exact operation
   replays return the original credential; conflicting replays return `operation_conflict`.
-- `POST /v1/previews/credentials` accepts the machine-control bearer, a bounded `{}` JSON
-  body, and `X-Paperboat-Machine-Proof`; it returns a five-minute
-  `preview_registration` credential with exact `preview:register` scope and machine/
-  installation-generation binding. Preview operations and observations use that credential as the
-  bearer, carry the durable identity separately in `X-Paperboat-Machine-Identity`, and
-  remain signed by the enrolled machine key. The preview credential is held only in
-  preview-runner memory.
+- `POST /v1/preview-launches` is the existing helper route used by the server's
+  canonical dispatcher. The request is a strict `paperboat.preview-tunnel/v1`
+  `preview_dispatch` projection containing the already-created preview lease,
+  operation ID, owner device/session, typed target, lifecycle snapshot, lease ETag,
+  expected generation, and non-secret idempotency/request/correlation identifiers.
+  The bearer is a short-lived, single-use `preview_launch` credential bound to the
+  exact request hash and every identity field. Hosts return only the matching
+  `accepted|ready|failed` outcome; acceptance never completes the create operation.
 - `POST /v1/machine-installation-failures` accepts an active helper identity,
   its exact Ed25519 request proof, and only `enrollment_id` plus the bounded stage
   `service_install|service_readiness`. It transitions the matching `installing|connecting`
@@ -300,13 +360,10 @@ CLI APIs:
   tunnel node. Each item is accepted only when route revision, node ID, and connector
   generation still match current desired ownership; stale observations return
   `version_conflict` and cannot mutate newer intent.
-- `POST /v1/machines/{machine_id}/preview-launch-descriptor` is a CLI endpoint for an
-  owned online paired machine. It returns the machine's routed `/v1/preview-launches`
-  endpoint and a two-minute `preview_launch` credential with exact `preview:launch`
-  scope, bound to user, machine, environment, and CLI client session. The target runtime
-  validates the binding and launches one isolated preview service; it does not grant
-  terminal, transfer, config, preview-registration, or connector authority.
-
+- `POST /v1/edge/private-access/grants` and `POST /v1/edge/private-access/authorize` are the
+  edge-only private preview/tunnel authorization boundary. Their exact proof, grant, audience,
+  generation, revocation, and non-enumerating denial contract is documented in
+  [private-access.md](private-access.md).
 These endpoints never return repository/provider secrets. Assignment replacement, consent
 revocation, helper replacement, and environment revocation invalidate subsequent credential
 use through the snapshot document.

@@ -109,11 +109,6 @@ SELECT EXISTS (
   JOIN user_machines m ON m.id = s.user_machine_id
   WHERE $1::text = 'session' AND m.user_id = $2
     AND (m.id || ':' || s.id) = $3
-  UNION ALL
-  SELECT 1 FROM control_previews p
-  JOIN control_environments e ON e.id = p.environment_id
-  WHERE $1::text = 'preview' AND e.owner_user_id = $2
-    AND p.id = $3
 )
 `
 

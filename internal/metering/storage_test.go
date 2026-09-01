@@ -19,6 +19,9 @@ func TestStorageAllocationPreventsOverallocation(t *testing.T) {
 	if dsn == "" {
 		t.Skip("set PAPERBOAT_TEST_DATABASE_DSN to run Postgres repository integration tests")
 	}
+	if err := db.ValidateIsolatedTestDSN(dsn, os.Getenv("PAPERBOAT_DATABASE_DSN")); err != nil {
+		t.Fatal(err)
+	}
 	ctx := context.Background()
 	store, err := db.Open(config.Database{Driver: "postgres", DSN: dsn})
 	if err != nil {
@@ -65,6 +68,9 @@ func TestConcurrentStorageAllocationCannotOverallocate(t *testing.T) {
 	dsn := os.Getenv("PAPERBOAT_TEST_DATABASE_DSN")
 	if dsn == "" {
 		t.Skip("set PAPERBOAT_TEST_DATABASE_DSN to run Postgres repository integration tests")
+	}
+	if err := db.ValidateIsolatedTestDSN(dsn, os.Getenv("PAPERBOAT_DATABASE_DSN")); err != nil {
+		t.Fatal(err)
 	}
 	ctx := context.Background()
 	store, err := db.Open(config.Database{Driver: "postgres", DSN: dsn})
@@ -132,6 +138,9 @@ func TestConcurrentStorageAllocationWithSameIdempotencyKeySucceeds(t *testing.T)
 	if dsn == "" {
 		t.Skip("set PAPERBOAT_TEST_DATABASE_DSN to run Postgres repository integration tests")
 	}
+	if err := db.ValidateIsolatedTestDSN(dsn, os.Getenv("PAPERBOAT_DATABASE_DSN")); err != nil {
+		t.Fatal(err)
+	}
 	ctx := context.Background()
 	store, err := db.Open(config.Database{Driver: "postgres", DSN: dsn})
 	if err != nil {
@@ -188,6 +197,9 @@ func TestStorageAllocationRejectsIdempotencyKeyConflict(t *testing.T) {
 	dsn := os.Getenv("PAPERBOAT_TEST_DATABASE_DSN")
 	if dsn == "" {
 		t.Skip("set PAPERBOAT_TEST_DATABASE_DSN to run Postgres repository integration tests")
+	}
+	if err := db.ValidateIsolatedTestDSN(dsn, os.Getenv("PAPERBOAT_DATABASE_DSN")); err != nil {
+		t.Fatal(err)
 	}
 	ctx := context.Background()
 	store, err := db.Open(config.Database{Driver: "postgres", DSN: dsn})

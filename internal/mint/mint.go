@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -14,6 +16,7 @@ import (
 	"net/http"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -75,15 +78,20 @@ type TerminalControlInput struct {
 }
 
 type CredentialInput struct {
-	Issuer                 string
-	Audience               string
-	Subject                string
-	JTI                    string
-	IssuedAt               time.Time
-	ExpiresAt              time.Time
-	CredentialClass        string
-	Scopes                 []string
-	EnvironmentID          string
+	Issuer          string
+	Audience        string
+	Subject         string
+	JTI             string
+	IssuedAt        time.Time
+	ExpiresAt       time.Time
+	CredentialClass string
+	Scopes          []string
+	EnvironmentID   string
+	// AccountID is the account/tenant binding for credentials that cross the
+	// control-plane to a user-owned machine. It is intentionally separate from
+	// EnvironmentID: an environment is an execution target, not an authority
+	// boundary.
+	AccountID              string
 	EnrollmentID           string
 	AssignmentID           string
 	WarningRevision        string
@@ -91,15 +99,49 @@ type CredentialInput struct {
 	MachineID              string
 	SourceMachineID        string
 	UserID                 string
+	ActorID                string
 	CLIClientSessionID     string
 	SessionID              string
 	OperationID            string
+	PreviewID              string
+	OwnerSessionID         string
+	IdempotencyKey         string
+	RequestID              string
+	CorrelationID          string
+	TargetScheme           string
+	TargetAddress          string
+	AccessMode             string
+	Endpoint               string
+	LeaseDeadline          time.Time
+	UserDeadline           *time.Time
+	LeaseETag              string
+	State                  string
+	AllocationState        string
+	EdgeState              string
+	OriginState            string
+	CreatedAt              time.Time
+	LastRenewedAt          time.Time
+	ExpectedGeneration     int64
+	RequestHash            string
 	KeyThumbprint          string
 	ConnectorID            string
+	ResourceKind           string
+	ResourceID             string
+	RouteID                string
+	Protocol               string
+	CarrierSessionID       string
+	ProcessGeneration      int64
+	ConfigGeneration       int64
+	SessionGeneration      int64
+	AssignmentGeneration   int64
+	Method                 string
+	Host                   string
+	Path                   string
 	ConnectorGeneration    int64
 	InstallationGeneration int64
 	EdgePool               string
 	EdgeNodeID             string
+	EdgeProcessEpoch       string
 	RouteBinding           string
 	IntentID               string
 	EndpointID             string
@@ -139,6 +181,7 @@ type CredentialClaims struct {
 	Scopes                 []string            `json:"scope"`
 	CredentialClass        string              `json:"credential_class"`
 	EnvironmentID          string              `json:"environment_id"`
+	AccountID              string              `json:"account_id,omitempty"`
 	EnrollmentID           string              `json:"enrollment_id,omitempty"`
 	AssignmentID           string              `json:"assignment_id,omitempty"`
 	WarningRevision        string              `json:"warning_revision,omitempty"`
@@ -146,15 +189,49 @@ type CredentialClaims struct {
 	MachineID              string              `json:"machine_id,omitempty"`
 	SourceMachineID        string              `json:"source_machine_id,omitempty"`
 	UserID                 string              `json:"user_id,omitempty"`
+	ActorID                string              `json:"actor_id,omitempty"`
 	CLIClientSessionID     string              `json:"cli_client_session_id,omitempty"`
 	SessionID              string              `json:"session_id,omitempty"`
 	OperationID            string              `json:"operation_id,omitempty"`
+	PreviewID              string              `json:"preview_id,omitempty"`
+	OwnerSessionID         string              `json:"owner_session_id,omitempty"`
+	IdempotencyKey         string              `json:"idempotency_key,omitempty"`
+	RequestID              string              `json:"request_id,omitempty"`
+	CorrelationID          string              `json:"correlation_id,omitempty"`
+	TargetScheme           string              `json:"target_scheme,omitempty"`
+	TargetAddress          string              `json:"target_address,omitempty"`
+	AccessMode             string              `json:"access_mode,omitempty"`
+	Endpoint               string              `json:"endpoint,omitempty"`
+	LeaseDeadline          int64               `json:"lease_deadline,omitempty"`
+	UserDeadline           *int64              `json:"user_deadline,omitempty"`
+	LeaseETag              string              `json:"lease_etag,omitempty"`
+	State                  string              `json:"state,omitempty"`
+	AllocationState        string              `json:"allocation_state,omitempty"`
+	EdgeState              string              `json:"edge_state,omitempty"`
+	OriginState            string              `json:"origin_state,omitempty"`
+	CreatedAt              int64               `json:"created_at,omitempty"`
+	LastRenewedAt          int64               `json:"last_renewed_at,omitempty"`
+	ExpectedGeneration     int64               `json:"expected_generation,omitempty"`
+	RequestHash            string              `json:"request_hash,omitempty"`
 	KeyThumbprint          string              `json:"key_thumbprint,omitempty"`
 	ConnectorGeneration    int64               `json:"connector_generation,omitempty"`
 	ConnectorID            string              `json:"connector_id,omitempty"`
+	ResourceKind           string              `json:"resource_kind,omitempty"`
+	ResourceID             string              `json:"resource_id,omitempty"`
+	RouteID                string              `json:"route_id,omitempty"`
+	Protocol               string              `json:"protocol,omitempty"`
+	CarrierSessionID       string              `json:"carrier_session_id,omitempty"`
+	ProcessGeneration      int64               `json:"process_generation,omitempty"`
+	ConfigGeneration       int64               `json:"config_generation,omitempty"`
+	SessionGeneration      int64               `json:"session_generation,omitempty"`
+	AssignmentGeneration   int64               `json:"assignment_generation,omitempty"`
+	Method                 string              `json:"method,omitempty"`
+	Host                   string              `json:"host,omitempty"`
+	Path                   string              `json:"path,omitempty"`
 	InstallationGeneration int64               `json:"installation_generation,omitempty"`
 	EdgePool               string              `json:"edge_pool,omitempty"`
 	EdgeNodeID             string              `json:"edge_node_id,omitempty"`
+	EdgeProcessEpoch       string              `json:"edge_process_epoch,omitempty"`
 	RouteBinding           string              `json:"route_binding,omitempty"`
 	IntentID               string              `json:"intent_id,omitempty"`
 	EndpointID             string              `json:"endpoint_id,omitempty"`
@@ -176,22 +253,38 @@ var credentialPolicies = map[string]struct {
 	scopes   []string
 	maxTTL   time.Duration
 }{
-	"helper_enrollment":    {audience: "paperboat-enrollment", scopes: []string{"helper:enroll"}, maxTTL: 10 * time.Minute},
-	"helper_identity":      {audience: "paperboat-control", scopes: []string{"helper:connect", "helper:renew"}, maxTTL: time.Hour},
-	"machine_control":      {audience: "paperboat-control", scopes: []string{"machine:connect", "machine:renew"}, maxTTL: time.Hour},
-	"preview_registration": {audience: "paperboat-control", scopes: []string{"preview:register"}, maxTTL: 5 * time.Minute},
-	"connector_admission":  {audience: "paperboat-edge", scopes: []string{"connector:admit"}, maxTTL: 5 * time.Minute},
-	"peer_signaling":       {audience: "paperboat-edge", scopes: []string{"peer:signal"}, maxTTL: 5 * time.Minute},
-	"peer_relay":           {audience: "paperboat-edge", scopes: []string{"peer:relay"}, maxTTL: 5 * time.Minute},
-	"peer_pmtu":            {audience: "paperboat-edge", scopes: []string{"peer:pmtu"}, maxTTL: 5 * time.Minute},
-	"config_sync":          {audience: "paperboat-machine", scopes: []string{"config:pull", "config:apply", "config:report"}, maxTTL: 5 * time.Minute},
-	"terminal_operation":   {audience: "paperboat-machine", scopes: []string{"terminal:operate"}, maxTTL: 5 * time.Minute},
-	"exec_operation":       {audience: "paperboat-machine", scopes: []string{"exec:operate"}, maxTTL: 5 * time.Minute},
-	"ssh_operation":        {audience: "paperboat-machine", scopes: []string{"ssh:operate"}, maxTTL: 5 * time.Minute},
-	"preview_launch":       {audience: "paperboat-machine", scopes: []string{"preview:launch"}, maxTTL: 5 * time.Minute},
-	"file_transfer":        {audience: "paperboat-machine", scopes: []string{"file:transfer"}, maxTTL: 5 * time.Minute},
-	"codex_manage":         {audience: "paperboat-machine", scopes: []string{"codex:prepare", "codex:browse", "codex:renew", "codex:stop"}, maxTTL: 5 * time.Minute},
-	"codex_connect":        {audience: "paperboat-machine", scopes: []string{"codex:connect"}, maxTTL: 5 * time.Minute},
+	"helper_enrollment":   {audience: "paperboat-enrollment", scopes: []string{"helper:enroll"}, maxTTL: 10 * time.Minute},
+	"helper_identity":     {audience: "paperboat-control", scopes: []string{"helper:connect", "helper:renew"}, maxTTL: time.Hour},
+	"machine_control":     {audience: "paperboat-control", scopes: []string{"machine:connect", "machine:renew"}, maxTTL: time.Hour},
+	"connector_admission": {audience: "paperboat-edge", scopes: []string{"connector:admit"}, maxTTL: 5 * time.Minute},
+	"peer_signaling":      {audience: "paperboat-edge", scopes: []string{"peer:signal"}, maxTTL: 5 * time.Minute},
+	"peer_relay":          {audience: "paperboat-edge", scopes: []string{"peer:relay"}, maxTTL: 5 * time.Minute},
+	"peer_pmtu":           {audience: "paperboat-edge", scopes: []string{"peer:pmtu"}, maxTTL: 5 * time.Minute},
+	"config_sync":         {audience: "paperboat-machine", scopes: []string{"config:pull", "config:apply", "config:report"}, maxTTL: 5 * time.Minute},
+	"terminal_operation":  {audience: "paperboat-machine", scopes: []string{"terminal:operate"}, maxTTL: 5 * time.Minute},
+	"exec_operation":      {audience: "paperboat-machine", scopes: []string{"exec:operate"}, maxTTL: 5 * time.Minute},
+	"ssh_operation":       {audience: "paperboat-machine", scopes: []string{"ssh:operate"}, maxTTL: 5 * time.Minute},
+	"preview_launch":      {audience: "paperboat-machine", scopes: []string{"preview:launch"}, maxTTL: 5 * time.Minute},
+	"private_access":      {audience: "paperboat-edge", scopes: []string{"private:access"}, maxTTL: 2 * time.Minute},
+	"file_transfer":       {audience: "paperboat-machine", scopes: []string{"file:transfer"}, maxTTL: 5 * time.Minute},
+	"codex_manage":        {audience: "paperboat-machine", scopes: []string{"codex:prepare", "codex:browse", "codex:renew", "codex:stop"}, maxTTL: 5 * time.Minute},
+	"codex_connect":       {audience: "paperboat-machine", scopes: []string{"codex:connect"}, maxTTL: 5 * time.Minute},
+}
+
+// private_access grants use the audience for the concrete edge protocol. The
+// class remains one policy so its scope and lifetime cannot drift, while the
+// exact audience prevents an HTTP grant from being replayed for raw TCP (or a
+// preview grant for a durable tunnel).
+func credentialAudienceAllowed(class, audience, defaultAudience string) bool {
+	if class != "private_access" {
+		return audience == defaultAudience
+	}
+	switch audience {
+	case "paperboat-preview-http", "paperboat-tunnel-http", "paperboat-tunnel-tcp":
+		return true
+	default:
+		return false
+	}
 }
 
 func New(keys []Key, activeID string, maxAge time.Duration) (*Provider, error) {
@@ -320,7 +413,7 @@ func (p *Provider) SignTerminalControl(input TerminalControlInput) (string, erro
 func (p *Provider) SignCredential(input CredentialInput) (string, error) {
 	policy, ok := credentialPolicies[input.CredentialClass]
 	issuedAt, expiresAt := input.IssuedAt.UTC(), input.ExpiresAt.UTC()
-	if !ok || input.Issuer == "" || input.Subject == "" || input.JTI == "" || input.EnvironmentID == "" || input.Audience != policy.audience || !slices.Equal(input.Scopes, policy.scopes) || !expiresAt.After(issuedAt) || expiresAt.Sub(issuedAt) > policy.maxTTL {
+	if !ok || input.Issuer == "" || input.Subject == "" || input.JTI == "" || input.EnvironmentID == "" || !credentialAudienceAllowed(input.CredentialClass, input.Audience, policy.audience) || !slices.Equal(input.Scopes, policy.scopes) || !expiresAt.After(issuedAt) || expiresAt.Sub(issuedAt) > policy.maxTTL {
 		return "", errors.New("credential claims are invalid")
 	}
 	claims := map[string]any{"iss": input.Issuer, "aud": input.Audience, "sub": input.Subject, "jti": input.JTI, "iat": issuedAt.Unix(), "exp": expiresAt.Unix(), "scope": input.Scopes, "credential_class": input.CredentialClass, "environment_id": input.EnvironmentID}
@@ -336,15 +429,10 @@ func (p *Provider) SignCredential(input CredentialInput) (string, error) {
 		}
 		claims["helper_id"], claims["machine_id"], claims["key_thumbprint"] = input.HelperID, input.MachineID, input.KeyThumbprint
 	case "machine_control":
-		if input.UserID == "" || input.MachineID == "" || input.KeyThumbprint == "" || input.InstallationGeneration < 1 {
+		if input.UserID == "" || input.MachineID == "" || input.KeyThumbprint == "" || input.InstallationGeneration < 1 || input.SessionGeneration < 1 {
 			return "", errors.New("machine control bindings are required")
 		}
-		claims["user_id"], claims["machine_id"], claims["key_thumbprint"], claims["installation_generation"] = input.UserID, input.MachineID, input.KeyThumbprint, input.InstallationGeneration
-	case "preview_registration":
-		if input.MachineID == "" || input.InstallationGeneration < 1 {
-			return "", errors.New("preview registration binding is required")
-		}
-		claims["machine_id"], claims["installation_generation"] = input.MachineID, input.InstallationGeneration
+		claims["user_id"], claims["machine_id"], claims["key_thumbprint"], claims["installation_generation"], claims["session_generation"] = input.UserID, input.MachineID, input.KeyThumbprint, input.InstallationGeneration, input.SessionGeneration
 	case "connector_admission":
 		if input.FileTransferPolicy == nil {
 			input.FileTransferPolicy = &DefaultFileTransferPolicy
@@ -405,10 +493,34 @@ func (p *Provider) SignCredential(input CredentialInput) (string, error) {
 		claims["installation_generation"], claims["connector_id"], claims["connector_generation"] = input.InstallationGeneration, input.ConnectorID, input.ConnectorGeneration
 		claims["edge_pool"], claims["edge_node_id"] = input.EdgePool, input.EdgeNodeID
 	case "preview_launch":
-		if input.MachineID == "" || input.UserID == "" || input.CLIClientSessionID == "" {
+		if err := validatePreviewLaunchInput(input); err != nil {
 			return "", errors.New("preview launch bindings are required")
 		}
-		claims["machine_id"], claims["user_id"], claims["cli_client_session_id"] = input.MachineID, input.UserID, input.CLIClientSessionID
+		claims["account_id"], claims["machine_id"], claims["user_id"], claims["actor_id"] = input.AccountID, input.MachineID, input.UserID, input.ActorID
+		claims["preview_id"], claims["owner_session_id"], claims["operation_id"] = input.PreviewID, input.OwnerSessionID, input.OperationID
+		claims["target_scheme"], claims["target_address"], claims["access_mode"] = input.TargetScheme, input.TargetAddress, input.AccessMode
+		claims["endpoint"], claims["lease_deadline"], claims["lease_etag"] = input.Endpoint, input.LeaseDeadline.UTC().Unix(), input.LeaseETag
+		claims["state"], claims["allocation_state"], claims["edge_state"], claims["origin_state"] = input.State, input.AllocationState, input.EdgeState, input.OriginState
+		claims["created_at"], claims["last_renewed_at"] = input.CreatedAt.UTC().Unix(), input.LastRenewedAt.UTC().Unix()
+		claims["expected_generation"], claims["request_hash"] = input.ExpectedGeneration, input.RequestHash
+		claims["idempotency_key"], claims["request_id"], claims["correlation_id"] = input.IdempotencyKey, input.RequestID, input.CorrelationID
+		if input.UserDeadline != nil {
+			value := input.UserDeadline.UTC().Unix()
+			claims["user_deadline"] = value
+		}
+	case "private_access":
+		if err := validatePrivateAccessInput(input); err != nil {
+			return "", errors.New("private access bindings are required")
+		}
+		claims["account_id"], claims["user_id"], claims["machine_id"], claims["session_id"] = input.AccountID, input.UserID, input.MachineID, input.SessionID
+		claims["resource_kind"], claims["resource_id"], claims["route_id"], claims["protocol"] = input.ResourceKind, input.ResourceID, input.RouteID, input.Protocol
+		claims["operation_id"], claims["connector_id"], claims["route_generation"] = input.OperationID, input.ConnectorID, input.RouteGeneration
+		claims["carrier_session_id"], claims["process_generation"], claims["config_generation"] = input.CarrierSessionID, input.ProcessGeneration, input.ConfigGeneration
+		claims["installation_generation"], claims["session_generation"], claims["assignment_generation"] = input.InstallationGeneration, input.SessionGeneration, input.AssignmentGeneration
+		claims["edge_node_id"], claims["edge_process_epoch"] = input.EdgeNodeID, input.EdgeProcessEpoch
+		claims["method"], claims["host"], claims["path"] = input.Method, input.Host, input.Path
+		claims["idempotency_key"], claims["request_id"], claims["correlation_id"] = input.IdempotencyKey, input.RequestID, input.CorrelationID
+		claims["access_mode"], claims["request_hash"] = input.AccessMode, input.RequestHash
 	case "file_transfer":
 		if input.MachineID == "" || input.SourceMachineID == "" || input.UserID == "" || input.CLIClientSessionID == "" {
 			return "", errors.New("machine transfer bindings are required")
@@ -476,7 +588,7 @@ func (p *Provider) verifyCredential(token, expectedIssuer, expectedClass string,
 		return CredentialClaims{}, errors.New("credential class is invalid")
 	case claims.Issuer != expectedIssuer:
 		return CredentialClaims{}, errors.New("credential issuer is invalid")
-	case claims.Audience != policy.audience:
+	case !credentialAudienceAllowed(expectedClass, claims.Audience, policy.audience):
 		return CredentialClaims{}, errors.New("credential audience is invalid")
 	case !slices.Equal(claims.Scopes, policy.scopes):
 		return CredentialClaims{}, errors.New("credential scopes are invalid")
@@ -501,11 +613,7 @@ func (p *Provider) verifyCredential(token, expectedIssuer, expectedClass string,
 			return CredentialClaims{}, errors.New("credential claims are invalid")
 		}
 	case "machine_control":
-		if claims.UserID == "" || claims.MachineID == "" || claims.KeyThumbprint == "" || claims.InstallationGeneration < 1 {
-			return CredentialClaims{}, errors.New("credential claims are invalid")
-		}
-	case "preview_registration":
-		if claims.MachineID == "" || claims.InstallationGeneration < 1 {
+		if claims.UserID == "" || claims.MachineID == "" || claims.KeyThumbprint == "" || claims.InstallationGeneration < 1 || claims.SessionGeneration < 1 {
 			return CredentialClaims{}, errors.New("credential claims are invalid")
 		}
 	case "connector_admission":
@@ -544,7 +652,11 @@ func (p *Provider) verifyCredential(token, expectedIssuer, expectedClass string,
 			return CredentialClaims{}, errors.New("credential claims are invalid")
 		}
 	case "preview_launch":
-		if claims.MachineID == "" || claims.UserID == "" || claims.CLIClientSessionID == "" {
+		if err := validatePreviewLaunchClaims(claims); err != nil {
+			return CredentialClaims{}, errors.New("credential claims are invalid")
+		}
+	case "private_access":
+		if err := validatePrivateAccessClaims(claims); err != nil {
 			return CredentialClaims{}, errors.New("credential claims are invalid")
 		}
 	case "file_transfer":
@@ -553,6 +665,214 @@ func (p *Provider) verifyCredential(token, expectedIssuer, expectedClass string,
 		}
 	}
 	return claims, nil
+}
+
+func validatePreviewLaunchInput(input CredentialInput) error {
+	if input.AccountID == "" || input.MachineID == "" || input.UserID == "" || input.ActorID == "" || input.PreviewID == "" || input.OwnerSessionID == "" || !validOperationID(input.OperationID) {
+		return errors.New("identity bindings are incomplete")
+	}
+	if input.Subject != input.UserID || !validCredentialBindingID(input.AccountID) || !validCredentialBindingID(input.ActorID) || !validCredentialBindingID(input.MachineID) || !validCredentialBindingID(input.PreviewID) || !validCredentialBindingID(input.OwnerSessionID) {
+		return errors.New("identity bindings are invalid")
+	}
+	if !validPreviewLaunchTrace(input.IdempotencyKey, 1, 256) || !validPreviewLaunchTrace(input.RequestID, 3, 128) || !validPreviewLaunchTrace(input.CorrelationID, 3, 128) {
+		return errors.New("trace bindings are invalid")
+	}
+	if input.TargetScheme != "http" && input.TargetScheme != "https" && input.TargetScheme != "h2c" && input.TargetScheme != "unix" && input.TargetScheme != "tcp" {
+		return errors.New("target scheme is invalid")
+	}
+	if input.TargetAddress == "" || len(input.TargetAddress) > 512 || strings.ContainsAny(input.TargetAddress, "\r\n") || (input.AccessMode != "public" && input.AccessMode != "private") {
+		return errors.New("target binding is invalid")
+	}
+	if input.Endpoint == "" || !strings.HasPrefix(input.Endpoint, "https://") || strings.ContainsAny(input.Endpoint, "\r\n") {
+		return errors.New("endpoint binding is invalid")
+	}
+	if input.LeaseDeadline.IsZero() || !input.LeaseDeadline.After(input.IssuedAt.UTC()) || input.UserDeadline != nil && (input.UserDeadline.IsZero() || input.UserDeadline.Before(input.IssuedAt.UTC()) || input.UserDeadline.After(input.LeaseDeadline)) {
+		return errors.New("lease deadline binding is invalid")
+	}
+	if input.CreatedAt.IsZero() || input.LastRenewedAt.IsZero() || input.LastRenewedAt.Before(input.CreatedAt) || input.CreatedAt.After(input.LeaseDeadline) {
+		return errors.New("lease timestamps are invalid")
+	}
+	if input.ExpectedGeneration < 1 || !validPreviewLaunchETag(input.LeaseETag, input.PreviewID, input.ExpectedGeneration) {
+		return errors.New("lease generation binding is invalid")
+	}
+	if !validPreviewLaunchHash(input.RequestHash) {
+		return errors.New("request hash binding is invalid")
+	}
+	if !validPreviewLaunchState(input.State, input.AllocationState, input.EdgeState, input.OriginState) {
+		return errors.New("lease state binding is invalid")
+	}
+	return nil
+}
+
+func validatePreviewLaunchClaims(claims CredentialClaims) error {
+	if claims.AccountID == "" || claims.MachineID == "" || claims.UserID == "" || claims.ActorID == "" || claims.PreviewID == "" || claims.OwnerSessionID == "" || !validOperationID(claims.OperationID) {
+		return errors.New("identity bindings are incomplete")
+	}
+	if claims.Subject != claims.UserID || !validCredentialBindingID(claims.AccountID) || !validCredentialBindingID(claims.ActorID) || !validCredentialBindingID(claims.MachineID) || !validCredentialBindingID(claims.PreviewID) || !validCredentialBindingID(claims.OwnerSessionID) {
+		return errors.New("identity bindings are invalid")
+	}
+	if !validPreviewLaunchTrace(claims.IdempotencyKey, 1, 256) || !validPreviewLaunchTrace(claims.RequestID, 3, 128) || !validPreviewLaunchTrace(claims.CorrelationID, 3, 128) {
+		return errors.New("trace bindings are invalid")
+	}
+	if claims.TargetScheme != "http" && claims.TargetScheme != "https" && claims.TargetScheme != "h2c" && claims.TargetScheme != "unix" && claims.TargetScheme != "tcp" {
+		return errors.New("target scheme is invalid")
+	}
+	if claims.TargetAddress == "" || len(claims.TargetAddress) > 512 || strings.ContainsAny(claims.TargetAddress, "\r\n") || (claims.AccessMode != "public" && claims.AccessMode != "private") {
+		return errors.New("target binding is invalid")
+	}
+	if claims.Endpoint == "" || !strings.HasPrefix(claims.Endpoint, "https://") || strings.ContainsAny(claims.Endpoint, "\r\n") || claims.LeaseDeadline <= claims.IssuedAt || claims.UserDeadline != nil && (*claims.UserDeadline <= claims.IssuedAt || *claims.UserDeadline > claims.LeaseDeadline) {
+		return errors.New("lease deadline binding is invalid")
+	}
+	if claims.CreatedAt <= 0 || claims.LastRenewedAt < claims.CreatedAt || claims.CreatedAt > claims.LeaseDeadline {
+		return errors.New("lease timestamps are invalid")
+	}
+	if claims.ExpectedGeneration < 1 || !validPreviewLaunchETag(claims.LeaseETag, claims.PreviewID, claims.ExpectedGeneration) || !validPreviewLaunchHash(claims.RequestHash) {
+		return errors.New("lease generation binding is invalid")
+	}
+	if !validPreviewLaunchState(claims.State, claims.AllocationState, claims.EdgeState, claims.OriginState) {
+		return errors.New("lease state binding is invalid")
+	}
+	return nil
+}
+
+func validatePrivateAccessInput(input CredentialInput) error {
+	if !validCredentialBindingID(input.AccountID) || !validCredentialBindingID(input.UserID) || !validCredentialBindingID(input.MachineID) || !validCredentialBindingID(input.SessionID) || !validCredentialBindingID(input.ResourceID) || !validCredentialBindingID(input.RouteID) || !validCredentialBindingID(input.CarrierSessionID) || !validCredentialBindingID(input.EdgeNodeID) || !validPrivateAccessEpoch(input.EdgeProcessEpoch) || input.JTI == "" || input.AccessMode != "private" || input.InstallationGeneration < 1 || input.RouteGeneration < 1 || input.SessionGeneration < 1 || input.ProcessGeneration < 1 || input.ConfigGeneration < 1 || input.AssignmentGeneration < 1 {
+		return errors.New("private access identity bindings are incomplete")
+	}
+	if input.ResourceKind != "preview" && input.ResourceKind != "tunnel" {
+		return errors.New("private access resource kind is invalid")
+	}
+	if input.Protocol != "http" && input.Protocol != "tcp" {
+		return errors.New("private access protocol is invalid")
+	}
+	if input.ResourceKind == "preview" && !validOperationID(input.OperationID) {
+		return errors.New("private preview operation binding is invalid")
+	}
+	if input.ResourceKind == "tunnel" && !validCredentialBindingID(input.ConnectorID) {
+		return errors.New("private tunnel connector binding is invalid")
+	}
+	if input.Protocol == "tcp" && input.ResourceKind != "tunnel" {
+		return errors.New("private TCP is only supported for tunnels")
+	}
+	if !validPreviewLaunchHash(input.RequestHash) {
+		return errors.New("private access request hash is invalid")
+	}
+	if !validPreviewLaunchTrace(input.IdempotencyKey, 1, 256) || !validPreviewLaunchTrace(input.RequestID, 3, 128) || !validPreviewLaunchTrace(input.CorrelationID, 3, 128) {
+		return errors.New("private access trace is invalid")
+	}
+	if input.Protocol == "http" {
+		if !validPreviewLaunchTrace(input.Method, 1, 32) || !validPreviewLaunchTrace(input.Host, 1, 512) || len(input.Path) < 1 || len(input.Path) > 4096 || !strings.HasPrefix(input.Path, "/") {
+			return errors.New("private access HTTP binding is invalid")
+		}
+	} else if input.Method != "" || input.Host != "" || input.Path != "" {
+		return errors.New("private access TCP binding is invalid")
+	}
+	return nil
+}
+
+func validatePrivateAccessClaims(claims CredentialClaims) error {
+	if !validCredentialBindingID(claims.AccountID) || !validCredentialBindingID(claims.UserID) || !validCredentialBindingID(claims.MachineID) || !validCredentialBindingID(claims.SessionID) || !validCredentialBindingID(claims.ResourceID) || !validCredentialBindingID(claims.RouteID) || !validCredentialBindingID(claims.CarrierSessionID) || !validCredentialBindingID(claims.EdgeNodeID) || !validPrivateAccessEpoch(claims.EdgeProcessEpoch) || claims.JTI == "" || claims.AccessMode != "private" || claims.InstallationGeneration < 1 || claims.RouteGeneration < 1 || claims.SessionGeneration < 1 || claims.ProcessGeneration < 1 || claims.ConfigGeneration < 1 || claims.AssignmentGeneration < 1 {
+		return errors.New("private access identity bindings are incomplete")
+	}
+	if claims.ResourceKind != "preview" && claims.ResourceKind != "tunnel" {
+		return errors.New("private access resource kind is invalid")
+	}
+	if claims.Protocol != "http" && claims.Protocol != "tcp" {
+		return errors.New("private access protocol is invalid")
+	}
+	if claims.ResourceKind == "preview" && !validOperationID(claims.OperationID) {
+		return errors.New("private preview operation binding is invalid")
+	}
+	if claims.ResourceKind == "tunnel" && !validCredentialBindingID(claims.ConnectorID) {
+		return errors.New("private tunnel connector binding is invalid")
+	}
+	if claims.Protocol == "tcp" && claims.ResourceKind != "tunnel" {
+		return errors.New("private TCP is only supported for tunnels")
+	}
+	if !validPreviewLaunchHash(claims.RequestHash) {
+		return errors.New("private access request hash is invalid")
+	}
+	if !validPreviewLaunchTrace(claims.IdempotencyKey, 1, 256) || !validPreviewLaunchTrace(claims.RequestID, 3, 128) || !validPreviewLaunchTrace(claims.CorrelationID, 3, 128) {
+		return errors.New("private access trace is invalid")
+	}
+	if claims.Protocol == "http" {
+		if !validPreviewLaunchTrace(claims.Method, 1, 32) || !validPreviewLaunchTrace(claims.Host, 1, 512) || len(claims.Path) < 1 || len(claims.Path) > 4096 || !strings.HasPrefix(claims.Path, "/") {
+			return errors.New("private access HTTP binding is invalid")
+		}
+	} else if claims.Method != "" || claims.Host != "" || claims.Path != "" {
+		return errors.New("private access TCP binding is invalid")
+	}
+	return nil
+}
+
+func validPrivateAccessEpoch(value string) bool {
+	if len(value) < 8 || len(value) > 128 {
+		return false
+	}
+	for _, r := range value {
+		if r != '-' && r != '_' && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func validCredentialBindingID(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) < 3 || len(value) > 128 {
+		return false
+	}
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f || r == ' ' || r == '\t' || r == '\r' || r == '\n' {
+			return false
+		}
+	}
+	return true
+}
+
+func validPreviewLaunchTrace(value string, minimum, maximum int) bool {
+	if len(value) < minimum || len(value) > maximum {
+		return false
+	}
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f || r == ' ' || r == '\t' || r == '\r' || r == '\n' {
+			return false
+		}
+	}
+	return true
+}
+
+func validPreviewLaunchHash(value string) bool {
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == sha256.Size && strings.ToLower(value) == value
+}
+
+func validPreviewLaunchETag(value, previewID string, expectedGeneration int64) bool {
+	value = strings.TrimSpace(value)
+	if len(value) < 2 || value[0] != '"' || value[len(value)-1] != '"' {
+		return false
+	}
+	parts := strings.Split(strings.Trim(value, `"`), ":")
+	if len(parts) != 4 || parts[0] != "ptv1" || parts[1] != "preview_lease" {
+		return false
+	}
+	decoded, err := base64.RawURLEncoding.Strict().DecodeString(parts[2])
+	if err != nil || string(decoded) != previewID || base64.RawURLEncoding.EncodeToString(decoded) != parts[2] {
+		return false
+	}
+	generation, err := strconv.ParseInt(parts[3], 10, 64)
+	return err == nil && generation == expectedGeneration && generation > 0
+}
+
+func validPreviewLaunchState(state, allocation, edge, origin string) bool {
+	validState := state == "allocating" || state == "connecting" || state == "ready"
+	validAllocation := allocation == "pending" || allocation == "ready" || allocation == "failed" || allocation == "released"
+	validEdge := edge == "pending" || edge == "ready" || edge == "degraded" || edge == "down"
+	validOrigin := origin == "unknown" || origin == "ready" || origin == "unavailable" || origin == "degraded" || origin == "down"
+	return validState && validAllocation && validEdge && validOrigin
 }
 
 func validOperationID(value string) bool {

@@ -14,7 +14,7 @@ import (
 const addUserMachineHostRole = `-- name: AddUserMachineHostRole :one
 UPDATE user_machines
 SET setup_roles = ARRAY(SELECT DISTINCT role FROM unnest(setup_roles || ARRAY['host']::text[]) role ORDER BY role),
-    setup_mode = 'host', configured_capabilities = ARRAY['file_receive','preview_launch','terminal_host','codex_host','session_host','keep_awake']::text[],
+    setup_mode = 'host', configured_capabilities = ARRAY['file_receive','preview_launch','terminal_host','codex_host','session_host','keep_awake','environment_injection']::text[],
     display_name = $1, workspace_root = $2,
     runtime_versions = $3,
     updated_at = CASE WHEN NOT ('host' = ANY(setup_roles)) OR display_name IS DISTINCT FROM $1 OR workspace_root IS DISTINCT FROM $2 OR runtime_versions IS DISTINCT FROM $3 THEN now() ELSE updated_at END,
@@ -434,6 +434,49 @@ func (q *Queries) BindCanonicalMachineIdentity(ctx context.Context, arg BindCano
 		&i.RelayLatencyGeneration,
 		&i.RelayLatencyObservedAt,
 		&i.RelayLatencyVector,
+	)
+	return i, err
+}
+
+const bindMachineControlRenewalSession = `-- name: BindMachineControlRenewalSession :one
+UPDATE machine_control_renewals
+SET session_generation = $1
+WHERE operation_id = $2
+  AND machine_id = $3
+  AND installation_generation = $4
+  AND credential_jti = $5
+  AND session_generation IS NULL
+  AND superseded_at IS NULL
+RETURNING operation_id, machine_id, installation_generation, credential_jti, issued_at, expires_at, created_at, session_generation, superseded_at
+`
+
+type BindMachineControlRenewalSessionParams struct {
+	SessionGeneration      sql.NullInt64
+	OperationID            string
+	MachineID              string
+	InstallationGeneration int64
+	CredentialJti          string
+}
+
+func (q *Queries) BindMachineControlRenewalSession(ctx context.Context, arg BindMachineControlRenewalSessionParams) (MachineControlRenewal, error) {
+	row := q.db.QueryRow(ctx, bindMachineControlRenewalSession,
+		arg.SessionGeneration,
+		arg.OperationID,
+		arg.MachineID,
+		arg.InstallationGeneration,
+		arg.CredentialJti,
+	)
+	var i MachineControlRenewal
+	err := row.Scan(
+		&i.OperationID,
+		&i.MachineID,
+		&i.InstallationGeneration,
+		&i.CredentialJti,
+		&i.IssuedAt,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.SessionGeneration,
+		&i.SupersededAt,
 	)
 	return i, err
 }
@@ -996,7 +1039,7 @@ INSERT INTO machine_control_renewals (
   $1, $2, $3,
   $4, $5, $6
 ) ON CONFLICT (operation_id) DO UPDATE SET operation_id = EXCLUDED.operation_id
-RETURNING operation_id, machine_id, installation_generation, credential_jti, issued_at, expires_at, created_at
+RETURNING operation_id, machine_id, installation_generation, credential_jti, issued_at, expires_at, created_at, session_generation, superseded_at
 `
 
 type CreateMachineControlRenewalParams struct {
@@ -1026,6 +1069,51 @@ func (q *Queries) CreateMachineControlRenewal(ctx context.Context, arg CreateMac
 		&i.IssuedAt,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.SessionGeneration,
+		&i.SupersededAt,
+	)
+	return i, err
+}
+
+const createMachineControlSession = `-- name: CreateMachineControlSession :one
+INSERT INTO machine_control_sessions (
+  machine_id, installation_generation, session_generation, operation_id,
+  credential_jti, issued_at, expires_at
+) VALUES (
+  $1, $2, 1, $3,
+  $4, $5, $6
+)
+RETURNING machine_id, installation_generation, session_generation, operation_id, credential_jti, issued_at, expires_at, updated_at
+`
+
+type CreateMachineControlSessionParams struct {
+	MachineID              string
+	InstallationGeneration int64
+	OperationID            string
+	CredentialJti          string
+	IssuedAt               time.Time
+	ExpiresAt              time.Time
+}
+
+func (q *Queries) CreateMachineControlSession(ctx context.Context, arg CreateMachineControlSessionParams) (MachineControlSession, error) {
+	row := q.db.QueryRow(ctx, createMachineControlSession,
+		arg.MachineID,
+		arg.InstallationGeneration,
+		arg.OperationID,
+		arg.CredentialJti,
+		arg.IssuedAt,
+		arg.ExpiresAt,
+	)
+	var i MachineControlSession
+	err := row.Scan(
+		&i.MachineID,
+		&i.InstallationGeneration,
+		&i.SessionGeneration,
+		&i.OperationID,
+		&i.CredentialJti,
+		&i.IssuedAt,
+		&i.ExpiresAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -1316,8 +1404,12 @@ func (q *Queries) CreateUserMachineTerminalSession(ctx context.Context, arg Crea
 }
 
 const deleteExpiredMachineControlRenewals = `-- name: DeleteExpiredMachineControlRenewals :execrows
-DELETE FROM machine_control_renewals
-WHERE expires_at < $1
+DELETE FROM machine_control_renewals renewals
+WHERE renewals.expires_at < $1
+  AND NOT EXISTS (
+    SELECT 1 FROM machine_control_sessions current
+    WHERE current.operation_id = renewals.operation_id
+  )
 `
 
 func (q *Queries) DeleteExpiredMachineControlRenewals(ctx context.Context, cutoff time.Time) (int64, error) {
@@ -1754,8 +1846,44 @@ func (q *Queries) GetCanonicalMachineForEnvironment(ctx context.Context, environ
 	return i, err
 }
 
+const getCurrentMachineControlSession = `-- name: GetCurrentMachineControlSession :one
+SELECT machine_id, installation_generation, session_generation, operation_id, credential_jti, issued_at, expires_at, updated_at FROM machine_control_sessions
+WHERE machine_id = $1
+  AND installation_generation = $2
+  AND credential_jti = $3
+  AND expires_at > $4
+`
+
+type GetCurrentMachineControlSessionParams struct {
+	MachineID              string
+	InstallationGeneration int64
+	CredentialJti          string
+	Now                    time.Time
+}
+
+func (q *Queries) GetCurrentMachineControlSession(ctx context.Context, arg GetCurrentMachineControlSessionParams) (MachineControlSession, error) {
+	row := q.db.QueryRow(ctx, getCurrentMachineControlSession,
+		arg.MachineID,
+		arg.InstallationGeneration,
+		arg.CredentialJti,
+		arg.Now,
+	)
+	var i MachineControlSession
+	err := row.Scan(
+		&i.MachineID,
+		&i.InstallationGeneration,
+		&i.SessionGeneration,
+		&i.OperationID,
+		&i.CredentialJti,
+		&i.IssuedAt,
+		&i.ExpiresAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getMachineControlRenewalForUpdate = `-- name: GetMachineControlRenewalForUpdate :one
-SELECT operation_id, machine_id, installation_generation, credential_jti, issued_at, expires_at, created_at FROM machine_control_renewals
+SELECT operation_id, machine_id, installation_generation, credential_jti, issued_at, expires_at, created_at, session_generation, superseded_at FROM machine_control_renewals
 WHERE operation_id = $1
 FOR UPDATE
 `
@@ -1771,6 +1899,30 @@ func (q *Queries) GetMachineControlRenewalForUpdate(ctx context.Context, operati
 		&i.IssuedAt,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.SessionGeneration,
+		&i.SupersededAt,
+	)
+	return i, err
+}
+
+const getMachineControlSessionForUpdate = `-- name: GetMachineControlSessionForUpdate :one
+SELECT machine_id, installation_generation, session_generation, operation_id, credential_jti, issued_at, expires_at, updated_at FROM machine_control_sessions
+WHERE machine_id = $1
+FOR UPDATE
+`
+
+func (q *Queries) GetMachineControlSessionForUpdate(ctx context.Context, machineID string) (MachineControlSession, error) {
+	row := q.db.QueryRow(ctx, getMachineControlSessionForUpdate, machineID)
+	var i MachineControlSession
+	err := row.Scan(
+		&i.MachineID,
+		&i.InstallationGeneration,
+		&i.SessionGeneration,
+		&i.OperationID,
+		&i.CredentialJti,
+		&i.IssuedAt,
+		&i.ExpiresAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -3482,6 +3634,35 @@ func (q *Queries) LockUserMachineTerminalSessions(ctx context.Context, arg LockU
 	return id, err
 }
 
+const markMachineControlRenewalSuperseded = `-- name: MarkMachineControlRenewalSuperseded :execrows
+UPDATE machine_control_renewals
+SET superseded_at = $1
+WHERE operation_id = $2
+  AND machine_id = $3
+  AND session_generation = $4
+  AND superseded_at IS NULL
+`
+
+type MarkMachineControlRenewalSupersededParams struct {
+	Now               sql.NullTime
+	OperationID       string
+	MachineID         string
+	SessionGeneration sql.NullInt64
+}
+
+func (q *Queries) MarkMachineControlRenewalSuperseded(ctx context.Context, arg MarkMachineControlRenewalSupersededParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markMachineControlRenewalSuperseded,
+		arg.Now,
+		arg.OperationID,
+		arg.MachineID,
+		arg.SessionGeneration,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const markStaleUserMachinesOffline = `-- name: MarkStaleUserMachinesOffline :execrows
 UPDATE user_machines
 SET state = 'offline', online = false, observed_capabilities = '{}'::text[], updated_at = now(), version = version + 1
@@ -4290,11 +4471,12 @@ const rotateMachineControlRenewal = `-- name: RotateMachineControlRenewal :one
 UPDATE machine_control_renewals
 SET credential_jti = $1,
     issued_at = $2,
-    expires_at = $3
+    expires_at = $3,
+    session_generation = NULL
 WHERE operation_id = $4
   AND machine_id = $5
   AND installation_generation = $6
-RETURNING operation_id, machine_id, installation_generation, credential_jti, issued_at, expires_at, created_at
+RETURNING operation_id, machine_id, installation_generation, credential_jti, issued_at, expires_at, created_at, session_generation, superseded_at
 `
 
 type RotateMachineControlRenewalParams struct {
@@ -4324,6 +4506,59 @@ func (q *Queries) RotateMachineControlRenewal(ctx context.Context, arg RotateMac
 		&i.IssuedAt,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.SessionGeneration,
+		&i.SupersededAt,
+	)
+	return i, err
+}
+
+const rotateMachineControlSession = `-- name: RotateMachineControlSession :one
+UPDATE machine_control_sessions
+SET installation_generation = $1,
+    session_generation = session_generation + 1,
+    operation_id = $2,
+    credential_jti = $3,
+    issued_at = $4,
+    expires_at = $5,
+    updated_at = now()
+WHERE machine_id = $6
+  AND session_generation = $7
+  AND credential_jti = $8
+RETURNING machine_id, installation_generation, session_generation, operation_id, credential_jti, issued_at, expires_at, updated_at
+`
+
+type RotateMachineControlSessionParams struct {
+	InstallationGeneration    int64
+	OperationID               string
+	CredentialJti             string
+	IssuedAt                  time.Time
+	ExpiresAt                 time.Time
+	MachineID                 string
+	ExpectedSessionGeneration int64
+	ExpectedCredentialJti     string
+}
+
+func (q *Queries) RotateMachineControlSession(ctx context.Context, arg RotateMachineControlSessionParams) (MachineControlSession, error) {
+	row := q.db.QueryRow(ctx, rotateMachineControlSession,
+		arg.InstallationGeneration,
+		arg.OperationID,
+		arg.CredentialJti,
+		arg.IssuedAt,
+		arg.ExpiresAt,
+		arg.MachineID,
+		arg.ExpectedSessionGeneration,
+		arg.ExpectedCredentialJti,
+	)
+	var i MachineControlSession
+	err := row.Scan(
+		&i.MachineID,
+		&i.InstallationGeneration,
+		&i.SessionGeneration,
+		&i.OperationID,
+		&i.CredentialJti,
+		&i.IssuedAt,
+		&i.ExpiresAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }

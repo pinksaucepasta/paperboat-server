@@ -22,6 +22,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
 	"github.com/pinksaucepasta/paperboat-server/internal/diagnosticuploads"
+	"github.com/pinksaucepasta/paperboat-server/internal/environment"
 	"github.com/pinksaucepasta/paperboat-server/internal/favorites"
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
@@ -31,9 +32,14 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/observability"
 	"github.com/pinksaucepasta/paperboat-server/internal/peeridentity"
 	"github.com/pinksaucepasta/paperboat-server/internal/peersessions"
+	"github.com/pinksaucepasta/paperboat-server/internal/previewattachment"
+	"github.com/pinksaucepasta/paperboat-server/internal/previewdomain"
+	"github.com/pinksaucepasta/paperboat-server/internal/privateaccess"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 	"github.com/pinksaucepasta/paperboat-server/internal/releaseauthority"
+	"github.com/pinksaucepasta/paperboat-server/internal/telemetry"
 	"github.com/pinksaucepasta/paperboat-server/internal/terminalsessions"
+	"github.com/pinksaucepasta/paperboat-server/internal/tunnelv1"
 	"github.com/pinksaucepasta/paperboat-server/internal/usermachines"
 )
 
@@ -58,6 +64,7 @@ type Options struct {
 	Fly                    fly.Client
 	GitHub                 *pbgithub.Service
 	Projects               *projects.Service
+	EnvironmentVariables   *environment.Service
 	TerminalSessions       *terminalsessions.Service
 	CodexSessions          *codexsessions.Service
 	EnvironmentAccess      *access.Service
@@ -78,7 +85,6 @@ type Options struct {
 	ConfigRuntime          *controlplane.ConfigRuntimeService
 	ConfigConflicts        *controlplane.ConfigConflictService
 	Routes                 *controlplane.RouteService
-	Previews               *controlplane.PreviewService
 	Favorites              *favorites.Service
 	ControlDiagnostics     *controlplane.DiagnosticsService
 	OperationRecovery      *controlplane.OperationRecoveryService
@@ -90,6 +96,40 @@ type Options struct {
 	OverrideHandler        http.Handler
 	ReleaseFiles           http.Handler
 	ReleaseAuthority       *releaseauthority.Service
+	PreviewTunnelAPI       PreviewTunnelAPI
+	PreviewLeases          PreviewLeaseAPI
+	PreviewDomains         previewdomain.API
+	Tunnels                tunnelv1.API
+	TunnelResources        tunnelv1.ResourceAPI
+	PreviewLogs            tunnelv1.PreviewLogAPI
+	// PreviewCarrierAttachment is the machine-proof host attachment surface;
+	// PreviewCarrierEdge is the edge-control pull/ACK/observation surface.
+	PreviewCarrierAttachment http.Handler
+	PreviewCarrierEdge       http.Handler
+	// PrivateAccessAuthorize and PrivateAccessGrant are edge-only handlers.
+	// Both first authenticate the edge node/process epoch, then verify the
+	// renewable user/device identity against the current private route.
+	PrivateAccessAuthorize    http.Handler
+	PrivateAccessGrant        http.Handler
+	PrivateAccessRoutes       http.Handler
+	ConnectorControl          http.Handler
+	ConnectorCarrierBootstrap http.Handler
+	TelemetryHTTP             *telemetry.HTTPObserver
+	TelemetryMetrics          *telemetry.Metrics
+	TelemetryDiagnostics      *telemetry.Diagnostics
+}
+
+func registerEnvironmentTransitionRoutes(mux *http.ServeMux, service environmentVariableAPI, read, write func(http.Handler) http.Handler) {
+	// Authority recovery is authenticated by the root-signed authority
+	// document (or abort authorization) and staged manifests are signed by the
+	// proposed authority. A replacement manager is intentionally not present in
+	// the active authority yet, so active-manager middleware must not run before
+	// these cryptographic checks.
+	mux.Handle("POST /v1/environment-authority/transitions", write(environmentTransitionPost(service)))
+	mux.Handle("GET /v1/environment-authority/transitions/{transition_id}", read(environmentTransitionGet(service)))
+	mux.Handle("POST /v1/environment-authority/transitions/{transition_id}/abort", write(environmentTransitionAbort(service)))
+	mux.Handle("PUT /v1/environment-authority/transitions/{transition_id}/scopes/global", write(environmentTransitionStage(service, false)))
+	mux.Handle("PUT /v1/environment-authority/transitions/{transition_id}/scopes/machines/{machine_id}", write(environmentTransitionStage(service, true)))
 }
 
 func NewRouter(opts Options) http.Handler {
@@ -114,9 +154,91 @@ func NewRouter(opts Options) http.Handler {
 		}
 		mux.HandleFunc("GET /readyz", ready(opts.ReadinessChecker))
 		mux.HandleFunc("GET /v1/client-configuration", clientConfiguration(opts.Config))
-		mux.Handle("GET /metrics", metrics(opts.ControlDiagnostics))
+		mux.Handle("GET /metrics", metrics(opts.ControlDiagnostics, opts.TelemetryMetrics))
+		mux.Handle(telemetryDiagnosticsPath, telemetryDiagnostics(opts.TelemetryDiagnostics))
 		if opts.MintKeys != nil {
 			mux.Handle("GET /.well-known/jwks.json", opts.MintKeys)
+		}
+		if opts.PreviewTunnelAPI != nil && opts.Auth != nil && opts.DeviceAuth != nil {
+			mux.Handle("GET /v1/operations/{operation_id}", requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope("operations:read", previewTunnelOperationGet(opts.PreviewTunnelAPI))))
+			mux.Handle("DELETE /v1/operations/{operation_id}", requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope("operations:write", requireCSRF(opts.Auth, previewTunnelOperationCancel(opts.PreviewTunnelAPI)))))
+		}
+		if opts.PreviewLeases != nil && opts.PreviewTunnelAPI != nil && opts.Auth != nil && opts.DeviceAuth != nil {
+			previewRead := func(next http.Handler) http.Handler {
+				return requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope("previews:read", next))
+			}
+			previewWrite := func(next http.Handler) http.Handler {
+				return requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope("previews:write", requireCSRF(opts.Auth, next)))
+			}
+			mux.Handle("POST /v1/previews", previewLeaseCreateAuth(opts.Auth, opts.DeviceAuth, opts.RuntimeIdentity, previewLeaseCreate(opts.PreviewLeases, opts.RuntimeIdentity)))
+			mux.Handle("GET /v1/previews", previewRead(previewLeaseList(opts.PreviewLeases)))
+			mux.Handle("GET /v1/previews/{preview_id}", previewRead(previewLeaseGet(opts.PreviewLeases)))
+			mux.Handle("DELETE /v1/previews/{preview_id}", previewWrite(previewLeaseStop(opts.PreviewLeases)))
+			mux.Handle("POST /v1/previews/{preview_id}/lease/renew", previewWrite(previewLeaseRenew(opts.PreviewLeases)))
+			mux.Handle("GET /v1/previews/{preview_id}/events", previewRead(previewTunnelEvents(opts.PreviewTunnelAPI, "preview_lease", "preview_id")))
+			if opts.PreviewLogs != nil {
+				mux.Handle("GET /v1/previews/{preview_id}/logs", previewRead(tunnelResourcePreviewLogs(opts.PreviewLogs)))
+			}
+			if opts.PreviewDomains != nil {
+				mux.Handle("POST /v1/previews/{preview_id}/domains", previewWrite(PreviewDomainCreate(opts.PreviewDomains)))
+				mux.Handle("GET /v1/previews/{preview_id}/domains", previewRead(PreviewDomainList(opts.PreviewDomains)))
+				mux.Handle("GET /v1/previews/{preview_id}/domains/{domain_id}", previewRead(PreviewDomainGet(opts.PreviewDomains)))
+				mux.Handle("DELETE /v1/previews/{preview_id}/domains/{domain_id}", previewWrite(PreviewDomainDelete(opts.PreviewDomains)))
+				mux.Handle("POST /v1/previews/{preview_id}/domains/{domain_id}/verify", previewWrite(PreviewDomainVerify(opts.PreviewDomains)))
+				mux.Handle("GET /v1/previews/{preview_id}/domains/{domain_id}/instructions", previewRead(PreviewDomainInstructions(opts.PreviewDomains)))
+			}
+		}
+		if opts.PreviewLeases != nil && opts.RuntimeIdentity != nil {
+			if readiness, ok := opts.PreviewLeases.(PreviewReadinessAPI); ok {
+				// Readiness is deliberately machine-auth-only. Browser sessions and
+				// CLI client-session bearers may observe a preview, but only a
+				// renewable signed machine identity can complete the host-owned CAS.
+				mux.Handle("POST /v1/previews/{preview_id}/readiness", previewLeaseReadiness(readiness, opts.RuntimeIdentity))
+			}
+		}
+		if opts.Tunnels != nil && opts.PreviewTunnelAPI != nil && opts.Auth != nil && opts.DeviceAuth != nil {
+			tunnelRead := func(next http.Handler) http.Handler {
+				return requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope("tunnels:read", next))
+			}
+			tunnelWrite := func(next http.Handler) http.Handler {
+				return requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope("tunnels:write", requireCSRF(opts.Auth, next)))
+			}
+			mux.Handle("POST /v1/tunnels", tunnelWrite(tunnelCreate(opts.Tunnels, opts.Enrollment)))
+			mux.Handle("GET /v1/tunnels", tunnelRead(tunnelList(opts.Tunnels)))
+			mux.Handle("GET /v1/tunnels/{tunnel_id}", tunnelRead(tunnelGet(opts.Tunnels)))
+			mux.Handle("PATCH /v1/tunnels/{tunnel_id}", tunnelWrite(tunnelPatch(opts.Tunnels)))
+			mux.Handle("DELETE /v1/tunnels/{tunnel_id}", tunnelWrite(tunnelDelete(opts.Tunnels)))
+			mux.Handle("POST /v1/tunnels/{tunnel_id}/pause", tunnelWrite(tunnelPause(opts.Tunnels)))
+			mux.Handle("POST /v1/tunnels/{tunnel_id}/resume", tunnelWrite(tunnelResume(opts.Tunnels)))
+			mux.Handle("GET /v1/tunnels/{tunnel_id}/status", tunnelRead(tunnelStatus(opts.Tunnels)))
+			mux.Handle("GET /v1/tunnels/{tunnel_id}/events", tunnelRead(previewTunnelEvents(opts.PreviewTunnelAPI, "tunnel", "tunnel_id")))
+			if opts.TunnelResources != nil {
+				mux.Handle("POST /v1/tunnels/{tunnel_id}/routes", tunnelWrite(tunnelResourceRouteCreate(opts.TunnelResources)))
+				mux.Handle("GET /v1/tunnels/{tunnel_id}/routes", tunnelRead(tunnelResourceRouteList(opts.TunnelResources)))
+				mux.Handle("GET /v1/tunnels/{tunnel_id}/routes/{route_id}", tunnelRead(tunnelResourceRouteGet(opts.TunnelResources)))
+				mux.Handle("PATCH /v1/tunnels/{tunnel_id}/routes/{route_id}", tunnelWrite(tunnelResourceRoutePatch(opts.TunnelResources)))
+				mux.Handle("DELETE /v1/tunnels/{tunnel_id}/routes/{route_id}", tunnelWrite(tunnelResourceRouteDelete(opts.TunnelResources)))
+				mux.Handle("POST /v1/tunnels/{tunnel_id}/domains", tunnelWrite(tunnelResourceDomainCreate(opts.TunnelResources)))
+				mux.Handle("GET /v1/tunnels/{tunnel_id}/domains", tunnelRead(tunnelResourceDomainList(opts.TunnelResources)))
+				mux.Handle("GET /v1/tunnels/{tunnel_id}/domains/{domain_id}", tunnelRead(tunnelResourceDomainGet(opts.TunnelResources)))
+				mux.Handle("DELETE /v1/tunnels/{tunnel_id}/domains/{domain_id}", tunnelWrite(tunnelResourceDomainDelete(opts.TunnelResources)))
+				mux.Handle("POST /v1/tunnels/{tunnel_id}/domains/{domain_id}/verify", tunnelWrite(tunnelResourceDomainVerify(opts.TunnelResources)))
+				mux.Handle("GET /v1/tunnels/{tunnel_id}/domains/{domain_id}/instructions", tunnelRead(tunnelResourceDomainInstructions(opts.TunnelResources)))
+				mux.Handle("GET /v1/tunnels/{tunnel_id}/connectors", tunnelRead(tunnelResourceConnectorList(opts.TunnelResources)))
+				mux.Handle("GET /v1/tunnels/{tunnel_id}/connectors/{connector_id}", tunnelRead(tunnelResourceConnectorGet(opts.TunnelResources)))
+				mux.Handle("POST /v1/tunnels/{tunnel_id}/connectors/enrollments", tunnelWrite(tunnelResourceIssueEnrollment(opts.TunnelResources)))
+				mux.Handle("POST /v1/tunnels/{tunnel_id}/connectors/enrollments/exchange", tunnelWrite(tunnelResourceExchangeEnrollment(opts.TunnelResources, opts.Enrollment)))
+				mux.Handle("POST /v1/tunnels/{tunnel_id}/connectors/{connector_id}/drain", tunnelWrite(tunnelResourceConnectorDrain(opts.TunnelResources)))
+				mux.Handle("DELETE /v1/tunnels/{tunnel_id}/connectors/{connector_id}", tunnelWrite(tunnelResourceConnectorRevoke(opts.TunnelResources)))
+				mux.Handle("POST /v1/tunnels/{tunnel_id}/credentials/rotate", tunnelWrite(tunnelResourceRotateCredentials(opts.TunnelResources)))
+				mux.Handle("GET /v1/tunnels/{tunnel_id}/logs", tunnelRead(tunnelResourceTunnelLogs(opts.TunnelResources)))
+			}
+		}
+		if opts.ConnectorControl != nil {
+			mux.Handle("GET /v1/tunnels/{tunnel_id}/connectors/{connector_id}/control", opts.ConnectorControl)
+		}
+		if opts.ConnectorCarrierBootstrap != nil {
+			mux.Handle("POST /v1/tunnels/{tunnel_id}/connectors/{connector_id}/carrier-bootstrap", opts.ConnectorCarrierBootstrap)
 		}
 		if opts.DiagnosticUploads == nil || opts.DeviceAuth == nil {
 			unavailable := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -125,12 +247,30 @@ func NewRouter(opts Options) http.Handler {
 			mux.Handle("POST /v1/diagnostic-upload-intents", unavailable)
 			mux.Handle("POST /v1/diagnostic-upload-intents/{intent_id}/complete", unavailable)
 		}
+		if opts.PreviewCarrierAttachment != nil {
+			mux.Handle("POST /v1/previews/{preview_id}/carrier-attachment", opts.PreviewCarrierAttachment)
+			mux.Handle("POST /v1/previews/{preview_id}/carrier-attachment/renew", opts.PreviewCarrierAttachment)
+			mux.Handle("POST /v1/previews/{preview_id}/carrier-attachment/readiness", opts.PreviewCarrierAttachment)
+			mux.Handle("POST /v1/previews/{preview_id}/carrier-attachment/release", opts.PreviewCarrierAttachment)
+		}
+		if opts.PreviewCarrierEdge != nil {
+			mux.Handle("POST "+previewattachment.EdgeAdmissionPullPath, opts.PreviewCarrierEdge)
+			mux.Handle("POST "+previewattachment.EdgeAdmissionAckPath, opts.PreviewCarrierEdge)
+			mux.Handle("POST "+previewattachment.EdgeObservationPath, opts.PreviewCarrierEdge)
+			mux.Handle("POST "+previewattachment.EdgeDetachmentPath, opts.PreviewCarrierEdge)
+		}
+		if opts.PrivateAccessGrant != nil {
+			mux.Handle("POST "+privateaccess.GrantPath, opts.PrivateAccessGrant)
+		}
+		if opts.PrivateAccessAuthorize != nil {
+			mux.Handle("POST "+privateaccess.AuthorizePath, opts.PrivateAccessAuthorize)
+		}
+		if opts.PrivateAccessRoutes != nil {
+			mux.Handle("POST "+privateaccess.MachineRoutesPath, opts.PrivateAccessRoutes)
+			mux.Handle("POST "+privateaccess.EdgeAdmissionsPath, opts.PrivateAccessRoutes)
+		}
 		if opts.EdgeControl != nil {
 			mux.Handle("/v1/", opts.EdgeControl)
-		}
-		if opts.Previews != nil {
-			mux.Handle("GET /v1/tls/authorizations/previews", previewTLSAsk(opts.Previews))
-			mux.Handle("GET /v1/tls/authorizations/routes", previewTLSAsk(opts.Previews))
 		}
 		if opts.Enrollment != nil {
 			mux.HandleFunc("POST /v1/helper-enrollments", helperEnrollmentExchange(opts.Enrollment, opts.Logger))
@@ -142,11 +282,6 @@ func NewRouter(opts Options) http.Handler {
 			if opts.Machines != nil {
 				mux.Handle("POST /v1/machine-installation-failures", helperInstallationFailure(opts.Enrollment, opts.Machines))
 				mux.Handle("POST /v1/helper-runtime-policies/resolve", helperRuntimePolicyResolve(opts.Enrollment, opts.Machines))
-			}
-			if opts.Previews != nil {
-				mux.Handle("POST /v1/previews/credentials", helperPreviewCredential(opts.Enrollment))
-				mux.Handle("POST /v1/previews/operations", helperPreviewOperation(opts.Previews, opts.Enrollment))
-				mux.Handle("POST /v1/previews/observations", helperPreviewObservation(opts.Previews, opts.Enrollment))
 			}
 			if opts.Auth != nil {
 				mux.Handle("POST /v1/environments/{environment_id}/helper-enrollments", requireAuth(opts.Auth, requireCSRF(opts.Auth, helperEnrollmentIssue(opts.Enrollment))))
@@ -240,16 +375,6 @@ func NewRouter(opts Options) http.Handler {
 				mux.Handle("POST /v1/diagnostic-upload-intents", diagnosticAuth(diagnosticUploadIntentCreate(opts.DiagnosticUploads)))
 				mux.Handle("POST /v1/diagnostic-upload-intents/{intent_id}/complete", diagnosticAuth(diagnosticUploadIntentComplete(opts.DiagnosticUploads)))
 			}
-			if opts.Previews != nil {
-				previewAuth := func(scope string, next http.Handler) http.Handler {
-					if opts.DeviceAuth != nil {
-						return requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope(scope, next))
-					}
-					return requireAuth(opts.Auth, next)
-				}
-				mux.Handle("GET /v1/previews", previewAuth("projects:read", ownedPreviewList(opts.Previews)))
-				mux.Handle("DELETE /v1/previews/{preview_id}", previewAuth("projects:connect", requireCSRF(opts.Auth, ownedPreviewRevoke(opts.Previews))))
-			}
 			if opts.Routes != nil {
 				mux.Handle("POST /v1/environments/{environment_id}/routes", requireAuth(opts.Auth, requireCSRF(opts.Auth, routeIntentCreate(opts.Routes))))
 				mux.Handle("PATCH /v1/routes/{route_id}", requireAuth(opts.Auth, requireCSRF(opts.Auth, routeIntentTransition(opts.Routes))))
@@ -272,6 +397,50 @@ func NewRouter(opts Options) http.Handler {
 				mux.Handle("DELETE /v1/machines/{machine_id}/config-assignment/consent", requireAuth(opts.Auth, requireCSRF(opts.Auth, configConsentRemove(opts.ConfigAssignments))))
 				mux.Handle("DELETE /v1/machines/{machine_id}/config-assignment", configAuth("projects:connect", requireCSRF(opts.Auth, configAssignmentClear(opts.ConfigAssignments))))
 			}
+			if opts.EnvironmentVariables != nil {
+				environmentAuth := func(scope string, next http.Handler) http.Handler {
+					var secured http.Handler
+					if opts.DeviceAuth != nil {
+						secured = requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope(scope, next))
+					} else {
+						secured = requireAuth(opts.Auth, next)
+					}
+					return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						noStore(w)
+						secured.ServeHTTP(w, r)
+					})
+				}
+				environmentWrite := func(next http.Handler) http.Handler {
+					return environmentAuth("projects:connect", requireCSRF(opts.Auth, next))
+				}
+				environmentRead := func(next http.Handler) http.Handler {
+					return environmentAuth("projects:read", next)
+				}
+				managerWrite := func(next http.Handler) http.Handler {
+					return environmentWrite(environmentManagerAuthorized(opts.EnvironmentVariables, next))
+				}
+				mux.Handle("GET /v1/environment-variables", environmentRead(environmentVariablesList(opts.EnvironmentVariables, false)))
+				mux.Handle("GET /v1/environment-scopes", environmentRead(environmentScopesList(opts.EnvironmentVariables)))
+				mux.Handle("GET /v1/environment-variables/{name}", environmentRead(environmentVariableGet(opts.EnvironmentVariables, false)))
+				mux.Handle("GET /v1/machines/{machine_id}/environment-variables", environmentRead(environmentVariablesList(opts.EnvironmentVariables, true)))
+				mux.Handle("GET /v1/machines/{machine_id}/environment-variables/{name}", environmentRead(environmentVariableGet(opts.EnvironmentVariables, true)))
+				// Recovery clients must fetch the existing opaque envelope before
+				// their replacement manager binding becomes active. Account auth may
+				// read ciphertext; only an active ENV manager may mutate it.
+				mux.Handle("GET /v1/environment-manifests/global", environmentRead(environmentManifestGet(opts.EnvironmentVariables, false)))
+				mux.Handle("PUT /v1/environment-manifests/global", managerWrite(environmentManifestPut(opts.EnvironmentVariables, false)))
+				mux.Handle("GET /v1/environment-manifests/machines/{machine_id}", environmentRead(environmentManifestGet(opts.EnvironmentVariables, true)))
+				mux.Handle("PUT /v1/environment-manifests/machines/{machine_id}", managerWrite(environmentManifestPut(opts.EnvironmentVariables, true)))
+				mux.Handle("GET /v1/environment-authority", environmentRead(environmentAuthorityGet(opts.EnvironmentVariables)))
+				mux.Handle("GET /v1/environment-authority/documents", environmentRead(environmentAuthorityDocuments(opts.EnvironmentVariables)))
+				enrollmentPost := environmentEnrollmentPost(opts.EnvironmentVariables)
+				mux.Handle("POST /v1/environment-key-enrollments", environmentEnrollmentMachineOrHuman(opts.RuntimeIdentity, environmentWrite(enrollmentPost), enrollmentPost))
+				mux.Handle("GET /v1/environment-key-enrollments/pending", environmentRead(environmentEnrollmentPending(opts.EnvironmentVariables)))
+				enrollmentProof := environmentEnrollmentProof(opts.EnvironmentVariables)
+				mux.Handle("PUT /v1/environment-key-enrollments/{request_id}/proof", environmentEnrollmentMachineOrHuman(opts.RuntimeIdentity, environmentWrite(enrollmentProof), enrollmentProof))
+				mux.Handle("POST /v1/environment-key-enrollments/{request_id}/approve", environmentWrite(environmentEnrollmentApprove(opts.EnvironmentVariables)))
+				registerEnvironmentTransitionRoutes(mux, opts.EnvironmentVariables, environmentRead, environmentWrite)
+			}
 		}
 		if opts.Machines != nil {
 			mux.HandleFunc("POST /v1/machine-control-renewals", machineControlRenew(opts.Machines))
@@ -288,11 +457,11 @@ func NewRouter(opts Options) http.Handler {
 				mux.Handle("POST /v1/machines/{machine_id}/control-credentials", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", machineControlIssue(opts.Machines))))
 				mux.Handle("POST /v1/machines/{machine_id}/unpair", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", machineUnpair(opts.Machines))))
 			}
-			mux.Handle("POST /v1/machine-enrollments", requireAuth(opts.Auth, requireCSRF(opts.Auth, userMachineEnrollmentStart(opts.Machines))))
-			mux.Handle("GET /v1/machine-enrollments/{enrollment_id}", requireAuth(opts.Auth, userMachineEnrollmentStatus(opts.Machines)))
-			mux.Handle("GET /v1/machine-enrollments/{enrollment_id}/bootstrap-token", requireAuth(opts.Auth, userMachineEnrollmentToken(opts.Machines)))
-			mux.Handle("POST /v1/machine-enrollments/{enrollment_id}/cancel", requireAuth(opts.Auth, requireCSRF(opts.Auth, userMachineEnrollmentCancel(opts.Machines))))
-			mux.Handle("POST /v1/machine-enrollments/{enrollment_id}/retry", requireAuth(opts.Auth, requireCSRF(opts.Auth, userMachineEnrollmentRetry(opts.Machines))))
+			mux.Handle("POST /v1/machine-enrollments", userMachineAuth("projects:connect", requireCSRF(opts.Auth, userMachineEnrollmentStart(opts.Machines))))
+			mux.Handle("GET /v1/machine-enrollments/{enrollment_id}", userMachineAuth("projects:read", userMachineEnrollmentStatus(opts.Machines)))
+			mux.Handle("GET /v1/machine-enrollments/{enrollment_id}/bootstrap-token", userMachineAuth("projects:read", userMachineEnrollmentToken(opts.Machines)))
+			mux.Handle("POST /v1/machine-enrollments/{enrollment_id}/cancel", userMachineAuth("projects:connect", requireCSRF(opts.Auth, userMachineEnrollmentCancel(opts.Machines))))
+			mux.Handle("POST /v1/machine-enrollments/{enrollment_id}/retry", userMachineAuth("projects:connect", requireCSRF(opts.Auth, userMachineEnrollmentRetry(opts.Machines))))
 			mux.Handle("GET /v1/machines/overview", userMachineAuth("projects:read", userMachineOverview(opts.Machines)))
 			mux.Handle("GET /v1/machines/update-summary", userMachineAuth("projects:read", userMachineUpdateSummary(opts.Machines)))
 			mux.Handle("GET /v1/transfer-destination-default", userMachineAuth("projects:read", transferDestinationDefault(opts.Machines)))
@@ -313,7 +482,6 @@ func NewRouter(opts Options) http.Handler {
 				mux.Handle("POST /v1/machines/{machine_id}/connection-descriptor", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", userMachineConnectionDescriptor(opts.Machines))))
 				mux.Handle("POST /v1/machines/{machine_id}/exec-descriptor", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", userMachineExecDescriptor(opts.Machines))))
 				mux.Handle("POST /v1/machines/{machine_id}/ssh-descriptor", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", userMachineSSHDescriptor(opts.Machines))))
-				mux.Handle("POST /v1/machines/{machine_id}/preview-launch-descriptor", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", userMachinePreviewLaunchDescriptor(opts.Machines))))
 				mux.Handle("POST /v1/machines/{machine_id}/file-transfer-descriptor", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", userMachineFileTransferDescriptor(opts.Machines, opts.EnvironmentAccess))))
 				mux.Handle("GET /v1/machines/{machine_id}/connection-readiness", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", userMachineConnectionReadiness(opts.Machines))))
 				mux.Handle("GET /v1/terminal-sessions/{session_id}/transfer-destinations", requireBearerAuth(opts.DeviceAuth, requireScope("projects:read", terminalSessionTransferDestinations(opts.Machines, opts.EnvironmentAccess))))
@@ -350,10 +518,13 @@ func NewRouter(opts Options) http.Handler {
 			mux.HandleFunc("POST /v1/webhooks/polar", polarWebhook(opts.Billing, opts.Config.Secrets.PolarWebhookSecret, opts.Config.Billing.PolarWebhookTolerance))
 		}
 		if opts.MeteringRepo != nil {
-			mux.HandleFunc("POST /v1/runtime-observations", runtimeObservation(opts.MeteringRepo, opts.RuntimeIdentity, opts.Config.ConfigSync.SummaryLimit, opts.Machines))
+			mux.HandleFunc("POST /v1/runtime-observations", runtimeObservation(opts.MeteringRepo, opts.RuntimeIdentity, opts.Config.ConfigSync.SummaryLimit, opts.Machines, opts.EnvironmentVariables))
 		}
 		mux.HandleFunc("/", notFound)
 		handler = mux
+	}
+	if opts.TelemetryHTTP != nil {
+		handler = opts.TelemetryHTTP.WrapFunc(telemetryRouteFamily, handler)
 	}
 	handler = secureHeaders(handler)
 	handler = cors(opts.Config.HTTP.AllowedOrigins, handler)
@@ -362,8 +533,36 @@ func NewRouter(opts Options) http.Handler {
 	handler = recoverer(opts.Logger, handler)
 	handler = accessLog(opts.Logger, handler)
 	handler = trustedClientNetwork(opts.Config.HTTP.TrustedProxyCIDRs, handler)
+	handler = correlationID(handler)
 	handler = requestID(handler)
 	return handler
+}
+
+func telemetryRouteFamily(r *http.Request) string {
+	path := r.URL.Path
+	switch {
+	case path == "/healthz", path == "/readyz", path == "/metrics", path == telemetryDiagnosticsPath, strings.HasPrefix(path, "/network-check/"):
+		return "health"
+	case strings.HasPrefix(path, "/v1/edge/"):
+		return "edge_control"
+	case path == "/install", path == "/current.json", strings.HasPrefix(path, "/tuf/"), strings.HasPrefix(path, "/helper-releases/"):
+		return "release"
+	case strings.HasPrefix(path, "/v1/"), strings.HasPrefix(path, "/.well-known/"):
+		return "public_api"
+	default:
+		return "other"
+	}
+}
+
+func correlationID(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		correlationID := observability.NormalizeRequestID(r.Header.Get("Correlation-Id"))
+		if correlationID == "" {
+			correlationID = observability.RequestID(r.Context())
+		}
+		w.Header().Set("Correlation-Id", correlationID)
+		next.ServeHTTP(w, r.WithContext(observability.WithCorrelationID(r.Context(), correlationID)))
+	})
 }
 
 func health(w http.ResponseWriter, _ *http.Request) {
@@ -389,14 +588,14 @@ func networkCheckRegions(reader ProbeRegionReader) http.HandlerFunc {
 	}
 }
 
-func metrics(diagnostics *controlplane.DiagnosticsService) http.HandlerFunc {
+func metrics(diagnostics *controlplane.DiagnosticsService, typed *telemetry.Metrics) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		host, _, err := net.SplitHostPort(r.RemoteAddr)
 		if err != nil || !net.ParseIP(host).IsLoopback() {
 			writeError(w, r, http.StatusForbidden, "forbidden", "Metrics are available only from localhost.")
 			return
 		}
-		result := observability.MetricsSnapshot()
+		legacy := observability.MetricsSnapshot()
 		if diagnostics != nil {
 			durable, err := diagnostics.Metrics(r.Context())
 			if err != nil {
@@ -404,8 +603,15 @@ func metrics(diagnostics *controlplane.DiagnosticsService) http.HandlerFunc {
 				return
 			}
 			for key, value := range durable {
-				result[key] = value
+				legacy[key] = value
 			}
+		}
+		result := make(map[string]any, len(legacy)+1)
+		for key, value := range legacy {
+			result[key] = value
+		}
+		if typed != nil {
+			result["typed"] = typed.Snapshot()
 		}
 		writeJSON(w, http.StatusOK, SuccessResponse{Data: result})
 	}
@@ -685,8 +891,12 @@ func isStreamingRequest(r *http.Request) bool {
 
 func bodyLimit(limit int64, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Body != nil && limit > 0 {
-			r.Body = http.MaxBytesReader(w, r.Body, limit)
+		requestLimit := limit
+		if strings.HasPrefix(r.URL.Path, "/v1/environment-") || strings.Contains(r.URL.Path, "/environment-manifests/") {
+			requestLimit = 3 << 20
+		}
+		if r.Body != nil && requestLimit > 0 {
+			r.Body = http.MaxBytesReader(w, r.Body, requestLimit)
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -699,8 +909,8 @@ func cors(allowedOrigins []string, next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key, X-CSRF-Token")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Correlation-Id, Idempotency-Key, If-Match, If-None-Match, X-CSRF-Token")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

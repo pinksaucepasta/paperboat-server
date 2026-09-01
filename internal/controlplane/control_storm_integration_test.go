@@ -4,13 +4,18 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -30,6 +35,41 @@ import (
 )
 
 const controlStormCredential = "paperboat-control-storm-credential-0123456789"
+
+type stormCarrierIdentity struct {
+	Pin   string
+	Chain string
+}
+
+var controlStormCarrierIdentity = mustControlStormCarrierIdentity()
+
+func mustControlStormCarrierIdentity() stormCarrierIdentity {
+	seed := sha256.Sum256([]byte("paperboat-control-storm-carrier-seed"))
+	privateKey := ed25519.NewKeyFromSeed(seed[:])
+	publicKey := privateKey.Public().(ed25519.PublicKey)
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "paperboat-control-storm"},
+		DNSNames:     []string{"edge.example.test"},
+		NotBefore:    time.Unix(0, 0).UTC(),
+		NotAfter:     time.Date(2100, time.January, 1, 0, 0, 0, 0, time.UTC),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, publicKey, privateKey)
+	if err != nil {
+		panic(fmt.Sprintf("create control-storm carrier certificate: %v", err))
+	}
+	certificate, err := x509.ParseCertificate(der)
+	if err != nil {
+		panic(fmt.Sprintf("parse control-storm carrier certificate: %v", err))
+	}
+	digest := sha256.Sum256(certificate.RawSubjectPublicKeyInfo)
+	return stormCarrierIdentity{
+		Pin:   "sha256:" + hex.EncodeToString(digest[:]),
+		Chain: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
+	}
+}
 
 type stormPhaseReport struct {
 	Name          string        `json:"name"`
@@ -104,7 +144,7 @@ func runControlStorm(t *testing.T, machines int) controlStormReport {
 	store := openControlPlaneTestDB(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	prefix := fmt.Sprintf("storm_%d_%d_", machines, time.Now().UnixNano())
+	prefix := fmt.Sprintf("storm-%d-%d-", machines, time.Now().UnixNano())
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cleanupCancel()
@@ -668,10 +708,14 @@ func stormRequest(ctx context.Context, client *http.Client, method, endpoint, cr
 
 func stormRegistration(prefix string, index int, epoch string) map[string]any {
 	return map[string]any{
-		"edge_node_id": prefix + strconv.Itoa(index), "edge_pool": "default", "artifact": "storm",
+		"edge_node_id": prefix + strconv.Itoa(index), "edge_pool": "default", "relay_id": "storm-relay-" + strconv.Itoa(index),
+		"relay_region": "storm", "relay_name": "Control Storm", "artifact": "storm",
 		"protocol": "1.0", "process_epoch": epoch, "capacity": 128,
-		"connector_endpoint": map[string]any{"host": "127.0.0.1", "tcp_port": 20000 + index, "quic_port": 30000 + index},
-		"signaling_host":     "signal.example.test", "stun_endpoint": map[string]any{"host": "127.0.0.1", "port": 3478},
+		"connector_endpoint":                   map[string]any{"host": "127.0.0.1", "tcp_port": 20000 + index, "quic_port": 30000 + index},
+		"carrier_endpoint":                     map[string]any{"host": "edge.example.test", "tcp_port": 40000 + index, "quic_port": 50000 + index},
+		"carrier_server_spki_sha256":           controlStormCarrierIdentity.Pin,
+		"carrier_server_certificate_chain_pem": controlStormCarrierIdentity.Chain,
+		"signaling_host":                       "signal.example.test", "stun_endpoint": map[string]any{"host": "127.0.0.1", "port": 3478},
 	}
 }
 

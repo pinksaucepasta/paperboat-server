@@ -15,7 +15,9 @@ INSERT INTO audit_events
 	(id, actor_user_id, actor_type, event_type, resource_type, resource_id, idempotency_key, metadata, created_at)
 VALUES
 	($1, nullif($2, ''), $3, $4, $5, $6, nullif($7, ''), $8::jsonb, now())
-ON CONFLICT (idempotency_key) DO NOTHING
+ON CONFLICT (event_type, resource_type, resource_id, idempotency_key)
+  WHERE idempotency_key IS NOT NULL
+DO NOTHING
 `
 
 type InsertAuditEventParams struct {

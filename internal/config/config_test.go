@@ -15,7 +15,9 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 	}
 	env := map[string]string{
 		"PAPERBOAT_ENV":                                         "test",
-		"PAPERBOAT_RUNTIME_BASE_DOMAIN":                         "helper.example.test",
+		"PAPERBOAT_RUNTIME_BASE_DOMAIN":                         "runtime.example.test",
+		"PAPERBOAT_PREVIEW_BASE_DOMAIN":                         "preview.example.test",
+		"PAPERBOAT_TUNNEL_BASE_DOMAIN":                          "tunnels.example.test",
 		"PAPERBOAT_HTTP_ADDRESS":                                "127.0.0.1:9090",
 		"PAPERBOAT_CATALOG_SEED_FILE":                           "/etc/paperboat/catalogs.json",
 		"PAPERBOAT_POLAR_WEBHOOK_TOLERANCE_SECONDS":             "120",
@@ -55,8 +57,11 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 	if cfg.CLIAuth.MachinesURL != env["PAPERBOAT_MACHINES_URL"] {
 		t.Fatalf("machines URL = %q", cfg.CLIAuth.MachinesURL)
 	}
-	if cfg.RuntimeBaseDomain != "helper.example.test" {
+	if cfg.RuntimeBaseDomain != "runtime.example.test" {
 		t.Fatalf("runtime base domain = %q", cfg.RuntimeBaseDomain)
+	}
+	if cfg.Preview.BaseDomain != "preview.example.test" || cfg.Tunnel.BaseDomain != "tunnels.example.test" {
+		t.Fatalf("preview/tunnel base domains = %q/%q", cfg.Preview.BaseDomain, cfg.Tunnel.BaseDomain)
 	}
 	if cfg.Fly.HostedSSHUser != "workspace" || cfg.Fly.HostedSSHPort != 2222 {
 		t.Fatalf("hosted SSH config = %q:%d", cfg.Fly.HostedSSHUser, cfg.Fly.HostedSSHPort)
@@ -92,9 +97,29 @@ func TestLoadOverlaysEnvAndSecretFiles(t *testing.T) {
 
 func TestValidationRejectsInvalidRuntimeBaseDomain(t *testing.T) {
 	cfg := Default()
-	cfg.RuntimeBaseDomain = "https://helper.example.test/path"
+	cfg.RuntimeBaseDomain = "https://runtime.example.test/path"
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "runtime_base_domain") {
 		t.Fatalf("validation error = %v", err)
+	}
+}
+
+func TestValidationRejectsInvalidPreviewAndTunnelBaseDomains(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*Config)
+		want   string
+	}{
+		{name: "preview URL", mutate: func(cfg *Config) { cfg.Preview.BaseDomain = "https://preview.example.test" }, want: "preview.base_domain"},
+		{name: "tunnel port", mutate: func(cfg *Config) { cfg.Tunnel.BaseDomain = "tunnels.example.test:443" }, want: "tunnel.base_domain"},
+		{name: "tunnel single label", mutate: func(cfg *Config) { cfg.Tunnel.BaseDomain = "localhost" }, want: "tunnel.base_domain"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := Default()
+			test.mutate(&cfg)
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validation error = %v", err)
+			}
+		})
 	}
 }
 
@@ -209,7 +234,7 @@ func validProductionConfig() Config {
 	cfg.ReleaseDirectory = "/srv/paperboat-releases"
 	cfg.ReleaseBaseURL = "https://get.example.test"
 	cfg.Preview.BaseDomain = "preview.example.test"
-	cfg.Secrets.PreviewIdentityKey = "preview-identity-key-012345678901234567890123456789"
+	cfg.Tunnel.BaseDomain = "tunnels.example.test"
 	cfg.CLIAuth.MintActiveKeyID = "current"
 	cfg.Secrets.MintSigningKeys = []string{"current:" + base64.RawURLEncoding.EncodeToString(make([]byte, 32))}
 	cfg.Diagnostics.ObjectEndpoint = "https://diagnostics.example.test"
@@ -217,7 +242,29 @@ func validProductionConfig() Config {
 	cfg.Diagnostics.ObjectBucket = "paperboat-diagnostics"
 	cfg.Secrets.DiagnosticsAccessKey = "diagnostics-access-key"
 	cfg.Secrets.DiagnosticsSecretKey = "diagnostics-secret-key"
+	cfg.Certificates = Certificates{
+		Enabled:                         true,
+		DirectoryURL:                    "https://acme.example.test/directory",
+		Issuer:                          "letsencrypt",
+		AccountKeyReference:             "secret://acme/account",
+		MasterKeyReference:              "secret://paperboat/master",
+		DNSProvider:                     "cloudflare",
+		DNSZoneID:                       "zone_01",
+		DNSTokenReference:               "secret://cloudflare/dns",
+		ChallengeZone:                   "challenges.example.test",
+		CAAResolver:                     "127.0.0.1:53",
+		DistributionCredentialReference: "secret://edge/distribution",
+		OwnerID:                         "server_01",
+	}
 	return cfg
+}
+
+func TestProductionValidationRequiresManagedCertificates(t *testing.T) {
+	cfg := validProductionConfig()
+	cfg.Certificates.Enabled = false
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "managed certificates are required in production") {
+		t.Fatalf("disabled production certificate runtime error = %v", err)
+	}
 }
 
 func TestProductionValidationRequiresGitHubAppOnlyWhenConfigSyncEnabled(t *testing.T) {
@@ -272,8 +319,11 @@ func TestValidationRejectsInvalidCLIAuthURLAndTrustedProxyCIDR(t *testing.T) {
 	}
 }
 
-func TestValidationRequiresOneShotCLIEnrollmentScopes(t *testing.T) {
-	for _, missing := range []string{"projects:read", "projects:connect"} {
+func TestValidationRequiresCLIAndPreviewTunnelScopes(t *testing.T) {
+	for _, missing := range []string{
+		"projects:read", "projects:connect", "previews:read", "previews:write",
+		"tunnels:read", "tunnels:write", "operations:read", "operations:write",
+	} {
 		t.Run(missing, func(t *testing.T) {
 			cfg := Default()
 			filtered := make([]string, 0, len(cfg.CLIAuth.AllowedScopes)-1)
@@ -323,5 +373,66 @@ func TestRedactedJSONDoesNotExposeSecrets(t *testing.T) {
 	}
 	if !strings.Contains(out, "supe") || !strings.Contains(out, "cret") {
 		t.Fatalf("redacted config should retain diagnostic prefix/suffix: %s", out)
+	}
+}
+
+func TestCertificatesValidationRequiresReferenceOnlyProductionInputs(t *testing.T) {
+	cfg := Default()
+	cfg.Certificates.Enabled = true
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "certificates.") {
+		t.Fatalf("enabled certificates accepted incomplete configuration: %v", err)
+	}
+	cfg.Certificates = Certificates{
+		Enabled:                         true,
+		DirectoryURL:                    "https://acme.example.test/directory",
+		Issuer:                          "letsencrypt",
+		AccountKeyReference:             "secret://acme/account",
+		MasterKeyReference:              "secret://paperboat/master",
+		DNSProvider:                     "cloudflare",
+		DNSZoneID:                       "zone_01",
+		DNSTokenReference:               "secret://cloudflare/dns",
+		ChallengeZone:                   "challenges.example.test",
+		CAAResolver:                     "127.0.0.1:53",
+		DistributionCredentialReference: "secret://edge/distribution",
+		OwnerID:                         "server_01",
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid certificate configuration rejected: %v", err)
+	}
+	cfg.Certificates.DirectoryURL = "http://acme.example.test/directory"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "directory_url") {
+		t.Fatalf("non-loopback HTTP ACME directory accepted: %v", err)
+	}
+}
+
+func TestCertificatesEnvironmentReferencesOverlayWithoutSecretFields(t *testing.T) {
+	cfg, err := Load(context.Background(), LoadOptions{
+		LookupEnv: func(name string) (string, bool) {
+			values := map[string]string{
+				"PAPERBOAT_CERTIFICATES_ENABLED":                           "true",
+				"PAPERBOAT_CERTIFICATES_DIRECTORY_URL":                     "https://acme.example.test/directory",
+				"PAPERBOAT_CERTIFICATES_ISSUER":                            "letsencrypt",
+				"PAPERBOAT_CERTIFICATES_ACCOUNT_KEY_REFERENCE":             "secret://acme/account",
+				"PAPERBOAT_CERTIFICATES_MASTER_KEY_REFERENCE":              "secret://paperboat/master",
+				"PAPERBOAT_CERTIFICATES_DNS_PROVIDER":                      "cloudflare",
+				"PAPERBOAT_CERTIFICATES_DNS_ZONE_ID":                       "zone_01",
+				"PAPERBOAT_CERTIFICATES_DNS_TOKEN_REFERENCE":               "secret://cloudflare/dns",
+				"PAPERBOAT_CERTIFICATES_CHALLENGE_ZONE":                    "challenges.example.test",
+				"PAPERBOAT_CERTIFICATES_CAA_RESOLVER":                      "127.0.0.1:53",
+				"PAPERBOAT_CERTIFICATES_DISTRIBUTION_CREDENTIAL_REFERENCE": "secret://edge/distribution",
+				"PAPERBOAT_CERTIFICATES_OWNER_ID":                          "server_01",
+			}
+			value, ok := values[name]
+			return value, ok
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Certificates.Enabled || cfg.Certificates.MasterKeyReference != "secret://paperboat/master" {
+		t.Fatalf("certificate references were not overlaid: %#v", cfg.Certificates)
+	}
+	if strings.Contains(cfg.RedactedJSON(), "secret-value") {
+		t.Fatal("certificate configuration unexpectedly exposed a secret value")
 	}
 }

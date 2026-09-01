@@ -16,10 +16,22 @@ import (
 var ErrDecrypt = errors.New("secret decryption failed")
 
 func Encrypt(key string, plaintext string) ([]byte, error) {
-	if plaintext == "" {
+	keyBytes := []byte(key)
+	plaintextBytes := []byte(plaintext)
+	defer clear(keyBytes)
+	defer clear(plaintextBytes)
+	return EncryptBytes(keyBytes, plaintextBytes)
+}
+
+// EncryptBytes encrypts secret material without requiring callers to create
+// immutable string copies. The input slices remain owned by the caller and are
+// not modified. Callers should clear them as soon as they are no longer needed.
+func EncryptBytes(key, plaintext []byte) ([]byte, error) {
+	if len(plaintext) == 0 {
 		return nil, errors.New("cannot encrypt empty secret")
 	}
-	sum := sha256.Sum256([]byte(key))
+	sum := sha256.Sum256(key)
+	defer clear(sum[:])
 	block, err := aes.NewCipher(sum[:])
 	if err != nil {
 		return nil, err
@@ -32,26 +44,42 @@ func Encrypt(key string, plaintext string) ([]byte, error) {
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
 	}
-	return append(nonce, gcm.Seal(nil, nonce, []byte(plaintext), nil)...), nil
+	return append(nonce, gcm.Seal(nil, nonce, plaintext, nil)...), nil
 }
 
 func Decrypt(key string, ciphertext []byte) (string, error) {
-	sum := sha256.Sum256([]byte(key))
+	keyBytes := []byte(key)
+	defer clear(keyBytes)
+	plaintext, err := DecryptBytes(keyBytes, ciphertext)
+	if err != nil {
+		return "", err
+	}
+	result := string(plaintext)
+	clear(plaintext)
+	return result, nil
+}
+
+// DecryptBytes returns caller-owned plaintext bytes so security-sensitive
+// callers can clear them after use. It preserves the same typed failure as the
+// legacy string API for wrong keys and malformed or tampered ciphertext.
+func DecryptBytes(key, ciphertext []byte) ([]byte, error) {
+	sum := sha256.Sum256(key)
+	defer clear(sum[:])
 	block, err := aes.NewCipher(sum[:])
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrDecrypt, err)
+		return nil, fmt.Errorf("%w: %v", ErrDecrypt, err)
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrDecrypt, err)
+		return nil, fmt.Errorf("%w: %v", ErrDecrypt, err)
 	}
 	if len(ciphertext) < gcm.NonceSize() {
-		return "", fmt.Errorf("%w: ciphertext too short", ErrDecrypt)
+		return nil, fmt.Errorf("%w: ciphertext too short", ErrDecrypt)
 	}
 	nonce, encrypted := ciphertext[:gcm.NonceSize()], ciphertext[gcm.NonceSize():]
 	plaintext, err := gcm.Open(nil, nonce, encrypted, nil)
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrDecrypt, err)
+		return nil, fmt.Errorf("%w: %v", ErrDecrypt, err)
 	}
-	return string(plaintext), nil
+	return plaintext, nil
 }

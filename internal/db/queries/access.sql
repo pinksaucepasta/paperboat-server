@@ -15,11 +15,6 @@ VALUES (sqlc.arg(id), sqlc.arg(project_id), sqlc.arg(tunnel_id), sqlc.arg(client
 ON CONFLICT (project_id) DO UPDATE SET tunnel_id=EXCLUDED.tunnel_id,client_id=EXCLUDED.client_id,resource_id=EXCLUDED.resource_id,
 metadata=EXCLUDED.metadata,version=provider_routes.version+1,updated_at=now();
 
--- name: UpsertPreviewURLRecord :exec
-INSERT INTO preview_url_records (id, project_id, preview_key, target_url, public_url, state)
-VALUES ($1, $2, 'helper', $3, $4, 'active')
-ON CONFLICT (project_id, preview_key) DO UPDATE SET target_url=EXCLUDED.target_url,public_url=EXCLUDED.public_url,state='active',version=preview_url_records.version+1,updated_at=now();
-
 -- name: GetProviderRouteResource :one
 SELECT tunnel_id,client_id,resource_id,metadata FROM provider_routes WHERE project_id=$1;
 

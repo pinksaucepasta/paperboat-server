@@ -260,6 +260,9 @@ func newTerminalSessionTestDB(t *testing.T) *db.DB {
 	if dsn == "" {
 		t.Skip("set PAPERBOAT_TEST_DATABASE_DSN to run terminal-session integration tests")
 	}
+	if err := db.ValidateIsolatedTestDSN(dsn, os.Getenv("PAPERBOAT_DATABASE_DSN")); err != nil {
+		t.Fatal(err)
+	}
 	u, err := url.Parse(dsn)
 	production, productionErr := url.Parse(os.Getenv("PAPERBOAT_DATABASE_DSN"))
 	databaseName := ""

@@ -57,6 +57,8 @@ const (
 	MetricRouteLatency              = "paperboat_server_route_latency_seconds"
 	MetricProtocolUpgrades          = "paperboat_server_protocol_upgrades_total"
 	MetricHealthProbes              = "paperboat_server_health_probes_total"
+	MetricHTTPRequests              = "paperboat_server_http_requests_total"
+	MetricHTTPDuration              = "paperboat_server_http_request_duration_seconds"
 )
 
 // Singular/plural aliases keep producer code readable without introducing a
@@ -132,6 +134,15 @@ var fixedMetricDescriptors = []MetricDescriptor{
 	{Name: MetricRouteLatency, Kind: MetricHistogram, Labels: []LabelDescriptor{{Name: "protocol", AllowedValues: []string{"http", "https", "h2c", "tcp", "websocket"}}}, Histogram: &HistogramDescriptor{Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10}}},
 	{Name: MetricProtocolUpgrades, Kind: MetricCounter, Labels: []LabelDescriptor{{Name: "protocol", AllowedValues: []string{"websocket", "h2c", "http2"}}}},
 	{Name: MetricHealthProbes, Kind: MetricCounter, Labels: []LabelDescriptor{{Name: "outcome", AllowedValues: []string{"success", "failed", "timeout", "canceled"}}}},
+	{Name: MetricHTTPRequests, Kind: MetricCounter, Labels: []LabelDescriptor{
+		{Name: "method", AllowedValues: []string{"get", "post", "put", "patch", "delete", "other"}},
+		{Name: "route_family", AllowedValues: []string{"health", "public_api", "edge_control", "release", "internal", "other"}},
+		{Name: "status_class", AllowedValues: []string{"1xx", "2xx", "3xx", "4xx", "5xx"}},
+	}},
+	{Name: MetricHTTPDuration, Kind: MetricHistogram, Labels: []LabelDescriptor{
+		{Name: "route_family", AllowedValues: []string{"health", "public_api", "edge_control", "release", "internal", "other"}},
+		{Name: "status_class", AllowedValues: []string{"1xx", "2xx", "3xx", "4xx", "5xx"}},
+	}, Histogram: &HistogramDescriptor{Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10}}},
 }
 
 func MetricDescriptors() []MetricDescriptor {

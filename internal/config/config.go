@@ -34,6 +34,8 @@ type Config struct {
 	UserMachines      UserMachines     `json:"user_machines"`
 	TerminalSessions  TerminalSessions `json:"terminal_sessions"`
 	Preview           Preview          `json:"preview"`
+	Tunnel            Tunnel           `json:"tunnel"`
+	Certificates      Certificates     `json:"certificates"`
 	ConfigSync        ConfigSync       `json:"config_sync"`
 	CLIAuth           CLIAuth          `json:"cli_auth"`
 	GitHub            GitHub           `json:"github"`
@@ -123,6 +125,43 @@ type TerminalSessions struct {
 
 type Preview struct {
 	BaseDomain string `json:"base_domain"`
+}
+
+type Tunnel struct {
+	BaseDomain string `json:"base_domain"`
+}
+
+// Certificates contains references and public endpoints only. It never
+// carries an ACME account key, DNS token, envelope key, or edge credential.
+// Values are resolved by the server process from its configured secret
+// provider when the managed lifecycle is enabled.
+type Certificates struct {
+	Enabled                         bool          `json:"enabled"`
+	DirectoryURL                    string        `json:"directory_url"`
+	AccountKID                      string        `json:"account_kid"`
+	AccountEmail                    string        `json:"account_email"`
+	Issuer                          string        `json:"issuer"`
+	AccountKeyReference             string        `json:"account_key_reference"`
+	MasterKeyReference              string        `json:"master_key_reference"`
+	DNSProvider                     string        `json:"dns_provider"`
+	DNSZoneID                       string        `json:"dns_zone_id"`
+	DNSTokenReference               string        `json:"dns_token_reference"`
+	ChallengeZone                   string        `json:"challenge_zone"`
+	CAAResolver                     string        `json:"caa_resolver"`
+	DistributionCredentialReference string        `json:"distribution_credential_reference"`
+	OwnerID                         string        `json:"owner_id"`
+	RenewBefore                     time.Duration `json:"renew_before"`
+	LockTTL                         time.Duration `json:"lock_ttl"`
+	DistributionTimeout             time.Duration `json:"distribution_timeout"`
+	ExpiryAlertWindow               time.Duration `json:"expiry_alert_window"`
+	MaxCertificateLifetime          time.Duration `json:"max_certificate_lifetime"`
+	ACMETimeout                     time.Duration `json:"acme_timeout"`
+	PropagationTimeout              time.Duration `json:"propagation_timeout"`
+	CleanupTimeout                  time.Duration `json:"cleanup_timeout"`
+	PollInterval                    time.Duration `json:"poll_interval"`
+	MaxAttempts                     int           `json:"max_attempts"`
+	RetryBase                       time.Duration `json:"retry_base"`
+	RetryMax                        time.Duration `json:"retry_max"`
 }
 
 type ConfigSync struct {
@@ -258,7 +297,6 @@ type Secrets struct {
 	GitHubAppPrivateKey   string   `json:"github_app_private_key"`
 	FlyAPIToken           string   `json:"fly_api_token"`
 	EdgeControlCredential string   `json:"edge_control_credential"`
-	PreviewIdentityKey    string   `json:"preview_identity_key"`
 	MintSigningKeys       []string `json:"mint_signing_keys"`
 	DiagnosticsAccessKey  string   `json:"diagnostics_access_key"`
 	DiagnosticsSecretKey  string   `json:"diagnostics_secret_key"`
@@ -328,6 +366,8 @@ func Default() Config {
 		RuntimeBaseDomain: "localhost",
 		UserMachines:      UserMachines{PairingLifetime: 10 * time.Minute, OfflineAfter: 2 * time.Minute, AllowedPlatforms: []string{"darwin", "linux", "windows"}, RuntimeListenPort: 38080},
 		TerminalSessions:  TerminalSessions{MaxActivePerProject: 20, OperationTimeout: 15 * time.Second, RetryBackoff: time.Second, WorkerInterval: time.Second, MaxAttemptsBeforeAlert: 10},
+		Preview:           Preview{BaseDomain: "preview.localhost"},
+		Tunnel:            Tunnel{BaseDomain: "tunnels.localhost"},
 		ConfigSync: ConfigSync{
 			Mode:             "disabled",
 			ManifestContract: "paperboat-manifest-v1", ManifestMaxBytes: 256 << 10,
@@ -342,7 +382,7 @@ func Default() Config {
 			VerificationURL:            "http://localhost:3000/cli/authorize",
 			MachinesURL:                "http://localhost:3000/dashboard/machines",
 			ClientID:                   "paperboat",
-			AllowedScopes:              []string{"account:read", "clients:revoke", "projects:read", "projects:connect", "session:refresh", "diagnostics:upload"},
+			AllowedScopes:              []string{"account:read", "clients:revoke", "projects:read", "projects:connect", "session:refresh", "diagnostics:upload", "previews:read", "previews:write", "tunnels:read", "tunnels:write", "operations:read", "operations:write"},
 			DeviceGrantLifetime:        10 * time.Minute,
 			AccessTokenLifetime:        15 * time.Minute,
 			RefreshTokenLifetime:       30 * 24 * time.Hour,
@@ -464,8 +504,8 @@ func (c Config) Validate() error {
 		if strings.TrimSpace(c.ReleaseBaseURL) == "" {
 			errs = append(errs, fmt.Errorf("release_base_url is required in production"))
 		}
-		if strings.TrimSpace(c.Preview.BaseDomain) == "" || strings.TrimSpace(c.Secrets.PreviewIdentityKey) == "" {
-			errs = append(errs, fmt.Errorf("preview base domain and identity key are required in production"))
+		if strings.TrimSpace(c.Preview.BaseDomain) == "" || strings.TrimSpace(c.Tunnel.BaseDomain) == "" {
+			errs = append(errs, fmt.Errorf("preview and tunnel base domains are required in production"))
 		}
 	}
 	if strings.TrimSpace(c.ReleaseBaseURL) != "" {
@@ -517,7 +557,7 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.CLIAuth.VerificationURL) == "" || strings.TrimSpace(c.CLIAuth.MachinesURL) == "" || strings.TrimSpace(c.CLIAuth.ClientID) == "" || len(c.CLIAuth.AllowedScopes) == 0 {
 		errs = append(errs, fmt.Errorf("cli_auth verification_url, machines_url, client_id, and allowed_scopes are required"))
 	}
-	for _, requiredScope := range []string{"projects:read", "projects:connect"} {
+	for _, requiredScope := range []string{"projects:read", "projects:connect", "previews:read", "previews:write", "tunnels:read", "tunnels:write", "operations:read", "operations:write"} {
 		found := false
 		for _, configuredScope := range c.CLIAuth.AllowedScopes {
 			if configuredScope == requiredScope {
@@ -590,8 +630,17 @@ func (c Config) Validate() error {
 	if c.Fly.OrchestrationLease <= c.Fly.OperationTimeout {
 		errs = append(errs, fmt.Errorf("fly.orchestration_lease must exceed operation_timeout"))
 	}
-	if helperDomain, err := url.Parse("https://" + strings.TrimSpace(c.RuntimeBaseDomain)); err != nil || helperDomain.Hostname() != strings.TrimSpace(c.RuntimeBaseDomain) || helperDomain.Port() != "" {
+	if runtimeDomain, err := url.Parse("https://" + strings.TrimSpace(c.RuntimeBaseDomain)); err != nil || runtimeDomain.Hostname() != strings.TrimSpace(c.RuntimeBaseDomain) || runtimeDomain.Port() != "" {
 		errs = append(errs, fmt.Errorf("runtime_base_domain must be a DNS hostname"))
+	}
+	if !validEndpointBaseDomain(c.Preview.BaseDomain) {
+		errs = append(errs, fmt.Errorf("preview.base_domain must be a DNS hostname"))
+	}
+	if !validEndpointBaseDomain(c.Tunnel.BaseDomain) {
+		errs = append(errs, fmt.Errorf("tunnel.base_domain must be a DNS hostname"))
+	}
+	if err := c.Certificates.Validate(c.Environment); err != nil {
+		errs = append(errs, err)
 	}
 	if value := strings.TrimSpace(c.Fly.HostedReadinessBaseURL); value != "" {
 		readinessURL, err := url.Parse(value)
@@ -615,6 +664,9 @@ func (c Config) Validate() error {
 		errs = append(errs, fmt.Errorf("edge control credential must be at least 32 characters"))
 	}
 	if c.Environment == EnvironmentProduction {
+		if !c.Certificates.Enabled {
+			errs = append(errs, fmt.Errorf("managed certificates are required in production"))
+		}
 		if !immutableImageReference(c.Fly.ImageRef) {
 			errs = append(errs, fmt.Errorf("fly.image_ref must use an immutable sha256 digest in production"))
 		}
@@ -645,6 +697,70 @@ func (c Config) Validate() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func (c Certificates) Validate(environment Environment) error {
+	if !c.Enabled {
+		return nil
+	}
+	var errs []error
+	if strings.TrimSpace(c.DirectoryURL) == "" {
+		errs = append(errs, fmt.Errorf("certificates.directory_url is required when certificates are enabled"))
+	} else if parsed, err := url.Parse(c.DirectoryURL); err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Scheme != "https" && !(environment != EnvironmentProduction && parsed.Scheme == "http" && net.ParseIP(parsed.Hostname()) != nil && net.ParseIP(parsed.Hostname()).IsLoopback()) {
+		errs = append(errs, fmt.Errorf("certificates.directory_url must be HTTPS (or loopback HTTP outside production)"))
+	}
+	for name, value := range map[string]string{
+		"account_key_reference":             c.AccountKeyReference,
+		"master_key_reference":              c.MasterKeyReference,
+		"dns_token_reference":               c.DNSTokenReference,
+		"distribution_credential_reference": c.DistributionCredentialReference,
+		"owner_id":                          c.OwnerID,
+	} {
+		if !validCertificateReference(value) {
+			errs = append(errs, fmt.Errorf("certificates.%s is required and must be a safe reference", name))
+		}
+	}
+	if strings.TrimSpace(c.DNSProvider) != "cloudflare" {
+		errs = append(errs, fmt.Errorf("certificates.dns_provider must be cloudflare"))
+	}
+	if !validConfigMetadata(c.DNSZoneID, 128) {
+		errs = append(errs, fmt.Errorf("certificates.dns_zone_id is required"))
+	}
+	if !validEndpointBaseDomain(c.ChallengeZone) {
+		errs = append(errs, fmt.Errorf("certificates.challenge_zone must be a DNS hostname"))
+	}
+	if host, port, err := net.SplitHostPort(strings.TrimSpace(c.CAAResolver)); err != nil || host == "" || port == "" {
+		errs = append(errs, fmt.Errorf("certificates.caa_resolver must be host:port"))
+	}
+	if strings.TrimSpace(c.Issuer) == "" || !validConfigMetadata(c.Issuer, 128) {
+		errs = append(errs, fmt.Errorf("certificates.issuer is required"))
+	}
+	if c.AccountEmail != "" && (strings.TrimSpace(c.AccountEmail) != c.AccountEmail || strings.ContainsAny(c.AccountEmail, "\r\n\x00") || len(c.AccountEmail) > 256) {
+		errs = append(errs, fmt.Errorf("certificates.account_email is invalid"))
+	}
+	if c.RenewBefore < 0 || c.RenewBefore >= 365*24*time.Hour || c.LockTTL < 0 || c.LockTTL > 15*time.Minute || c.DistributionTimeout < 0 || c.DistributionTimeout > 2*time.Minute || c.ExpiryAlertWindow < 0 || c.ExpiryAlertWindow > 90*24*time.Hour || c.MaxCertificateLifetime < 0 || c.MaxCertificateLifetime > 90*24*time.Hour || c.ACMETimeout < 0 || c.ACMETimeout > 10*time.Minute || c.PropagationTimeout < 0 || c.PropagationTimeout > 10*time.Minute || c.CleanupTimeout < 0 || c.CleanupTimeout > 2*time.Minute || c.PollInterval < 0 || c.PollInterval > time.Minute || c.RetryBase < 0 || c.RetryBase > time.Minute || c.RetryMax < 0 || c.RetryMax > 2*time.Minute || c.MaxAttempts < 0 || c.MaxAttempts > 8 {
+		errs = append(errs, fmt.Errorf("certificates timing and retry bounds are invalid"))
+	}
+	return errors.Join(errs...)
+}
+
+func validCertificateReference(value string) bool {
+	if !validConfigMetadata(value, 256) {
+		return false
+	}
+	if strings.Contains(strings.ToLower(value), "begin ") || strings.Contains(strings.ToLower(value), "private key") {
+		return false
+	}
+	for _, character := range value {
+		if !(character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '-' || character == '_' || character == '.' || character == ':' || character == '/') {
+			return false
+		}
+	}
+	return true
+}
+
+func validConfigMetadata(value string, maximum int) bool {
+	return value != "" && len(value) <= maximum && strings.TrimSpace(value) == value && !strings.ContainsAny(value, "\r\n\x00")
 }
 
 func immutableImageReference(value string) bool {
@@ -758,8 +874,54 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 		c.UserMachines.RuntimeListenPort = int32(parsed)
 	}
 	setString("PAPERBOAT_PREVIEW_BASE_DOMAIN", &c.Preview.BaseDomain)
-	if err := setSecret("PAPERBOAT_PREVIEW_IDENTITY_KEY", &c.Secrets.PreviewIdentityKey); err != nil {
-		return err
+	setString("PAPERBOAT_TUNNEL_BASE_DOMAIN", &c.Tunnel.BaseDomain)
+	setString("PAPERBOAT_CERTIFICATES_DIRECTORY_URL", &c.Certificates.DirectoryURL)
+	setString("PAPERBOAT_CERTIFICATES_ACCOUNT_KID", &c.Certificates.AccountKID)
+	setString("PAPERBOAT_CERTIFICATES_ACCOUNT_EMAIL", &c.Certificates.AccountEmail)
+	setString("PAPERBOAT_CERTIFICATES_ISSUER", &c.Certificates.Issuer)
+	setString("PAPERBOAT_CERTIFICATES_ACCOUNT_KEY_REFERENCE", &c.Certificates.AccountKeyReference)
+	setString("PAPERBOAT_CERTIFICATES_MASTER_KEY_REFERENCE", &c.Certificates.MasterKeyReference)
+	setString("PAPERBOAT_CERTIFICATES_DNS_PROVIDER", &c.Certificates.DNSProvider)
+	setString("PAPERBOAT_CERTIFICATES_DNS_ZONE_ID", &c.Certificates.DNSZoneID)
+	setString("PAPERBOAT_CERTIFICATES_DNS_TOKEN_REFERENCE", &c.Certificates.DNSTokenReference)
+	setString("PAPERBOAT_CERTIFICATES_CHALLENGE_ZONE", &c.Certificates.ChallengeZone)
+	setString("PAPERBOAT_CERTIFICATES_CAA_RESOLVER", &c.Certificates.CAAResolver)
+	setString("PAPERBOAT_CERTIFICATES_DISTRIBUTION_CREDENTIAL_REFERENCE", &c.Certificates.DistributionCredentialReference)
+	setString("PAPERBOAT_CERTIFICATES_OWNER_ID", &c.Certificates.OwnerID)
+	if value, ok := lookup("PAPERBOAT_CERTIFICATES_ENABLED"); ok {
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("PAPERBOAT_CERTIFICATES_ENABLED: %w", err)
+		}
+		c.Certificates.Enabled = parsed
+	}
+	for name, target := range map[string]*time.Duration{
+		"PAPERBOAT_CERTIFICATES_RENEW_BEFORE":         &c.Certificates.RenewBefore,
+		"PAPERBOAT_CERTIFICATES_LOCK_TTL":             &c.Certificates.LockTTL,
+		"PAPERBOAT_CERTIFICATES_DISTRIBUTION_TIMEOUT": &c.Certificates.DistributionTimeout,
+		"PAPERBOAT_CERTIFICATES_EXPIRY_ALERT_WINDOW":  &c.Certificates.ExpiryAlertWindow,
+		"PAPERBOAT_CERTIFICATES_MAX_LIFETIME":         &c.Certificates.MaxCertificateLifetime,
+		"PAPERBOAT_CERTIFICATES_ACME_TIMEOUT":         &c.Certificates.ACMETimeout,
+		"PAPERBOAT_CERTIFICATES_PROPAGATION_TIMEOUT":  &c.Certificates.PropagationTimeout,
+		"PAPERBOAT_CERTIFICATES_CLEANUP_TIMEOUT":      &c.Certificates.CleanupTimeout,
+		"PAPERBOAT_CERTIFICATES_POLL_INTERVAL":        &c.Certificates.PollInterval,
+		"PAPERBOAT_CERTIFICATES_RETRY_BASE":           &c.Certificates.RetryBase,
+		"PAPERBOAT_CERTIFICATES_RETRY_MAX":            &c.Certificates.RetryMax,
+	} {
+		if value, ok := lookup(name); ok {
+			parsed, err := time.ParseDuration(value)
+			if err != nil {
+				return fmt.Errorf("parse %s: %w", name, err)
+			}
+			*target = parsed
+		}
+	}
+	if value, ok := lookup("PAPERBOAT_CERTIFICATES_MAX_ATTEMPTS"); ok {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("parse PAPERBOAT_CERTIFICATES_MAX_ATTEMPTS: %w", err)
+		}
+		c.Certificates.MaxAttempts = parsed
 	}
 	if v, ok := lookup("PAPERBOAT_FILE_TRANSFER_POLICY_JSON"); ok {
 		decoder := json.NewDecoder(strings.NewReader(v))
@@ -1053,6 +1215,28 @@ func splitCSV(v string) []string {
 		}
 	}
 	return out
+}
+
+func validEndpointBaseDomain(raw string) bool {
+	domain := strings.TrimSpace(raw)
+	if domain == "" || domain != raw || domain != strings.ToLower(domain) || len(domain) > 253 || strings.HasSuffix(domain, ".") {
+		return false
+	}
+	labels := strings.Split(domain, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	for _, label := range labels {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, char := range label {
+			if (char < 'a' || char > 'z') && (char < '0' || char > '9') && char != '-' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func validSSHOSUser(value string) bool {

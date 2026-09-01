@@ -182,6 +182,12 @@ WHERE upload_intent.cli_client_session_id = client_session.id
 -- Each of the following statements is intentionally separate. The managed
 -- SSH child table has a RESTRICT foreign key to its owner, so sibling data
 -- modifying CTEs could fail FK checks depending on PostgreSQL snapshot order.
+-- The current machine-control session is a child of its renewal and must be
+-- removed first so deleting the renewal cannot violate its RESTRICT FK.
+-- name: DeleteUserMachineControlSessions :execrows
+DELETE FROM machine_control_sessions AS session
+WHERE session.machine_id = sqlc.arg(target_machine_id);
+
 -- name: DeleteUserMachineControlRenewals :execrows
 DELETE FROM machine_control_renewals AS renewal
 WHERE renewal.machine_id = sqlc.arg(target_machine_id);
@@ -257,16 +263,3 @@ WHERE owner.user_machine_id = sqlc.arg(target_machine_id);
 -- name: DeleteUserMachineSSHTarget :execrows
 DELETE FROM machine_ssh_targets AS target
 WHERE target.user_machine_id = sqlc.arg(target_machine_id);
-
--- A removed environment must not continue advertising a preview URL. The
--- row remains until retention cleanup so existing user data and audit history
--- are preserved, but it can no longer be resolved or served.
--- name: RemoveControlPreviewsForEnvironment :execrows
-UPDATE control_previews AS preview
-SET state = 'removed',
-    removed_at = coalesce(preview.removed_at, sqlc.arg(revocation_time)),
-    retained_until = greatest(coalesce(preview.retained_until, sqlc.arg(revocation_time)), sqlc.arg(revocation_time)),
-    version = preview.version + 1,
-    updated_at = sqlc.arg(revocation_time)
-WHERE preview.environment_id = sqlc.arg(target_environment_id)
-  AND preview.state <> 'removed';

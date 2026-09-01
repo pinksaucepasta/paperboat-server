@@ -106,6 +106,13 @@ func (s *Service) RenewMachineControl(ctx context.Context, credential string, pr
 	if err != nil || machine.UserID != identity.UserID || machine.EnvironmentID != identity.EnvironmentID || machine.InstallationGeneration != identity.InstallationGeneration || machineKeyThumbprint(machine) != identity.KeyThumbprint {
 		return MachineControlCredential{}, ErrMachineControlInvalid
 	}
+	current, err := s.db.Queries().GetCurrentMachineControlSession(ctx, dbsqlc.GetCurrentMachineControlSessionParams{
+		MachineID: machine.ID, InstallationGeneration: machine.InstallationGeneration,
+		CredentialJti: identity.JTI, Now: now.Add(-time.Hour),
+	})
+	if err != nil || current.SessionGeneration != identity.SessionGeneration {
+		return MachineControlCredential{}, ErrMachineControlInvalid
+	}
 	claims, err := verifyMachineProof(machine, proof, method, path, body, now)
 	if err != nil {
 		return MachineControlCredential{}, err
@@ -117,13 +124,14 @@ func (s *Service) mintMachineControl(ctx context.Context, machine dbsqlc.UserMac
 	issuedAt := s.now().UTC().Truncate(time.Second)
 	expiresAt := issuedAt.Add(machineControlTTL)
 	var row dbsqlc.MachineControlRenewal
+	var session dbsqlc.MachineControlSession
 	err := s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		if _, err := tx.Queries().DeleteExpiredMachineControlRenewals(ctx, issuedAt.Add(-time.Hour)); err != nil {
 			return err
 		}
 		current, err := tx.Queries().GetMachineControlRenewalForUpdate(ctx, operationID)
 		if err == nil {
-			return s.resolveMachineControlRenewal(ctx, tx, current, machine, operationID, issuedAt, expiresAt, &row)
+			return s.resolveMachineControlRenewal(ctx, tx, current, machine, operationID, issuedAt, expiresAt, &row, &session)
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
@@ -139,9 +147,9 @@ func (s *Service) mintMachineControl(ctx context.Context, machine dbsqlc.UserMac
 		if err != nil {
 			return err
 		}
-		return s.resolveMachineControlRenewal(ctx, tx, created, machine, operationID, issuedAt, expiresAt, &row)
+		return s.resolveMachineControlRenewal(ctx, tx, created, machine, operationID, issuedAt, expiresAt, &row, &session)
 	})
-	if err != nil || row.MachineID != machine.ID || row.InstallationGeneration != machine.InstallationGeneration {
+	if err != nil || row.MachineID != machine.ID || row.InstallationGeneration != machine.InstallationGeneration || session.CredentialJti != row.CredentialJti || session.SessionGeneration < 1 {
 		return MachineControlCredential{}, ErrMachineControlInvalid
 	}
 	token, err := s.controlSigner.SignCredential(mint.CredentialInput{
@@ -149,7 +157,7 @@ func (s *Service) mintMachineControl(ctx context.Context, machine dbsqlc.UserMac
 		IssuedAt: row.IssuedAt, ExpiresAt: row.ExpiresAt, CredentialClass: "machine_control",
 		Scopes: []string{"machine:connect", "machine:renew"}, EnvironmentID: machine.EnvironmentID,
 		MachineID: machine.ID, UserID: machine.UserID, KeyThumbprint: machineKeyThumbprint(machine),
-		InstallationGeneration: machine.InstallationGeneration,
+		InstallationGeneration: machine.InstallationGeneration, SessionGeneration: session.SessionGeneration,
 	})
 	if err != nil {
 		return MachineControlCredential{}, err
@@ -157,22 +165,76 @@ func (s *Service) mintMachineControl(ctx context.Context, machine dbsqlc.UserMac
 	return MachineControlCredential{Credential: token, ExpiresAt: row.ExpiresAt}, nil
 }
 
-func (s *Service) resolveMachineControlRenewal(ctx context.Context, tx *db.Tx, row dbsqlc.MachineControlRenewal, machine dbsqlc.UserMachine, operationID string, issuedAt, expiresAt time.Time, result *dbsqlc.MachineControlRenewal) error {
+func (s *Service) resolveMachineControlRenewal(ctx context.Context, tx *db.Tx, row dbsqlc.MachineControlRenewal, machine dbsqlc.UserMachine, operationID string, issuedAt, expiresAt time.Time, result *dbsqlc.MachineControlRenewal, resultSession *dbsqlc.MachineControlSession) error {
 	if row.OperationID != operationID || row.MachineID != machine.ID || row.InstallationGeneration != machine.InstallationGeneration {
 		return ErrMachineControlInvalid
 	}
-	if row.ExpiresAt.After(issuedAt) {
-		*result = row
-		return nil
+	if row.SupersededAt.Valid {
+		return ErrMachineControlInvalid
 	}
-	rotated, err := tx.Queries().RotateMachineControlRenewal(ctx, dbsqlc.RotateMachineControlRenewalParams{
-		OperationID: operationID, MachineID: machine.ID, InstallationGeneration: machine.InstallationGeneration,
-		CredentialJti: newID("mcc"), IssuedAt: issuedAt, ExpiresAt: expiresAt,
+	current, currentErr := tx.Queries().GetMachineControlSessionForUpdate(ctx, machine.ID)
+	if currentErr != nil && !errors.Is(currentErr, sql.ErrNoRows) {
+		return currentErr
+	}
+	if row.SessionGeneration.Valid {
+		if currentErr != nil || current.OperationID != operationID || current.CredentialJti != row.CredentialJti || current.SessionGeneration != row.SessionGeneration.Int64 {
+			return ErrMachineControlInvalid
+		}
+		if row.ExpiresAt.After(issuedAt) {
+			*result, *resultSession = row, current
+			return nil
+		}
+	}
+	if !row.SessionGeneration.Valid && currentErr == nil && current.OperationID == operationID {
+		return ErrMachineControlInvalid
+	}
+	if row.SessionGeneration.Valid {
+		var err error
+		row, err = tx.Queries().RotateMachineControlRenewal(ctx, dbsqlc.RotateMachineControlRenewalParams{
+			OperationID: operationID, MachineID: machine.ID, InstallationGeneration: machine.InstallationGeneration,
+			CredentialJti: newID("mcc"), IssuedAt: issuedAt, ExpiresAt: expiresAt,
+		})
+		if err != nil {
+			return err
+		}
+	}
+	if currentErr != nil {
+		var err error
+		current, err = tx.Queries().CreateMachineControlSession(ctx, dbsqlc.CreateMachineControlSessionParams{
+			MachineID: machine.ID, InstallationGeneration: machine.InstallationGeneration, OperationID: operationID,
+			CredentialJti: row.CredentialJti, IssuedAt: row.IssuedAt, ExpiresAt: row.ExpiresAt,
+		})
+		if err != nil {
+			return err
+		}
+	} else {
+		if current.OperationID != operationID {
+			updated, err := tx.Queries().MarkMachineControlRenewalSuperseded(ctx, dbsqlc.MarkMachineControlRenewalSupersededParams{
+				Now: sql.NullTime{Time: issuedAt, Valid: true}, OperationID: current.OperationID, MachineID: machine.ID,
+				SessionGeneration: sql.NullInt64{Int64: current.SessionGeneration, Valid: true},
+			})
+			if err != nil || updated != 1 {
+				return ErrMachineControlInvalid
+			}
+		}
+		var err error
+		current, err = tx.Queries().RotateMachineControlSession(ctx, dbsqlc.RotateMachineControlSessionParams{
+			InstallationGeneration: machine.InstallationGeneration, OperationID: operationID, CredentialJti: row.CredentialJti,
+			IssuedAt: row.IssuedAt, ExpiresAt: row.ExpiresAt, MachineID: machine.ID,
+			ExpectedSessionGeneration: current.SessionGeneration, ExpectedCredentialJti: current.CredentialJti,
+		})
+		if err != nil {
+			return err
+		}
+	}
+	bound, err := tx.Queries().BindMachineControlRenewalSession(ctx, dbsqlc.BindMachineControlRenewalSessionParams{
+		SessionGeneration: sql.NullInt64{Int64: current.SessionGeneration, Valid: true}, OperationID: operationID,
+		MachineID: machine.ID, InstallationGeneration: machine.InstallationGeneration, CredentialJti: row.CredentialJti,
 	})
 	if err != nil {
 		return err
 	}
-	*result = rotated
+	*result, *resultSession = bound, current
 	return nil
 }
 

@@ -2077,6 +2077,29 @@ func TestMachineControlInitialReplayRotatesAfterExpiryWithoutCrossMachineCollisi
 	if err != nil || replayClaims.JTI != secondClaims.JTI || !replay.ExpiresAt.Equal(second.ExpiresAt) {
 		t.Fatalf("valid replay claims=%+v credential=%+v err=%v", replayClaims, replay, err)
 	}
+	if replayClaims.SessionGeneration != secondClaims.SessionGeneration || replayClaims.SessionGeneration <= firstClaims.SessionGeneration {
+		t.Fatalf("session generations first=%d second=%d replay=%d", firstClaims.SessionGeneration, secondClaims.SessionGeneration, replayClaims.SessionGeneration)
+	}
+
+	newOperationID := "machine-control-reconnect-" + suffix
+	reconnected, err := service.mintMachineControl(ctx, machine, newOperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconnectedClaims, err := signer.VerifyCredential(reconnected.Credential, "https://api.example.test", "machine_control", now)
+	if err != nil || reconnectedClaims.SessionGeneration != replayClaims.SessionGeneration+1 {
+		t.Fatalf("reconnected claims=%+v err=%v", reconnectedClaims, err)
+	}
+	if _, err := store.Queries().GetCurrentMachineControlSession(ctx, dbsqlc.GetCurrentMachineControlSessionParams{MachineID: machineID, InstallationGeneration: 3, CredentialJti: replayClaims.JTI, Now: now}); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("superseded credential lookup err=%v, want sql.ErrNoRows", err)
+	}
+	current, err := store.Queries().GetCurrentMachineControlSession(ctx, dbsqlc.GetCurrentMachineControlSessionParams{MachineID: machineID, InstallationGeneration: 3, CredentialJti: reconnectedClaims.JTI, Now: now})
+	if err != nil || current.SessionGeneration != reconnectedClaims.SessionGeneration {
+		t.Fatalf("current session=%+v err=%v", current, err)
+	}
+	if _, err := service.mintMachineControl(ctx, machine, operationID); !errors.Is(err, ErrMachineControlInvalid) {
+		t.Fatalf("superseded operation replay err=%v, want ErrMachineControlInvalid", err)
+	}
 
 	otherMachine, err := store.Queries().GetActiveUserMachineForControl(ctx, otherMachineID)
 	if err != nil {
@@ -2091,6 +2114,30 @@ func TestMachineControlInitialReplayRotatesAfterExpiryWithoutCrossMachineCollisi
 	}
 	if storedMachine != machineID || storedJTI != secondClaims.JTI {
 		t.Fatalf("cross-machine attempt changed reservation machine=%q jti=%q", storedMachine, storedJTI)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machines SET setup_roles=ARRAY['host','interactive']::text[],setup_mode='host' WHERE id=$1`, machineID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Unpair(ctx, userID, machineID); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Delete(ctx, userID, machineID); err != nil {
+		t.Fatal(err)
+	}
+	for table := range map[string]struct{}{
+		"machine_control_sessions": {},
+		"machine_control_renewals": {},
+	} {
+		var count int
+		if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.`+table+` WHERE machine_id=$1`, machineID).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatalf("%s rows=%d, want 0 after delete", table, count)
+		}
+	}
+	if err := service.Delete(ctx, userID, machineID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("delete replay error=%v, want ErrNotFound", err)
 	}
 }
 
@@ -2727,6 +2774,9 @@ func testStore(t *testing.T) *db.DB {
 	dsn := os.Getenv("PAPERBOAT_TEST_DATABASE_DSN")
 	if dsn == "" {
 		t.Skip("set PAPERBOAT_TEST_DATABASE_DSN to run user-machine integration tests")
+	}
+	if err := db.ValidateIsolatedTestDSN(dsn, os.Getenv("PAPERBOAT_DATABASE_DSN")); err != nil {
+		t.Fatal(err)
 	}
 	store, err := db.Open(config.Database{Driver: "postgres", DSN: dsn})
 	if err != nil {

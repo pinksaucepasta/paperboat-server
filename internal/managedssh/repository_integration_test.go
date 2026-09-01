@@ -18,6 +18,9 @@ func TestSQLRepositoryManagedSSHAuthorityLifecycle(t *testing.T) {
 	if dsn == "" {
 		t.Skip("set PAPERBOAT_TEST_DATABASE_DSN to run managed SSH repository integration tests")
 	}
+	if err := db.ValidateIsolatedTestDSN(dsn, os.Getenv("PAPERBOAT_DATABASE_DSN")); err != nil {
+		t.Fatal(err)
+	}
 	store, err := db.Open(config.Database{Driver: "postgres", DSN: dsn})
 	if err != nil {
 		t.Fatal(err)
@@ -205,6 +208,9 @@ func TestSQLRepositoryManagedSSHKeyRevokesWithClientSessionAndAccount(t *testing
 	dsn := os.Getenv("PAPERBOAT_TEST_DATABASE_DSN")
 	if dsn == "" {
 		t.Skip("set PAPERBOAT_TEST_DATABASE_DSN to run managed SSH repository integration tests")
+	}
+	if err := db.ValidateIsolatedTestDSN(dsn, os.Getenv("PAPERBOAT_DATABASE_DSN")); err != nil {
+		t.Fatal(err)
 	}
 	store, err := db.Open(config.Database{Driver: "postgres", DSN: dsn})
 	if err != nil {

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
+	"github.com/pinksaucepasta/paperboat-server/internal/environment"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
 	"github.com/pinksaucepasta/paperboat-server/internal/usermachines"
 )
@@ -33,6 +34,10 @@ type updateObservationRepository interface {
 	RecordUpdateObservation(context.Context, string, string, usermachines.UpdateObservation) error
 }
 
+type runtimeEnvironmentObservationRepository interface {
+	RecordEnvironmentObservation(context.Context, string, string, *environment.Observation) (environment.RuntimeResult, error)
+}
+
 type runtimeAuxiliaryRejection struct {
 	Observation string `json:"observation"`
 	Code        string `json:"code"`
@@ -41,6 +46,7 @@ type runtimeAuxiliaryRejection struct {
 func runtimeObservation(repo runtimeObservationRepository, identities runtimeIdentityVerifier, _ int, observationSinks ...any) http.HandlerFunc {
 	var availability availabilityObservationRepository
 	var updates updateObservationRepository
+	var environmentObservation runtimeEnvironmentObservationRepository
 	for _, sink := range observationSinks {
 		if candidate, ok := sink.(availabilityObservationRepository); ok {
 			availability = candidate
@@ -48,8 +54,12 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 		if candidate, ok := sink.(updateObservationRepository); ok {
 			updates = candidate
 		}
+		if candidate, ok := sink.(runtimeEnvironmentObservationRepository); ok {
+			environmentObservation = candidate
+		}
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
+		noStore(w)
 		var req struct {
 			EnvironmentID      string                                `json:"environment_id"`
 			ResourceID         string                                `json:"resource_id"`
@@ -67,6 +77,7 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 			} `json:"runtime_diagnostics"`
 			RelayLatency *metering.RelayLatencyVector    `json:"relay_latency,omitempty"`
 			Update       *usermachines.UpdateObservation `json:"update,omitempty"`
+			Environment  *environment.Observation        `json:"environment,omitempty"`
 		}
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20+1))
 		decoder := json.NewDecoder(bytes.NewReader(body))
@@ -85,6 +96,12 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 		}
 		if req.RelayLatency != nil && (req.RuntimeDiagnostics == nil || !req.RelayLatency.Valid(req.SampledAt)) {
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "Relay latency observation is invalid.")
+			return
+		}
+		hasEnvironmentCapability := req.RuntimeDiagnostics != nil && slices.Contains(req.RuntimeDiagnostics.Capabilities, "environment_injection")
+		environmentMember, environmentMarshalErr := json.Marshal(req.Environment)
+		if !validEnvironmentObservationShape(body, hasEnvironmentCapability, req.Environment) || environmentMarshalErr != nil || (req.Environment != nil && (len(environmentMember) > 4<<10 || environment.ValidateObservation(*req.Environment) != nil)) {
+			writeError(w, r, http.StatusBadRequest, "invalid_request", "Environment observation is invalid.")
 			return
 		}
 		got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
@@ -128,6 +145,23 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 			}
 			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
 			return
+		}
+		var environmentResult environment.RuntimeResult
+		if environmentObservation != nil && req.Environment != nil {
+			environmentResult, err = environmentObservation.RecordEnvironmentObservation(r.Context(), req.EnvironmentID, req.ResourceID, req.Environment)
+			if err != nil {
+				switch {
+				case errors.Is(err, environment.ErrObservationInvalid):
+					writeError(w, r, http.StatusBadRequest, "invalid_request", "Environment observation is invalid.")
+				case errors.Is(err, environment.ErrMachineNotHost):
+					writeError(w, r, http.StatusUnprocessableEntity, "machine_not_host", "Environment variables are available only for host-capable machines.")
+				case errors.Is(err, environment.ErrMachineNotFound):
+					writeError(w, r, http.StatusNotFound, "machine_not_found", "Machine was not found.")
+				default:
+					writeError(w, r, http.StatusInternalServerError, "internal_error", "Environment bundle is unavailable.")
+				}
+				return
+			}
 		}
 
 		auxiliaryRejections := make([]runtimeAuxiliaryRejection, 0, 2)
@@ -184,15 +218,42 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 		if len(auxiliaryRejections) > 0 {
 			response["auxiliary_rejections"] = auxiliaryRejections
 		}
+		if environmentObservation != nil && req.Environment != nil && environmentResult.Bundle != nil {
+			response["environment_bundle"] = environmentResult.Bundle
+		}
 		writeJSON(w, http.StatusAccepted, SuccessResponse{Data: response})
 	}
 }
 
-func validObservedCapabilities(capabilities []string) bool {
-	if len(capabilities) > 6 {
+func validEnvironmentObservationShape(body []byte, capability bool, observation *environment.Observation) bool {
+	var outer map[string]json.RawMessage
+	if json.Unmarshal(body, &outer) != nil {
 		return false
 	}
-	allowed := []string{"file_receive", "preview_launch", "terminal_host", "codex_host", "session_host", "keep_awake"}
+	raw, present := outer["environment"]
+	if present != capability {
+		return false
+	}
+	if !capability || observation == nil || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return !capability
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil || fields == nil {
+		return false
+	}
+	for _, name := range []string{"schema", "observation_seq", "host_recipient_key_id", "authority", "global", "machine", "state", "error_code", "observed_at"} {
+		if _, ok := fields[name]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func validObservedCapabilities(capabilities []string) bool {
+	allowed := []string{"file_receive", "preview_launch", "terminal_host", "codex_host", "session_host", "keep_awake", "environment_injection"}
+	if len(capabilities) > len(allowed) {
+		return false
+	}
 	for index, capability := range capabilities {
 		if !slices.Contains(allowed, capability) || slices.Contains(capabilities[:index], capability) {
 			return false

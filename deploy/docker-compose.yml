@@ -1,6 +1,12 @@
+x-server-env-file: &server-env-file
+  # Keep the same production overlay on the migration and serving paths. The
+  # explicit service entries below are intentional: a YAML merge must not make
+  # certificate settings disappear from one phase of the rollout.
+  - ${PAPERBOAT_ENV_FILE:-.env}
+
 x-server: &server
   image: ${PAPERBOAT_SERVER_IMAGE:?set PAPERBOAT_SERVER_IMAGE}
-  env_file: ${PAPERBOAT_ENV_FILE:-.env}
+  env_file: *server-env-file
   environment:
     # This destination is an invariant of the parent mount below. Do not let
     # an older env file redirect the server to the parent directory.
@@ -18,11 +24,13 @@ x-server: &server
 services:
   migrate:
     <<: *server
+    env_file: *server-env-file
     restart: "no"
     command: ["paperboat-server", "migrate"]
 
   seed-catalogs:
     <<: *server
+    env_file: *server-env-file
     restart: "no"
     depends_on:
       migrate:
@@ -31,6 +39,7 @@ services:
 
   server:
     <<: *server
+    env_file: *server-env-file
     restart: unless-stopped
     depends_on:
       seed-catalogs:

@@ -549,29 +549,6 @@ func (q *Queries) RevokeUserAccessSessions(ctx context.Context, arg RevokeUserAc
 	return err
 }
 
-const upsertPreviewURLRecord = `-- name: UpsertPreviewURLRecord :exec
-INSERT INTO preview_url_records (id, project_id, preview_key, target_url, public_url, state)
-VALUES ($1, $2, 'helper', $3, $4, 'active')
-ON CONFLICT (project_id, preview_key) DO UPDATE SET target_url=EXCLUDED.target_url,public_url=EXCLUDED.public_url,state='active',version=preview_url_records.version+1,updated_at=now()
-`
-
-type UpsertPreviewURLRecordParams struct {
-	ID        string
-	ProjectID string
-	TargetUrl string
-	PublicUrl string
-}
-
-func (q *Queries) UpsertPreviewURLRecord(ctx context.Context, arg UpsertPreviewURLRecordParams) error {
-	_, err := q.db.Exec(ctx, upsertPreviewURLRecord,
-		arg.ID,
-		arg.ProjectID,
-		arg.TargetUrl,
-		arg.PublicUrl,
-	)
-	return err
-}
-
 const upsertProviderRouteCleanupOutbox = `-- name: UpsertProviderRouteCleanupOutbox :exec
 INSERT INTO provider_route_cleanup_outbox (id,project_id,action,reason)
 VALUES ($1,$2,$3,$4)

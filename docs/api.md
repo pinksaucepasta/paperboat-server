@@ -38,6 +38,17 @@ adjustments, and GitHub config-repo provisioning require an `Idempotency-Key` he
 Project lifecycle and access routes are replay-safe through persisted project, session,
 and orchestration state; they do not currently require a client idempotency key.
 
+Preview and tunnel v1 responses also include `Correlation-Id`. Their typed errors add
+component, outcome certainty, retryability, and a safe repair action. Every create uses
+`Idempotency-Key`; mutable-resource writes use a strong ETag and require `If-Match` when
+a stale write could overwrite another actor. Lists use bounded keyset pagination and
+events resume from an opaque account-and-resource-bound cursor.
+
+`GET /v1/operations/{operation_id}` returns typed long-running progress. Safe pending
+work can be canceled with idempotent `DELETE /v1/operations/{operation_id}`. Work that
+has crossed its cancellation boundary returns `operation_not_cancellable` without
+claiming that its outcome is known.
+
 Mutable resources include a numeric `version`. Dashboard updates to
 `PATCH /v1/projects/{project_id}` must send either an `If-Match` header containing that
 version or a `version` field in the JSON body. Stale writes fail with `version_conflict`.

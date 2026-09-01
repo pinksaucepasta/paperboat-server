@@ -1,4 +1,15 @@
-# Reviewed 2026-08-06 after the primary peer transport control-plane cutover.
-# Updating a size requires package/dependency attribution in the reviewing change.
-linux	amd64	23330978
-linux	arm64	21364898
+# Reviewed 2026-09-01 for TRK-38 against the 2026-08-06 baseline. Exact Go 1.26.6
+# Make binary-size builds changed linux/amd64 23330978 -> 30314658
+# (+6983680, +29.93%) and linux/arm64 21364898 -> 27459746 (+6094848,
+# +28.53%). Reproducible `go tool nm -size` attribution against the checkpoint
+# source identifies non-TLS growth in httpapi (+453265), connectorprotocol
+# (+443141), tunnelv1 (+346731), dbsqlc (+296110), miekg/dns (+246934),
+# previewattachment (+208195), environment (+183405), fxamacker/cbor (+138180),
+# telemetry (+126042), usermachines (+109986), privateaccess (+100018),
+# previewdomain (+84648), previewtunnelstore (+66733), previewv1 (+62383),
+# and x/net/idna (+45444) bytes. Certificate/TLS packages are measured but
+# excluded from this non-TLS ownership attribution per TRK-38 scope. The
+# remaining measured growth includes Go runtime/linker/static data and newly
+# reachable feature code. Updating a size requires this attribution.
+linux	amd64	30314658
+linux	arm64	27459746

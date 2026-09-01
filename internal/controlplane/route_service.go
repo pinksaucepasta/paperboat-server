@@ -138,7 +138,7 @@ func routeRequestHash(values ...any) [32]byte {
 	return sha256.Sum256(data)
 }
 func validRouteKind(kind string) bool {
-	return kind == "runtime_https_wss" || kind == "preview_public_https_wss"
+	return kind == "runtime_https_wss"
 }
 func validRouteHost(host string) bool {
 	host = strings.TrimSpace(host)

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testRepository = "example/paperboat-cli"
@@ -100,6 +101,111 @@ func TestReadyRequiresCompletePublicBundle(t *testing.T) {
 	}
 }
 
+func TestReadyRejectsIncompleteReleaseIndex(t *testing.T) {
+	for _, field := range []string{"manifest_sha256", "deployment_plan_sha256", "deployment_plan"} {
+		t.Run(field, func(t *testing.T) {
+			directory := t.TempDir()
+			writeReadyBundle(t, directory, false)
+			path := filepath.Join(directory, "tuf", "metadata", "targets.json")
+			body, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var document map[string]any
+			if err := json.Unmarshal(body, &document); err != nil {
+				t.Fatal(err)
+			}
+			signed, ok := document["signed"].(map[string]any)
+			if !ok {
+				t.Fatal("targets metadata has no signed envelope")
+			}
+			targets, ok := signed["targets"].(map[string]any)
+			if !ok {
+				t.Fatal("targets metadata has no targets")
+			}
+			target, ok := targets["pb-linux-arm64"].(map[string]any)
+			if !ok {
+				t.Fatal("targets metadata has no linux arm64 target")
+			}
+			custom, ok := target["custom"].(map[string]any)
+			if !ok {
+				t.Fatal("target metadata has no custom envelope")
+			}
+			index, ok := custom["release_index"].(map[string]any)
+			if !ok {
+				t.Fatal("target metadata has no release index")
+			}
+			delete(index, field)
+			body, err = json.Marshal(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, body, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := Ready(directory); err == nil {
+				t.Fatalf("release origin accepted release index missing %s", field)
+			}
+			index[field] = nil
+			body, err = json.Marshal(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, body, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := Ready(directory); err == nil {
+				t.Fatalf("release origin accepted release index with null %s", field)
+			}
+		})
+	}
+}
+
+func TestReadyRejectsDeploymentPlanDigestMismatch(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		edit func(map[string]any)
+	}{
+		{name: "digest", edit: func(index map[string]any) {
+			index["deployment_plan_sha256"] = strings.Repeat("b", sha256.Size*2)
+		}},
+		{name: "plan", edit: func(index map[string]any) {
+			plan := index["deployment_plan"].(map[string]any)
+			plan["rollout_state"] = "paused"
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			writeReadyBundle(t, directory, false)
+			path := filepath.Join(directory, "tuf", "metadata", "targets.json")
+			body, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var document map[string]any
+			if err := json.Unmarshal(body, &document); err != nil {
+				t.Fatal(err)
+			}
+			signed := document["signed"].(map[string]any)
+			targets := signed["targets"].(map[string]any)
+			target := targets["pb-linux-arm64"].(map[string]any)
+			custom := target["custom"].(map[string]any)
+			index := custom["release_index"].(map[string]any)
+			test.edit(index)
+			body, err = json.Marshal(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, body, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := Ready(directory); err == nil {
+				t.Fatalf("release origin accepted deployment plan %s mismatch", test.name)
+			}
+		})
+	}
+}
+
 func TestReadyRejectsDarwinAMD64Target(t *testing.T) {
 	directory := t.TempDir()
 	writeReadyBundle(t, directory, false)
@@ -151,6 +257,7 @@ func writeReadyBundle(t *testing.T, directory string, _ bool) {
 	}
 	assets := map[string]any{}
 	for name, asset := range current.Assets {
+		index := testPublishedReleaseIndex(asset, time.Now().UTC())
 		assets[name] = map[string]any{
 			"length": asset.Length,
 			"hashes": map[string]string{"sha256": asset.SHA256},
@@ -158,7 +265,7 @@ func writeReadyBundle(t *testing.T, directory string, _ bool) {
 				"schema": "paperboat.tuf-asset/v1", "kind": "github-release-asset", "version": current.Version,
 				"platform": asset.Platform, "architecture": asset.Architecture, "format": asset.Format,
 				"asset_name": name, "repository": current.Repository, "url": asset.URL, "sha256": asset.SHA256, "length": asset.Length,
-				"release_index": map[string]any{"schema": "paperboat.release-index/v1"},
+				"release_index": index,
 			},
 		}
 	}
@@ -172,6 +279,46 @@ func writeReadyBundle(t *testing.T, directory string, _ bool) {
 	if err := os.MkdirAll(filepath.Join(directory, "tuf", "targets"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func testPublishedReleaseIndex(asset Asset, now time.Time) publishedReleaseIndex {
+	manifest := strings.Repeat("a", sha256.Size*2)
+	cohorts := []map[string]any{}
+	for _, target := range supportedPlatformArchitectures {
+		for _, wave := range []struct {
+			name  string
+			pct   uint8
+			delay uint32
+			max   uint16
+		}{{"canary", 1, 0, 1}, {"early", 10, 60 * 60, 10}, {"general", 100, 2 * 60 * 60, 100}} {
+			cohorts = append(cohorts, map[string]any{"name": wave.name, "platform": target.platform, "architecture": target.architecture, "failure_domain": "*", "percentage": wave.pct, "start_after_seconds": wave.delay, "max_concurrent": wave.max})
+		}
+	}
+	plan := map[string]any{
+		"schema": "paperboat.release-deployment/v1", "version": testVersion, "manifest_sha256": manifest,
+		"channel": "stable", "rollout_state": "active", "severity": "routine", "policy_revision": 1, "cohort_seed": "test-seed", "cohorts": cohorts,
+		"canary":            map[string]any{"path": "/healthz", "expected_status": 200, "timeout_seconds": 10, "samples": 3, "require_edge": true, "require_connector": true, "require_route": true, "require_origin": true},
+		"activation":        map[string]any{"drain_timeout_seconds": 30, "stability_window_seconds": 10 * 60, "stability_probe_interval_seconds": 30, "rollback_timeout_seconds": 60},
+		"security_deferral": map[string]any{"max_seconds": 7 * 24 * 60 * 60, "requires_approval": false},
+		"rollback":          map[string]any{"triggers": []string{"crash_loop", "watchdog_failure", "connector_authentication", "snapshot_apply", "edge_canary", "route_protocol", "state_migration", "readiness_regression"}, "quarantine_seconds": 7 * 24 * 60 * 60, "revoke_failed_release": true},
+	}
+	planBody, _ := json.Marshal(plan)
+	planDigest := sha256.Sum256(append(append([]byte(nil), planBody...), '\n'))
+	index := publishedReleaseIndex{
+		Schema: "paperboat.release-index/v1", ReleaseID: "rel_" + testVersion, Version: testVersion, Channel: "stable", Severity: "routine", CreatedAt: now.Add(-time.Minute),
+		Platform: asset.Platform, Architecture: asset.Architecture, BinaryFormat: asset.Format,
+		Targets:     []publishedReleaseTarget{{Component: "pb", TargetPath: assetName(asset.Platform, asset.Architecture), AssetName: assetName(asset.Platform, asset.Architecture), Repository: testRepository, DownloadURL: asset.URL, SHA256: asset.SHA256, Length: asset.Length, Platform: asset.Platform, Architecture: asset.Architecture, BinaryFormat: asset.Format}},
+		HostdAPIMin: 1, HostdAPIMax: 2, RuntimeAPIMin: 1, RuntimeAPIMax: 2, RolloutPolicyRevision: 1, ManifestSHA256: manifest,
+		DeploymentPlanSHA256: hex.EncodeToString(planDigest[:]), DeploymentPlan: planBody,
+	}
+	if asset.Platform == "windows" {
+		index.Stability = "stable"
+		index.NativeTested = true
+		index.TestedWindowsBuilds = []string{"22631"}
+		index.OpenSSHPackageID = "Microsoft.OpenSSH.Preview"
+		index.OpenSSHApprovedVersion = "10.0.0.0"
+	}
+	return index
 }
 
 func TestSupportedPlatformArchitectureMatchesReleaseMatrix(t *testing.T) {

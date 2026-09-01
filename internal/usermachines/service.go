@@ -1172,12 +1172,13 @@ type CapabilityAvailability struct {
 }
 
 type MachineCapabilities struct {
-	FileReceive   CapabilityAvailability `json:"file_receive"`
-	PreviewLaunch CapabilityAvailability `json:"preview_launch"`
-	TerminalHost  CapabilityAvailability `json:"terminal_host"`
-	CodexHost     CapabilityAvailability `json:"codex_host"`
-	SessionHost   CapabilityAvailability `json:"session_host"`
-	KeepAwake     CapabilityAvailability `json:"keep_awake"`
+	FileReceive          CapabilityAvailability `json:"file_receive"`
+	PreviewLaunch        CapabilityAvailability `json:"preview_launch"`
+	TerminalHost         CapabilityAvailability `json:"terminal_host"`
+	CodexHost            CapabilityAvailability `json:"codex_host"`
+	SessionHost          CapabilityAvailability `json:"session_host"`
+	KeepAwake            CapabilityAvailability `json:"keep_awake"`
+	EnvironmentInjection CapabilityAvailability `json:"environment_injection"`
 }
 
 func configuredCapabilities(mode string) []string {
@@ -1185,7 +1186,7 @@ func configuredCapabilities(mode string) []string {
 	case "client":
 		return []string{"file_receive", "preview_launch"}
 	case "host":
-		return []string{"file_receive", "preview_launch", "terminal_host", "codex_host", "session_host", "keep_awake"}
+		return []string{"file_receive", "preview_launch", "terminal_host", "codex_host", "session_host", "keep_awake", "environment_injection"}
 	default:
 		return []string{}
 	}
@@ -1530,56 +1531,6 @@ type FileTransferDescriptor struct {
 	InitiatingUserID     string                              `json:"initiating_user_id"`
 	Auth                 map[string]any                      `json:"auth"`
 	Policy               accessdescriptor.FileTransferPolicy `json:"policy"`
-}
-
-type PreviewLaunchDescriptor struct {
-	Endpoint  string         `json:"endpoint"`
-	MachineID string         `json:"machine_id"`
-	ExpiresAt time.Time      `json:"expires_at"`
-	Auth      map[string]any `json:"auth"`
-}
-
-func (s *Service) PreviewLaunchDescriptor(ctx context.Context, userID, machineID, cliClientSessionID string) (PreviewLaunchDescriptor, error) {
-	if userID == "" || machineID == "" || cliClientSessionID == "" || s.controlSigner == nil {
-		return PreviewLaunchDescriptor{}, ErrProvisioningUnavailable
-	}
-	row, err := s.db.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: machineID, UserID: userID})
-	if errors.Is(err, sql.ErrNoRows) {
-		return PreviewLaunchDescriptor{}, ErrNotFound
-	}
-	if err != nil {
-		return PreviewLaunchDescriptor{}, err
-	}
-	if !slices.Contains(row.ConfiguredCapabilities, "preview_launch") {
-		return PreviewLaunchDescriptor{}, ErrMachineCapabilityUnavailable
-	}
-	if !row.Online || !slices.Contains(row.ObservedCapabilities, "preview_launch") {
-		return PreviewLaunchDescriptor{}, ErrMachineOffline
-	}
-	if row.State == "revoked" || row.State == "disconnected" || row.State == "deleted" {
-		return PreviewLaunchDescriptor{}, ErrProvisioningUnavailable
-	}
-	route, err := s.db.Queries().GetActiveHelperRouteForEnvironment(ctx, row.EnvironmentID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return PreviewLaunchDescriptor{}, ErrProvisioningUnavailable
-	}
-	if err != nil {
-		return PreviewLaunchDescriptor{}, err
-	}
-	now := s.now().UTC()
-	expires := now.Add(2 * time.Minute)
-	token, err := s.controlSigner.SignCredential(mint.CredentialInput{
-		Issuer: s.issuer, Audience: "paperboat-machine", Subject: userID, JTI: newID("jti_preview_launch"),
-		IssuedAt: now, ExpiresAt: expires, CredentialClass: "preview_launch", Scopes: []string{"preview:launch"},
-		EnvironmentID: row.EnvironmentID, MachineID: row.ID, UserID: userID, CLIClientSessionID: cliClientSessionID,
-	})
-	if err != nil {
-		return PreviewLaunchDescriptor{}, err
-	}
-	return PreviewLaunchDescriptor{
-		Endpoint: "https://" + route.PublicHost + "/v1/preview-launches", MachineID: row.ID, ExpiresAt: expires,
-		Auth: map[string]any{"method": "bearer", "token": token, "expires_at": expires, "scopes": []string{"preview:launch"}},
-	}, nil
 }
 
 func (s *Service) FileTransferDescriptor(ctx context.Context, userID, sourceMachineID, destinationMachineID, cliClientSessionID, sessionID string) (FileTransferDescriptor, error) {
@@ -3517,6 +3468,9 @@ func (s *Service) cleanupUserMachineDeviceTx(ctx context.Context, tx *db.Tx, use
 	if _, err := queries.StopCodexSessionsForMachine(ctx, dbsqlc.StopCodexSessionsForMachineParams{MachineID: userMachineID, Now: revocationTime}); err != nil {
 		return err
 	}
+	if _, err := queries.DeleteUserMachineControlSessions(ctx, userMachineID); err != nil {
+		return err
+	}
 	if _, err := queries.DeleteUserMachineControlRenewals(ctx, userMachineID); err != nil {
 		return err
 	}
@@ -3627,8 +3581,7 @@ func (s *Service) revokeEnvironmentControlTx(ctx context.Context, tx *db.Tx, env
 	if _, err = tx.Queries().RevokeControlConfigRepositoryLeasesForEnvironment(ctx, dbsqlc.RevokeControlConfigRepositoryLeasesForEnvironmentParams{EnvironmentID: sql.NullString{String: environmentID, Valid: true}, Now: sql.NullTime{Time: now, Valid: true}}); err != nil {
 		return err
 	}
-	_, err = tx.Queries().RemoveControlPreviewsForEnvironment(ctx, dbsqlc.RemoveControlPreviewsForEnvironmentParams{RevocationTime: now, TargetEnvironmentID: environmentID})
-	return err
+	return nil
 }
 
 // RevokeUserMachineSessions records revocation before attempting the downstream
@@ -3945,7 +3898,7 @@ func mapCapabilities(configured, observed []string) MachineCapabilities {
 	capability := func(name string) CapabilityAvailability {
 		return CapabilityAvailability{Configured: slices.Contains(configured, name), Observed: slices.Contains(observed, name)}
 	}
-	return MachineCapabilities{FileReceive: capability("file_receive"), PreviewLaunch: capability("preview_launch"), TerminalHost: capability("terminal_host"), CodexHost: capability("codex_host"), SessionHost: capability("session_host"), KeepAwake: capability("keep_awake")}
+	return MachineCapabilities{FileReceive: capability("file_receive"), PreviewLaunch: capability("preview_launch"), TerminalHost: capability("terminal_host"), CodexHost: capability("codex_host"), SessionHost: capability("session_host"), KeepAwake: capability("keep_awake"), EnvironmentInjection: capability("environment_injection")}
 }
 func newID(prefix string) string {
 	var b [16]byte

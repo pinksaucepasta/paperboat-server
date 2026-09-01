@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// Lifecycle records use the same versioned resource envelope as the rest of
+// LifecycleSchemaV1 identifies the version used by lifecycle records. Lifecycle records use the same versioned resource envelope as the rest of
 // the preview/tunnel API. They are intentionally richer than Event, which is
 // the small edge-compatible transport event retained for existing producers.
 const LifecycleSchemaV1 = ContractSchemaV1

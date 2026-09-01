@@ -112,6 +112,105 @@ func (q *Queries) ActivateControlHelper(ctx context.Context, arg ActivateControl
 	return i, err
 }
 
+const activateTunnelEdgeRouteAssignmentV1 = `-- name: ActivateTunnelEdgeRouteAssignmentV1 :one
+WITH candidate AS (
+  SELECT a.assignment_id, a.route_id, a.connector_id
+  FROM tunnel_edge_route_assignments AS a
+  WHERE a.assignment_id = $1
+    AND a.route_id = $2
+    AND a.state IN ('staged','active') AND a.observed_state = 'ready'
+  FOR UPDATE
+), transitioned AS (
+  UPDATE tunnel_edge_route_assignments AS a
+  SET state = 'draining', observed_state = 'draining', updated_at = $3
+  FROM candidate AS c
+  WHERE a.route_id = c.route_id AND a.connector_id = c.connector_id
+    AND a.state = 'active' AND a.assignment_id <> c.assignment_id
+  RETURNING a.assignment_id
+), promoted AS (
+  UPDATE tunnel_edge_route_assignments AS a
+  SET state = 'active', observed_state = 'ready', updated_at = $3
+  FROM candidate AS c
+  WHERE a.assignment_id = c.assignment_id
+    AND (SELECT count(*) FROM transitioned) >= 0
+  RETURNING a.assignment_id, a.route_id, a.assignment_generation, a.account_id, a.tunnel_id, a.connector_id, a.host_id, a.machine_identity_public_key, a.machine_identity_thumbprint, a.connector_generation, a.connector_session_id, a.connector_process_generation, a.config_generation, a.config_content_hash, a.access_mode, a.route_generation, a.route_revision, a.edge_node_id, a.edge_process_epoch, a.edge_failure_domain, a.state, a.observed_state, a.assigned_at, a.observed_at, a.released_at, a.created_at, a.updated_at
+)
+SELECT assignment_id, route_id, assignment_generation, account_id, tunnel_id, connector_id, host_id, machine_identity_public_key, machine_identity_thumbprint, connector_generation, connector_session_id, connector_process_generation, config_generation, config_content_hash, access_mode, route_generation, route_revision, edge_node_id, edge_process_epoch, edge_failure_domain, state, observed_state, assigned_at, observed_at, released_at, created_at, updated_at FROM promoted
+`
+
+type ActivateTunnelEdgeRouteAssignmentV1Params struct {
+	AssignmentID string
+	RouteID      string
+	Now          time.Time
+}
+
+type ActivateTunnelEdgeRouteAssignmentV1Row struct {
+	AssignmentID               string
+	RouteID                    string
+	AssignmentGeneration       int64
+	AccountID                  string
+	TunnelID                   string
+	ConnectorID                string
+	HostID                     string
+	MachineIdentityPublicKey   string
+	MachineIdentityThumbprint  string
+	ConnectorGeneration        int64
+	ConnectorSessionID         string
+	ConnectorProcessGeneration int64
+	ConfigGeneration           int64
+	ConfigContentHash          []byte
+	AccessMode                 string
+	RouteGeneration            int64
+	RouteRevision              int64
+	EdgeNodeID                 string
+	EdgeProcessEpoch           string
+	EdgeFailureDomain          string
+	State                      string
+	ObservedState              string
+	AssignedAt                 time.Time
+	ObservedAt                 sql.NullTime
+	ReleasedAt                 sql.NullTime
+	CreatedAt                  time.Time
+	UpdatedAt                  time.Time
+}
+
+// Promotion is the ready-new-before-drain fence.  It atomically makes the
+// staged assignment current and leaves the prior assignment draining.
+func (q *Queries) ActivateTunnelEdgeRouteAssignmentV1(ctx context.Context, arg ActivateTunnelEdgeRouteAssignmentV1Params) (ActivateTunnelEdgeRouteAssignmentV1Row, error) {
+	row := q.db.QueryRow(ctx, activateTunnelEdgeRouteAssignmentV1, arg.AssignmentID, arg.RouteID, arg.Now)
+	var i ActivateTunnelEdgeRouteAssignmentV1Row
+	err := row.Scan(
+		&i.AssignmentID,
+		&i.RouteID,
+		&i.AssignmentGeneration,
+		&i.AccountID,
+		&i.TunnelID,
+		&i.ConnectorID,
+		&i.HostID,
+		&i.MachineIdentityPublicKey,
+		&i.MachineIdentityThumbprint,
+		&i.ConnectorGeneration,
+		&i.ConnectorSessionID,
+		&i.ConnectorProcessGeneration,
+		&i.ConfigGeneration,
+		&i.ConfigContentHash,
+		&i.AccessMode,
+		&i.RouteGeneration,
+		&i.RouteRevision,
+		&i.EdgeNodeID,
+		&i.EdgeProcessEpoch,
+		&i.EdgeFailureDomain,
+		&i.State,
+		&i.ObservedState,
+		&i.AssignedAt,
+		&i.ObservedAt,
+		&i.ReleasedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const advanceControlConnectorGeneration = `-- name: AdvanceControlConnectorGeneration :one
 INSERT INTO control_connector_generations (environment_id, connector_id, machine_id, generation, edge_pool, state)
 VALUES ($1, $2, $3, 1, $4, 'pending')
@@ -318,79 +417,6 @@ func (q *Queries) ApplyControlEnvironmentState(ctx context.Context, arg ApplyCon
 	return i, err
 }
 
-const applyControlPreviewHelperObservation = `-- name: ApplyControlPreviewHelperObservation :one
-UPDATE control_previews
-SET helper_ready = $1, target_ready = $2,
-    helper_observation_revision = $3, helper_observed_at = $4,
-    state = CASE
-      WHEN state = 'removed' THEN state
-      WHEN expires_at IS NOT NULL AND expires_at <= $4 THEN 'expired'
-      WHEN NOT $1 THEN 'offline'
-      WHEN $2 AND edge_ready THEN 'ready'
-      ELSE 'degraded'
-    END,
-    version = version + 1, updated_at = $4
-WHERE environment_id = $5 AND preview_key = $6
-  AND logical_name = $7 AND target_host = $8
-  AND target_port = $9
-  AND state <> 'removed' AND $3 > helper_observation_revision
-RETURNING id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at, source_kind, owner_mode
-`
-
-type ApplyControlPreviewHelperObservationParams struct {
-	HelperReady         bool
-	TargetReady         bool
-	ObservationRevision int64
-	ObservedAt          sql.NullTime
-	EnvironmentID       string
-	PreviewKey          string
-	LogicalName         string
-	TargetHost          string
-	TargetPort          int32
-}
-
-func (q *Queries) ApplyControlPreviewHelperObservation(ctx context.Context, arg ApplyControlPreviewHelperObservationParams) (ControlPreview, error) {
-	row := q.db.QueryRow(ctx, applyControlPreviewHelperObservation,
-		arg.HelperReady,
-		arg.TargetReady,
-		arg.ObservationRevision,
-		arg.ObservedAt,
-		arg.EnvironmentID,
-		arg.PreviewKey,
-		arg.LogicalName,
-		arg.TargetHost,
-		arg.TargetPort,
-	)
-	var i ControlPreview
-	err := row.Scan(
-		&i.ID,
-		&i.EnvironmentID,
-		&i.LogicalName,
-		&i.PreviewKey,
-		&i.CollisionCounter,
-		&i.PublicHost,
-		&i.TargetHost,
-		&i.TargetPort,
-		&i.State,
-		&i.RouteID,
-		&i.HelperReady,
-		&i.EdgeReady,
-		&i.TargetReady,
-		&i.PublicAcknowledgedAt,
-		&i.ExpiresAt,
-		&i.RemovedAt,
-		&i.RetainedUntil,
-		&i.Version,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.HelperObservationRevision,
-		&i.HelperObservedAt,
-		&i.SourceKind,
-		&i.OwnerMode,
-	)
-	return i, err
-}
-
 const applyControlRouteObservation = `-- name: ApplyControlRouteObservation :one
 UPDATE control_routes
 SET applied_revision = $1, applied_node_id = $2,
@@ -442,6 +468,131 @@ func (q *Queries) ApplyControlRouteObservation(ctx context.Context, arg ApplyCon
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.ConnectorID,
+	)
+	return i, err
+}
+
+const applyTunnelEdgeRouteObservationV1 = `-- name: ApplyTunnelEdgeRouteObservationV1 :one
+UPDATE tunnel_edge_route_assignments AS a
+SET observed_state = $1, observed_at = $2, updated_at = $2
+FROM tunnel_routes AS r, tunnel_connectors AS c, tunnel_connector_sessions AS session,
+     tunnel_config_generations AS config, tunnels AS t, control_tunnel_nodes AS node
+WHERE a.route_id = $3
+  AND a.assignment_id = $4
+  AND a.assignment_generation = $5
+  AND a.route_revision = $6
+  AND a.edge_node_id = $7
+  AND a.edge_process_epoch = $8
+  AND a.connector_generation = $9
+  AND a.connector_id = $10
+  AND a.host_id = $11
+  AND a.connector_session_id = $12
+  AND a.connector_process_generation = $13
+  AND a.config_generation = $14
+  AND a.config_content_hash = $15
+  AND $1 IN ('ready','degraded','draining','failed')
+  AND (
+    ($1 = 'ready' AND a.state IN ('staged','active'))
+    OR ($1 <> 'ready' AND a.state IN ('staged','active','draining'))
+  )
+  AND r.id = a.route_id AND r.tunnel_id = a.tunnel_id
+  AND c.id = a.connector_id AND c.tunnel_id = a.tunnel_id AND c.host_id = a.host_id
+  AND session.id = a.connector_session_id AND session.connector_id = c.id
+  AND session.process_generation = a.connector_process_generation
+  AND node.id = a.edge_node_id
+  AND config.tunnel_id = a.tunnel_id AND config.generation = a.config_generation
+  AND t.id = a.tunnel_id AND t.account_id = a.account_id
+  AND (
+    $1 <> 'ready'
+    OR (
+      t.desired_state = 'active'
+      AND (t.expires_at IS NULL OR t.expires_at > $2)
+      AND t.access_mode = a.access_mode
+      AND r.desired_state = 'active' AND r.generation = a.route_generation
+      AND c.desired_state = 'active' AND c.drain_state = 'accepting'
+      AND c.generation = a.connector_generation
+      AND c.last_session_id = session.id
+      AND session.state = 'ready' AND session.lease_deadline > $2
+      AND session.applied_config_generation = a.config_generation
+      AND c.last_applied_config_generation = a.config_generation
+      AND config.activation_state = 'active'
+      AND config.content_hash = a.config_content_hash
+      AND node.process_epoch = a.edge_process_epoch
+      AND node.state = 'ready' AND node.ready = true
+      AND node.last_heartbeat_at IS NOT NULL
+      AND node.last_heartbeat_at > $2 - interval '2 minutes'
+    )
+  )
+RETURNING a.assignment_id, a.route_id, a.assignment_generation, a.account_id, a.tunnel_id, a.connector_id, a.host_id, a.machine_identity_public_key, a.machine_identity_thumbprint, a.connector_generation, a.connector_session_id, a.connector_process_generation, a.config_generation, a.config_content_hash, a.access_mode, a.route_generation, a.route_revision, a.edge_node_id, a.edge_process_epoch, a.edge_failure_domain, a.state, a.observed_state, a.assigned_at, a.observed_at, a.released_at, a.created_at, a.updated_at
+`
+
+type ApplyTunnelEdgeRouteObservationV1Params struct {
+	ObservedState              string
+	Now                        sql.NullTime
+	RouteID                    string
+	AssignmentID               string
+	AssignmentGeneration       int64
+	RouteRevision              int64
+	EdgeNodeID                 string
+	EdgeProcessEpoch           string
+	ConnectorGeneration        int64
+	ConnectorID                string
+	HostID                     string
+	ConnectorSessionID         string
+	ConnectorProcessGeneration int64
+	ConfigGeneration           int64
+	ConfigContentHash          []byte
+}
+
+// Observation is accepted only for the exact assignment/session/process/config
+// tuple currently authorized for this edge process.
+func (q *Queries) ApplyTunnelEdgeRouteObservationV1(ctx context.Context, arg ApplyTunnelEdgeRouteObservationV1Params) (TunnelEdgeRouteAssignment, error) {
+	row := q.db.QueryRow(ctx, applyTunnelEdgeRouteObservationV1,
+		arg.ObservedState,
+		arg.Now,
+		arg.RouteID,
+		arg.AssignmentID,
+		arg.AssignmentGeneration,
+		arg.RouteRevision,
+		arg.EdgeNodeID,
+		arg.EdgeProcessEpoch,
+		arg.ConnectorGeneration,
+		arg.ConnectorID,
+		arg.HostID,
+		arg.ConnectorSessionID,
+		arg.ConnectorProcessGeneration,
+		arg.ConfigGeneration,
+		arg.ConfigContentHash,
+	)
+	var i TunnelEdgeRouteAssignment
+	err := row.Scan(
+		&i.AssignmentID,
+		&i.RouteID,
+		&i.AssignmentGeneration,
+		&i.AccountID,
+		&i.TunnelID,
+		&i.ConnectorID,
+		&i.HostID,
+		&i.MachineIdentityPublicKey,
+		&i.MachineIdentityThumbprint,
+		&i.ConnectorGeneration,
+		&i.ConnectorSessionID,
+		&i.ConnectorProcessGeneration,
+		&i.ConfigGeneration,
+		&i.ConfigContentHash,
+		&i.AccessMode,
+		&i.RouteGeneration,
+		&i.RouteRevision,
+		&i.EdgeNodeID,
+		&i.EdgeProcessEpoch,
+		&i.EdgeFailureDomain,
+		&i.State,
+		&i.ObservedState,
+		&i.AssignedAt,
+		&i.ObservedAt,
+		&i.ReleasedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -512,40 +663,6 @@ func (q *Queries) BindControlConnectorMachine(ctx context.Context, arg BindContr
 		&i.ConnectorID,
 	)
 	return i, err
-}
-
-const canIssueControlRouteCertificate = `-- name: CanIssueControlRouteCertificate :one
-SELECT EXISTS (
-  SELECT 1
-  FROM control_routes r
-  JOIN control_environments e ON e.id = r.environment_id
-  LEFT JOIN control_previews p ON p.route_id = r.id
-  WHERE r.public_host = $1
-    AND e.desired_state = 'active'
-    AND e.revoked_at IS NULL
-    AND r.desired_state = 'attached'
-    AND (
-      r.kind = 'runtime_https_wss'
-      OR (
-        r.kind = 'preview_public_https_wss'
-        AND p.state <> 'removed'
-        AND p.public_acknowledged_at IS NOT NULL
-        AND (p.expires_at IS NULL OR p.expires_at > $2)
-      )
-    )
-)
-`
-
-type CanIssueControlRouteCertificateParams struct {
-	PublicHost string
-	Now        sql.NullTime
-}
-
-func (q *Queries) CanIssueControlRouteCertificate(ctx context.Context, arg CanIssueControlRouteCertificateParams) (bool, error) {
-	row := q.db.QueryRow(ctx, canIssueControlRouteCertificate, arg.PublicHost, arg.Now)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
 }
 
 const clearControlConfigAssignment = `-- name: ClearControlConfigAssignment :one
@@ -687,24 +804,6 @@ func (q *Queries) ConsumeControlHelperEnrollment(ctx context.Context, arg Consum
 		&i.CreatedAt,
 	)
 	return i, err
-}
-
-const countActiveControlPreviews = `-- name: CountActiveControlPreviews :one
-SELECT count(*)::integer FROM control_previews
-WHERE environment_id = $1 AND state NOT IN ('removed','expired')
-  AND (expires_at IS NULL OR expires_at > $2)
-`
-
-type CountActiveControlPreviewsParams struct {
-	EnvironmentID string
-	Now           sql.NullTime
-}
-
-func (q *Queries) CountActiveControlPreviews(ctx context.Context, arg CountActiveControlPreviewsParams) (int32, error) {
-	row := q.db.QueryRow(ctx, countActiveControlPreviews, arg.EnvironmentID, arg.Now)
-	var column_1 int32
-	err := row.Scan(&column_1)
-	return column_1, err
 }
 
 const createControlConfigConflictResolution = `-- name: CreateControlConfigConflictResolution :one
@@ -1081,78 +1180,6 @@ func (q *Queries) CreateControlHelperEnrollment(ctx context.Context, arg CreateC
 	return i, err
 }
 
-const createControlPreview = `-- name: CreateControlPreview :one
-INSERT INTO control_previews
-  (id, environment_id, logical_name, preview_key, collision_counter, public_host,
-   target_host, target_port, source_kind, owner_mode, public_acknowledged_at, expires_at)
-VALUES
-  ($1, $2, $3, $4,
-   $5, $6, $7, $8,
-   $9, $10, $11, $12)
-ON CONFLICT DO NOTHING
-RETURNING id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at, source_kind, owner_mode
-`
-
-type CreateControlPreviewParams struct {
-	ID                   string
-	EnvironmentID        string
-	LogicalName          string
-	PreviewKey           string
-	CollisionCounter     int64
-	PublicHost           string
-	TargetHost           string
-	TargetPort           int32
-	SourceKind           string
-	OwnerMode            string
-	PublicAcknowledgedAt sql.NullTime
-	ExpiresAt            sql.NullTime
-}
-
-func (q *Queries) CreateControlPreview(ctx context.Context, arg CreateControlPreviewParams) (ControlPreview, error) {
-	row := q.db.QueryRow(ctx, createControlPreview,
-		arg.ID,
-		arg.EnvironmentID,
-		arg.LogicalName,
-		arg.PreviewKey,
-		arg.CollisionCounter,
-		arg.PublicHost,
-		arg.TargetHost,
-		arg.TargetPort,
-		arg.SourceKind,
-		arg.OwnerMode,
-		arg.PublicAcknowledgedAt,
-		arg.ExpiresAt,
-	)
-	var i ControlPreview
-	err := row.Scan(
-		&i.ID,
-		&i.EnvironmentID,
-		&i.LogicalName,
-		&i.PreviewKey,
-		&i.CollisionCounter,
-		&i.PublicHost,
-		&i.TargetHost,
-		&i.TargetPort,
-		&i.State,
-		&i.RouteID,
-		&i.HelperReady,
-		&i.EdgeReady,
-		&i.TargetReady,
-		&i.PublicAcknowledgedAt,
-		&i.ExpiresAt,
-		&i.RemovedAt,
-		&i.RetainedUntil,
-		&i.Version,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.HelperObservationRevision,
-		&i.HelperObservedAt,
-		&i.SourceKind,
-		&i.OwnerMode,
-	)
-	return i, err
-}
-
 const createControlRoute = `-- name: CreateControlRoute :one
 INSERT INTO control_routes (id, environment_id, connector_id, kind, public_host, target_host, target_port)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -1275,6 +1302,90 @@ func (q *Queries) CreateHostedHelperIdentityRenewal(ctx context.Context, arg Cre
 	return i, err
 }
 
+const detachTunnelEdgeRouteAssignmentV1 = `-- name: DetachTunnelEdgeRouteAssignmentV1 :one
+UPDATE tunnel_edge_route_assignments
+SET state = 'detached', observed_state = 'detached', released_at = $1, updated_at = $1
+WHERE assignment_id = $2
+  AND route_id = $3
+  AND assignment_generation = $4
+  AND edge_node_id = $5
+  AND edge_process_epoch = $6
+  AND connector_id = $7
+  AND host_id = $8
+  AND connector_generation = $9
+  AND connector_session_id = $10
+  AND connector_process_generation = $11
+  AND config_generation = $12
+  AND config_content_hash = $13
+  AND state <> 'detached'
+RETURNING assignment_id, route_id, assignment_generation, account_id, tunnel_id, connector_id, host_id, machine_identity_public_key, machine_identity_thumbprint, connector_generation, connector_session_id, connector_process_generation, config_generation, config_content_hash, access_mode, route_generation, route_revision, edge_node_id, edge_process_epoch, edge_failure_domain, state, observed_state, assigned_at, observed_at, released_at, created_at, updated_at
+`
+
+type DetachTunnelEdgeRouteAssignmentV1Params struct {
+	Now                        sql.NullTime
+	AssignmentID               string
+	RouteID                    string
+	AssignmentGeneration       int64
+	EdgeNodeID                 string
+	EdgeProcessEpoch           string
+	ConnectorID                string
+	HostID                     string
+	ConnectorGeneration        int64
+	ConnectorSessionID         string
+	ConnectorProcessGeneration int64
+	ConfigGeneration           int64
+	ConfigContentHash          []byte
+}
+
+func (q *Queries) DetachTunnelEdgeRouteAssignmentV1(ctx context.Context, arg DetachTunnelEdgeRouteAssignmentV1Params) (TunnelEdgeRouteAssignment, error) {
+	row := q.db.QueryRow(ctx, detachTunnelEdgeRouteAssignmentV1,
+		arg.Now,
+		arg.AssignmentID,
+		arg.RouteID,
+		arg.AssignmentGeneration,
+		arg.EdgeNodeID,
+		arg.EdgeProcessEpoch,
+		arg.ConnectorID,
+		arg.HostID,
+		arg.ConnectorGeneration,
+		arg.ConnectorSessionID,
+		arg.ConnectorProcessGeneration,
+		arg.ConfigGeneration,
+		arg.ConfigContentHash,
+	)
+	var i TunnelEdgeRouteAssignment
+	err := row.Scan(
+		&i.AssignmentID,
+		&i.RouteID,
+		&i.AssignmentGeneration,
+		&i.AccountID,
+		&i.TunnelID,
+		&i.ConnectorID,
+		&i.HostID,
+		&i.MachineIdentityPublicKey,
+		&i.MachineIdentityThumbprint,
+		&i.ConnectorGeneration,
+		&i.ConnectorSessionID,
+		&i.ConnectorProcessGeneration,
+		&i.ConfigGeneration,
+		&i.ConfigContentHash,
+		&i.AccessMode,
+		&i.RouteGeneration,
+		&i.RouteRevision,
+		&i.EdgeNodeID,
+		&i.EdgeProcessEpoch,
+		&i.EdgeFailureDomain,
+		&i.State,
+		&i.ObservedState,
+		&i.AssignedAt,
+		&i.ObservedAt,
+		&i.ReleasedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const disableControlConfigAssignmentsForRepository = `-- name: DisableControlConfigAssignmentsForRepository :execrows
 UPDATE control_config_assignments
 SET consent_state = 'revoked', accepted_at = NULL, revoked_at = $1,
@@ -1339,7 +1450,7 @@ UPDATE control_tunnel_nodes
 SET state = 'draining', ready = false, drain_deadline = $1,
     version = version + 1, updated_at = $2
 WHERE id = $3 AND version = $4 AND state IN ('registered','ready')
-RETURNING id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port, relay_id, relay_region, relay_name
+RETURNING id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port, relay_id, relay_region, relay_name, carrier_endpoint_host, carrier_endpoint_tcp_port, carrier_endpoint_quic_port, carrier_server_spki_sha256, carrier_server_certificate_chain_pem
 `
 
 type DrainControlTunnelNodeParams struct {
@@ -1380,6 +1491,11 @@ func (q *Queries) DrainControlTunnelNode(ctx context.Context, arg DrainControlTu
 		&i.RelayID,
 		&i.RelayRegion,
 		&i.RelayName,
+		&i.CarrierEndpointHost,
+		&i.CarrierEndpointTcpPort,
+		&i.CarrierEndpointQuicPort,
+		&i.CarrierServerSpkiSha256,
+		&i.CarrierServerCertificateChainPem,
 	)
 	return i, err
 }
@@ -1520,6 +1636,91 @@ func (q *Queries) FinalizeDetachedControlRoute(ctx context.Context, arg Finalize
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.ConnectorID,
+	)
+	return i, err
+}
+
+const finalizeDrainingTunnelEdgeRouteAssignmentV1 = `-- name: FinalizeDrainingTunnelEdgeRouteAssignmentV1 :one
+UPDATE tunnel_edge_route_assignments
+SET state = 'detached', observed_state = 'detached', released_at = $1, updated_at = $1
+WHERE assignment_id = $2
+  AND route_id = $3
+  AND assignment_generation = $4
+  AND edge_node_id = $5
+  AND edge_process_epoch = $6
+  AND connector_id = $7
+  AND host_id = $8
+  AND connector_generation = $9
+  AND connector_session_id = $10
+  AND connector_process_generation = $11
+  AND config_generation = $12
+  AND config_content_hash = $13
+  AND state = 'draining'
+  AND observed_state IN ('draining','ready')
+RETURNING assignment_id, route_id, assignment_generation, account_id, tunnel_id, connector_id, host_id, machine_identity_public_key, machine_identity_thumbprint, connector_generation, connector_session_id, connector_process_generation, config_generation, config_content_hash, access_mode, route_generation, route_revision, edge_node_id, edge_process_epoch, edge_failure_domain, state, observed_state, assigned_at, observed_at, released_at, created_at, updated_at
+`
+
+type FinalizeDrainingTunnelEdgeRouteAssignmentV1Params struct {
+	Now                        sql.NullTime
+	AssignmentID               string
+	RouteID                    string
+	AssignmentGeneration       int64
+	EdgeNodeID                 string
+	EdgeProcessEpoch           string
+	ConnectorID                string
+	HostID                     string
+	ConnectorGeneration        int64
+	ConnectorSessionID         string
+	ConnectorProcessGeneration int64
+	ConfigGeneration           int64
+	ConfigContentHash          []byte
+}
+
+func (q *Queries) FinalizeDrainingTunnelEdgeRouteAssignmentV1(ctx context.Context, arg FinalizeDrainingTunnelEdgeRouteAssignmentV1Params) (TunnelEdgeRouteAssignment, error) {
+	row := q.db.QueryRow(ctx, finalizeDrainingTunnelEdgeRouteAssignmentV1,
+		arg.Now,
+		arg.AssignmentID,
+		arg.RouteID,
+		arg.AssignmentGeneration,
+		arg.EdgeNodeID,
+		arg.EdgeProcessEpoch,
+		arg.ConnectorID,
+		arg.HostID,
+		arg.ConnectorGeneration,
+		arg.ConnectorSessionID,
+		arg.ConnectorProcessGeneration,
+		arg.ConfigGeneration,
+		arg.ConfigContentHash,
+	)
+	var i TunnelEdgeRouteAssignment
+	err := row.Scan(
+		&i.AssignmentID,
+		&i.RouteID,
+		&i.AssignmentGeneration,
+		&i.AccountID,
+		&i.TunnelID,
+		&i.ConnectorID,
+		&i.HostID,
+		&i.MachineIdentityPublicKey,
+		&i.MachineIdentityThumbprint,
+		&i.ConnectorGeneration,
+		&i.ConnectorSessionID,
+		&i.ConnectorProcessGeneration,
+		&i.ConfigGeneration,
+		&i.ConfigContentHash,
+		&i.AccessMode,
+		&i.RouteGeneration,
+		&i.RouteRevision,
+		&i.EdgeNodeID,
+		&i.EdgeProcessEpoch,
+		&i.EdgeFailureDomain,
+		&i.State,
+		&i.ObservedState,
+		&i.AssignedAt,
+		&i.ObservedAt,
+		&i.ReleasedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -1692,6 +1893,54 @@ LIMIT 1
 
 func (q *Queries) GetActiveHelperRouteForEnvironment(ctx context.Context, environmentID string) (ControlRoute, error) {
 	row := q.db.QueryRow(ctx, getActiveHelperRouteForEnvironment, environmentID)
+	var i ControlRoute
+	err := row.Scan(
+		&i.ID,
+		&i.EnvironmentID,
+		&i.Kind,
+		&i.PublicHost,
+		&i.TargetHost,
+		&i.TargetPort,
+		&i.DesiredRevision,
+		&i.DesiredState,
+		&i.AppliedRevision,
+		&i.AppliedNodeID,
+		&i.AppliedGeneration,
+		&i.DrainDeadline,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ConnectorID,
+	)
+	return i, err
+}
+
+const getActiveHelperRouteForMachine = `-- name: GetActiveHelperRouteForMachine :one
+SELECT r.id, r.environment_id, r.kind, r.public_host, r.target_host, r.target_port, r.desired_revision, r.desired_state, r.applied_revision, r.applied_node_id, r.applied_generation, r.drain_deadline, r.version, r.created_at, r.updated_at, r.connector_id FROM control_routes r
+JOIN control_environments e ON e.id = r.environment_id
+JOIN control_connector_generations c ON c.environment_id = r.environment_id AND c.connector_id = r.connector_id
+JOIN user_machines m ON m.id = c.machine_id AND m.environment_id = r.environment_id
+JOIN control_tunnel_nodes n ON n.id = c.edge_node_id AND n.id = r.applied_node_id
+WHERE m.id = $1
+  AND m.user_id = $2
+  AND r.kind = 'runtime_https_wss'
+  AND c.connector_id = 'runtime'
+  AND r.desired_state IN ('attached','replacing')
+  AND r.applied_revision >= r.desired_revision
+  AND r.applied_generation = c.generation
+  AND e.desired_state = 'active' AND m.revoked_at IS NULL AND m.deleted_at IS NULL
+  AND c.state = 'admitted' AND n.state = 'ready' AND n.ready = true
+ORDER BY r.id
+LIMIT 1
+`
+
+type GetActiveHelperRouteForMachineParams struct {
+	MachineID string
+	AccountID string
+}
+
+func (q *Queries) GetActiveHelperRouteForMachine(ctx context.Context, arg GetActiveHelperRouteForMachineParams) (ControlRoute, error) {
+	row := q.db.QueryRow(ctx, getActiveHelperRouteForMachine, arg.MachineID, arg.AccountID)
 	var i ControlRoute
 	err := row.Scan(
 		&i.ID,
@@ -2255,104 +2504,6 @@ func (q *Queries) GetControlPlaneQueueMetrics(ctx context.Context) (GetControlPl
 	return i, err
 }
 
-const getControlPreviewByKey = `-- name: GetControlPreviewByKey :one
-SELECT id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at, source_kind, owner_mode FROM control_previews WHERE preview_key = $1
-`
-
-func (q *Queries) GetControlPreviewByKey(ctx context.Context, previewKey string) (ControlPreview, error) {
-	row := q.db.QueryRow(ctx, getControlPreviewByKey, previewKey)
-	var i ControlPreview
-	err := row.Scan(
-		&i.ID,
-		&i.EnvironmentID,
-		&i.LogicalName,
-		&i.PreviewKey,
-		&i.CollisionCounter,
-		&i.PublicHost,
-		&i.TargetHost,
-		&i.TargetPort,
-		&i.State,
-		&i.RouteID,
-		&i.HelperReady,
-		&i.EdgeReady,
-		&i.TargetReady,
-		&i.PublicAcknowledgedAt,
-		&i.ExpiresAt,
-		&i.RemovedAt,
-		&i.RetainedUntil,
-		&i.Version,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.HelperObservationRevision,
-		&i.HelperObservedAt,
-		&i.SourceKind,
-		&i.OwnerMode,
-	)
-	return i, err
-}
-
-const getControlPreviewForUpdate = `-- name: GetControlPreviewForUpdate :one
-SELECT id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at, source_kind, owner_mode FROM control_previews
-WHERE environment_id = $1 AND logical_name = $2
-  AND state <> 'removed'
-FOR UPDATE
-`
-
-type GetControlPreviewForUpdateParams struct {
-	EnvironmentID string
-	LogicalName   string
-}
-
-func (q *Queries) GetControlPreviewForUpdate(ctx context.Context, arg GetControlPreviewForUpdateParams) (ControlPreview, error) {
-	row := q.db.QueryRow(ctx, getControlPreviewForUpdate, arg.EnvironmentID, arg.LogicalName)
-	var i ControlPreview
-	err := row.Scan(
-		&i.ID,
-		&i.EnvironmentID,
-		&i.LogicalName,
-		&i.PreviewKey,
-		&i.CollisionCounter,
-		&i.PublicHost,
-		&i.TargetHost,
-		&i.TargetPort,
-		&i.State,
-		&i.RouteID,
-		&i.HelperReady,
-		&i.EdgeReady,
-		&i.TargetReady,
-		&i.PublicAcknowledgedAt,
-		&i.ExpiresAt,
-		&i.RemovedAt,
-		&i.RetainedUntil,
-		&i.Version,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.HelperObservationRevision,
-		&i.HelperObservedAt,
-		&i.SourceKind,
-		&i.OwnerMode,
-	)
-	return i, err
-}
-
-const getControlPreviewOperation = `-- name: GetControlPreviewOperation :one
-SELECT operation_key, operation_type, request_hash, preview_id, result, created_at FROM control_preview_operations WHERE operation_key = $1
-`
-
-func (q *Queries) GetControlPreviewOperation(ctx context.Context, operationKey string) (ControlPreviewOperation, error) {
-	row := q.db.QueryRow(ctx, getControlPreviewOperation, operationKey)
-	var i ControlPreviewOperation
-	err := row.Scan(
-		&i.OperationKey,
-		&i.OperationType,
-		&i.RequestHash,
-		&i.PreviewID,
-		&i.Result,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
 const getControlRouteForUpdate = `-- name: GetControlRouteForUpdate :one
 SELECT id, environment_id, kind, public_host, target_host, target_port, desired_revision, desired_state, applied_revision, applied_node_id, applied_generation, drain_deadline, version, created_at, updated_at, connector_id FROM control_routes WHERE id = $1 FOR UPDATE
 `
@@ -2832,50 +2983,6 @@ func (q *Queries) GetOwnedControlConfigRepository(ctx context.Context, arg GetOw
 	return i, err
 }
 
-const getOwnedControlPreview = `-- name: GetOwnedControlPreview :one
-SELECT p.id, p.environment_id, p.logical_name, p.preview_key, p.collision_counter, p.public_host, p.target_host, p.target_port, p.state, p.route_id, p.helper_ready, p.edge_ready, p.target_ready, p.public_acknowledged_at, p.expires_at, p.removed_at, p.retained_until, p.version, p.created_at, p.updated_at, p.helper_observation_revision, p.helper_observed_at, p.source_kind, p.owner_mode FROM control_previews p
-JOIN control_environments e ON e.id = p.environment_id
-WHERE p.id = $1 AND e.owner_user_id = $2
-FOR UPDATE
-`
-
-type GetOwnedControlPreviewParams struct {
-	ID          string
-	OwnerUserID sql.NullString
-}
-
-func (q *Queries) GetOwnedControlPreview(ctx context.Context, arg GetOwnedControlPreviewParams) (ControlPreview, error) {
-	row := q.db.QueryRow(ctx, getOwnedControlPreview, arg.ID, arg.OwnerUserID)
-	var i ControlPreview
-	err := row.Scan(
-		&i.ID,
-		&i.EnvironmentID,
-		&i.LogicalName,
-		&i.PreviewKey,
-		&i.CollisionCounter,
-		&i.PublicHost,
-		&i.TargetHost,
-		&i.TargetPort,
-		&i.State,
-		&i.RouteID,
-		&i.HelperReady,
-		&i.EdgeReady,
-		&i.TargetReady,
-		&i.PublicAcknowledgedAt,
-		&i.ExpiresAt,
-		&i.RemovedAt,
-		&i.RetainedUntil,
-		&i.Version,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.HelperObservationRevision,
-		&i.HelperObservedAt,
-		&i.SourceKind,
-		&i.OwnerMode,
-	)
-	return i, err
-}
-
 const getPendingControlHelperEnrollmentForEnvironment = `-- name: GetPendingControlHelperEnrollmentForEnvironment :one
 SELECT id, environment_id, helper_id, jti_hash, operation_key, request_hash, grant_ciphertext, state, expires_at, consumed_at, revoked_at, created_at FROM control_helper_enrollments
 WHERE environment_id = $1 AND state = 'pending' AND revoked_at IS NULL
@@ -2922,6 +3029,172 @@ func (q *Queries) GetPendingControlHelperForEnvironment(ctx context.Context, env
 		&i.ReplacementConnectorGeneration,
 		&i.LastSeenAt,
 		&i.RevokedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getTunnelEdgeRouteAssignmentBindingV1 = `-- name: GetTunnelEdgeRouteAssignmentBindingV1 :one
+SELECT assignment_id, route_id, assignment_generation, account_id, tunnel_id, connector_id, host_id, machine_identity_public_key, machine_identity_thumbprint, connector_generation, connector_session_id, connector_process_generation, config_generation, config_content_hash, access_mode, route_generation, route_revision, edge_node_id, edge_process_epoch, edge_failure_domain, state, observed_state, assigned_at, observed_at, released_at, created_at, updated_at FROM tunnel_edge_route_assignments
+WHERE route_id = $1
+  AND account_id = $2
+  AND tunnel_id = $3
+  AND connector_id = $4
+  AND host_id = $5
+  AND connector_generation = $6
+  AND connector_session_id = $7
+  AND connector_process_generation = $8
+  AND config_generation = $9
+  AND config_content_hash = $10
+  AND edge_node_id = $11
+  AND edge_process_epoch = $12
+  AND state IN ('staged','active')
+ORDER BY assignment_generation DESC
+LIMIT 1
+`
+
+type GetTunnelEdgeRouteAssignmentBindingV1Params struct {
+	RouteID                    string
+	AccountID                  string
+	TunnelID                   string
+	ConnectorID                string
+	HostID                     string
+	ConnectorGeneration        int64
+	ConnectorSessionID         string
+	ConnectorProcessGeneration int64
+	ConfigGeneration           int64
+	ConfigContentHash          []byte
+	EdgeNodeID                 string
+	EdgeProcessEpoch           string
+}
+
+// Existing staged/active bindings are the idempotent reconciliation result.
+// Draining history is intentionally excluded so a replacement gets a new
+// assignment generation after the previous one has detached.
+func (q *Queries) GetTunnelEdgeRouteAssignmentBindingV1(ctx context.Context, arg GetTunnelEdgeRouteAssignmentBindingV1Params) (TunnelEdgeRouteAssignment, error) {
+	row := q.db.QueryRow(ctx, getTunnelEdgeRouteAssignmentBindingV1,
+		arg.RouteID,
+		arg.AccountID,
+		arg.TunnelID,
+		arg.ConnectorID,
+		arg.HostID,
+		arg.ConnectorGeneration,
+		arg.ConnectorSessionID,
+		arg.ConnectorProcessGeneration,
+		arg.ConfigGeneration,
+		arg.ConfigContentHash,
+		arg.EdgeNodeID,
+		arg.EdgeProcessEpoch,
+	)
+	var i TunnelEdgeRouteAssignment
+	err := row.Scan(
+		&i.AssignmentID,
+		&i.RouteID,
+		&i.AssignmentGeneration,
+		&i.AccountID,
+		&i.TunnelID,
+		&i.ConnectorID,
+		&i.HostID,
+		&i.MachineIdentityPublicKey,
+		&i.MachineIdentityThumbprint,
+		&i.ConnectorGeneration,
+		&i.ConnectorSessionID,
+		&i.ConnectorProcessGeneration,
+		&i.ConfigGeneration,
+		&i.ConfigContentHash,
+		&i.AccessMode,
+		&i.RouteGeneration,
+		&i.RouteRevision,
+		&i.EdgeNodeID,
+		&i.EdgeProcessEpoch,
+		&i.EdgeFailureDomain,
+		&i.State,
+		&i.ObservedState,
+		&i.AssignedAt,
+		&i.ObservedAt,
+		&i.ReleasedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getTunnelEdgeRouteAssignmentForObservationV1 = `-- name: GetTunnelEdgeRouteAssignmentForObservationV1 :one
+SELECT assignment_id, route_id, assignment_generation, account_id, tunnel_id, connector_id, host_id, machine_identity_public_key, machine_identity_thumbprint, connector_generation, connector_session_id, connector_process_generation, config_generation, config_content_hash, access_mode, route_generation, route_revision, edge_node_id, edge_process_epoch, edge_failure_domain, state, observed_state, assigned_at, observed_at, released_at, created_at, updated_at FROM tunnel_edge_route_assignments
+WHERE assignment_id = $1
+  AND route_id = $2
+  AND assignment_generation = $3
+  AND edge_node_id = $4
+  AND edge_process_epoch = $5
+  AND connector_id = $6
+  AND host_id = $7
+  AND connector_generation = $8
+  AND connector_session_id = $9
+  AND connector_process_generation = $10
+  AND config_generation = $11
+  AND config_content_hash = $12
+`
+
+type GetTunnelEdgeRouteAssignmentForObservationV1Params struct {
+	AssignmentID               string
+	RouteID                    string
+	AssignmentGeneration       int64
+	EdgeNodeID                 string
+	EdgeProcessEpoch           string
+	ConnectorID                string
+	HostID                     string
+	ConnectorGeneration        int64
+	ConnectorSessionID         string
+	ConnectorProcessGeneration int64
+	ConfigGeneration           int64
+	ConfigContentHash          []byte
+}
+
+// Exact read used to make a repeated terminal observation idempotent without
+// allowing an old assignment/session/process tuple to acknowledge a newer row.
+func (q *Queries) GetTunnelEdgeRouteAssignmentForObservationV1(ctx context.Context, arg GetTunnelEdgeRouteAssignmentForObservationV1Params) (TunnelEdgeRouteAssignment, error) {
+	row := q.db.QueryRow(ctx, getTunnelEdgeRouteAssignmentForObservationV1,
+		arg.AssignmentID,
+		arg.RouteID,
+		arg.AssignmentGeneration,
+		arg.EdgeNodeID,
+		arg.EdgeProcessEpoch,
+		arg.ConnectorID,
+		arg.HostID,
+		arg.ConnectorGeneration,
+		arg.ConnectorSessionID,
+		arg.ConnectorProcessGeneration,
+		arg.ConfigGeneration,
+		arg.ConfigContentHash,
+	)
+	var i TunnelEdgeRouteAssignment
+	err := row.Scan(
+		&i.AssignmentID,
+		&i.RouteID,
+		&i.AssignmentGeneration,
+		&i.AccountID,
+		&i.TunnelID,
+		&i.ConnectorID,
+		&i.HostID,
+		&i.MachineIdentityPublicKey,
+		&i.MachineIdentityThumbprint,
+		&i.ConnectorGeneration,
+		&i.ConnectorSessionID,
+		&i.ConnectorProcessGeneration,
+		&i.ConfigGeneration,
+		&i.ConfigContentHash,
+		&i.AccessMode,
+		&i.RouteGeneration,
+		&i.RouteRevision,
+		&i.EdgeNodeID,
+		&i.EdgeProcessEpoch,
+		&i.EdgeFailureDomain,
+		&i.State,
+		&i.ObservedState,
+		&i.AssignedAt,
+		&i.ObservedAt,
+		&i.ReleasedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -3001,7 +3274,7 @@ SET state = CASE WHEN $1::boolean THEN 'draining' WHEN state = 'registered' AND 
     observation = coalesce($3::jsonb, '{}'::jsonb),
     last_heartbeat_at = $4, version = version + 1, updated_at = $4
 WHERE id = $5 AND process_epoch = $6 AND state NOT IN ('offline','retired')
-RETURNING id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port, relay_id, relay_region, relay_name
+RETURNING id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port, relay_id, relay_region, relay_name, carrier_endpoint_host, carrier_endpoint_tcp_port, carrier_endpoint_quic_port, carrier_server_spki_sha256, carrier_server_certificate_chain_pem
 `
 
 type HeartbeatControlTunnelNodeParams struct {
@@ -3046,6 +3319,11 @@ func (q *Queries) HeartbeatControlTunnelNode(ctx context.Context, arg HeartbeatC
 		&i.RelayID,
 		&i.RelayRegion,
 		&i.RelayName,
+		&i.CarrierEndpointHost,
+		&i.CarrierEndpointTcpPort,
+		&i.CarrierEndpointQuicPort,
+		&i.CarrierServerSpkiSha256,
+		&i.CarrierServerCertificateChainPem,
 	)
 	return i, err
 }
@@ -3347,65 +3625,11 @@ func (q *Queries) ListControlConfigRepositoryAccessPendingProviderRevoke(ctx con
 	return items, nil
 }
 
-const listControlPreviews = `-- name: ListControlPreviews :many
-SELECT id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at, source_kind, owner_mode FROM control_previews
-WHERE environment_id = $1 AND state NOT IN ('removed','expired')
-  AND (expires_at IS NULL OR expires_at > now())
-ORDER BY logical_name, id
-`
-
-func (q *Queries) ListControlPreviews(ctx context.Context, environmentID string) ([]ControlPreview, error) {
-	rows, err := q.db.Query(ctx, listControlPreviews, environmentID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ControlPreview
-	for rows.Next() {
-		var i ControlPreview
-		if err := rows.Scan(
-			&i.ID,
-			&i.EnvironmentID,
-			&i.LogicalName,
-			&i.PreviewKey,
-			&i.CollisionCounter,
-			&i.PublicHost,
-			&i.TargetHost,
-			&i.TargetPort,
-			&i.State,
-			&i.RouteID,
-			&i.HelperReady,
-			&i.EdgeReady,
-			&i.TargetReady,
-			&i.PublicAcknowledgedAt,
-			&i.ExpiresAt,
-			&i.RemovedAt,
-			&i.RetainedUntil,
-			&i.Version,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.HelperObservationRevision,
-			&i.HelperObservedAt,
-			&i.SourceKind,
-			&i.OwnerMode,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listControlRoutesForEnvironmentAdmission = `-- name: ListControlRoutesForEnvironmentAdmission :many
 SELECT r.id AS route_id, r.desired_revision AS route_revision, r.kind, r.public_host, r.target_host, r.target_port
 FROM control_routes r
-LEFT JOIN control_previews p ON p.route_id = r.id
 WHERE r.environment_id = $1 AND r.connector_id = $2
   AND r.desired_state IN ('attached','replacing')
-  AND (p.id IS NULL OR (p.state NOT IN ('expired','removed') AND (p.expires_at IS NULL OR p.expires_at > now())))
 ORDER BY r.id
 LIMIT 128
 `
@@ -3454,24 +3678,16 @@ func (q *Queries) ListControlRoutesForEnvironmentAdmission(ctx context.Context, 
 const listControlRoutesForNode = `-- name: ListControlRoutesForNode :many
 SELECT r.id AS route_id, r.desired_revision AS route_revision, r.environment_id, c.connector_id,
        c.generation AS connector_generation, c.edge_node_id, r.kind, r.public_host,
-       r.target_host, r.target_port, COALESCE(p.state, 'ready') AS preview_state,
-       CASE WHEN p.state = 'degraded' AND NOT p.target_ready THEN 'target_unhealthy' ELSE '' END AS preview_reason
+       r.target_host, r.target_port
 FROM control_routes r
 JOIN control_connector_generations c ON c.environment_id = r.environment_id AND c.connector_id = r.connector_id
 JOIN user_machines m ON m.id = c.machine_id AND m.environment_id = c.environment_id
-LEFT JOIN control_previews p ON p.route_id = r.id
 WHERE c.edge_node_id = $1
   AND r.desired_state IN ('attached','replacing')
   AND c.state IN ('pending','admitted')
   AND m.revoked_at IS NULL AND m.deleted_at IS NULL
-  AND (p.id IS NULL OR (p.state NOT IN ('expired','removed') AND (p.expires_at IS NULL OR p.expires_at > $2)))
 ORDER BY r.id
 `
-
-type ListControlRoutesForNodeParams struct {
-	EdgeNodeID sql.NullString
-	Now        sql.NullTime
-}
 
 type ListControlRoutesForNodeRow struct {
 	RouteID             string
@@ -3484,12 +3700,10 @@ type ListControlRoutesForNodeRow struct {
 	PublicHost          string
 	TargetHost          string
 	TargetPort          int32
-	PreviewState        string
-	PreviewReason       string
 }
 
-func (q *Queries) ListControlRoutesForNode(ctx context.Context, arg ListControlRoutesForNodeParams) ([]ListControlRoutesForNodeRow, error) {
-	rows, err := q.db.Query(ctx, listControlRoutesForNode, arg.EdgeNodeID, arg.Now)
+func (q *Queries) ListControlRoutesForNode(ctx context.Context, edgeNodeID sql.NullString) ([]ListControlRoutesForNodeRow, error) {
+	rows, err := q.db.Query(ctx, listControlRoutesForNode, edgeNodeID)
 	if err != nil {
 		return nil, err
 	}
@@ -3508,8 +3722,6 @@ func (q *Queries) ListControlRoutesForNode(ctx context.Context, arg ListControlR
 			&i.PublicHost,
 			&i.TargetHost,
 			&i.TargetPort,
-			&i.PreviewState,
-			&i.PreviewReason,
 		); err != nil {
 			return nil, err
 		}
@@ -3705,108 +3917,6 @@ func (q *Queries) ListOwnedControlConfigSyncStatus(ctx context.Context, ownerUse
 	return items, nil
 }
 
-const listOwnedControlPreviews = `-- name: ListOwnedControlPreviews :many
-SELECT p.id, p.environment_id, p.logical_name, p.preview_key, p.collision_counter, p.public_host, p.target_host, p.target_port, p.state, p.route_id, p.helper_ready, p.edge_ready, p.target_ready, p.public_acknowledged_at, p.expires_at, p.removed_at, p.retained_until, p.version, p.created_at, p.updated_at, p.helper_observation_revision, p.helper_observed_at, p.source_kind, p.owner_mode, e.owner_user_id, e.workspace_id,
-       cm.id AS machine_id,
-       COALESCE(cm.display_name, pr.name, e.id) AS environment_name,
-       CASE WHEN cm.id IS NULL THEN 'hosted' ELSE 'byod' END AS environment_kind,
-       COALESCE(u.primary_email, '') AS owner_email
-FROM control_previews p
-JOIN control_environments e ON e.id = p.environment_id
-LEFT JOIN user_machines cm ON cm.environment_id = e.id AND cm.deleted_at IS NULL
-LEFT JOIN projects pr ON pr.id = e.workspace_id
-LEFT JOIN users u ON u.id = e.owner_user_id
-WHERE e.owner_user_id = $1
-  AND e.desired_state = 'active'
-  AND e.revoked_at IS NULL
-  AND p.state <> 'removed'
-ORDER BY p.updated_at DESC, p.id
-`
-
-type ListOwnedControlPreviewsRow struct {
-	ID                        string
-	EnvironmentID             string
-	LogicalName               string
-	PreviewKey                string
-	CollisionCounter          int64
-	PublicHost                string
-	TargetHost                string
-	TargetPort                int32
-	State                     string
-	RouteID                   sql.NullString
-	HelperReady               bool
-	EdgeReady                 bool
-	TargetReady               bool
-	PublicAcknowledgedAt      sql.NullTime
-	ExpiresAt                 sql.NullTime
-	RemovedAt                 sql.NullTime
-	RetainedUntil             sql.NullTime
-	Version                   int64
-	CreatedAt                 time.Time
-	UpdatedAt                 time.Time
-	HelperObservationRevision int64
-	HelperObservedAt          sql.NullTime
-	SourceKind                string
-	OwnerMode                 string
-	OwnerUserID               sql.NullString
-	WorkspaceID               string
-	MachineID                 sql.NullString
-	EnvironmentName           string
-	EnvironmentKind           string
-	OwnerEmail                string
-}
-
-func (q *Queries) ListOwnedControlPreviews(ctx context.Context, ownerUserID sql.NullString) ([]ListOwnedControlPreviewsRow, error) {
-	rows, err := q.db.Query(ctx, listOwnedControlPreviews, ownerUserID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListOwnedControlPreviewsRow
-	for rows.Next() {
-		var i ListOwnedControlPreviewsRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.EnvironmentID,
-			&i.LogicalName,
-			&i.PreviewKey,
-			&i.CollisionCounter,
-			&i.PublicHost,
-			&i.TargetHost,
-			&i.TargetPort,
-			&i.State,
-			&i.RouteID,
-			&i.HelperReady,
-			&i.EdgeReady,
-			&i.TargetReady,
-			&i.PublicAcknowledgedAt,
-			&i.ExpiresAt,
-			&i.RemovedAt,
-			&i.RetainedUntil,
-			&i.Version,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.HelperObservationRevision,
-			&i.HelperObservedAt,
-			&i.SourceKind,
-			&i.OwnerMode,
-			&i.OwnerUserID,
-			&i.WorkspaceID,
-			&i.MachineID,
-			&i.EnvironmentName,
-			&i.EnvironmentKind,
-			&i.OwnerEmail,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listPendingControlConfigConflictResolutions = `-- name: ListPendingControlConfigConflictResolutions :many
 SELECT id, environment_id, repository_id, assignment_id, conflict_revision, path, scope, action, expected_remote_revision, requested_by_user_id, state, landed_revision, requested_at, applied_at, updated_at
 FROM control_config_conflict_resolutions
@@ -3900,6 +4010,116 @@ func (q *Queries) ListReadyControlTunnelProbeRegions(ctx context.Context, staleA
 			&i.SignalingHost,
 			&i.StunHost,
 			&i.StunPort,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listReadyTunnelEdgeRouteCandidatesV1 = `-- name: ListReadyTunnelEdgeRouteCandidatesV1 :many
+SELECT t.account_id,
+       t.id AS tunnel_id,
+       r.id AS route_id,
+       r.generation AS route_generation,
+       c.id AS connector_id,
+       c.host_id,
+       m.public_identity_key AS machine_identity_public_key,
+       c.generation AS connector_generation,
+       c.last_session_id AS connector_session_id,
+       session.process_generation AS connector_process_generation,
+       config.generation AS config_generation,
+       config.content_hash AS config_content_hash,
+       node.id AS edge_node_id,
+       node.process_epoch AS edge_process_epoch
+FROM tunnels AS t
+JOIN tunnel_routes AS r ON r.tunnel_id = t.id
+JOIN tunnel_connectors AS c ON c.tunnel_id = t.id
+JOIN tunnel_connector_sessions AS session
+  ON session.id = c.last_session_id AND session.connector_id = c.id
+JOIN user_machines AS m
+  ON m.id = c.host_id AND m.user_id = t.account_id
+ AND m.deleted_at IS NULL AND m.revoked_at IS NULL
+ AND m.public_identity_key IS NOT NULL
+JOIN tunnel_config_generations AS config
+  ON config.tunnel_id = t.id AND config.generation = session.applied_config_generation
+JOIN LATERAL (
+  SELECT candidate_node.id, candidate_node.edge_pool, candidate_node.protocol_version, candidate_node.process_epoch, candidate_node.endpoint_host, candidate_node.endpoint_tcp_port, candidate_node.endpoint_quic_port, candidate_node.state, candidate_node.ready, candidate_node.capacity, candidate_node.observation, candidate_node.last_heartbeat_at, candidate_node.drain_deadline, candidate_node.version, candidate_node.created_at, candidate_node.updated_at, candidate_node.signaling_host, candidate_node.stun_host, candidate_node.stun_port, candidate_node.relay_id, candidate_node.relay_region, candidate_node.relay_name, candidate_node.carrier_endpoint_host, candidate_node.carrier_endpoint_tcp_port, candidate_node.carrier_endpoint_quic_port, candidate_node.carrier_server_spki_sha256, candidate_node.carrier_server_certificate_chain_pem
+  FROM control_tunnel_nodes AS candidate_node
+  WHERE candidate_node.state = 'ready' AND candidate_node.ready = true
+    AND candidate_node.last_heartbeat_at IS NOT NULL
+    AND candidate_node.last_heartbeat_at > $1::timestamptz - interval '2 minutes'
+  ORDER BY candidate_node.id, candidate_node.process_epoch
+  LIMIT 1
+) AS node ON true
+WHERE t.desired_state = 'active'
+  AND (t.expires_at IS NULL OR t.expires_at > $1::timestamptz)
+  AND r.desired_state = 'active'
+  AND r.protocol IN ('http','private_tcp')
+  AND c.desired_state = 'active'
+  AND c.drain_state = 'accepting'
+  AND c.last_session_id IS NOT NULL
+  AND session.state = 'ready'
+  AND session.lease_deadline > $1::timestamptz
+  AND c.last_applied_config_generation = config.generation
+  AND config.activation_state = 'active'
+ORDER BY r.id, c.id
+LIMIT $2
+`
+
+type ListReadyTunnelEdgeRouteCandidatesV1Params struct {
+	Now      time.Time
+	RowLimit int32
+}
+
+type ListReadyTunnelEdgeRouteCandidatesV1Row struct {
+	AccountID                  string
+	TunnelID                   string
+	RouteID                    string
+	RouteGeneration            int64
+	ConnectorID                string
+	HostID                     string
+	MachineIdentityPublicKey   sql.NullString
+	ConnectorGeneration        int64
+	ConnectorSessionID         sql.NullString
+	ConnectorProcessGeneration int64
+	ConfigGeneration           int64
+	ConfigContentHash          []byte
+	EdgeNodeID                 string
+	EdgeProcessEpoch           string
+}
+
+// Pick every ready connector replica and one ready edge process for each active
+// HTTP route. Each tuple is only a candidate; Stage performs the
+// same exact readiness checks in the write statement.
+func (q *Queries) ListReadyTunnelEdgeRouteCandidatesV1(ctx context.Context, arg ListReadyTunnelEdgeRouteCandidatesV1Params) ([]ListReadyTunnelEdgeRouteCandidatesV1Row, error) {
+	rows, err := q.db.Query(ctx, listReadyTunnelEdgeRouteCandidatesV1, arg.Now, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListReadyTunnelEdgeRouteCandidatesV1Row
+	for rows.Next() {
+		var i ListReadyTunnelEdgeRouteCandidatesV1Row
+		if err := rows.Scan(
+			&i.AccountID,
+			&i.TunnelID,
+			&i.RouteID,
+			&i.RouteGeneration,
+			&i.ConnectorID,
+			&i.HostID,
+			&i.MachineIdentityPublicKey,
+			&i.ConnectorGeneration,
+			&i.ConnectorSessionID,
+			&i.ConnectorProcessGeneration,
+			&i.ConfigGeneration,
+			&i.ConfigContentHash,
+			&i.EdgeNodeID,
+			&i.EdgeProcessEpoch,
 		); err != nil {
 			return nil, err
 		}
@@ -4069,7 +4289,7 @@ func (q *Queries) ListRevokedControlSigningKeyIDs(ctx context.Context, rowLimit 
 }
 
 const listStaleControlTunnelNodesForUpdate = `-- name: ListStaleControlTunnelNodesForUpdate :many
-SELECT id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port, relay_id, relay_region, relay_name FROM control_tunnel_nodes
+SELECT id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port, relay_id, relay_region, relay_name, carrier_endpoint_host, carrier_endpoint_tcp_port, carrier_endpoint_quic_port, carrier_server_spki_sha256, carrier_server_certificate_chain_pem FROM control_tunnel_nodes
 WHERE state IN ('registered','ready') AND (last_heartbeat_at IS NULL OR last_heartbeat_at <= $1)
 ORDER BY coalesce(last_heartbeat_at, created_at), id
 FOR UPDATE SKIP LOCKED LIMIT $2
@@ -4112,6 +4332,201 @@ func (q *Queries) ListStaleControlTunnelNodesForUpdate(ctx context.Context, arg 
 			&i.RelayID,
 			&i.RelayRegion,
 			&i.RelayName,
+			&i.CarrierEndpointHost,
+			&i.CarrierEndpointTcpPort,
+			&i.CarrierEndpointQuicPort,
+			&i.CarrierServerSpkiSha256,
+			&i.CarrierServerCertificateChainPem,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTunnelEdgeRouteAssignmentsForNodeV1 = `-- name: ListTunnelEdgeRouteAssignmentsForNodeV1 :many
+SELECT a.assignment_id,
+       a.route_id,
+       a.assignment_generation,
+       a.route_revision,
+       t.account_id,
+       a.tunnel_id,
+       a.connector_id,
+       a.host_id,
+       a.machine_identity_public_key,
+       a.machine_identity_thumbprint,
+       a.connector_generation,
+       a.connector_session_id,
+       a.connector_process_generation,
+       a.config_generation,
+       a.config_content_hash,
+       a.access_mode,
+       a.route_generation,
+       a.edge_node_id,
+       a.edge_process_epoch,
+       a.edge_failure_domain,
+       CASE WHEN r.protocol = 'private_tcp' THEN 'tunnel_private_tcp' ELSE 'tunnel_http_wss' END AS kind,
+       (CASE WHEN r.match_type = 'one_label_wildcard' THEN '*.' || r.wildcard_suffix ELSE COALESCE(r.match_hostname, '') END)::text AS public_host,
+       r.match_type,
+       r.match_hostname,
+       r.wildcard_suffix,
+       r.path_prefix,
+       r.priority,
+       r.protocol,
+       r.origin_scheme,
+       r.preserve_host,
+       r.host_override,
+       COALESCE((
+         SELECT jsonb_agg(jsonb_build_object(
+           'id', d.id,
+           'hostname', d.hostname,
+           'match_type', d.match_type,
+           'generation', d.generation
+         ) ORDER BY d.hostname, d.id)
+         FROM tunnel_domains AS d
+         WHERE d.route_id = r.id
+           AND d.tunnel_id = r.tunnel_id
+           AND d.deleted_at IS NULL
+           AND d.ownership_state = 'verified'
+           AND d.certificate_state = 'ready'
+           AND d.conflict_state = 'clear'
+       ), '[]'::jsonb)::text AS domain_bindings,
+       a.state,
+       a.observed_state,
+       r.desired_state AS route_desired_state
+FROM tunnel_edge_route_assignments AS a
+JOIN tunnels AS t ON t.id = a.tunnel_id AND t.account_id = a.account_id
+JOIN tunnel_routes AS r ON r.id = a.route_id AND r.tunnel_id = a.tunnel_id
+JOIN tunnel_connectors AS c ON c.id = a.connector_id AND c.tunnel_id = a.tunnel_id AND c.host_id = a.host_id
+JOIN tunnel_connector_sessions AS session
+  ON session.id = a.connector_session_id AND session.connector_id = a.connector_id
+JOIN tunnel_config_generations AS config
+  ON config.tunnel_id = a.tunnel_id AND config.generation = a.config_generation
+JOIN control_tunnel_nodes AS node
+  ON node.id = a.edge_node_id
+WHERE a.edge_node_id = $1
+  AND a.edge_process_epoch = $2
+  AND a.state IN ('staged','active','draining')
+  AND (
+    a.state = 'draining'
+    OR (
+      t.desired_state = 'active'
+      AND (t.expires_at IS NULL OR t.expires_at > $3)
+      AND r.desired_state = 'active'
+      AND r.protocol IN ('http','private_tcp')
+      AND c.desired_state = 'active' AND c.drain_state = 'accepting'
+      AND c.generation = a.connector_generation
+      AND c.last_session_id = session.id
+      AND c.last_applied_config_generation = a.config_generation
+      AND session.process_generation = a.connector_process_generation
+      AND session.state = 'ready'
+      AND session.lease_deadline > $3
+      AND session.applied_config_generation = a.config_generation
+      AND config.activation_state = 'active'
+      AND config.content_hash = a.config_content_hash
+      AND node.process_epoch = a.edge_process_epoch
+      AND node.state = 'ready' AND node.ready = true
+    )
+  )
+ORDER BY a.route_id, a.assignment_generation, a.assignment_id
+`
+
+type ListTunnelEdgeRouteAssignmentsForNodeV1Params struct {
+	EdgeNodeID       string
+	EdgeProcessEpoch string
+	Now              sql.NullTime
+}
+
+type ListTunnelEdgeRouteAssignmentsForNodeV1Row struct {
+	AssignmentID               string
+	RouteID                    string
+	AssignmentGeneration       int64
+	RouteRevision              int64
+	AccountID                  string
+	TunnelID                   string
+	ConnectorID                string
+	HostID                     string
+	MachineIdentityPublicKey   string
+	MachineIdentityThumbprint  string
+	ConnectorGeneration        int64
+	ConnectorSessionID         string
+	ConnectorProcessGeneration int64
+	ConfigGeneration           int64
+	ConfigContentHash          []byte
+	AccessMode                 string
+	RouteGeneration            int64
+	EdgeNodeID                 string
+	EdgeProcessEpoch           string
+	EdgeFailureDomain          string
+	Kind                       string
+	PublicHost                 string
+	MatchType                  string
+	MatchHostname              sql.NullString
+	WildcardSuffix             sql.NullString
+	PathPrefix                 sql.NullString
+	Priority                   int32
+	Protocol                   string
+	OriginScheme               string
+	PreserveHost               bool
+	HostOverride               sql.NullString
+	DomainBindings             string
+	State                      string
+	ObservedState              string
+	RouteDesiredState          string
+}
+
+// This is a complete desired snapshot for one edge process.  A missing row is
+// therefore an explicit authorization absence, while a failed query must
+// leave the edge's last-known-good registry untouched.
+func (q *Queries) ListTunnelEdgeRouteAssignmentsForNodeV1(ctx context.Context, arg ListTunnelEdgeRouteAssignmentsForNodeV1Params) ([]ListTunnelEdgeRouteAssignmentsForNodeV1Row, error) {
+	rows, err := q.db.Query(ctx, listTunnelEdgeRouteAssignmentsForNodeV1, arg.EdgeNodeID, arg.EdgeProcessEpoch, arg.Now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListTunnelEdgeRouteAssignmentsForNodeV1Row
+	for rows.Next() {
+		var i ListTunnelEdgeRouteAssignmentsForNodeV1Row
+		if err := rows.Scan(
+			&i.AssignmentID,
+			&i.RouteID,
+			&i.AssignmentGeneration,
+			&i.RouteRevision,
+			&i.AccountID,
+			&i.TunnelID,
+			&i.ConnectorID,
+			&i.HostID,
+			&i.MachineIdentityPublicKey,
+			&i.MachineIdentityThumbprint,
+			&i.ConnectorGeneration,
+			&i.ConnectorSessionID,
+			&i.ConnectorProcessGeneration,
+			&i.ConfigGeneration,
+			&i.ConfigContentHash,
+			&i.AccessMode,
+			&i.RouteGeneration,
+			&i.EdgeNodeID,
+			&i.EdgeProcessEpoch,
+			&i.EdgeFailureDomain,
+			&i.Kind,
+			&i.PublicHost,
+			&i.MatchType,
+			&i.MatchHostname,
+			&i.WildcardSuffix,
+			&i.PathPrefix,
+			&i.Priority,
+			&i.Protocol,
+			&i.OriginScheme,
+			&i.PreserveHost,
+			&i.HostOverride,
+			&i.DomainBindings,
+			&i.State,
+			&i.ObservedState,
+			&i.RouteDesiredState,
 		); err != nil {
 			return nil, err
 		}
@@ -4240,6 +4655,32 @@ func (q *Queries) MarkControlTunnelNodeOffline(ctx context.Context, arg MarkCont
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const nextTunnelEdgeRouteAssignmentGenerationV1 = `-- name: NextTunnelEdgeRouteAssignmentGenerationV1 :one
+WITH route_lock AS (
+  SELECT id
+  FROM tunnel_routes
+  WHERE id = $1
+  FOR UPDATE
+), locked AS (
+  SELECT assignment_generation
+  FROM tunnel_edge_route_assignments
+  WHERE route_id = (SELECT id FROM route_lock)
+  FOR UPDATE
+)
+SELECT CAST(COALESCE(MAX(assignment_generation), 0) + 1 AS BIGINT) AS next_generation
+FROM locked
+`
+
+// Serialize allocation per route.  The assignment history is the durable
+// monotonic fence, so concurrent reconcilers must not derive the same next
+// generation from an unlocked MAX() snapshot.
+func (q *Queries) NextTunnelEdgeRouteAssignmentGenerationV1(ctx context.Context, routeID string) (int64, error) {
+	row := q.db.QueryRow(ctx, nextTunnelEdgeRouteAssignmentGenerationV1, routeID)
+	var next_generation int64
+	err := row.Scan(&next_generation)
+	return next_generation, err
 }
 
 const reactivateHelperRouteForEnvironment = `-- name: ReactivateHelperRouteForEnvironment :one
@@ -4552,59 +4993,46 @@ func (q *Queries) RecoverUncertainHostedProviderOperation(ctx context.Context, a
 	return result.RowsAffected(), nil
 }
 
-const refreshControlPreviewEdgeReadiness = `-- name: RefreshControlPreviewEdgeReadiness :exec
-UPDATE control_previews p
-SET helper_ready = (p.helper_ready AND p.helper_observed_at >= $1::timestamptz - interval '1 minute'),
-    target_ready = (p.target_ready AND p.helper_observed_at >= $1::timestamptz - interval '1 minute'),
-    edge_ready = (r.desired_state = 'attached' AND r.applied_revision = r.desired_revision AND r.applied_node_id IS NOT NULL),
-    state = CASE
-      WHEN p.state IN ('removed','expired') THEN p.state
-      WHEN NOT p.helper_ready OR p.helper_observed_at IS NULL OR p.helper_observed_at < $1::timestamptz - interval '1 minute' THEN 'offline'
-      WHEN p.target_ready AND r.desired_state = 'attached' AND r.applied_revision = r.desired_revision AND r.applied_node_id IS NOT NULL THEN 'ready'
-      ELSE 'degraded'
-    END,
-    version = p.version + 1, updated_at = $1
-FROM control_routes r
-WHERE p.route_id = r.id AND p.state <> 'removed'
-`
-
-func (q *Queries) RefreshControlPreviewEdgeReadiness(ctx context.Context, now time.Time) error {
-	_, err := q.db.Exec(ctx, refreshControlPreviewEdgeReadiness, now)
-	return err
-}
-
 const registerControlTunnelNode = `-- name: RegisterControlTunnelNode :one
-INSERT INTO control_tunnel_nodes (id, edge_pool, relay_id, relay_region, relay_name, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, signaling_host, stun_host, stun_port, state, ready, capacity, last_heartbeat_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'registered', false,
-        coalesce($14::jsonb, '{}'::jsonb), $15)
+INSERT INTO control_tunnel_nodes (id, edge_pool, relay_id, relay_region, relay_name, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, carrier_endpoint_host, carrier_endpoint_tcp_port, carrier_endpoint_quic_port, carrier_server_spki_sha256, carrier_server_certificate_chain_pem, signaling_host, stun_host, stun_port, state, ready, capacity, last_heartbeat_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, 'registered', false,
+        coalesce($19::jsonb, '{}'::jsonb), $20)
 ON CONFLICT (id) DO UPDATE
 SET edge_pool = EXCLUDED.edge_pool, relay_id = EXCLUDED.relay_id,
     relay_region = EXCLUDED.relay_region, relay_name = EXCLUDED.relay_name,
     protocol_version = EXCLUDED.protocol_version, process_epoch = EXCLUDED.process_epoch,
     endpoint_host = EXCLUDED.endpoint_host, endpoint_tcp_port = EXCLUDED.endpoint_tcp_port, endpoint_quic_port = EXCLUDED.endpoint_quic_port,
+    carrier_endpoint_host = EXCLUDED.carrier_endpoint_host, carrier_endpoint_tcp_port = EXCLUDED.carrier_endpoint_tcp_port, carrier_endpoint_quic_port = EXCLUDED.carrier_endpoint_quic_port,
+    carrier_server_spki_sha256 = EXCLUDED.carrier_server_spki_sha256,
+    carrier_server_certificate_chain_pem = EXCLUDED.carrier_server_certificate_chain_pem,
     signaling_host = EXCLUDED.signaling_host, stun_host = EXCLUDED.stun_host, stun_port = EXCLUDED.stun_port,
     state = 'registered', ready = false, capacity = EXCLUDED.capacity,
     observation = '{}'::jsonb, last_heartbeat_at = EXCLUDED.last_heartbeat_at,
     drain_deadline = NULL, version = control_tunnel_nodes.version + 1, updated_at = EXCLUDED.last_heartbeat_at
-RETURNING id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port, relay_id, relay_region, relay_name
+RETURNING id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port, relay_id, relay_region, relay_name, carrier_endpoint_host, carrier_endpoint_tcp_port, carrier_endpoint_quic_port, carrier_server_spki_sha256, carrier_server_certificate_chain_pem
 `
 
 type RegisterControlTunnelNodeParams struct {
-	ID               string
-	EdgePool         string
-	RelayID          sql.NullString
-	RelayRegion      sql.NullString
-	RelayName        sql.NullString
-	ProtocolVersion  string
-	ProcessEpoch     string
-	EndpointHost     sql.NullString
-	EndpointTcpPort  sql.NullInt32
-	EndpointQuicPort sql.NullInt32
-	SignalingHost    sql.NullString
-	StunHost         sql.NullString
-	StunPort         sql.NullInt32
-	Capacity         []byte
-	Now              sql.NullTime
+	ID                               string
+	EdgePool                         string
+	RelayID                          sql.NullString
+	RelayRegion                      sql.NullString
+	RelayName                        sql.NullString
+	ProtocolVersion                  string
+	ProcessEpoch                     string
+	EndpointHost                     sql.NullString
+	EndpointTcpPort                  sql.NullInt32
+	EndpointQuicPort                 sql.NullInt32
+	CarrierEndpointHost              sql.NullString
+	CarrierEndpointTcpPort           sql.NullInt32
+	CarrierEndpointQuicPort          sql.NullInt32
+	CarrierServerSpkiSha256          sql.NullString
+	CarrierServerCertificateChainPem sql.NullString
+	SignalingHost                    sql.NullString
+	StunHost                         sql.NullString
+	StunPort                         sql.NullInt32
+	Capacity                         []byte
+	Now                              sql.NullTime
 }
 
 func (q *Queries) RegisterControlTunnelNode(ctx context.Context, arg RegisterControlTunnelNodeParams) (ControlTunnelNode, error) {
@@ -4619,6 +5047,11 @@ func (q *Queries) RegisterControlTunnelNode(ctx context.Context, arg RegisterCon
 		arg.EndpointHost,
 		arg.EndpointTcpPort,
 		arg.EndpointQuicPort,
+		arg.CarrierEndpointHost,
+		arg.CarrierEndpointTcpPort,
+		arg.CarrierEndpointQuicPort,
+		arg.CarrierServerSpkiSha256,
+		arg.CarrierServerCertificateChainPem,
 		arg.SignalingHost,
 		arg.StunHost,
 		arg.StunPort,
@@ -4649,6 +5082,11 @@ func (q *Queries) RegisterControlTunnelNode(ctx context.Context, arg RegisterCon
 		&i.RelayID,
 		&i.RelayRegion,
 		&i.RelayName,
+		&i.CarrierEndpointHost,
+		&i.CarrierEndpointTcpPort,
+		&i.CarrierEndpointQuicPort,
+		&i.CarrierServerSpkiSha256,
+		&i.CarrierServerCertificateChainPem,
 	)
 	return i, err
 }
@@ -4737,81 +5175,6 @@ func (q *Queries) RemoveControlConfigConsent(ctx context.Context, arg RemoveCont
 		&i.MachineID,
 	)
 	return i, err
-}
-
-const removeControlPreview = `-- name: RemoveControlPreview :one
-UPDATE control_previews
-SET state = 'removed', removed_at = coalesce(removed_at, $1),
-    retained_until = greatest(coalesce(retained_until, $1), $2),
-    version = version + 1, updated_at = $1
-WHERE id = $3 AND version = $4
-RETURNING id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at, source_kind, owner_mode
-`
-
-type RemoveControlPreviewParams struct {
-	Now             time.Time
-	RetainedUntil   sql.NullTime
-	ID              string
-	ExpectedVersion int64
-}
-
-func (q *Queries) RemoveControlPreview(ctx context.Context, arg RemoveControlPreviewParams) (ControlPreview, error) {
-	row := q.db.QueryRow(ctx, removeControlPreview,
-		arg.Now,
-		arg.RetainedUntil,
-		arg.ID,
-		arg.ExpectedVersion,
-	)
-	var i ControlPreview
-	err := row.Scan(
-		&i.ID,
-		&i.EnvironmentID,
-		&i.LogicalName,
-		&i.PreviewKey,
-		&i.CollisionCounter,
-		&i.PublicHost,
-		&i.TargetHost,
-		&i.TargetPort,
-		&i.State,
-		&i.RouteID,
-		&i.HelperReady,
-		&i.EdgeReady,
-		&i.TargetReady,
-		&i.PublicAcknowledgedAt,
-		&i.ExpiresAt,
-		&i.RemovedAt,
-		&i.RetainedUntil,
-		&i.Version,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.HelperObservationRevision,
-		&i.HelperObservedAt,
-		&i.SourceKind,
-		&i.OwnerMode,
-	)
-	return i, err
-}
-
-const removeControlPreviewRoute = `-- name: RemoveControlPreviewRoute :execrows
-UPDATE control_routes
-SET desired_state = CASE WHEN applied_node_id IS NULL THEN 'detached' ELSE 'detaching' END,
-    desired_revision = desired_revision + 1, version = version + 1, updated_at = $1
-WHERE id = $2 AND environment_id = $3
-  AND desired_state NOT IN ('detaching','detached')
-`
-
-type RemoveControlPreviewRouteParams struct {
-	Now           time.Time
-	ID            string
-	EnvironmentID string
-}
-
-func (q *Queries) RemoveControlPreviewRoute(ctx context.Context, arg RemoveControlPreviewRouteParams) (int64, error) {
-	result, err := q.db.Exec(ctx, removeControlPreviewRoute, arg.Now, arg.ID, arg.EnvironmentID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
 }
 
 const renewControlConfigRepositoryLease = `-- name: RenewControlConfigRepositoryLease :one
@@ -5017,39 +5380,6 @@ func (q *Queries) ReserveControlOperationRecovery(ctx context.Context, arg Reser
 		&i.OperationKey,
 		&i.OperationID,
 		&i.ActorUserID,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
-const reserveControlPreviewOperation = `-- name: ReserveControlPreviewOperation :one
-INSERT INTO control_preview_operations(operation_key, operation_type, request_hash, preview_id)
-VALUES ($1, $2, $3, $4)
-ON CONFLICT (operation_key) DO UPDATE SET operation_key = EXCLUDED.operation_key
-RETURNING operation_key, operation_type, request_hash, preview_id, result, created_at
-`
-
-type ReserveControlPreviewOperationParams struct {
-	OperationKey  string
-	OperationType string
-	RequestHash   []byte
-	PreviewID     sql.NullString
-}
-
-func (q *Queries) ReserveControlPreviewOperation(ctx context.Context, arg ReserveControlPreviewOperationParams) (ControlPreviewOperation, error) {
-	row := q.db.QueryRow(ctx, reserveControlPreviewOperation,
-		arg.OperationKey,
-		arg.OperationType,
-		arg.RequestHash,
-		arg.PreviewID,
-	)
-	var i ControlPreviewOperation
-	err := row.Scan(
-		&i.OperationKey,
-		&i.OperationType,
-		&i.RequestHash,
-		&i.PreviewID,
-		&i.Result,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -5523,53 +5853,8 @@ func (q *Queries) RevokeUnboundAuthenticatedHostHelperEnrollment(ctx context.Con
 	return safe, err
 }
 
-const selectControlPreviewForEviction = `-- name: SelectControlPreviewForEviction :one
-SELECT id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at, source_kind, owner_mode FROM control_previews
-WHERE environment_id = $1 AND state NOT IN ('removed','expired')
-  AND (expires_at IS NULL OR expires_at > $2)
-ORDER BY (expires_at IS NULL) ASC, created_at ASC, id ASC
-LIMIT 1 FOR UPDATE
-`
-
-type SelectControlPreviewForEvictionParams struct {
-	EnvironmentID string
-	Now           sql.NullTime
-}
-
-func (q *Queries) SelectControlPreviewForEviction(ctx context.Context, arg SelectControlPreviewForEvictionParams) (ControlPreview, error) {
-	row := q.db.QueryRow(ctx, selectControlPreviewForEviction, arg.EnvironmentID, arg.Now)
-	var i ControlPreview
-	err := row.Scan(
-		&i.ID,
-		&i.EnvironmentID,
-		&i.LogicalName,
-		&i.PreviewKey,
-		&i.CollisionCounter,
-		&i.PublicHost,
-		&i.TargetHost,
-		&i.TargetPort,
-		&i.State,
-		&i.RouteID,
-		&i.HelperReady,
-		&i.EdgeReady,
-		&i.TargetReady,
-		&i.PublicAcknowledgedAt,
-		&i.ExpiresAt,
-		&i.RemovedAt,
-		&i.RetainedUntil,
-		&i.Version,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.HelperObservationRevision,
-		&i.HelperObservedAt,
-		&i.SourceKind,
-		&i.OwnerMode,
-	)
-	return i, err
-}
-
 const selectReadyControlTunnelNode = `-- name: SelectReadyControlTunnelNode :one
-SELECT id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port, relay_id, relay_region, relay_name FROM control_tunnel_nodes
+SELECT id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port, relay_id, relay_region, relay_name, carrier_endpoint_host, carrier_endpoint_tcp_port, carrier_endpoint_quic_port, carrier_server_spki_sha256, carrier_server_certificate_chain_pem FROM control_tunnel_nodes
 WHERE edge_pool = $1 AND state = 'ready' AND ready = true
   AND last_heartbeat_at > $2
 ORDER BY last_heartbeat_at DESC, id
@@ -5607,6 +5892,11 @@ func (q *Queries) SelectReadyControlTunnelNode(ctx context.Context, arg SelectRe
 		&i.RelayID,
 		&i.RelayRegion,
 		&i.RelayName,
+		&i.CarrierEndpointHost,
+		&i.CarrierEndpointTcpPort,
+		&i.CarrierEndpointQuicPort,
+		&i.CarrierServerSpkiSha256,
+		&i.CarrierServerCertificateChainPem,
 	)
 	return i, err
 }
@@ -5761,66 +6051,6 @@ func (q *Queries) SetControlHelperReplacementGeneration(ctx context.Context, arg
 	return i, err
 }
 
-const setControlPreviewOperationResult = `-- name: SetControlPreviewOperationResult :exec
-UPDATE control_preview_operations SET result = $1, preview_id = $2
-WHERE operation_key = $3
-`
-
-type SetControlPreviewOperationResultParams struct {
-	Result       []byte
-	PreviewID    sql.NullString
-	OperationKey string
-}
-
-func (q *Queries) SetControlPreviewOperationResult(ctx context.Context, arg SetControlPreviewOperationResultParams) error {
-	_, err := q.db.Exec(ctx, setControlPreviewOperationResult, arg.Result, arg.PreviewID, arg.OperationKey)
-	return err
-}
-
-const setControlPreviewRoute = `-- name: SetControlPreviewRoute :one
-UPDATE control_previews SET route_id = $1, updated_at = $2
-WHERE id = $3 AND route_id IS NULL
-RETURNING id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at, source_kind, owner_mode
-`
-
-type SetControlPreviewRouteParams struct {
-	RouteID sql.NullString
-	Now     time.Time
-	ID      string
-}
-
-func (q *Queries) SetControlPreviewRoute(ctx context.Context, arg SetControlPreviewRouteParams) (ControlPreview, error) {
-	row := q.db.QueryRow(ctx, setControlPreviewRoute, arg.RouteID, arg.Now, arg.ID)
-	var i ControlPreview
-	err := row.Scan(
-		&i.ID,
-		&i.EnvironmentID,
-		&i.LogicalName,
-		&i.PreviewKey,
-		&i.CollisionCounter,
-		&i.PublicHost,
-		&i.TargetHost,
-		&i.TargetPort,
-		&i.State,
-		&i.RouteID,
-		&i.HelperReady,
-		&i.EdgeReady,
-		&i.TargetReady,
-		&i.PublicAcknowledgedAt,
-		&i.ExpiresAt,
-		&i.RemovedAt,
-		&i.RetainedUntil,
-		&i.Version,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.HelperObservationRevision,
-		&i.HelperObservedAt,
-		&i.SourceKind,
-		&i.OwnerMode,
-	)
-	return i, err
-}
-
 const setControlRouteOperationResult = `-- name: SetControlRouteOperationResult :execrows
 UPDATE control_route_operations SET result_revision = $1, result = $2::jsonb
 WHERE operation_key = $3 AND result_revision IS NULL
@@ -5838,6 +6068,155 @@ func (q *Queries) SetControlRouteOperationResult(ctx context.Context, arg SetCon
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const stageTunnelEdgeRouteAssignmentV1 = `-- name: StageTunnelEdgeRouteAssignmentV1 :one
+INSERT INTO tunnel_edge_route_assignments
+  (assignment_id, route_id, assignment_generation, account_id, tunnel_id,
+   connector_id, host_id, machine_identity_public_key, machine_identity_thumbprint,
+   connector_generation, connector_session_id,
+   connector_process_generation, config_generation, config_content_hash,
+   access_mode, route_generation, route_revision, edge_node_id, edge_process_epoch,
+   edge_failure_domain, state, observed_state, assigned_at, updated_at)
+SELECT $1, r.id, $2, t.account_id, r.tunnel_id,
+       c.id, c.host_id, m.public_identity_key, $3,
+       c.generation, session.id, session.process_generation, config.generation,
+       config.content_hash, t.access_mode, r.generation, r.generation, node.id, node.process_epoch,
+       node.edge_pool, 'staged', 'pending', $4, $4
+FROM tunnel_routes AS r
+JOIN tunnels AS t ON t.id = r.tunnel_id AND t.account_id = $5
+JOIN tunnel_connectors AS c
+  ON c.id = $6 AND c.tunnel_id = r.tunnel_id
+JOIN user_machines AS m
+  ON m.id = c.host_id AND m.user_id = t.account_id
+ AND m.deleted_at IS NULL AND m.revoked_at IS NULL
+ AND m.public_identity_key IS NOT NULL
+JOIN tunnel_connector_sessions AS session
+  ON session.id = $7 AND session.connector_id = c.id
+JOIN tunnel_config_generations AS config
+  ON config.tunnel_id = r.tunnel_id AND config.generation = $8
+JOIN control_tunnel_nodes AS node
+  ON node.id = $9 AND node.process_epoch = $10
+WHERE r.id = $11
+  AND r.tunnel_id = $12
+  AND r.protocol IN ('http','private_tcp')
+  AND btrim($1) = $1
+  AND $1 ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{2,127}$'
+  AND btrim(node.edge_pool) = node.edge_pool
+  AND node.edge_pool ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
+  AND r.desired_state = 'active'
+  AND t.desired_state = 'active'
+  AND (t.expires_at IS NULL OR t.expires_at > $4)
+  AND c.desired_state = 'active' AND c.drain_state = 'accepting'
+  AND c.generation = $13
+  AND c.last_session_id = session.id
+  AND c.last_applied_config_generation = config.generation
+  AND session.process_generation = $14
+  AND session.state = 'ready'
+  AND session.lease_deadline > $4
+  AND session.applied_config_generation = config.generation
+  AND config.activation_state = 'active'
+  AND config.content_hash = $15
+  AND node.state = 'ready' AND node.ready = true
+  AND node.last_heartbeat_at IS NOT NULL
+  AND node.last_heartbeat_at > $4 - interval '2 minutes'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM tunnel_edge_route_assignments AS prior
+    WHERE prior.route_id = r.id
+      AND prior.assignment_id <> $1
+      AND prior.assignment_generation >= $2
+  )
+ON CONFLICT (assignment_id) DO UPDATE
+SET updated_at = EXCLUDED.updated_at
+WHERE tunnel_edge_route_assignments.route_id = EXCLUDED.route_id
+  AND tunnel_edge_route_assignments.assignment_generation = EXCLUDED.assignment_generation
+  AND tunnel_edge_route_assignments.account_id = EXCLUDED.account_id
+  AND tunnel_edge_route_assignments.tunnel_id = EXCLUDED.tunnel_id
+  AND tunnel_edge_route_assignments.connector_id = EXCLUDED.connector_id
+  AND tunnel_edge_route_assignments.host_id = EXCLUDED.host_id
+  AND tunnel_edge_route_assignments.connector_generation = EXCLUDED.connector_generation
+  AND tunnel_edge_route_assignments.connector_session_id = EXCLUDED.connector_session_id
+  AND tunnel_edge_route_assignments.connector_process_generation = EXCLUDED.connector_process_generation
+  AND tunnel_edge_route_assignments.config_generation = EXCLUDED.config_generation
+  AND tunnel_edge_route_assignments.config_content_hash = EXCLUDED.config_content_hash
+  AND tunnel_edge_route_assignments.access_mode = EXCLUDED.access_mode
+  AND tunnel_edge_route_assignments.edge_node_id = EXCLUDED.edge_node_id
+  AND tunnel_edge_route_assignments.edge_process_epoch = EXCLUDED.edge_process_epoch
+  AND tunnel_edge_route_assignments.state = 'staged'
+RETURNING assignment_id, route_id, assignment_generation, account_id, tunnel_id, connector_id, host_id, machine_identity_public_key, machine_identity_thumbprint, connector_generation, connector_session_id, connector_process_generation, config_generation, config_content_hash, access_mode, route_generation, route_revision, edge_node_id, edge_process_epoch, edge_failure_domain, state, observed_state, assigned_at, observed_at, released_at, created_at, updated_at
+`
+
+type StageTunnelEdgeRouteAssignmentV1Params struct {
+	AssignmentID               string
+	AssignmentGeneration       int64
+	MachineIdentityThumbprint  string
+	Now                        time.Time
+	AccountID                  string
+	ConnectorID                string
+	ConnectorSessionID         string
+	ConfigGeneration           int64
+	EdgeNodeID                 string
+	EdgeProcessEpoch           string
+	RouteID                    string
+	TunnelID                   string
+	ConnectorGeneration        int64
+	ConnectorProcessGeneration int64
+	ConfigContentHash          []byte
+}
+
+// Publish only after the connector session and the edge process have both
+// reported readiness for the exact immutable config generation.  The edge
+// receives route identity and policy, never the host-local origin address.
+func (q *Queries) StageTunnelEdgeRouteAssignmentV1(ctx context.Context, arg StageTunnelEdgeRouteAssignmentV1Params) (TunnelEdgeRouteAssignment, error) {
+	row := q.db.QueryRow(ctx, stageTunnelEdgeRouteAssignmentV1,
+		arg.AssignmentID,
+		arg.AssignmentGeneration,
+		arg.MachineIdentityThumbprint,
+		arg.Now,
+		arg.AccountID,
+		arg.ConnectorID,
+		arg.ConnectorSessionID,
+		arg.ConfigGeneration,
+		arg.EdgeNodeID,
+		arg.EdgeProcessEpoch,
+		arg.RouteID,
+		arg.TunnelID,
+		arg.ConnectorGeneration,
+		arg.ConnectorProcessGeneration,
+		arg.ConfigContentHash,
+	)
+	var i TunnelEdgeRouteAssignment
+	err := row.Scan(
+		&i.AssignmentID,
+		&i.RouteID,
+		&i.AssignmentGeneration,
+		&i.AccountID,
+		&i.TunnelID,
+		&i.ConnectorID,
+		&i.HostID,
+		&i.MachineIdentityPublicKey,
+		&i.MachineIdentityThumbprint,
+		&i.ConnectorGeneration,
+		&i.ConnectorSessionID,
+		&i.ConnectorProcessGeneration,
+		&i.ConfigGeneration,
+		&i.ConfigContentHash,
+		&i.AccessMode,
+		&i.RouteGeneration,
+		&i.RouteRevision,
+		&i.EdgeNodeID,
+		&i.EdgeProcessEpoch,
+		&i.EdgeFailureDomain,
+		&i.State,
+		&i.ObservedState,
+		&i.AssignedAt,
+		&i.ObservedAt,
+		&i.ReleasedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const suspendControlEnvironmentForQuota = `-- name: SuspendControlEnvironmentForQuota :execrows
@@ -5894,119 +6273,6 @@ func (q *Queries) UpdateControlEnvironmentDesiredState(ctx context.Context, arg 
 		&i.RevokedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const updateControlPreview = `-- name: UpdateControlPreview :one
-UPDATE control_previews
-SET target_host = $1, target_port = $2,
-    source_kind = $3, owner_mode = $4,
-    state = CASE WHEN state = 'removed' THEN state ELSE 'registering' END,
-    public_acknowledged_at = coalesce(public_acknowledged_at, $5),
-    expires_at = $6,
-    version = version + 1, updated_at = $7
-WHERE id = $8 AND version = $9
-RETURNING id, environment_id, logical_name, preview_key, collision_counter, public_host, target_host, target_port, state, route_id, helper_ready, edge_ready, target_ready, public_acknowledged_at, expires_at, removed_at, retained_until, version, created_at, updated_at, helper_observation_revision, helper_observed_at, source_kind, owner_mode
-`
-
-type UpdateControlPreviewParams struct {
-	TargetHost           string
-	TargetPort           int32
-	SourceKind           string
-	OwnerMode            string
-	PublicAcknowledgedAt sql.NullTime
-	ExpiresAt            sql.NullTime
-	Now                  time.Time
-	ID                   string
-	ExpectedVersion      int64
-}
-
-func (q *Queries) UpdateControlPreview(ctx context.Context, arg UpdateControlPreviewParams) (ControlPreview, error) {
-	row := q.db.QueryRow(ctx, updateControlPreview,
-		arg.TargetHost,
-		arg.TargetPort,
-		arg.SourceKind,
-		arg.OwnerMode,
-		arg.PublicAcknowledgedAt,
-		arg.ExpiresAt,
-		arg.Now,
-		arg.ID,
-		arg.ExpectedVersion,
-	)
-	var i ControlPreview
-	err := row.Scan(
-		&i.ID,
-		&i.EnvironmentID,
-		&i.LogicalName,
-		&i.PreviewKey,
-		&i.CollisionCounter,
-		&i.PublicHost,
-		&i.TargetHost,
-		&i.TargetPort,
-		&i.State,
-		&i.RouteID,
-		&i.HelperReady,
-		&i.EdgeReady,
-		&i.TargetReady,
-		&i.PublicAcknowledgedAt,
-		&i.ExpiresAt,
-		&i.RemovedAt,
-		&i.RetainedUntil,
-		&i.Version,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.HelperObservationRevision,
-		&i.HelperObservedAt,
-		&i.SourceKind,
-		&i.OwnerMode,
-	)
-	return i, err
-}
-
-const updateControlPreviewRouteTarget = `-- name: UpdateControlPreviewRouteTarget :one
-UPDATE control_routes
-SET target_host = $1, target_port = $2,
-    desired_state = 'attached', desired_revision = desired_revision + 1,
-    version = version + 1, updated_at = $3
-WHERE id = $4 AND environment_id = $5
-RETURNING id, environment_id, kind, public_host, target_host, target_port, desired_revision, desired_state, applied_revision, applied_node_id, applied_generation, drain_deadline, version, created_at, updated_at, connector_id
-`
-
-type UpdateControlPreviewRouteTargetParams struct {
-	TargetHost    string
-	TargetPort    int32
-	Now           time.Time
-	ID            string
-	EnvironmentID string
-}
-
-func (q *Queries) UpdateControlPreviewRouteTarget(ctx context.Context, arg UpdateControlPreviewRouteTargetParams) (ControlRoute, error) {
-	row := q.db.QueryRow(ctx, updateControlPreviewRouteTarget,
-		arg.TargetHost,
-		arg.TargetPort,
-		arg.Now,
-		arg.ID,
-		arg.EnvironmentID,
-	)
-	var i ControlRoute
-	err := row.Scan(
-		&i.ID,
-		&i.EnvironmentID,
-		&i.Kind,
-		&i.PublicHost,
-		&i.TargetHost,
-		&i.TargetPort,
-		&i.DesiredRevision,
-		&i.DesiredState,
-		&i.AppliedRevision,
-		&i.AppliedNodeID,
-		&i.AppliedGeneration,
-		&i.DrainDeadline,
-		&i.Version,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.ConnectorID,
 	)
 	return i, err
 }

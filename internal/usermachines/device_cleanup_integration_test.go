@@ -22,15 +22,20 @@ func TestDeleteMachineRevokesBoundDeviceCredentialsAndState(t *testing.T) {
 	machineID := "mch_cleanup_" + suffix
 	siblingMachineID := "mch_cleanup_sibling_" + suffix
 	environmentID := "env_cleanup_" + suffix
+	siblingEnvironmentID := "env_cleanup_sibling_" + suffix
 	cliSessionID := "cls_cleanup_" + suffix
 	siblingCLISessionID := "cls_cleanup_sibling_" + suffix
 	pairingID := "ump_cleanup_" + suffix
 	enrollmentID := "ume_cleanup_" + suffix
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	publicIdentityKey := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
-	siblingPublicIdentityKey := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{6}, 32))
-	rootPublicKey := bytes.Repeat([]byte{8}, 32)
-	siblingPublicKey := bytes.Repeat([]byte{9}, 32)
+	publicIdentityFingerprint := sha256.Sum256([]byte("public-identity:" + suffix))
+	publicIdentityKey := base64.RawURLEncoding.EncodeToString(publicIdentityFingerprint[:])
+	siblingPublicIdentityFingerprint := sha256.Sum256([]byte("sibling-public-identity:" + suffix))
+	siblingPublicIdentityKey := base64.RawURLEncoding.EncodeToString(siblingPublicIdentityFingerprint[:])
+	rootPublicKeyFingerprint := sha256.Sum256([]byte("root-public-key:" + suffix))
+	rootPublicKey := rootPublicKeyFingerprint[:]
+	siblingPublicKeyFingerprint := sha256.Sum256([]byte("sibling-public-key:" + suffix))
+	siblingPublicKey := siblingPublicKeyFingerprint[:]
 	rootFingerprint := sha256.Sum256(rootPublicKey)
 	keyID := "aek_" + hex.EncodeToString(rootFingerprint[:])
 	siblingFingerprint := sha256.Sum256(siblingPublicKey)
@@ -42,6 +47,8 @@ func TestDeleteMachineRevokesBoundDeviceCredentialsAndState(t *testing.T) {
 	sshClientFingerprint := sha256.Sum256([]byte("ssh-client:" + suffix))
 	sshHostFingerprint := sha256.Sum256([]byte("ssh-host:" + suffix))
 	sshSetFingerprint := sha256.Sum256([]byte("ssh-set:" + suffix))
+	managedSSHPublicKey := strings.Repeat("p", 79) + suffix
+	hostSSHPublicKey := strings.Repeat("h", 79) + suffix
 	verifierHash := sha256.Sum256([]byte("verifier:" + suffix))
 	enrollmentTokenHash := sha256.Sum256([]byte("enrollment-token:" + suffix))
 	peerRequestHash := sha256.Sum256([]byte("peer-request:" + suffix))
@@ -70,7 +77,7 @@ INSERT INTO paperboat.user_machines
   (id, user_id, environment_id, display_name, platform, architecture, workspace_root,
    state, seat_state, public_identity_key, setup_roles, setup_mode, configured_capabilities)
 VALUES ($1, $2, $3, 'Sibling cleanup test', 'linux', 'amd64', '/sibling', 'offline', 'released',
-        $4, ARRAY['interactive']::text[], 'client', ARRAY['file_receive']::text[])`, siblingMachineID, userID, environmentID, siblingPublicIdentityKey); err != nil {
+		$4, ARRAY['interactive']::text[], 'client', ARRAY['file_receive']::text[])`, siblingMachineID, userID, siblingEnvironmentID, siblingPublicIdentityKey); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `
@@ -121,7 +128,7 @@ VALUES ($1, $2, 'active', $3, $4)`, "refresh_"+suffix, cliSessionID, now.Add(tim
 	if _, err := store.SQL().ExecContext(ctx, `
 INSERT INTO paperboat.managed_ssh_client_keys
   (fingerprint, user_id, cli_client_session_id, algorithm, public_key, created_at)
-VALUES ($1, $2, $3, 'ssh-ed25519', $4, $5)`, sshClientFingerprint[:], userID, cliSessionID, strings.Repeat("p", 80), now); err != nil {
+VALUES ($1, $2, $3, 'ssh-ed25519', $4, $5)`, sshClientFingerprint[:], userID, cliSessionID, managedSSHPublicKey, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `
@@ -188,9 +195,16 @@ VALUES ($1, $2, 1, $3, $4, $5)`, "renewal_"+suffix, machineID, "jti_"+suffix, no
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `
+INSERT INTO paperboat.machine_control_sessions
+  (machine_id, installation_generation, session_generation, operation_id,
+   credential_jti, issued_at, expires_at)
+VALUES ($1, 1, 1, $2, $3, $4, $5)`, machineID, "renewal_"+suffix, "jti_"+suffix, now, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `
 INSERT INTO paperboat.machine_ssh_host_key_owners
   (fingerprint, user_machine_id, algorithm, public_key, first_observed_at)
-VALUES ($1, $2, 'ssh-ed25519', $3, $4)`, sshHostFingerprint[:], machineID, strings.Repeat("h", 80), now); err != nil {
+VALUES ($1, $2, 'ssh-ed25519', $3, $4)`, sshHostFingerprint[:], machineID, hostSSHPublicKey, now); err != nil {
 		t.Fatal(err)
 	}
 	sshSetID := "sshks_" + suffix
@@ -198,7 +212,7 @@ VALUES ($1, $2, 'ssh-ed25519', $3, $4)`, sshHostFingerprint[:], machineID, strin
 INSERT INTO paperboat.machine_ssh_host_key_sets
   (id, user_machine_id, machine_generation, observation_generation, set_fingerprint,
    state, reconciliation_version, observed_at, promoted_at)
-VALUES ($1, $2, 1, 1, $3, 'active', 1, $4, $4)`, sshSetID, machineID, sshSetFingerprint[:], now, now); err != nil {
+VALUES ($1, $2, 1, 1, $3, 'active', 1, $4, $4)`, sshSetID, machineID, sshSetFingerprint[:], now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `
@@ -289,6 +303,7 @@ WHERE k.key_id = $2`, cliSessionID, keyID).Scan(&keyRevoked, &certificateRevoked
 		t.Fatalf("device authority revoked = key:%t certificate:%t managed_ssh:%t, want all true", keyRevoked, certificateRevoked, managedSSHRevoked)
 	}
 	for table, column := range map[string]string{
+		"machine_control_sessions":    "machine_id",
 		"machine_control_renewals":    "machine_id",
 		"machine_ssh_targets":         "user_machine_id",
 		"machine_ssh_host_key_sets":   "user_machine_id",

@@ -14,11 +14,6 @@ SELECT EXISTS (
   JOIN user_machines m ON m.id = s.user_machine_id
   WHERE sqlc.arg(kind)::text = 'session' AND m.user_id = sqlc.arg(owner_user_id)
     AND (m.id || ':' || s.id) = sqlc.arg(resource_id)
-  UNION ALL
-  SELECT 1 FROM control_previews p
-  JOIN control_environments e ON e.id = p.environment_id
-  WHERE sqlc.arg(kind)::text = 'preview' AND e.owner_user_id = sqlc.arg(owner_user_id)
-    AND p.id = sqlc.arg(resource_id)
 );
 
 -- name: CountUserFavorites :one

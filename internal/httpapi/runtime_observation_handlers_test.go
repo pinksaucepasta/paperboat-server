@@ -284,3 +284,43 @@ func TestValidObservedCapabilitiesRejectsUnknownAndDuplicates(t *testing.T) {
 		}
 	}
 }
+
+func TestRuntimeEnvironmentObservationRequiresEveryDocumentMember(t *testing.T) {
+	base := `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-08-06T12:00:01Z","runtime_diagnostics":{"capabilities":["environment_injection"],"worker_generation":4,"os_boot_id":"boot-1","worker_service_scope":"system","connector_state":"ready","connector_generation":2,"observed_at":"2026-08-06T12:00:01Z"},"environment":{"schema":"paperboat.environment-observation/v2","observation_seq":1,"host_recipient_key_id":"envk_` + strings.Repeat("A", 43) + `","authority":null,"global":null,"machine":null,"state":"pending","error_code":null,"observed_at":"2026-08-06T12:00:00Z"}}`
+	for name, body := range map[string]string{
+		"complete":            base,
+		"missing state":       strings.Replace(base, `,"state":"pending"`, "", 1),
+		"missing observed_at": strings.Replace(base, `,"observed_at":"2026-08-06T12:00:00Z"`, "", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			repository := &fakeRuntimeObservationRepository{}
+			request := httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(body))
+			request.Header.Set("Authorization", "Bearer machine-token")
+			recorder := httptest.NewRecorder()
+			runtimeObservation(repository, nil, 10).ServeHTTP(recorder, request)
+			wantCode := http.StatusAccepted
+			if name != "complete" {
+				wantCode = http.StatusBadRequest
+			}
+			if recorder.Code != wantCode || (wantCode == http.StatusAccepted) != (repository.recorded != nil) {
+				t.Fatalf("status=%d want=%d recorded=%v body=%s", recorder.Code, wantCode, repository.recorded != nil, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestRuntimeEnvironmentObservationRejectsPlaintextValueCanary(t *testing.T) {
+	const canary = "ENV_CANARY_RUNTIME_PLAINTEXT_MUST_NOT_CROSS"
+	base := `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-08-06T12:00:01Z","runtime_diagnostics":{"capabilities":["environment_injection"],"worker_generation":4,"os_boot_id":"boot-1","worker_service_scope":"system","connector_state":"ready","connector_generation":2,"observed_at":"2026-08-06T12:00:01Z"},"environment":{"schema":"paperboat.environment-observation/v2","observation_seq":1,"host_recipient_key_id":"envk_` + strings.Repeat("A", 43) + `","authority":null,"global":null,"machine":null,"state":"pending","error_code":null,"observed_at":"2026-08-06T12:00:00Z","value":"` + canary + `"}}`
+	repository := &fakeRuntimeObservationRepository{}
+	request := httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(base))
+	request.Header.Set("Authorization", "Bearer machine-token")
+	recorder := httptest.NewRecorder()
+	runtimeObservation(repository, nil, 10).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("plaintext environment value was accepted: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if repository.recorded != nil || strings.Contains(recorder.Body.String(), canary) {
+		t.Fatalf("plaintext environment canary crossed runtime observation boundary: recorded=%#v body=%s", repository.recorded, recorder.Body.String())
+	}
+}

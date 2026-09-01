@@ -1043,6 +1043,9 @@ func newAccessIntegrationRouterWithService(t *testing.T, email string, client ac
 	if dsn == "" {
 		t.Skip("set PAPERBOAT_TEST_DATABASE_DSN to run access integration tests")
 	}
+	if err := db.ValidateIsolatedTestDSN(dsn, os.Getenv("PAPERBOAT_DATABASE_DSN")); err != nil {
+		t.Fatal(err)
+	}
 	store, err := db.Open(config.Database{Driver: "postgres", DSN: dsn})
 	if err != nil {
 		t.Fatal(err)

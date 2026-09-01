@@ -178,7 +178,7 @@ func validEventOutcome(value EventOutcome) bool {
 }
 
 func validCorrelationID(value string) bool {
-	return hasSafePrefix(value, "corr_", "cor_", "correlation_", "request_", "pb-")
+	return hasSafePrefix(value, "corr_", "cor_", "correlation_", "request_", "req_", "pb-")
 }
 
 func validSafeIDs(ids SafeIDs) bool {

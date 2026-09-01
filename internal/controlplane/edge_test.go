@@ -64,6 +64,37 @@ func TestEdgeHandlerRejectsUnauthorizedAndUnknownRoutes(t *testing.T) {
 	}
 }
 
+func TestValidateCarrierEndpointRequiresSeparateCanonicalListener(t *testing.T) {
+	valid := struct {
+		Host     string `json:"host"`
+		TCPPort  uint16 `json:"tcp_port"`
+		QUICPort uint16 `json:"quic_port"`
+	}{Host: "carrier.edge.example.test", TCPPort: 17443, QUICPort: 17444}
+	if err := validateCarrierEndpoint(valid); err != nil {
+		t.Fatalf("valid carrier endpoint error = %v", err)
+	}
+	if err := validateCarrierEndpoint(struct {
+		Host     string `json:"host"`
+		TCPPort  uint16 `json:"tcp_port"`
+		QUICPort uint16 `json:"quic_port"`
+	}{}); err == nil {
+		t.Fatal("omitted canonical carrier endpoint was accepted")
+	}
+	for _, invalid := range []struct {
+		Host     string `json:"host"`
+		TCPPort  uint16 `json:"tcp_port"`
+		QUICPort uint16 `json:"quic_port"`
+	}{
+		{Host: "carrier.edge.example.test", TCPPort: 17443},
+		{Host: "carrier.edge.example.test", TCPPort: 17443, QUICPort: 17443},
+		{Host: " carrier.edge.example.test", TCPPort: 17443, QUICPort: 17444},
+	} {
+		if err := validateCarrierEndpoint(invalid); err == nil {
+			t.Fatalf("invalid carrier endpoint %+v was accepted", invalid)
+		}
+	}
+}
+
 func TestEdgeAssignmentSerializesRevokedAsBoolean(t *testing.T) {
 	store := openControlPlaneTestDB(t)
 	ctx := context.Background()
@@ -166,5 +197,28 @@ func TestEdgeHandlerRejectsUnknownAndTrailingJSON(t *testing.T) {
 		if response.Code != http.StatusBadRequest {
 			t.Fatalf("body %q status = %d", body, response.Code)
 		}
+	}
+}
+
+func TestEdgeHandlerReturnsCompleteCanonicalSnapshotForProcess(t *testing.T) {
+	store := openControlPlaneTestDB(t)
+	service := NewEdgeService(store, "edge-control-credential-01234567890123456789")
+	request := httptest.NewRequest(http.MethodPost, "/v1/edge/routes/desired-state", strings.NewReader(`{"edge_node_id":"edge_01","process_epoch":"epoch_0001"}`))
+	request.Header.Set("Authorization", "Bearer edge-control-credential-01234567890123456789")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	service.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("canonical snapshot status = %d body=%s", response.Code, response.Body.String())
+	}
+	var envelope struct {
+		Complete bool             `json:"complete"`
+		Routes   []map[string]any `json:"routes"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if !envelope.Complete || envelope.Routes == nil || len(envelope.Routes) != 0 {
+		t.Fatalf("canonical snapshot = %+v", envelope)
 	}
 }

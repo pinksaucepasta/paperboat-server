@@ -21,6 +21,7 @@ var providerMetrics = struct {
 type providerTransport struct {
 	provider string
 	next     http.RoundTripper
+	now      func() time.Time
 }
 
 func DefaultProviderClient(provider string) *http.Client {
@@ -33,13 +34,17 @@ func InstrumentProviderTransport(provider string, next http.RoundTripper) http.R
 		//paperboat:allow-source-policy default-http owner=server-observability reason=instrument-standard-transport-fallback
 		next = http.DefaultTransport
 	}
-	return providerTransport{provider: normalizeProvider(provider), next: next}
+	return providerTransport{provider: normalizeProvider(provider), next: next, now: time.Now}
 }
 
 func (t providerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	started := time.Now()
+	now := t.now
+	if now == nil {
+		now = time.Now
+	}
+	started := now()
 	response, err := t.next.RoundTrip(request)
-	latency := max(0, time.Since(started).Milliseconds())
+	latency := max(0, now().Sub(started).Milliseconds())
 	failed := err != nil || response == nil || response.StatusCode >= http.StatusInternalServerError
 
 	providerMetrics.Lock()

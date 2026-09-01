@@ -1,0 +1,2 @@
+-- ENV E2EE repository transactions use bounded, colocated pgx statements in
+-- internal/environment. There are intentionally no value-oriented sqlc APIs.

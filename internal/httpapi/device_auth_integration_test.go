@@ -337,6 +337,93 @@ VALUES ($1,$2,$3,$4,'linux','amd64','/home/paperboat','online','occupied',true)`
 	}
 }
 
+func TestMachineEnrollmentRoutesAcceptScopedBearerAndRequireCookieCSRF(t *testing.T) {
+	store, router := newAuthIntegrationRouter(t)
+	cookies := loginCookies(t, router, "workos_machine_enrollment:machine-enrollment@example.com:Machine Enrollment")
+	tokens := authorizeCLI(t, router, cookies)
+
+	start := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/machine-enrollments", strings.NewReader(`{"role":"client","shell":"posix"}`))
+	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
+	req.Header.Set("Idempotency-Key", "machine-enrollment-bearer")
+	router.ServeHTTP(start, req)
+	if start.Code != http.StatusCreated {
+		t.Fatalf("bearer enrollment start status=%d body=%s", start.Code, start.Body.String())
+	}
+	var started struct {
+		Data struct {
+			ID             string `json:"id"`
+			State          string `json:"state"`
+			BootstrapToken string `json:"bootstrap_token"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(start.Body.Bytes(), &started); err != nil {
+		t.Fatal(err)
+	}
+	if started.Data.ID == "" || started.Data.State != "awaiting_bootstrap" || started.Data.BootstrapToken == "" {
+		t.Fatalf("unexpected enrollment start response: %s", start.Body.String())
+	}
+
+	status := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/v1/machine-enrollments/"+started.Data.ID, nil)
+	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
+	router.ServeHTTP(status, req)
+	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"state":"awaiting_bootstrap"`) {
+		t.Fatalf("bearer enrollment status=%d body=%s", status.Code, status.Body.String())
+	}
+
+	token := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/v1/machine-enrollments/"+started.Data.ID+"/bootstrap-token", nil)
+	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
+	router.ServeHTTP(token, req)
+	if token.Code != http.StatusOK || strings.TrimSpace(token.Body.String()) != started.Data.BootstrapToken {
+		t.Fatalf("bearer enrollment token status=%d body=%q", token.Code, token.Body.String())
+	}
+
+	missingCSRF := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/machine-enrollments", strings.NewReader(`{"role":"client","shell":"posix"}`))
+	addCookies(req, cookies)
+	req.Header.Set("Idempotency-Key", "machine-enrollment-cookie")
+	router.ServeHTTP(missingCSRF, req)
+	if missingCSRF.Code != http.StatusForbidden || !strings.Contains(missingCSRF.Body.String(), `"code":"csrf_failed"`) {
+		t.Fatalf("cookie enrollment without csrf status=%d body=%s", missingCSRF.Code, missingCSRF.Body.String())
+	}
+
+	cancel := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/machine-enrollments/"+started.Data.ID+"/cancel", nil)
+	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
+	router.ServeHTTP(cancel, req)
+	if cancel.Code != http.StatusOK {
+		t.Fatalf("bearer enrollment cancel status=%d body=%s", cancel.Code, cancel.Body.String())
+	}
+
+	retry := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/machine-enrollments/"+started.Data.ID+"/retry", nil)
+	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
+	router.ServeHTTP(retry, req)
+	if retry.Code != http.StatusOK {
+		t.Fatalf("bearer enrollment retry status=%d body=%s", retry.Code, retry.Body.String())
+	}
+
+	if _, err := store.SQL().Exec(`UPDATE paperboat.cli_client_sessions SET scopes=ARRAY['projects:read']::text[] WHERE id=$1`, tokens.CLIClientSessionID); err != nil {
+		t.Fatal(err)
+	}
+	readOnlyStatus := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/v1/machine-enrollments/"+started.Data.ID, nil)
+	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
+	router.ServeHTTP(readOnlyStatus, req)
+	if readOnlyStatus.Code != http.StatusOK {
+		t.Fatalf("read-only bearer enrollment status=%d body=%s", readOnlyStatus.Code, readOnlyStatus.Body.String())
+	}
+	readOnlyRetry := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/machine-enrollments/"+started.Data.ID+"/retry", nil)
+	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
+	router.ServeHTTP(readOnlyRetry, req)
+	if readOnlyRetry.Code != http.StatusForbidden || !strings.Contains(readOnlyRetry.Body.String(), `"code":"insufficient_scope"`) {
+		t.Fatalf("read-only bearer enrollment retry status=%d body=%s", readOnlyRetry.Code, readOnlyRetry.Body.String())
+	}
+}
+
 func TestAccountSuspensionPermanentlyRevokesCLIClients(t *testing.T) {
 	store, router := newAuthIntegrationRouter(t)
 	cookies := loginCookies(t, router, "workos_suspension:suspension@example.com:Suspension")

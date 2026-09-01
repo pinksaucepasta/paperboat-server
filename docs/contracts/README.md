@@ -1,6 +1,6 @@
 # Contract Pack
 
-Status: implemented contract baseline, pending final cross-project sign-off.
+Status: implemented v1 contract set, pending the final paid-product gate.
 
 These docs capture the initial contract work for `paperboat-server`.
 They define the implementation baseline for later releases while keeping environment-
@@ -16,6 +16,8 @@ specific provider values in dynamic configuration and catalog seed data.
   pre-connect descriptor contracts.
 - [cli-authorization.md](cli-authorization.md) - device grants, scoped CLI sessions,
   refresh rotation, and client revocation.
+- [private-access.md](private-access.md) - stable-host machine proof, route-bound
+  grants, edge authorization, generation fencing, and fail-closed HTTP behavior.
 
 ## Approval Rule
 

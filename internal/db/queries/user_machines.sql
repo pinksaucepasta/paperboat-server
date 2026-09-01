@@ -394,6 +394,61 @@ INSERT INTO machine_control_renewals (
 ) ON CONFLICT (operation_id) DO UPDATE SET operation_id = EXCLUDED.operation_id
 RETURNING *;
 
+-- name: GetCurrentMachineControlSession :one
+SELECT * FROM machine_control_sessions
+WHERE machine_id = sqlc.arg(machine_id)
+  AND installation_generation = sqlc.arg(installation_generation)
+  AND credential_jti = sqlc.arg(credential_jti)
+  AND expires_at > sqlc.arg(now);
+
+-- name: GetMachineControlSessionForUpdate :one
+SELECT * FROM machine_control_sessions
+WHERE machine_id = sqlc.arg(machine_id)
+FOR UPDATE;
+
+-- name: CreateMachineControlSession :one
+INSERT INTO machine_control_sessions (
+  machine_id, installation_generation, session_generation, operation_id,
+  credential_jti, issued_at, expires_at
+) VALUES (
+  sqlc.arg(machine_id), sqlc.arg(installation_generation), 1, sqlc.arg(operation_id),
+  sqlc.arg(credential_jti), sqlc.arg(issued_at), sqlc.arg(expires_at)
+)
+RETURNING *;
+
+-- name: RotateMachineControlSession :one
+UPDATE machine_control_sessions
+SET installation_generation = sqlc.arg(installation_generation),
+    session_generation = session_generation + 1,
+    operation_id = sqlc.arg(operation_id),
+    credential_jti = sqlc.arg(credential_jti),
+    issued_at = sqlc.arg(issued_at),
+    expires_at = sqlc.arg(expires_at),
+    updated_at = now()
+WHERE machine_id = sqlc.arg(machine_id)
+  AND session_generation = sqlc.arg(expected_session_generation)
+  AND credential_jti = sqlc.arg(expected_credential_jti)
+RETURNING *;
+
+-- name: BindMachineControlRenewalSession :one
+UPDATE machine_control_renewals
+SET session_generation = sqlc.arg(session_generation)
+WHERE operation_id = sqlc.arg(operation_id)
+  AND machine_id = sqlc.arg(machine_id)
+  AND installation_generation = sqlc.arg(installation_generation)
+  AND credential_jti = sqlc.arg(credential_jti)
+  AND session_generation IS NULL
+  AND superseded_at IS NULL
+RETURNING *;
+
+-- name: MarkMachineControlRenewalSuperseded :execrows
+UPDATE machine_control_renewals
+SET superseded_at = sqlc.arg(now)
+WHERE operation_id = sqlc.arg(operation_id)
+  AND machine_id = sqlc.arg(machine_id)
+  AND session_generation = sqlc.arg(session_generation)
+  AND superseded_at IS NULL;
+
 -- name: GetMachineControlRenewalForUpdate :one
 SELECT * FROM machine_control_renewals
 WHERE operation_id = sqlc.arg(operation_id)
@@ -403,15 +458,20 @@ FOR UPDATE;
 UPDATE machine_control_renewals
 SET credential_jti = sqlc.arg(credential_jti),
     issued_at = sqlc.arg(issued_at),
-    expires_at = sqlc.arg(expires_at)
+    expires_at = sqlc.arg(expires_at),
+    session_generation = NULL
 WHERE operation_id = sqlc.arg(operation_id)
   AND machine_id = sqlc.arg(machine_id)
   AND installation_generation = sqlc.arg(installation_generation)
 RETURNING *;
 
 -- name: DeleteExpiredMachineControlRenewals :execrows
-DELETE FROM machine_control_renewals
-WHERE expires_at < sqlc.arg(cutoff);
+DELETE FROM machine_control_renewals renewals
+WHERE renewals.expires_at < sqlc.arg(cutoff)
+  AND NOT EXISTS (
+    SELECT 1 FROM machine_control_sessions current
+    WHERE current.operation_id = renewals.operation_id
+  );
 
 -- name: BindCanonicalMachineIdentity :one
 UPDATE user_machines
@@ -426,7 +486,7 @@ RETURNING *;
 -- name: AddUserMachineHostRole :one
 UPDATE user_machines
 SET setup_roles = ARRAY(SELECT DISTINCT role FROM unnest(setup_roles || ARRAY['host']::text[]) role ORDER BY role),
-    setup_mode = 'host', configured_capabilities = ARRAY['file_receive','preview_launch','terminal_host','codex_host','session_host','keep_awake']::text[],
+    setup_mode = 'host', configured_capabilities = ARRAY['file_receive','preview_launch','terminal_host','codex_host','session_host','keep_awake','environment_injection']::text[],
     display_name = sqlc.arg(display_name), workspace_root = sqlc.arg(workspace_root),
     runtime_versions = sqlc.arg(runtime_versions),
     updated_at = CASE WHEN NOT ('host' = ANY(setup_roles)) OR display_name IS DISTINCT FROM sqlc.arg(display_name) OR workspace_root IS DISTINCT FROM sqlc.arg(workspace_root) OR runtime_versions IS DISTINCT FROM sqlc.arg(runtime_versions) THEN now() ELSE updated_at END,

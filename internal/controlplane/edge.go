@@ -6,10 +6,13 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/x509"
 	"database/sql"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"io"
 	"log/slog"
@@ -31,15 +34,16 @@ import (
 const maxEdgeDocument = 1 << 20
 
 type EdgeService struct {
-	store              *db.DB
-	credential         string
-	clock              func() time.Time
-	bandwidth          BandwidthDebiter
-	audit              *audit.Writer
-	signer             *mint.Provider
-	issuer             string
-	encryptionKey      string
-	fileTransferPolicy mint.FileTransferPolicy
+	store                   *db.DB
+	credential              string
+	clock                   func() time.Time
+	bandwidth               BandwidthDebiter
+	audit                   *audit.Writer
+	signer                  *mint.Provider
+	issuer                  string
+	encryptionKey           string
+	fileTransferPolicy      mint.FileTransferPolicy
+	certificateDistribution http.Handler
 }
 
 func (s *EdgeService) SetBandwidthDebiter(debiter BandwidthDebiter) { s.bandwidth = debiter }
@@ -49,6 +53,14 @@ func (s *EdgeService) SetCredentialIssuer(signer *mint.Provider, issuer, encrypt
 }
 func (s *EdgeService) SetFileTransferPolicy(policy mint.FileTransferPolicy) {
 	s.fileTransferPolicy = policy
+}
+
+// SetCertificateDistribution mounts the internal certificate distribution
+// transport beneath the already authenticated edge-control handler. The
+// handler is deliberately injected by deployment composition because it
+// owns the in-memory issuance queue and server-side envelope key source.
+func (s *EdgeService) SetCertificateDistribution(handler http.Handler) {
+	s.certificateDistribution = handler
 }
 
 type ConnectorAdmission struct {
@@ -128,10 +140,38 @@ type RevokedConnectorGeneration struct {
 }
 
 type RouteObservation struct {
-	RouteID             string `json:"route_id"`
-	RouteRevision       int64  `json:"route_revision"`
-	EdgeNodeID          string `json:"edge_node_id"`
-	ConnectorGeneration int64  `json:"connector_generation"`
+	RouteID                    string `json:"route_id"`
+	AssignmentID               string `json:"assignment_id,omitempty"`
+	AssignmentGeneration       int64  `json:"assignment_generation,omitempty"`
+	RouteRevision              int64  `json:"route_revision"`
+	EdgeNodeID                 string `json:"edge_node_id"`
+	EdgeProcessEpoch           string `json:"edge_process_epoch,omitempty"`
+	ConnectorID                string `json:"connector_id,omitempty"`
+	HostID                     string `json:"host_id,omitempty"`
+	ConnectorGeneration        int64  `json:"connector_generation"`
+	ConnectorSessionID         string `json:"connector_session_id,omitempty"`
+	ConnectorProcessGeneration int64  `json:"connector_process_generation,omitempty"`
+	ConfigGeneration           int64  `json:"config_generation,omitempty"`
+	ConfigContentHash          string `json:"config_content_hash,omitempty"`
+	State                      string `json:"state,omitempty"`
+	ObservedState              string `json:"observed_state,omitempty"`
+}
+
+func (o RouteObservation) canonicalObservedState() (string, error) {
+	state := strings.TrimSpace(o.State)
+	observed := strings.TrimSpace(o.ObservedState)
+	if state != "" && observed != "" && state != observed {
+		return "", ErrInvalidUsageReport
+	}
+	if state == "" {
+		state = observed
+	}
+	switch state {
+	case "ready", "degraded", "draining", "failed", "detached":
+		return state, nil
+	default:
+		return "", ErrInvalidUsageReport
+	}
 }
 
 func (s *EdgeService) ObserveRoutes(ctx context.Context, nodeID string, observations []RouteObservation) error {
@@ -141,12 +181,88 @@ func (s *EdgeService) ObserveRoutes(ctx context.Context, nodeID string, observat
 	now := s.clock().UTC()
 	detachedCount := int64(0)
 	err := s.store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		observed := make(map[string]struct{}, len(observations))
+		// Legacy routes have one observation per route ID. Canonical route
+		// replacement deliberately reports the new and old assignment for the
+		// same route in one batch, so its idempotency key is the immutable
+		// assignment ID instead.
+		observedLegacy := make(map[string]struct{}, len(observations))
+		observedCanonical := make(map[string]struct{}, len(observations))
 		for _, observation := range observations {
 			if observation.RouteID == "" || observation.RouteRevision < 1 || observation.EdgeNodeID != nodeID || observation.ConnectorGeneration < 1 {
 				return ErrInvalidUsageReport
 			}
-			observed[observation.RouteID] = struct{}{}
+			if observation.ConfigGeneration > 0 {
+				if observation.AssignmentID == "" || observation.AssignmentGeneration < 1 || observation.EdgeProcessEpoch == "" || observation.ConnectorID == "" || observation.HostID == "" || observation.ConnectorSessionID == "" || observation.ConnectorProcessGeneration < 1 {
+					return ErrInvalidUsageReport
+				}
+				configHash, err := parseTunnelEdgeConfigHash(observation.ConfigContentHash)
+				if err != nil {
+					return ErrInvalidUsageReport
+				}
+				if _, duplicate := observedCanonical[observation.AssignmentID]; duplicate {
+					return ErrInvalidUsageReport
+				}
+				observedCanonical[observation.AssignmentID] = struct{}{}
+				state, err := observation.canonicalObservedState()
+				if err != nil {
+					return err
+				}
+				if state == "detached" {
+					if _, err := tx.Queries().FinalizeDrainingTunnelEdgeRouteAssignmentV1(ctx, dbsqlc.FinalizeDrainingTunnelEdgeRouteAssignmentV1Params{
+						Now: sql.NullTime{Time: now, Valid: true}, AssignmentID: observation.AssignmentID, RouteID: observation.RouteID,
+						AssignmentGeneration: observation.AssignmentGeneration, EdgeNodeID: observation.EdgeNodeID,
+						EdgeProcessEpoch: observation.EdgeProcessEpoch, ConnectorID: observation.ConnectorID,
+						HostID:              observation.HostID,
+						ConnectorGeneration: observation.ConnectorGeneration, ConnectorSessionID: observation.ConnectorSessionID,
+						ConnectorProcessGeneration: observation.ConnectorProcessGeneration, ConfigGeneration: observation.ConfigGeneration,
+						ConfigContentHash: configHash,
+					}); err != nil {
+						if !errors.Is(err, sql.ErrNoRows) {
+							return err
+						}
+						existing, getErr := tx.Queries().GetTunnelEdgeRouteAssignmentForObservationV1(ctx, dbsqlc.GetTunnelEdgeRouteAssignmentForObservationV1Params{
+							AssignmentID: observation.AssignmentID, RouteID: observation.RouteID, AssignmentGeneration: observation.AssignmentGeneration,
+							EdgeNodeID: observation.EdgeNodeID, EdgeProcessEpoch: observation.EdgeProcessEpoch, ConnectorID: observation.ConnectorID,
+							ConnectorGeneration: observation.ConnectorGeneration, ConnectorSessionID: observation.ConnectorSessionID,
+							HostID: observation.HostID, ConnectorProcessGeneration: observation.ConnectorProcessGeneration, ConfigGeneration: observation.ConfigGeneration,
+							ConfigContentHash: configHash,
+						})
+						if getErr != nil || existing.State != "detached" {
+							return ErrAssignmentConflict
+						}
+					}
+					continue
+				}
+				_, err = tx.Queries().ApplyTunnelEdgeRouteObservationV1(ctx, dbsqlc.ApplyTunnelEdgeRouteObservationV1Params{
+					ObservedState: state,
+					Now:           sql.NullTime{Time: now, Valid: true}, AssignmentID: observation.AssignmentID, AssignmentGeneration: observation.AssignmentGeneration,
+					RouteID: observation.RouteID, RouteRevision: observation.RouteRevision, EdgeNodeID: observation.EdgeNodeID,
+					EdgeProcessEpoch: observation.EdgeProcessEpoch, ConnectorID: observation.ConnectorID,
+					HostID:              observation.HostID,
+					ConnectorGeneration: observation.ConnectorGeneration, ConnectorSessionID: observation.ConnectorSessionID,
+					ConnectorProcessGeneration: observation.ConnectorProcessGeneration, ConfigGeneration: observation.ConfigGeneration,
+					ConfigContentHash: configHash,
+				})
+				if err != nil {
+					if errors.Is(err, sql.ErrNoRows) {
+						return ErrAssignmentConflict
+					}
+					return err
+				}
+				switch state {
+				case "ready":
+					if _, err := tx.Queries().ActivateTunnelEdgeRouteAssignmentV1(ctx, dbsqlc.ActivateTunnelEdgeRouteAssignmentV1Params{
+						AssignmentID: observation.AssignmentID, RouteID: observation.RouteID, Now: now,
+					}); err != nil {
+						return ErrAssignmentConflict
+					}
+				}
+				continue
+			}
+			if _, duplicate := observedLegacy[observation.RouteID]; duplicate {
+				return ErrInvalidUsageReport
+			}
+			observedLegacy[observation.RouteID] = struct{}{}
 			if _, err := tx.Queries().ApplyControlRouteObservation(ctx, dbsqlc.ApplyControlRouteObservationParams{ID: observation.RouteID, RouteRevision: observation.RouteRevision, EdgeNodeID: sql.NullString{String: observation.EdgeNodeID, Valid: true}, ConnectorGeneration: sql.NullInt64{Int64: observation.ConnectorGeneration, Valid: true}, Now: now}); err != nil {
 				if errors.Is(err, sql.ErrNoRows) {
 					return ErrAssignmentConflict
@@ -159,7 +275,7 @@ func (s *EdgeService) ObserveRoutes(ctx context.Context, nodeID string, observat
 			return err
 		}
 		for _, route := range detaching {
-			if _, present := observed[route.ID]; present {
+			if _, present := observedLegacy[route.ID]; present {
 				continue
 			}
 			if _, err := tx.Queries().FinalizeDetachedControlRoute(ctx, dbsqlc.FinalizeDetachedControlRouteParams{ID: route.ID, DesiredRevision: route.DesiredRevision, EdgeNodeID: sql.NullString{String: nodeID, Valid: true}, Now: now}); err != nil {
@@ -167,7 +283,7 @@ func (s *EdgeService) ObserveRoutes(ctx context.Context, nodeID string, observat
 			}
 			detachedCount++
 		}
-		return tx.Queries().RefreshControlPreviewEdgeReadiness(ctx, now)
+		return nil
 	})
 	if err == nil {
 		observability.ControlRouteObserved(int64(len(observations)))
@@ -381,8 +497,18 @@ type edgeNodeRegistration struct {
 		TCPPort  uint16 `json:"tcp_port"`
 		QUICPort uint16 `json:"quic_port"`
 	} `json:"connector_endpoint"`
-	SignalingHost string `json:"signaling_host"`
-	STUNEndpoint  struct {
+	// CarrierEndpoint is the canonical data-carrier listener. It is kept
+	// separate from ConnectorEndpoint because the latter is the legacy FRP
+	// connector transport and must never be used for preview carrier routes.
+	CarrierEndpoint struct {
+		Host     string `json:"host"`
+		TCPPort  uint16 `json:"tcp_port"`
+		QUICPort uint16 `json:"quic_port"`
+	} `json:"carrier_endpoint"`
+	CarrierServerSPKISHA256          string `json:"carrier_server_spki_sha256"`
+	CarrierServerCertificateChainPEM string `json:"carrier_server_certificate_chain_pem"`
+	SignalingHost                    string `json:"signaling_host"`
+	STUNEndpoint                     struct {
 		Host string `json:"host"`
 		Port uint16 `json:"port"`
 	} `json:"stun_endpoint"`
@@ -474,12 +600,84 @@ func (s *EdgeService) RegisterNode(ctx context.Context, r edgeNodeRegistration) 
 	if r.RelayName == "" {
 		r.RelayName = r.RelayRegion
 	}
-	if r.NodeID == "" || r.EdgePool == "" || !validProbeRegion(r.RelayID) || !validProbeRegion(r.RelayRegion) || strings.TrimSpace(r.RelayName) == "" || len(r.RelayName) > 80 || r.Protocol == "" || r.ProcessEpoch == "" || r.Capacity == 0 || r.Endpoint.Host == "" || r.Endpoint.TCPPort == 0 || r.Endpoint.QUICPort == 0 || r.SignalingHost == "" || r.STUNEndpoint.Host == "" || r.STUNEndpoint.Port == 0 {
+	if r.NodeID == "" || r.EdgePool == "" || !validProbeRegion(r.RelayID) || !validProbeRegion(r.RelayRegion) || strings.TrimSpace(r.RelayName) == "" || len(r.RelayName) > 80 || r.Protocol == "" || r.ProcessEpoch == "" || r.Capacity == 0 || r.Endpoint.Host == "" || r.Endpoint.TCPPort == 0 || r.Endpoint.QUICPort == 0 || r.SignalingHost == "" || r.STUNEndpoint.Host == "" || r.STUNEndpoint.Port == 0 || validateCarrierServerCertificateChain(r.CarrierServerCertificateChainPEM, r.CarrierServerSPKISHA256, r.CarrierEndpoint.Host, s.clock().UTC()) != nil {
 		return ErrInvalidUsageReport
 	}
+	if err := validateCarrierEndpoint(r.CarrierEndpoint); err != nil {
+		return err
+	}
 	capacity, _ := json.Marshal(map[string]any{"connectors": r.Capacity, "artifact": r.Artifact})
-	_, err := s.store.Queries().RegisterControlTunnelNode(ctx, dbsqlc.RegisterControlTunnelNodeParams{ID: r.NodeID, EdgePool: r.EdgePool, RelayID: sql.NullString{String: r.RelayID, Valid: true}, RelayRegion: sql.NullString{String: r.RelayRegion, Valid: true}, RelayName: sql.NullString{String: r.RelayName, Valid: true}, ProtocolVersion: r.Protocol, ProcessEpoch: r.ProcessEpoch, EndpointHost: sql.NullString{String: r.Endpoint.Host, Valid: true}, EndpointTcpPort: sql.NullInt32{Int32: int32(r.Endpoint.TCPPort), Valid: true}, EndpointQuicPort: sql.NullInt32{Int32: int32(r.Endpoint.QUICPort), Valid: true}, SignalingHost: sql.NullString{String: r.SignalingHost, Valid: true}, StunHost: sql.NullString{String: r.STUNEndpoint.Host, Valid: true}, StunPort: sql.NullInt32{Int32: int32(r.STUNEndpoint.Port), Valid: true}, Capacity: capacity, Now: sql.NullTime{Time: s.clock(), Valid: true}})
+	now := sql.NullTime{Time: s.clock().UTC(), Valid: true}
+	_, err := s.store.Queries().RegisterControlTunnelNode(ctx, dbsqlc.RegisterControlTunnelNodeParams{
+		ID: r.NodeID, EdgePool: r.EdgePool,
+		RelayID: sql.NullString{String: r.RelayID, Valid: true}, RelayRegion: sql.NullString{String: r.RelayRegion, Valid: true}, RelayName: sql.NullString{String: r.RelayName, Valid: true},
+		ProtocolVersion: r.Protocol, ProcessEpoch: r.ProcessEpoch,
+		EndpointHost: sql.NullString{String: r.Endpoint.Host, Valid: true}, EndpointTcpPort: sql.NullInt32{Int32: int32(r.Endpoint.TCPPort), Valid: true}, EndpointQuicPort: sql.NullInt32{Int32: int32(r.Endpoint.QUICPort), Valid: true},
+		CarrierEndpointHost: sql.NullString{String: r.CarrierEndpoint.Host, Valid: true}, CarrierEndpointTcpPort: sql.NullInt32{Int32: int32(r.CarrierEndpoint.TCPPort), Valid: true}, CarrierEndpointQuicPort: sql.NullInt32{Int32: int32(r.CarrierEndpoint.QUICPort), Valid: true},
+		CarrierServerSpkiSha256:          sql.NullString{String: r.CarrierServerSPKISHA256, Valid: true},
+		CarrierServerCertificateChainPem: sql.NullString{String: r.CarrierServerCertificateChainPEM, Valid: true},
+		SignalingHost:                    sql.NullString{String: r.SignalingHost, Valid: true}, StunHost: sql.NullString{String: r.STUNEndpoint.Host, Valid: true}, StunPort: sql.NullInt32{Int32: int32(r.STUNEndpoint.Port), Valid: true},
+		Capacity: capacity, Now: now,
+	})
 	return err
+}
+
+func validCarrierServerSPKISHA256(value string) bool {
+	if len(value) != len("sha256:")+64 || !strings.HasPrefix(value, "sha256:") {
+		return false
+	}
+	decoded, err := hex.DecodeString(strings.TrimPrefix(value, "sha256:"))
+	return err == nil && len(decoded) == sha256.Size
+}
+
+func validateCarrierServerCertificateChain(chainPEM, pin, hostname string, now time.Time) error {
+	if len(chainPEM) == 0 || len(chainPEM) > 64<<10 || !validCarrierServerSPKISHA256(pin) {
+		return ErrInvalidUsageReport
+	}
+	rest := []byte(chainPEM)
+	count := 0
+	var leaf *x509.Certificate
+	for len(rest) > 0 {
+		block, next := pem.Decode(rest)
+		if block == nil || block.Type != "CERTIFICATE" || len(block.Headers) != 0 {
+			return ErrInvalidUsageReport
+		}
+		certificate, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return ErrInvalidUsageReport
+		}
+		if count == 0 {
+			leaf = certificate
+		}
+		count++
+		if count > 8 {
+			return ErrInvalidUsageReport
+		}
+		rest = next
+	}
+	if leaf == nil {
+		return ErrInvalidUsageReport
+	}
+	if now.Before(leaf.NotBefore) || !now.Before(leaf.NotAfter) || leaf.VerifyHostname(hostname) != nil {
+		return ErrInvalidUsageReport
+	}
+	digest := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
+	if pin != "sha256:"+hex.EncodeToString(digest[:]) {
+		return ErrInvalidUsageReport
+	}
+	return nil
+}
+
+func validateCarrierEndpoint(endpoint struct {
+	Host     string `json:"host"`
+	TCPPort  uint16 `json:"tcp_port"`
+	QUICPort uint16 `json:"quic_port"`
+}) error {
+	host := strings.TrimSpace(endpoint.Host)
+	if host != endpoint.Host || len(host) > 253 || strings.ContainsAny(host, "/ 	\r\n\x00") || endpoint.TCPPort == 0 || endpoint.QUICPort == 0 || endpoint.TCPPort == endpoint.QUICPort {
+		return ErrInvalidUsageReport
+	}
+	return nil
 }
 
 func (s *EdgeService) Heartbeat(ctx context.Context, r edgeNodeObservation) error {
@@ -499,10 +697,7 @@ func (s *EdgeService) Assignment(ctx context.Context, environment, machine, conn
 }
 
 func (s *EdgeService) Routes(ctx context.Context, nodeID string) ([]dbsqlc.ListControlRoutesForNodeRow, error) {
-	return s.store.Queries().ListControlRoutesForNode(ctx, dbsqlc.ListControlRoutesForNodeParams{
-		EdgeNodeID: sql.NullString{String: nodeID, Valid: nodeID != ""},
-		Now:        sql.NullTime{Time: s.clock().UTC(), Valid: true},
-	})
+	return s.store.Queries().ListControlRoutesForNode(ctx, sql.NullString{String: nodeID, Valid: nodeID != ""})
 }
 
 func (s *EdgeService) Usage(ctx context.Context, r edgeUsageRequest) (UsageReceipt, error) {
@@ -521,6 +716,9 @@ func (s *EdgeService) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/edge/routes/observations", s.handleObservedRoutes)
 	mux.HandleFunc("POST /v1/edge/usage-reports", s.handleUsage)
 	mux.HandleFunc("GET /v1/trust/revocations", s.handleRevocations)
+	if s.certificateDistribution != nil {
+		mux.Handle("/v1/edge/certificates/distributions/", s.certificateDistribution)
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && r.URL.Path == "/v1/connectors/admission" {
 			s.handleConnectorAdmission(w, r)
@@ -658,9 +856,23 @@ func (s *EdgeService) handleAssignment(w http.ResponseWriter, r *http.Request) {
 
 func (s *EdgeService) handleRoutes(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		NodeID string `json:"edge_node_id"`
+		NodeID       string `json:"edge_node_id"`
+		ProcessEpoch string `json:"process_epoch,omitempty"`
 	}
 	if !s.decode(w, r, &input) {
+		return
+	}
+	if input.ProcessEpoch != "" {
+		rows, err := s.ListTunnelEdgeRouteAssignmentsForNodeV1(r.Context(), input.NodeID, input.ProcessEpoch)
+		if err != nil {
+			writeEdgeError(w, r, http.StatusServiceUnavailable, "control_unavailable", true, 1000)
+			return
+		}
+		items := make([]map[string]any, 0, len(rows))
+		for _, row := range rows {
+			items = append(items, tunnelEdgeRouteJSON(row))
+		}
+		writeEdgeJSON(w, http.StatusOK, map[string]any{"complete": true, "routes": items})
 		return
 	}
 	rows, err := s.Routes(r.Context(), input.NodeID)
@@ -668,9 +880,12 @@ func (s *EdgeService) handleRoutes(w http.ResponseWriter, r *http.Request) {
 		writeEdgeError(w, r, http.StatusServiceUnavailable, "control_unavailable", true, 1000)
 		return
 	}
+	// Callers without a process epoch are the legacy control projection. The
+	// process-fenced canonical route snapshot above is authoritative for current
+	// edge runtimes and deliberately carries an explicit completion marker.
 	items := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, map[string]any{"route_id": row.RouteID, "route_revision": row.RouteRevision, "environment_id": row.EnvironmentID, "connector_id": row.ConnectorID, "connector_generation": row.ConnectorGeneration, "edge_node_id": row.EdgeNodeID.String, "kind": row.Kind, "public_host": row.PublicHost, "preview_state": row.PreviewState, "preview_reason": row.PreviewReason, "target": map[string]any{"host": row.TargetHost, "port": row.TargetPort}})
+		items = append(items, map[string]any{"route_id": row.RouteID, "route_revision": row.RouteRevision, "environment_id": row.EnvironmentID, "connector_id": row.ConnectorID, "connector_generation": row.ConnectorGeneration, "edge_node_id": row.EdgeNodeID.String, "kind": row.Kind, "public_host": row.PublicHost, "target": map[string]any{"host": row.TargetHost, "port": row.TargetPort}})
 	}
 	writeEdgeJSON(w, http.StatusOK, map[string]any{"routes": items})
 }
@@ -710,6 +925,18 @@ func writeEdgeJSON(w http.ResponseWriter, status int, value any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
 }
+
+func parseTunnelEdgeConfigHash(value string) ([]byte, error) {
+	if len(value) != len("sha256:")+sha256.Size*2 || !strings.HasPrefix(value, "sha256:") {
+		return nil, ErrInvalidUsageReport
+	}
+	decoded, err := hex.DecodeString(strings.TrimPrefix(value, "sha256:"))
+	if err != nil || len(decoded) != sha256.Size {
+		return nil, ErrInvalidUsageReport
+	}
+	return decoded, nil
+}
+
 func writeEdgeError(w http.ResponseWriter, r *http.Request, status int, code string, retryable bool, retryAfterMS int) {
 	requestID := observability.RequestID(r.Context())
 	if requestID == "" {

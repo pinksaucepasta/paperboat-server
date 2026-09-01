@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 )
 
 type ErrorResponse struct {
@@ -10,10 +11,18 @@ type ErrorResponse struct {
 }
 
 type APIError struct {
-	Code      string         `json:"code"`
-	Message   string         `json:"message"`
-	RequestID string         `json:"request_id"`
-	Details   map[string]any `json:"details"`
+	Schema        string         `json:"schema,omitempty"`
+	Kind          string         `json:"kind,omitempty"`
+	Code          string         `json:"code"`
+	Component     string         `json:"component,omitempty"`
+	Message       string         `json:"message"`
+	Outcome       string         `json:"outcome,omitempty"`
+	Retryable     *bool          `json:"retryable,omitempty"`
+	RetryAt       *time.Time     `json:"retry_at,omitempty"`
+	RepairAction  string         `json:"repair_action,omitempty"`
+	RequestID     string         `json:"request_id"`
+	CorrelationID string         `json:"correlation_id,omitempty"`
+	Details       map[string]any `json:"details,omitempty"`
 }
 
 type SuccessResponse struct {

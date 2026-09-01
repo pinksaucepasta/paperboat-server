@@ -291,6 +291,9 @@ func newAuthIntegrationRouter(t *testing.T) (*db.DB, http.Handler) {
 	if dsn == "" {
 		t.Skip("set PAPERBOAT_TEST_DATABASE_DSN to run auth integration tests")
 	}
+	if err := db.ValidateIsolatedTestDSN(dsn, os.Getenv("PAPERBOAT_DATABASE_DSN")); err != nil {
+		t.Fatal(err)
+	}
 	store, err := db.Open(config.Database{Driver: "postgres", DSN: dsn})
 	if err != nil {
 		t.Fatal(err)
@@ -304,7 +307,8 @@ func newAuthIntegrationRouter(t *testing.T) (*db.DB, http.Handler) {
 	service := auth.NewService(store, auditWriter, auth.FakeWorkOSVerifier{}, []string{"test-session-key"}, false)
 	deviceService := auth.NewDeviceService(store, auditWriter, config.Default().CLIAuth, []string{"test-device-hash-key"})
 	billingService := billing.NewService(billing.NewRepository(store), billing.FakePolarClient{}, auditWriter)
-	userMachineService := usermachines.New(store, auditWriter, usermachines.Policy{}, billingService)
+	userMachineService := usermachines.New(store, auditWriter, usermachines.Policy{PairingLifetime: 10 * time.Minute}, billingService)
+	userMachineService.ConfigureProvisioning(nil, "test-enrollment-key")
 	cfg := config.Default()
 	return store, NewRouter(Options{
 		Config: cfg,

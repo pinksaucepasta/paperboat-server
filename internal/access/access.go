@@ -180,8 +180,6 @@ func (f FakeClient) EnsureProjectResources(_ context.Context, project ProjectRef
 		Metadata: map[string]any{
 			"provider":       "fake",
 			"resource_kind":  "http_tunnel",
-			"preview_url":    base + "/projects/" + project.ID,
-			"local_url":      "http://127.0.0.1:4099",
 			"machine_secret": "external",
 		},
 	}, nil
@@ -1562,12 +1560,7 @@ func (r *Repository) UpsertResource(ctx context.Context, projectID string, resou
 		if err != nil {
 			return err
 		}
-		previewURL, _ := resource.Metadata["preview_url"].(string)
-		localURL, _ := resource.Metadata["local_url"].(string)
-		if strings.TrimSpace(previewURL) == "" || strings.TrimSpace(localURL) == "" {
-			return nil
-		}
-		return q.UpsertPreviewURLRecord(ctx, dbsqlc.UpsertPreviewURLRecordParams{ID: newID("pvr"), ProjectID: projectID, TargetUrl: localURL, PublicUrl: previewURL})
+		return nil
 	})
 	return resource, err
 }

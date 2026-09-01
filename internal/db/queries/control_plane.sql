@@ -786,179 +786,12 @@ RETURNING *;
 -- name: GetControlEnvironment :one
 SELECT * FROM control_environments WHERE id = $1;
 
--- name: GetControlPreviewForUpdate :one
-SELECT * FROM control_previews
-WHERE environment_id = sqlc.arg(environment_id) AND logical_name = sqlc.arg(logical_name)
-  AND state <> 'removed'
-FOR UPDATE;
-
--- name: GetControlPreviewByKey :one
-SELECT * FROM control_previews WHERE preview_key = sqlc.arg(preview_key);
-
--- name: CanIssueControlRouteCertificate :one
-SELECT EXISTS (
-  SELECT 1
-  FROM control_routes r
-  JOIN control_environments e ON e.id = r.environment_id
-  LEFT JOIN control_previews p ON p.route_id = r.id
-  WHERE r.public_host = sqlc.arg(public_host)
-    AND e.desired_state = 'active'
-    AND e.revoked_at IS NULL
-    AND r.desired_state = 'attached'
-    AND (
-      r.kind = 'runtime_https_wss'
-      OR (
-        r.kind = 'preview_public_https_wss'
-        AND p.state <> 'removed'
-        AND p.public_acknowledged_at IS NOT NULL
-        AND (p.expires_at IS NULL OR p.expires_at > sqlc.arg(now))
-      )
-    )
-);
-
--- name: ListControlPreviews :many
-SELECT * FROM control_previews
-WHERE environment_id = sqlc.arg(environment_id) AND state NOT IN ('removed','expired')
-  AND (expires_at IS NULL OR expires_at > now())
-ORDER BY logical_name, id;
-
--- name: CountActiveControlPreviews :one
-SELECT count(*)::integer FROM control_previews
-WHERE environment_id = sqlc.arg(environment_id) AND state NOT IN ('removed','expired')
-  AND (expires_at IS NULL OR expires_at > sqlc.arg(now));
-
--- name: SelectControlPreviewForEviction :one
-SELECT * FROM control_previews
-WHERE environment_id = sqlc.arg(environment_id) AND state NOT IN ('removed','expired')
-  AND (expires_at IS NULL OR expires_at > sqlc.arg(now))
-ORDER BY (expires_at IS NULL) ASC, created_at ASC, id ASC
-LIMIT 1 FOR UPDATE;
-
--- name: ListOwnedControlPreviews :many
-SELECT p.*, e.owner_user_id, e.workspace_id,
-       cm.id AS machine_id,
-       COALESCE(cm.display_name, pr.name, e.id) AS environment_name,
-       CASE WHEN cm.id IS NULL THEN 'hosted' ELSE 'byod' END AS environment_kind,
-       COALESCE(u.primary_email, '') AS owner_email
-FROM control_previews p
-JOIN control_environments e ON e.id = p.environment_id
-LEFT JOIN user_machines cm ON cm.environment_id = e.id AND cm.deleted_at IS NULL
-LEFT JOIN projects pr ON pr.id = e.workspace_id
-LEFT JOIN users u ON u.id = e.owner_user_id
-WHERE e.owner_user_id = sqlc.arg(owner_user_id)
-  AND e.desired_state = 'active'
-  AND e.revoked_at IS NULL
-  AND p.state <> 'removed'
-ORDER BY p.updated_at DESC, p.id;
-
--- name: GetOwnedControlPreview :one
-SELECT p.* FROM control_previews p
-JOIN control_environments e ON e.id = p.environment_id
-WHERE p.id = sqlc.arg(id) AND e.owner_user_id = sqlc.arg(owner_user_id)
-FOR UPDATE;
-
--- name: CreateControlPreview :one
-INSERT INTO control_previews
-  (id, environment_id, logical_name, preview_key, collision_counter, public_host,
-   target_host, target_port, source_kind, owner_mode, public_acknowledged_at, expires_at)
-VALUES
-  (sqlc.arg(id), sqlc.arg(environment_id), sqlc.arg(logical_name), sqlc.arg(preview_key),
-   sqlc.arg(collision_counter), sqlc.arg(public_host), sqlc.arg(target_host), sqlc.arg(target_port),
-   sqlc.arg(source_kind), sqlc.arg(owner_mode), sqlc.narg(public_acknowledged_at), sqlc.narg(expires_at))
-ON CONFLICT DO NOTHING
-RETURNING *;
-
--- name: UpdateControlPreview :one
-UPDATE control_previews
-SET target_host = sqlc.arg(target_host), target_port = sqlc.arg(target_port),
-    source_kind = sqlc.arg(source_kind), owner_mode = sqlc.arg(owner_mode),
-    state = CASE WHEN state = 'removed' THEN state ELSE 'registering' END,
-    public_acknowledged_at = coalesce(public_acknowledged_at, sqlc.narg(public_acknowledged_at)),
-    expires_at = sqlc.narg(expires_at),
-    version = version + 1, updated_at = sqlc.arg(now)
-WHERE id = sqlc.arg(id) AND version = sqlc.arg(expected_version)
-RETURNING *;
-
--- name: SetControlPreviewRoute :one
-UPDATE control_previews SET route_id = sqlc.arg(route_id), updated_at = sqlc.arg(now)
-WHERE id = sqlc.arg(id) AND route_id IS NULL
-RETURNING *;
-
--- name: UpdateControlPreviewRouteTarget :one
-UPDATE control_routes
-SET target_host = sqlc.arg(target_host), target_port = sqlc.arg(target_port),
-    desired_state = 'attached', desired_revision = desired_revision + 1,
-    version = version + 1, updated_at = sqlc.arg(now)
-WHERE id = sqlc.arg(id) AND environment_id = sqlc.arg(environment_id)
-RETURNING *;
-
--- name: RemoveControlPreview :one
-UPDATE control_previews
-SET state = 'removed', removed_at = coalesce(removed_at, sqlc.arg(now)),
-    retained_until = greatest(coalesce(retained_until, sqlc.arg(now)), sqlc.arg(retained_until)),
-    version = version + 1, updated_at = sqlc.arg(now)
-WHERE id = sqlc.arg(id) AND version = sqlc.arg(expected_version)
-RETURNING *;
-
--- name: RemoveControlPreviewRoute :execrows
-UPDATE control_routes
-SET desired_state = CASE WHEN applied_node_id IS NULL THEN 'detached' ELSE 'detaching' END,
-    desired_revision = desired_revision + 1, version = version + 1, updated_at = sqlc.arg(now)
-WHERE id = sqlc.arg(id) AND environment_id = sqlc.arg(environment_id)
-  AND desired_state NOT IN ('detaching','detached');
-
 -- name: RevokeControlRoutesForEnvironment :execrows
 UPDATE control_routes
 SET desired_state = CASE WHEN applied_node_id IS NULL THEN 'detached' ELSE 'detaching' END,
     desired_revision = desired_revision + 1, version = version + 1, updated_at = sqlc.arg(now)
 WHERE environment_id = sqlc.arg(environment_id)
   AND desired_state NOT IN ('detaching','detached');
-
--- name: ApplyControlPreviewHelperObservation :one
-UPDATE control_previews
-SET helper_ready = sqlc.arg(helper_ready), target_ready = sqlc.arg(target_ready),
-    helper_observation_revision = sqlc.arg(observation_revision), helper_observed_at = sqlc.arg(observed_at),
-    state = CASE
-      WHEN state = 'removed' THEN state
-      WHEN expires_at IS NOT NULL AND expires_at <= sqlc.arg(observed_at) THEN 'expired'
-      WHEN NOT sqlc.arg(helper_ready) THEN 'offline'
-      WHEN sqlc.arg(target_ready) AND edge_ready THEN 'ready'
-      ELSE 'degraded'
-    END,
-    version = version + 1, updated_at = sqlc.arg(observed_at)
-WHERE environment_id = sqlc.arg(environment_id) AND preview_key = sqlc.arg(preview_key)
-  AND logical_name = sqlc.arg(logical_name) AND target_host = sqlc.arg(target_host)
-  AND target_port = sqlc.arg(target_port)
-  AND state <> 'removed' AND sqlc.arg(observation_revision) > helper_observation_revision
-RETURNING *;
-
--- name: RefreshControlPreviewEdgeReadiness :exec
-UPDATE control_previews p
-SET helper_ready = (p.helper_ready AND p.helper_observed_at >= sqlc.arg(now)::timestamptz - interval '1 minute'),
-    target_ready = (p.target_ready AND p.helper_observed_at >= sqlc.arg(now)::timestamptz - interval '1 minute'),
-    edge_ready = (r.desired_state = 'attached' AND r.applied_revision = r.desired_revision AND r.applied_node_id IS NOT NULL),
-    state = CASE
-      WHEN p.state IN ('removed','expired') THEN p.state
-      WHEN NOT p.helper_ready OR p.helper_observed_at IS NULL OR p.helper_observed_at < sqlc.arg(now)::timestamptz - interval '1 minute' THEN 'offline'
-      WHEN p.target_ready AND r.desired_state = 'attached' AND r.applied_revision = r.desired_revision AND r.applied_node_id IS NOT NULL THEN 'ready'
-      ELSE 'degraded'
-    END,
-    version = p.version + 1, updated_at = sqlc.arg(now)
-FROM control_routes r
-WHERE p.route_id = r.id AND p.state <> 'removed';
-
--- name: GetControlPreviewOperation :one
-SELECT * FROM control_preview_operations WHERE operation_key = $1;
-
--- name: ReserveControlPreviewOperation :one
-INSERT INTO control_preview_operations(operation_key, operation_type, request_hash, preview_id)
-VALUES (sqlc.arg(operation_key), sqlc.arg(operation_type), sqlc.arg(request_hash), sqlc.arg(preview_id))
-ON CONFLICT (operation_key) DO UPDATE SET operation_key = EXCLUDED.operation_key
-RETURNING *;
-
--- name: SetControlPreviewOperationResult :exec
-UPDATE control_preview_operations SET result = sqlc.arg(result), preview_id = sqlc.arg(preview_id)
-WHERE operation_key = sqlc.arg(operation_key);
 
 -- name: UpdateControlEnvironmentDesiredState :one
 UPDATE control_environments
@@ -1104,14 +937,17 @@ SET state = 'pending', attempts = 0, last_error = NULL, next_attempt_at = NULL,
 WHERE id = sqlc.arg(id) AND state = 'dead_letter';
 
 -- name: RegisterControlTunnelNode :one
-INSERT INTO control_tunnel_nodes (id, edge_pool, relay_id, relay_region, relay_name, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, signaling_host, stun_host, stun_port, state, ready, capacity, last_heartbeat_at)
-VALUES (sqlc.arg(id), sqlc.arg(edge_pool), sqlc.arg(relay_id), sqlc.arg(relay_region), sqlc.arg(relay_name), sqlc.arg(protocol_version), sqlc.arg(process_epoch), sqlc.arg(endpoint_host), sqlc.arg(endpoint_tcp_port), sqlc.arg(endpoint_quic_port), sqlc.arg(signaling_host), sqlc.arg(stun_host), sqlc.arg(stun_port), 'registered', false,
+INSERT INTO control_tunnel_nodes (id, edge_pool, relay_id, relay_region, relay_name, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, carrier_endpoint_host, carrier_endpoint_tcp_port, carrier_endpoint_quic_port, carrier_server_spki_sha256, carrier_server_certificate_chain_pem, signaling_host, stun_host, stun_port, state, ready, capacity, last_heartbeat_at)
+VALUES (sqlc.arg(id), sqlc.arg(edge_pool), sqlc.arg(relay_id), sqlc.arg(relay_region), sqlc.arg(relay_name), sqlc.arg(protocol_version), sqlc.arg(process_epoch), sqlc.arg(endpoint_host), sqlc.arg(endpoint_tcp_port), sqlc.arg(endpoint_quic_port), sqlc.narg(carrier_endpoint_host), sqlc.narg(carrier_endpoint_tcp_port), sqlc.narg(carrier_endpoint_quic_port), sqlc.narg(carrier_server_spki_sha256), sqlc.narg(carrier_server_certificate_chain_pem), sqlc.arg(signaling_host), sqlc.arg(stun_host), sqlc.arg(stun_port), 'registered', false,
         coalesce(sqlc.arg(capacity)::jsonb, '{}'::jsonb), sqlc.arg(now))
 ON CONFLICT (id) DO UPDATE
 SET edge_pool = EXCLUDED.edge_pool, relay_id = EXCLUDED.relay_id,
     relay_region = EXCLUDED.relay_region, relay_name = EXCLUDED.relay_name,
     protocol_version = EXCLUDED.protocol_version, process_epoch = EXCLUDED.process_epoch,
     endpoint_host = EXCLUDED.endpoint_host, endpoint_tcp_port = EXCLUDED.endpoint_tcp_port, endpoint_quic_port = EXCLUDED.endpoint_quic_port,
+    carrier_endpoint_host = EXCLUDED.carrier_endpoint_host, carrier_endpoint_tcp_port = EXCLUDED.carrier_endpoint_tcp_port, carrier_endpoint_quic_port = EXCLUDED.carrier_endpoint_quic_port,
+    carrier_server_spki_sha256 = EXCLUDED.carrier_server_spki_sha256,
+    carrier_server_certificate_chain_pem = EXCLUDED.carrier_server_certificate_chain_pem,
     signaling_host = EXCLUDED.signaling_host, stun_host = EXCLUDED.stun_host, stun_port = EXCLUDED.stun_port,
     state = 'registered', ready = false, capacity = EXCLUDED.capacity,
     observation = '{}'::jsonb, last_heartbeat_at = EXCLUDED.last_heartbeat_at,
@@ -1166,26 +1002,21 @@ RETURNING *;
 -- name: ListControlRoutesForNode :many
 SELECT r.id AS route_id, r.desired_revision AS route_revision, r.environment_id, c.connector_id,
        c.generation AS connector_generation, c.edge_node_id, r.kind, r.public_host,
-       r.target_host, r.target_port, COALESCE(p.state, 'ready') AS preview_state,
-       CASE WHEN p.state = 'degraded' AND NOT p.target_ready THEN 'target_unhealthy' ELSE '' END AS preview_reason
+       r.target_host, r.target_port
 FROM control_routes r
 JOIN control_connector_generations c ON c.environment_id = r.environment_id AND c.connector_id = r.connector_id
 JOIN user_machines m ON m.id = c.machine_id AND m.environment_id = c.environment_id
-LEFT JOIN control_previews p ON p.route_id = r.id
 WHERE c.edge_node_id = sqlc.arg(edge_node_id)
   AND r.desired_state IN ('attached','replacing')
   AND c.state IN ('pending','admitted')
   AND m.revoked_at IS NULL AND m.deleted_at IS NULL
-  AND (p.id IS NULL OR (p.state NOT IN ('expired','removed') AND (p.expires_at IS NULL OR p.expires_at > sqlc.arg(now))))
 ORDER BY r.id;
 
 -- name: ListControlRoutesForEnvironmentAdmission :many
 SELECT r.id AS route_id, r.desired_revision AS route_revision, r.kind, r.public_host, r.target_host, r.target_port
 FROM control_routes r
-LEFT JOIN control_previews p ON p.route_id = r.id
 WHERE r.environment_id = sqlc.arg(environment_id) AND r.connector_id = sqlc.arg(connector_id)
   AND r.desired_state IN ('attached','replacing')
-  AND (p.id IS NULL OR (p.state NOT IN ('expired','removed') AND (p.expires_at IS NULL OR p.expires_at > now())))
 ORDER BY r.id
 LIMIT 128;
 
@@ -1249,6 +1080,401 @@ WHERE applied_node_id = sqlc.arg(edge_node_id) AND desired_state IN ('attached',
 -- name: GetControlRouteForUpdate :one
 SELECT * FROM control_routes WHERE id = $1 FOR UPDATE;
 
+-- name: StageTunnelEdgeRouteAssignmentV1 :one
+-- Publish only after the connector session and the edge process have both
+-- reported readiness for the exact immutable config generation.  The edge
+-- receives route identity and policy, never the host-local origin address.
+INSERT INTO tunnel_edge_route_assignments
+  (assignment_id, route_id, assignment_generation, account_id, tunnel_id,
+   connector_id, host_id, machine_identity_public_key, machine_identity_thumbprint,
+   connector_generation, connector_session_id,
+   connector_process_generation, config_generation, config_content_hash,
+   access_mode, route_generation, route_revision, edge_node_id, edge_process_epoch,
+   edge_failure_domain, state, observed_state, assigned_at, updated_at)
+SELECT sqlc.arg(assignment_id), r.id, sqlc.arg(assignment_generation), t.account_id, r.tunnel_id,
+       c.id, c.host_id, m.public_identity_key, sqlc.arg(machine_identity_thumbprint),
+       c.generation, session.id, session.process_generation, config.generation,
+       config.content_hash, t.access_mode, r.generation, r.generation, node.id, node.process_epoch,
+       node.edge_pool, 'staged', 'pending', sqlc.arg(now), sqlc.arg(now)
+FROM tunnel_routes AS r
+JOIN tunnels AS t ON t.id = r.tunnel_id AND t.account_id = sqlc.arg(account_id)
+JOIN tunnel_connectors AS c
+  ON c.id = sqlc.arg(connector_id) AND c.tunnel_id = r.tunnel_id
+JOIN user_machines AS m
+  ON m.id = c.host_id AND m.user_id = t.account_id
+ AND m.deleted_at IS NULL AND m.revoked_at IS NULL
+ AND m.public_identity_key IS NOT NULL
+JOIN tunnel_connector_sessions AS session
+  ON session.id = sqlc.arg(connector_session_id) AND session.connector_id = c.id
+JOIN tunnel_config_generations AS config
+  ON config.tunnel_id = r.tunnel_id AND config.generation = sqlc.arg(config_generation)
+JOIN control_tunnel_nodes AS node
+  ON node.id = sqlc.arg(edge_node_id) AND node.process_epoch = sqlc.arg(edge_process_epoch)
+WHERE r.id = sqlc.arg(route_id)
+  AND r.tunnel_id = sqlc.arg(tunnel_id)
+  AND r.protocol IN ('http','private_tcp')
+  AND btrim(sqlc.arg(assignment_id)) = sqlc.arg(assignment_id)
+  AND sqlc.arg(assignment_id) ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{2,127}$'
+  AND btrim(node.edge_pool) = node.edge_pool
+  AND node.edge_pool ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
+  AND r.desired_state = 'active'
+  AND t.desired_state = 'active'
+  AND (t.expires_at IS NULL OR t.expires_at > sqlc.arg(now))
+  AND c.desired_state = 'active' AND c.drain_state = 'accepting'
+  AND c.generation = sqlc.arg(connector_generation)
+  AND c.last_session_id = session.id
+  AND c.last_applied_config_generation = config.generation
+  AND session.process_generation = sqlc.arg(connector_process_generation)
+  AND session.state = 'ready'
+  AND session.lease_deadline > sqlc.arg(now)
+  AND session.applied_config_generation = config.generation
+  AND config.activation_state = 'active'
+  AND config.content_hash = sqlc.arg(config_content_hash)
+  AND node.state = 'ready' AND node.ready = true
+  AND node.last_heartbeat_at IS NOT NULL
+  AND node.last_heartbeat_at > sqlc.arg(now) - interval '2 minutes'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM tunnel_edge_route_assignments AS prior
+    WHERE prior.route_id = r.id
+      AND prior.assignment_id <> sqlc.arg(assignment_id)
+      AND prior.assignment_generation >= sqlc.arg(assignment_generation)
+  )
+ON CONFLICT (assignment_id) DO UPDATE
+SET updated_at = EXCLUDED.updated_at
+WHERE tunnel_edge_route_assignments.route_id = EXCLUDED.route_id
+  AND tunnel_edge_route_assignments.assignment_generation = EXCLUDED.assignment_generation
+  AND tunnel_edge_route_assignments.account_id = EXCLUDED.account_id
+  AND tunnel_edge_route_assignments.tunnel_id = EXCLUDED.tunnel_id
+  AND tunnel_edge_route_assignments.connector_id = EXCLUDED.connector_id
+  AND tunnel_edge_route_assignments.host_id = EXCLUDED.host_id
+  AND tunnel_edge_route_assignments.connector_generation = EXCLUDED.connector_generation
+  AND tunnel_edge_route_assignments.connector_session_id = EXCLUDED.connector_session_id
+  AND tunnel_edge_route_assignments.connector_process_generation = EXCLUDED.connector_process_generation
+  AND tunnel_edge_route_assignments.config_generation = EXCLUDED.config_generation
+  AND tunnel_edge_route_assignments.config_content_hash = EXCLUDED.config_content_hash
+  AND tunnel_edge_route_assignments.access_mode = EXCLUDED.access_mode
+  AND tunnel_edge_route_assignments.edge_node_id = EXCLUDED.edge_node_id
+  AND tunnel_edge_route_assignments.edge_process_epoch = EXCLUDED.edge_process_epoch
+  AND tunnel_edge_route_assignments.state = 'staged'
+RETURNING *;
+
+-- name: ListReadyTunnelEdgeRouteCandidatesV1 :many
+-- Pick every ready connector replica and one ready edge process for each active
+-- HTTP route. Each tuple is only a candidate; Stage performs the
+-- same exact readiness checks in the write statement.
+SELECT t.account_id,
+       t.id AS tunnel_id,
+       r.id AS route_id,
+       r.generation AS route_generation,
+       c.id AS connector_id,
+       c.host_id,
+       m.public_identity_key AS machine_identity_public_key,
+       c.generation AS connector_generation,
+       c.last_session_id AS connector_session_id,
+       session.process_generation AS connector_process_generation,
+       config.generation AS config_generation,
+       config.content_hash AS config_content_hash,
+       node.id AS edge_node_id,
+       node.process_epoch AS edge_process_epoch
+FROM tunnels AS t
+JOIN tunnel_routes AS r ON r.tunnel_id = t.id
+JOIN tunnel_connectors AS c ON c.tunnel_id = t.id
+JOIN tunnel_connector_sessions AS session
+  ON session.id = c.last_session_id AND session.connector_id = c.id
+JOIN user_machines AS m
+  ON m.id = c.host_id AND m.user_id = t.account_id
+ AND m.deleted_at IS NULL AND m.revoked_at IS NULL
+ AND m.public_identity_key IS NOT NULL
+JOIN tunnel_config_generations AS config
+  ON config.tunnel_id = t.id AND config.generation = session.applied_config_generation
+JOIN LATERAL (
+  SELECT candidate_node.*
+  FROM control_tunnel_nodes AS candidate_node
+  WHERE candidate_node.state = 'ready' AND candidate_node.ready = true
+    AND candidate_node.last_heartbeat_at IS NOT NULL
+    AND candidate_node.last_heartbeat_at > sqlc.arg(now)::timestamptz - interval '2 minutes'
+  ORDER BY candidate_node.id, candidate_node.process_epoch
+  LIMIT 1
+) AS node ON true
+WHERE t.desired_state = 'active'
+  AND (t.expires_at IS NULL OR t.expires_at > sqlc.arg(now)::timestamptz)
+  AND r.desired_state = 'active'
+  AND r.protocol IN ('http','private_tcp')
+  AND c.desired_state = 'active'
+  AND c.drain_state = 'accepting'
+  AND c.last_session_id IS NOT NULL
+  AND session.state = 'ready'
+  AND session.lease_deadline > sqlc.arg(now)::timestamptz
+  AND c.last_applied_config_generation = config.generation
+  AND config.activation_state = 'active'
+ORDER BY r.id, c.id
+LIMIT sqlc.arg(row_limit);
+
+-- name: GetTunnelEdgeRouteAssignmentBindingV1 :one
+-- Existing staged/active bindings are the idempotent reconciliation result.
+-- Draining history is intentionally excluded so a replacement gets a new
+-- assignment generation after the previous one has detached.
+SELECT * FROM tunnel_edge_route_assignments
+WHERE route_id = sqlc.arg(route_id)
+  AND account_id = sqlc.arg(account_id)
+  AND tunnel_id = sqlc.arg(tunnel_id)
+  AND connector_id = sqlc.arg(connector_id)
+  AND host_id = sqlc.arg(host_id)
+  AND connector_generation = sqlc.arg(connector_generation)
+  AND connector_session_id = sqlc.arg(connector_session_id)
+  AND connector_process_generation = sqlc.arg(connector_process_generation)
+  AND config_generation = sqlc.arg(config_generation)
+  AND config_content_hash = sqlc.arg(config_content_hash)
+  AND edge_node_id = sqlc.arg(edge_node_id)
+  AND edge_process_epoch = sqlc.arg(edge_process_epoch)
+  AND state IN ('staged','active')
+ORDER BY assignment_generation DESC
+LIMIT 1;
+
+-- name: NextTunnelEdgeRouteAssignmentGenerationV1 :one
+-- Serialize allocation per route.  The assignment history is the durable
+-- monotonic fence, so concurrent reconcilers must not derive the same next
+-- generation from an unlocked MAX() snapshot.
+WITH route_lock AS (
+  SELECT id
+  FROM tunnel_routes
+  WHERE id = sqlc.arg(route_id)
+  FOR UPDATE
+), locked AS (
+  SELECT assignment_generation
+  FROM tunnel_edge_route_assignments
+  WHERE route_id = (SELECT id FROM route_lock)
+  FOR UPDATE
+)
+SELECT CAST(COALESCE(MAX(assignment_generation), 0) + 1 AS BIGINT) AS next_generation
+FROM locked;
+
+-- name: ActivateTunnelEdgeRouteAssignmentV1 :one
+-- Promotion is the ready-new-before-drain fence.  It atomically makes the
+-- staged assignment current and leaves the prior assignment draining.
+WITH candidate AS (
+  SELECT a.assignment_id, a.route_id, a.connector_id
+  FROM tunnel_edge_route_assignments AS a
+  WHERE a.assignment_id = sqlc.arg(assignment_id)
+    AND a.route_id = sqlc.arg(route_id)
+    AND a.state IN ('staged','active') AND a.observed_state = 'ready'
+  FOR UPDATE
+), transitioned AS (
+  UPDATE tunnel_edge_route_assignments AS a
+  SET state = 'draining', observed_state = 'draining', updated_at = sqlc.arg(now)
+  FROM candidate AS c
+  WHERE a.route_id = c.route_id AND a.connector_id = c.connector_id
+    AND a.state = 'active' AND a.assignment_id <> c.assignment_id
+  RETURNING a.assignment_id
+), promoted AS (
+  UPDATE tunnel_edge_route_assignments AS a
+  SET state = 'active', observed_state = 'ready', updated_at = sqlc.arg(now)
+  FROM candidate AS c
+  WHERE a.assignment_id = c.assignment_id
+    AND (SELECT count(*) FROM transitioned) >= 0
+  RETURNING a.*
+)
+SELECT * FROM promoted;
+
+-- name: ListTunnelEdgeRouteAssignmentsForNodeV1 :many
+-- This is a complete desired snapshot for one edge process.  A missing row is
+-- therefore an explicit authorization absence, while a failed query must
+-- leave the edge's last-known-good registry untouched.
+SELECT a.assignment_id,
+       a.route_id,
+       a.assignment_generation,
+       a.route_revision,
+       t.account_id,
+       a.tunnel_id,
+       a.connector_id,
+       a.host_id,
+       a.machine_identity_public_key,
+       a.machine_identity_thumbprint,
+       a.connector_generation,
+       a.connector_session_id,
+       a.connector_process_generation,
+       a.config_generation,
+       a.config_content_hash,
+       a.access_mode,
+       a.route_generation,
+       a.edge_node_id,
+       a.edge_process_epoch,
+       a.edge_failure_domain,
+       CASE WHEN r.protocol = 'private_tcp' THEN 'tunnel_private_tcp' ELSE 'tunnel_http_wss' END AS kind,
+       (CASE WHEN r.match_type = 'one_label_wildcard' THEN '*.' || r.wildcard_suffix ELSE COALESCE(r.match_hostname, '') END)::text AS public_host,
+       r.match_type,
+       r.match_hostname,
+       r.wildcard_suffix,
+       r.path_prefix,
+       r.priority,
+       r.protocol,
+       r.origin_scheme,
+       r.preserve_host,
+       r.host_override,
+       COALESCE((
+         SELECT jsonb_agg(jsonb_build_object(
+           'id', d.id,
+           'hostname', d.hostname,
+           'match_type', d.match_type,
+           'generation', d.generation
+         ) ORDER BY d.hostname, d.id)
+         FROM tunnel_domains AS d
+         WHERE d.route_id = r.id
+           AND d.tunnel_id = r.tunnel_id
+           AND d.deleted_at IS NULL
+           AND d.ownership_state = 'verified'
+           AND d.certificate_state = 'ready'
+           AND d.conflict_state = 'clear'
+       ), '[]'::jsonb)::text AS domain_bindings,
+       a.state,
+       a.observed_state,
+       r.desired_state AS route_desired_state
+FROM tunnel_edge_route_assignments AS a
+JOIN tunnels AS t ON t.id = a.tunnel_id AND t.account_id = a.account_id
+JOIN tunnel_routes AS r ON r.id = a.route_id AND r.tunnel_id = a.tunnel_id
+JOIN tunnel_connectors AS c ON c.id = a.connector_id AND c.tunnel_id = a.tunnel_id AND c.host_id = a.host_id
+JOIN tunnel_connector_sessions AS session
+  ON session.id = a.connector_session_id AND session.connector_id = a.connector_id
+JOIN tunnel_config_generations AS config
+  ON config.tunnel_id = a.tunnel_id AND config.generation = a.config_generation
+JOIN control_tunnel_nodes AS node
+  ON node.id = a.edge_node_id
+WHERE a.edge_node_id = sqlc.arg(edge_node_id)
+  AND a.edge_process_epoch = sqlc.arg(edge_process_epoch)
+  AND a.state IN ('staged','active','draining')
+  AND (
+    a.state = 'draining'
+    OR (
+      t.desired_state = 'active'
+      AND (t.expires_at IS NULL OR t.expires_at > sqlc.arg(now))
+      AND r.desired_state = 'active'
+      AND r.protocol IN ('http','private_tcp')
+      AND c.desired_state = 'active' AND c.drain_state = 'accepting'
+      AND c.generation = a.connector_generation
+      AND c.last_session_id = session.id
+      AND c.last_applied_config_generation = a.config_generation
+      AND session.process_generation = a.connector_process_generation
+      AND session.state = 'ready'
+      AND session.lease_deadline > sqlc.arg(now)
+      AND session.applied_config_generation = a.config_generation
+      AND config.activation_state = 'active'
+      AND config.content_hash = a.config_content_hash
+      AND node.process_epoch = a.edge_process_epoch
+      AND node.state = 'ready' AND node.ready = true
+    )
+  )
+ORDER BY a.route_id, a.assignment_generation, a.assignment_id;
+
+-- name: ApplyTunnelEdgeRouteObservationV1 :one
+-- Observation is accepted only for the exact assignment/session/process/config
+-- tuple currently authorized for this edge process.
+UPDATE tunnel_edge_route_assignments AS a
+SET observed_state = sqlc.arg(observed_state), observed_at = sqlc.arg(now), updated_at = sqlc.arg(now)
+FROM tunnel_routes AS r, tunnel_connectors AS c, tunnel_connector_sessions AS session,
+     tunnel_config_generations AS config, tunnels AS t, control_tunnel_nodes AS node
+WHERE a.route_id = sqlc.arg(route_id)
+  AND a.assignment_id = sqlc.arg(assignment_id)
+  AND a.assignment_generation = sqlc.arg(assignment_generation)
+  AND a.route_revision = sqlc.arg(route_revision)
+  AND a.edge_node_id = sqlc.arg(edge_node_id)
+  AND a.edge_process_epoch = sqlc.arg(edge_process_epoch)
+  AND a.connector_generation = sqlc.arg(connector_generation)
+  AND a.connector_id = sqlc.arg(connector_id)
+  AND a.host_id = sqlc.arg(host_id)
+  AND a.connector_session_id = sqlc.arg(connector_session_id)
+  AND a.connector_process_generation = sqlc.arg(connector_process_generation)
+  AND a.config_generation = sqlc.arg(config_generation)
+  AND a.config_content_hash = sqlc.arg(config_content_hash)
+  AND sqlc.arg(observed_state) IN ('ready','degraded','draining','failed')
+  AND (
+    (sqlc.arg(observed_state) = 'ready' AND a.state IN ('staged','active'))
+    OR (sqlc.arg(observed_state) <> 'ready' AND a.state IN ('staged','active','draining'))
+  )
+  AND r.id = a.route_id AND r.tunnel_id = a.tunnel_id
+  AND c.id = a.connector_id AND c.tunnel_id = a.tunnel_id AND c.host_id = a.host_id
+  AND session.id = a.connector_session_id AND session.connector_id = c.id
+  AND session.process_generation = a.connector_process_generation
+  AND node.id = a.edge_node_id
+  AND config.tunnel_id = a.tunnel_id AND config.generation = a.config_generation
+  AND t.id = a.tunnel_id AND t.account_id = a.account_id
+  AND (
+    sqlc.arg(observed_state) <> 'ready'
+    OR (
+      t.desired_state = 'active'
+      AND (t.expires_at IS NULL OR t.expires_at > sqlc.arg(now))
+      AND t.access_mode = a.access_mode
+      AND r.desired_state = 'active' AND r.generation = a.route_generation
+      AND c.desired_state = 'active' AND c.drain_state = 'accepting'
+      AND c.generation = a.connector_generation
+      AND c.last_session_id = session.id
+      AND session.state = 'ready' AND session.lease_deadline > sqlc.arg(now)
+      AND session.applied_config_generation = a.config_generation
+      AND c.last_applied_config_generation = a.config_generation
+      AND config.activation_state = 'active'
+      AND config.content_hash = a.config_content_hash
+      AND node.process_epoch = a.edge_process_epoch
+      AND node.state = 'ready' AND node.ready = true
+      AND node.last_heartbeat_at IS NOT NULL
+      AND node.last_heartbeat_at > sqlc.arg(now) - interval '2 minutes'
+    )
+  )
+RETURNING a.*;
+
+-- name: DetachTunnelEdgeRouteAssignmentV1 :one
+UPDATE tunnel_edge_route_assignments
+SET state = 'detached', observed_state = 'detached', released_at = sqlc.arg(now), updated_at = sqlc.arg(now)
+WHERE assignment_id = sqlc.arg(assignment_id)
+  AND route_id = sqlc.arg(route_id)
+  AND assignment_generation = sqlc.arg(assignment_generation)
+  AND edge_node_id = sqlc.arg(edge_node_id)
+  AND edge_process_epoch = sqlc.arg(edge_process_epoch)
+  AND connector_id = sqlc.arg(connector_id)
+  AND host_id = sqlc.arg(host_id)
+  AND connector_generation = sqlc.arg(connector_generation)
+  AND connector_session_id = sqlc.arg(connector_session_id)
+  AND connector_process_generation = sqlc.arg(connector_process_generation)
+  AND config_generation = sqlc.arg(config_generation)
+  AND config_content_hash = sqlc.arg(config_content_hash)
+  AND state <> 'detached'
+RETURNING *;
+
+-- name: FinalizeDrainingTunnelEdgeRouteAssignmentV1 :one
+UPDATE tunnel_edge_route_assignments
+SET state = 'detached', observed_state = 'detached', released_at = sqlc.arg(now), updated_at = sqlc.arg(now)
+WHERE assignment_id = sqlc.arg(assignment_id)
+  AND route_id = sqlc.arg(route_id)
+  AND assignment_generation = sqlc.arg(assignment_generation)
+  AND edge_node_id = sqlc.arg(edge_node_id)
+  AND edge_process_epoch = sqlc.arg(edge_process_epoch)
+  AND connector_id = sqlc.arg(connector_id)
+  AND host_id = sqlc.arg(host_id)
+  AND connector_generation = sqlc.arg(connector_generation)
+  AND connector_session_id = sqlc.arg(connector_session_id)
+  AND connector_process_generation = sqlc.arg(connector_process_generation)
+  AND config_generation = sqlc.arg(config_generation)
+  AND config_content_hash = sqlc.arg(config_content_hash)
+  AND state = 'draining'
+  AND observed_state IN ('draining','ready')
+RETURNING *;
+
+-- name: GetTunnelEdgeRouteAssignmentForObservationV1 :one
+-- Exact read used to make a repeated terminal observation idempotent without
+-- allowing an old assignment/session/process tuple to acknowledge a newer row.
+SELECT * FROM tunnel_edge_route_assignments
+WHERE assignment_id = sqlc.arg(assignment_id)
+  AND route_id = sqlc.arg(route_id)
+  AND assignment_generation = sqlc.arg(assignment_generation)
+  AND edge_node_id = sqlc.arg(edge_node_id)
+  AND edge_process_epoch = sqlc.arg(edge_process_epoch)
+  AND connector_id = sqlc.arg(connector_id)
+  AND host_id = sqlc.arg(host_id)
+  AND connector_generation = sqlc.arg(connector_generation)
+  AND connector_session_id = sqlc.arg(connector_session_id)
+  AND connector_process_generation = sqlc.arg(connector_process_generation)
+  AND config_generation = sqlc.arg(config_generation)
+  AND config_content_hash = sqlc.arg(config_content_hash);
+
 -- name: GetActiveHelperRouteForEnvironment :one
 SELECT r.* FROM control_routes r
 JOIN control_environments e ON e.id = r.environment_id
@@ -1263,6 +1489,24 @@ WHERE r.environment_id = sqlc.arg(environment_id)
   AND r.applied_generation = c.generation
   AND e.desired_state = 'active' AND m.revoked_at IS NULL AND m.deleted_at IS NULL AND c.state = 'admitted'
   AND n.state = 'ready' AND n.ready = true
+ORDER BY r.id
+LIMIT 1;
+
+-- name: GetActiveHelperRouteForMachine :one
+SELECT r.* FROM control_routes r
+JOIN control_environments e ON e.id = r.environment_id
+JOIN control_connector_generations c ON c.environment_id = r.environment_id AND c.connector_id = r.connector_id
+JOIN user_machines m ON m.id = c.machine_id AND m.environment_id = r.environment_id
+JOIN control_tunnel_nodes n ON n.id = c.edge_node_id AND n.id = r.applied_node_id
+WHERE m.id = sqlc.arg(machine_id)
+  AND m.user_id = sqlc.arg(account_id)
+  AND r.kind = 'runtime_https_wss'
+  AND c.connector_id = 'runtime'
+  AND r.desired_state IN ('attached','replacing')
+  AND r.applied_revision >= r.desired_revision
+  AND r.applied_generation = c.generation
+  AND e.desired_state = 'active' AND m.revoked_at IS NULL AND m.deleted_at IS NULL
+  AND c.state = 'admitted' AND n.state = 'ready' AND n.ready = true
 ORDER BY r.id
 LIMIT 1;
 

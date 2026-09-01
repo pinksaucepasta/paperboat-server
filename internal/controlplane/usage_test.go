@@ -269,6 +269,9 @@ func openControlPlaneTestDB(t *testing.T) *db.DB {
 	if dsn == "" {
 		t.Skip("set PAPERBOAT_TEST_DATABASE_DSN to run control-plane PostgreSQL integration tests")
 	}
+	if err := db.ValidateIsolatedTestDSN(dsn, os.Getenv("PAPERBOAT_DATABASE_DSN")); err != nil {
+		t.Fatal(err)
+	}
 	store, err := db.Open(config.Database{Driver: "postgres", DSN: dsn})
 	if err != nil {
 		t.Fatal(err)

@@ -21,6 +21,8 @@ type MachineRequestClaims struct {
 	UserID                 string
 	InstallationGeneration int64
 	OperationID            string
+	CredentialJTI          string
+	SessionGeneration      int64
 }
 
 type canonicalMachineProofClaims struct {
@@ -36,18 +38,9 @@ type canonicalMachineProofClaims struct {
 }
 
 func (s *EnrollmentService) VerifyMachineRequest(ctx context.Context, identityToken string, proof []byte, method, path string, body []byte) (MachineRequestClaims, error) {
-	now := s.clock().UTC()
-	identity, credentialErr := s.signer.VerifyCredential(identityToken, s.issuer, "machine_control", now)
-	if credentialErr == nil {
-		machine, err := s.store.Queries().GetActiveUserMachineForControl(ctx, identity.MachineID)
-		if err != nil || machine.UserID != identity.UserID || machine.EnvironmentID != identity.EnvironmentID || machine.InstallationGeneration != identity.InstallationGeneration || machineControlThumbprint(machine) != identity.KeyThumbprint {
-			return MachineRequestClaims{}, ErrHelperProof
-		}
-		claims, err := verifyCanonicalMachineProof(machine, proof, method, path, body, now)
-		if err != nil {
-			return MachineRequestClaims{}, err
-		}
-		return MachineRequestClaims{MachineID: machine.ID, EnvironmentID: machine.EnvironmentID, UserID: machine.UserID, InstallationGeneration: machine.InstallationGeneration, OperationID: claims.OperationID}, nil
+	claims, err := s.VerifyMachineControlRequest(ctx, identityToken, proof, method, path, body)
+	if err == nil {
+		return claims, nil
 	}
 	helper, err := s.VerifyHelperRequest(ctx, identityToken, proof, method, path, body)
 	if err != nil {
@@ -58,6 +51,37 @@ func (s *EnrollmentService) VerifyMachineRequest(ctx context.Context, identityTo
 		return MachineRequestClaims{}, ErrHelperProof
 	}
 	return MachineRequestClaims{MachineID: machine.ID, EnvironmentID: machine.EnvironmentID, UserID: machine.UserID, InstallationGeneration: machine.InstallationGeneration, OperationID: helper.OperationID}, nil
+}
+
+// VerifyMachineControlRequest accepts only the current renewable machine-control
+// session. It deliberately has no helper-identity fallback and is the verifier
+// for private-access authority.
+func (s *EnrollmentService) VerifyMachineControlRequest(ctx context.Context, identityToken string, proof []byte, method, path string, body []byte) (MachineRequestClaims, error) {
+	now := s.clock().UTC()
+	identity, err := s.signer.VerifyCredential(identityToken, s.issuer, "machine_control", now)
+	if err != nil {
+		return MachineRequestClaims{}, ErrHelperProof
+	}
+	machine, err := s.store.Queries().GetActiveUserMachineForControl(ctx, identity.MachineID)
+	if err != nil || machine.UserID != identity.UserID || machine.EnvironmentID != identity.EnvironmentID || machine.InstallationGeneration != identity.InstallationGeneration || machineControlThumbprint(machine) != identity.KeyThumbprint {
+		return MachineRequestClaims{}, ErrHelperProof
+	}
+	current, err := s.store.Queries().GetCurrentMachineControlSession(ctx, dbsqlc.GetCurrentMachineControlSessionParams{
+		MachineID: machine.ID, InstallationGeneration: machine.InstallationGeneration,
+		CredentialJti: identity.JTI, Now: now,
+	})
+	if err != nil || current.SessionGeneration != identity.SessionGeneration || current.OperationID == "" {
+		return MachineRequestClaims{}, ErrHelperProof
+	}
+	claims, err := verifyCanonicalMachineProof(machine, proof, method, path, body, now)
+	if err != nil {
+		return MachineRequestClaims{}, err
+	}
+	return MachineRequestClaims{
+		MachineID: machine.ID, EnvironmentID: machine.EnvironmentID, UserID: machine.UserID,
+		InstallationGeneration: machine.InstallationGeneration, OperationID: claims.OperationID,
+		CredentialJTI: current.CredentialJti, SessionGeneration: current.SessionGeneration,
+	}, nil
 }
 
 func verifyCanonicalMachineProof(machine dbsqlc.UserMachine, encoded []byte, method, path string, body []byte, now time.Time) (canonicalMachineProofClaims, error) {

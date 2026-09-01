@@ -1,6 +1,9 @@
 {
   "environment": "development",
   "runtime_base_domain": "runtime.paperboat.local",
+  "tunnel": {
+    "base_domain": "tunnels.paperboat.local"
+  },
   "http": {
     "address": "127.0.0.1:8080",
     "public_base_url": "http://127.0.0.1:8080",
@@ -54,7 +57,13 @@
       "projects:read",
       "projects:connect",
       "session:refresh",
-      "diagnostics:upload"
+      "diagnostics:upload",
+      "previews:read",
+      "previews:write",
+      "tunnels:read",
+      "tunnels:write",
+      "operations:read",
+      "operations:write"
     ],
     "mint_active_key_id": "",
     "mint_jwks_max_age": 300000000000,

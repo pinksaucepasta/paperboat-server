@@ -13,13 +13,13 @@ import (
 
 func TestHostedHelperHostUsesTypedRuntimeBaseDomain(t *testing.T) {
 	cfg := config.Default()
-	cfg.RuntimeBaseDomain = "helper.example.test"
+	cfg.RuntimeBaseDomain = "runtime.example.test"
 	cfg.Access.RouteSubdomainPrefix = "pb"
 
-	if got, want := HostedHelperHealthHost(cfg, "prj_test"), "pb-prj-test.helper.example.test"; got != want {
+	if got, want := HostedHelperHealthHost(cfg, "prj_test"), "pb-prj-test.runtime.example.test"; got != want {
 		t.Fatalf("host = %q, want %q", got, want)
 	}
-	if got, want := HostedHelperHealthURL(cfg, "prj_test"), "https://pb-prj-test.helper.example.test/healthz"; got != want {
+	if got, want := HostedHelperHealthURL(cfg, "prj_test"), "https://pb-prj-test.runtime.example.test/healthz"; got != want {
 		t.Fatalf("URL = %q, want %q", got, want)
 	}
 }

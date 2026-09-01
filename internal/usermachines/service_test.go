@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -47,6 +48,29 @@ func TestRandomEnrollmentTokenMatchesInstallerContract(t *testing.T) {
 	}
 	if len(token) != enrollmentTokenLength {
 		t.Fatalf("token length = %d, want %d", len(token), enrollmentTokenLength)
+	}
+}
+
+func TestEnvironmentInjectionIsHostOnlyMachineCapability(t *testing.T) {
+	client := configuredCapabilities("client")
+	if slices.Contains(client, "environment_injection") || len(client) != 2 {
+		t.Fatalf("client capabilities = %v, want the unchanged two-capability set", client)
+	}
+	host := configuredCapabilities("host")
+	if !slices.Contains(host, "environment_injection") || len(host) != 7 {
+		t.Fatalf("host capabilities = %v, want environment_injection plus six existing capabilities", host)
+	}
+
+	resolved := mapCapabilities([]string{"environment_injection"}, []string{"environment_injection"})
+	if !resolved.EnvironmentInjection.Configured || !resolved.EnvironmentInjection.Observed {
+		t.Fatalf("resolved environment capability = %+v", resolved.EnvironmentInjection)
+	}
+	encoded, err := json.Marshal(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"environment_injection":{"configured":true,"observed":true}`) {
+		t.Fatalf("machine capability JSON omitted environment injection: %s", encoded)
 	}
 }
 

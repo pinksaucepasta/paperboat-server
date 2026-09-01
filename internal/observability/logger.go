@@ -21,7 +21,10 @@ func NormalizeRequestID(value string) string {
 
 type contextKey string
 
-const requestIDKey contextKey = "request_id"
+const (
+	requestIDKey     contextKey = "request_id"
+	correlationIDKey contextKey = "correlation_id"
+)
 
 func WithRequestID(ctx context.Context, requestID string) context.Context {
 	return context.WithValue(ctx, requestIDKey, requestID)
@@ -34,9 +37,23 @@ func RequestID(ctx context.Context) string {
 	return ""
 }
 
+func WithCorrelationID(ctx context.Context, correlationID string) context.Context {
+	return context.WithValue(ctx, correlationIDKey, correlationID)
+}
+
+func CorrelationID(ctx context.Context) string {
+	if value, ok := ctx.Value(correlationIDKey).(string); ok {
+		return value
+	}
+	return ""
+}
+
 func LoggerWithRequest(ctx context.Context, logger *slog.Logger) *slog.Logger {
 	if requestID := RequestID(ctx); requestID != "" {
-		return logger.With("request_id", requestID)
+		logger = logger.With("request_id", requestID)
+	}
+	if correlationID := CorrelationID(ctx); correlationID != "" {
+		logger = logger.With("correlation_id", correlationID)
 	}
 	return logger
 }

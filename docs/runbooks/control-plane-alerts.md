@@ -53,6 +53,10 @@ Close an incident only after the metric returns to baseline and the durable
 operation, reconciliation, route, or billing record agrees with provider and
 tunnel observations.
 
+For preview, tunnel, DNS, certificate, connector, private-access, and update
+incidents, continue with
+[`preview-tunnel-control-plane.md`](preview-tunnel-control-plane.md).
+
 ## Hosted Provider Recovery
 
 For an uncertain hosted secret deletion, an authenticated administrator may call

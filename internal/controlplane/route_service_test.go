@@ -25,11 +25,11 @@ func TestRouteIntentOwnershipAndRevisionCAS(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := NewRouteService(store, nil)
-	route, err := service.Create(ctx, owner, "route-create-01", environmentID, "preview_public_https_wss", "Preview.Example.Test.", "127.0.0.1", 8080)
+	route, err := service.Create(ctx, owner, "route-create-01", environmentID, "runtime_https_wss", "Preview.Example.Test.", "127.0.0.1", 8080)
 	if err != nil || route.PublicHost != "preview.example.test" || route.DesiredRevision != 1 {
 		t.Fatalf("route = %#v, %v", route, err)
 	}
-	replay, err := service.Create(ctx, owner, "route-create-01", environmentID, "preview_public_https_wss", "Preview.Example.Test.", "127.0.0.1", 8080)
+	replay, err := service.Create(ctx, owner, "route-create-01", environmentID, "runtime_https_wss", "Preview.Example.Test.", "127.0.0.1", 8080)
 	if err != nil || replay.ID != route.ID {
 		t.Fatalf("create replay = %#v, %v", replay, err)
 	}
@@ -73,7 +73,7 @@ func TestRouteIntentConcurrentExactCreateReplaysOneResult(t *testing.T) {
 		group.Add(1)
 		go func() {
 			defer group.Done()
-			route, err := service.Create(ctx, user, operationKey, environmentID, "preview_public_https_wss", publicHost, "127.0.0.1", 8080)
+			route, err := service.Create(ctx, user, operationKey, environmentID, "runtime_https_wss", publicHost, "127.0.0.1", 8080)
 			results <- route
 			errs <- err
 		}()

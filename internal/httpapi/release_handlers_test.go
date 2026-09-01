@@ -13,14 +13,32 @@ import (
 )
 
 func TestReleaseDownloadsAreNotCutOffByAPIRequestTimeout(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
 	handler := timeout(time.Millisecond, slog.New(slog.NewTextHandler(io.Discard, nil)), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		time.Sleep(5 * time.Millisecond)
+		started <- struct{}{}
+		<-release
 		_, _ = w.Write([]byte("complete"))
 	}))
 
 	for _, path := range []string{"/install", "/current.json", "/tuf/targets/hash.pb-linux-amd64", "/helper-releases/tuf/targets/hash.pb-linux-amd64"} {
 		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		done := make(chan struct{})
+		go func() {
+			handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+			close(done)
+		}()
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatalf("release handler did not start for %s", path)
+		}
+		release <- struct{}{}
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatalf("release handler did not finish for %s", path)
+		}
 		if recorder.Code != http.StatusOK || recorder.Body.String() != "complete" {
 			t.Fatalf("%s response = %d %q", path, recorder.Code, recorder.Body.String())
 		}

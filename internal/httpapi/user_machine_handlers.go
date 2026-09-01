@@ -728,31 +728,6 @@ func userMachineFileTransferDescriptor(service *usermachines.Service, hosted *ac
 	}
 }
 
-func userMachinePreviewLaunchDescriptor(service *usermachines.Service) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		p, ok := principalFromContext(r.Context())
-		if !ok || p.Client == nil {
-			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "CLI authentication is required.")
-			return
-		}
-		response, err := service.PreviewLaunchDescriptor(r.Context(), p.User.ID, r.PathValue("machine_id"), p.Client.SessionID)
-		switch {
-		case errors.Is(err, usermachines.ErrNotFound):
-			writeError(w, r, http.StatusNotFound, "user_machine_not_found", "Machine was not found.")
-		case errors.Is(err, usermachines.ErrMachineCapabilityUnavailable):
-			writeError(w, r, http.StatusConflict, "machine_capability_unavailable", "Machine cannot launch previews.")
-		case errors.Is(err, usermachines.ErrMachineOffline):
-			writeError(w, r, http.StatusConflict, "machine_offline", "Machine is offline.")
-		case errors.Is(err, usermachines.ErrProvisioningUnavailable):
-			writeError(w, r, http.StatusConflict, "machine_offline", "Machine is offline.")
-		case err != nil:
-			writeError(w, r, http.StatusServiceUnavailable, "preview_launch_unavailable", "Preview launch credentials are unavailable.")
-		default:
-			writeJSON(w, http.StatusOK, SuccessResponse{Data: response})
-		}
-	}
-}
-
 func userMachineConnectionReadiness(service *usermachines.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := principalFromContext(r.Context())

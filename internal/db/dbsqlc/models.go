@@ -63,6 +63,14 @@ type AuditEvent struct {
 	IdempotencyKey sql.NullString
 	Metadata       []byte
 	CreatedAt      time.Time
+	AccountID      sql.NullString
+	ActorID        sql.NullString
+	ChangeType     string
+	Outcome        string
+	RequestID      sql.NullString
+	CorrelationID  sql.NullString
+	SourceDeviceID sql.NullString
+	CursorSequence sql.NullInt64
 }
 
 type AuthRateLimit struct {
@@ -205,6 +213,18 @@ type ConnectionEvent struct {
 	FailureReason   string
 	Metadata        []byte
 	CreatedAt       time.Time
+}
+
+type ConnectorProofReplay struct {
+	AccountID            string
+	TunnelID             string
+	ConnectorID          string
+	CredentialGeneration int64
+	ProofKind            string
+	Nonce                string
+	ProofDigest          []byte
+	ExpiresAt            time.Time
+	CreatedAt            time.Time
 }
 
 type ControlConfigAssignment struct {
@@ -478,42 +498,6 @@ type ControlOperationRecovery struct {
 	CreatedAt    time.Time
 }
 
-type ControlPreview struct {
-	ID                        string
-	EnvironmentID             string
-	LogicalName               string
-	PreviewKey                string
-	CollisionCounter          int64
-	PublicHost                string
-	TargetHost                string
-	TargetPort                int32
-	State                     string
-	RouteID                   sql.NullString
-	HelperReady               bool
-	EdgeReady                 bool
-	TargetReady               bool
-	PublicAcknowledgedAt      sql.NullTime
-	ExpiresAt                 sql.NullTime
-	RemovedAt                 sql.NullTime
-	RetainedUntil             sql.NullTime
-	Version                   int64
-	CreatedAt                 time.Time
-	UpdatedAt                 time.Time
-	HelperObservationRevision int64
-	HelperObservedAt          sql.NullTime
-	SourceKind                string
-	OwnerMode                 string
-}
-
-type ControlPreviewOperation struct {
-	OperationKey  string
-	OperationType string
-	RequestHash   []byte
-	PreviewID     sql.NullString
-	Result        []byte
-	CreatedAt     time.Time
-}
-
 type ControlReconciliationAttempt struct {
 	ID             string
 	EnvironmentID  string
@@ -570,28 +554,33 @@ type ControlSigningKeyRevocationOperation struct {
 }
 
 type ControlTunnelNode struct {
-	ID               string
-	EdgePool         string
-	ProtocolVersion  string
-	ProcessEpoch     string
-	EndpointHost     sql.NullString
-	EndpointTcpPort  sql.NullInt32
-	EndpointQuicPort sql.NullInt32
-	State            string
-	Ready            bool
-	Capacity         []byte
-	Observation      []byte
-	LastHeartbeatAt  sql.NullTime
-	DrainDeadline    sql.NullTime
-	Version          int64
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-	SignalingHost    sql.NullString
-	StunHost         sql.NullString
-	StunPort         sql.NullInt32
-	RelayID          sql.NullString
-	RelayRegion      sql.NullString
-	RelayName        sql.NullString
+	ID                               string
+	EdgePool                         string
+	ProtocolVersion                  string
+	ProcessEpoch                     string
+	EndpointHost                     sql.NullString
+	EndpointTcpPort                  sql.NullInt32
+	EndpointQuicPort                 sql.NullInt32
+	State                            string
+	Ready                            bool
+	Capacity                         []byte
+	Observation                      []byte
+	LastHeartbeatAt                  sql.NullTime
+	DrainDeadline                    sql.NullTime
+	Version                          int64
+	CreatedAt                        time.Time
+	UpdatedAt                        time.Time
+	SignalingHost                    sql.NullString
+	StunHost                         sql.NullString
+	StunPort                         sql.NullInt32
+	RelayID                          sql.NullString
+	RelayRegion                      sql.NullString
+	RelayName                        sql.NullString
+	CarrierEndpointHost              sql.NullString
+	CarrierEndpointTcpPort           sql.NullInt32
+	CarrierEndpointQuicPort          sql.NullInt32
+	CarrierServerSpkiSha256          sql.NullString
+	CarrierServerCertificateChainPem sql.NullString
 }
 
 type ControlUsageCounter struct {
@@ -712,6 +701,170 @@ type DiagnosticUploadIntent struct {
 	CreatedAt          time.Time
 	UploadedAt         sql.NullTime
 	ObjectEtag         sql.NullString
+}
+
+type EnvironmentAuthority struct {
+	AccountID           string
+	Generation          int64
+	AuthorityID         string
+	PreviousAuthorityID sql.NullString
+	OperationID         string
+	Envelope            []byte
+	CreatedAt           time.Time
+}
+
+type EnvironmentAuthorityHead struct {
+	AccountID   string
+	Generation  int64
+	AuthorityID string
+	UpdatedAt   time.Time
+}
+
+type EnvironmentAuthorityRoot struct {
+	AccountID string
+	KeyID     string
+	PublicKey []byte
+}
+
+type EnvironmentAuthorityTransition struct {
+	TransitionID        string
+	AccountID           string
+	OperationID         string
+	BaseAuthorityID     sql.NullString
+	ProposedGeneration  int64
+	ProposedAuthorityID string
+	ProposedAuthority   []byte
+	State               string
+	RequiredScopes      []string
+	AbortOperationID    sql.NullString
+	AbortAuthorization  []byte
+	CreatedAt           time.Time
+	ActivatedAt         sql.NullTime
+	AbortedAt           sql.NullTime
+}
+
+type EnvironmentHostBootstrap struct {
+	AccountID           string
+	MachineID           string
+	SubjectGeneration   int64
+	KeyGeneration       int64
+	RecipientKeyID      string
+	AuthorityGeneration int64
+	AuthorityID         string
+	GlobalVersion       int64
+	GlobalKeyEpoch      int64
+	GlobalManifestID    string
+	GlobalEnvelope      []byte
+	MachineVersion      int64
+	MachineKeyEpoch     int64
+	MachineManifestID   string
+	MachineEnvelope     []byte
+	CreatedAt           time.Time
+}
+
+type EnvironmentKeyBinding struct {
+	BindingID          string
+	AccountID          string
+	SubjectKind        string
+	SubjectID          string
+	SubjectGeneration  int64
+	KeyGeneration      int64
+	SigningKeyID       sql.NullString
+	SigningPublicKey   []byte
+	RecipientKeyID     string
+	RecipientPublicKey []byte
+	Envelope           []byte
+	CreatedAt          time.Time
+}
+
+type EnvironmentKeyEnrollmentRequest struct {
+	ID                 string
+	AccountID          string
+	RequesterKind      string
+	RequesterID        string
+	SubjectKind        string
+	SubjectID          string
+	SubjectGeneration  int64
+	KeyGeneration      int64
+	OperationID        string
+	RequestDigest      []byte
+	CanonicalRequest   []byte
+	SigningProof       []byte
+	RecipientKeyID     string
+	RecipientPublicKey []byte
+	SafetyCode         string
+	ChallengeEnvelope  []byte
+	ExpectedProof      []byte
+	State              string
+	TransitionID       sql.NullString
+	ExpiresAt          time.Time
+	ProvedAt           sql.NullTime
+	ApprovedAt         sql.NullTime
+	CreatedAt          time.Time
+}
+
+type EnvironmentObservation struct {
+	MachineID           string
+	AccountID           string
+	HostRecipientKeyID  string
+	ObservationSeq      int64
+	AuthorityGeneration sql.NullInt64
+	AuthorityID         sql.NullString
+	GlobalVersion       sql.NullInt64
+	GlobalKeyEpoch      sql.NullInt64
+	GlobalManifestID    sql.NullString
+	MachineVersion      sql.NullInt64
+	MachineKeyEpoch     sql.NullInt64
+	MachineManifestID   sql.NullString
+	State               string
+	ErrorCode           sql.NullString
+	ObservedAt          time.Time
+	ReceivedAt          time.Time
+}
+
+type EnvironmentScope struct {
+	ID                  string
+	AccountID           string
+	Scope               string
+	MachineID           sql.NullString
+	ScopeState          string
+	Version             int64
+	KeyEpoch            int64
+	AuthorityGeneration int64
+	AuthorityID         string
+	ManifestID          string
+	UpdatedAt           time.Time
+}
+
+type EnvironmentScopeManifest struct {
+	ScopeID             string
+	Version             int64
+	KeyEpoch            int64
+	AuthorityGeneration int64
+	AuthorityID         string
+	OperationID         string
+	ManifestID          string
+	Envelope            []byte
+	CreatedAt           time.Time
+}
+
+type EnvironmentScopeName struct {
+	ScopeID   string
+	Name      string
+	UpdatedAt time.Time
+}
+
+type EnvironmentTransitionManifest struct {
+	TransitionID    string
+	ScopeRef        string
+	ExpectedVersion int64
+	Version         int64
+	KeyEpoch        int64
+	OperationID     string
+	ManifestID      string
+	Envelope        []byte
+	Names           []string
+	CreatedAt       time.Time
 }
 
 type FeatureFlag struct {
@@ -865,6 +1018,19 @@ type MachineControlRenewal struct {
 	IssuedAt               time.Time
 	ExpiresAt              time.Time
 	CreatedAt              time.Time
+	SessionGeneration      sql.NullInt64
+	SupersededAt           sql.NullTime
+}
+
+type MachineControlSession struct {
+	MachineID              string
+	InstallationGeneration int64
+	SessionGeneration      int64
+	OperationID            string
+	CredentialJti          string
+	IssuedAt               time.Time
+	ExpiresAt              time.Time
+	UpdatedAt              time.Time
 }
 
 type MachineRuntimeInterval struct {
@@ -987,6 +1153,28 @@ type MeteringCheckpoint struct {
 	LastError         string
 	CreatedAt         time.Time
 	ProcessedAt       sql.NullTime
+}
+
+type Operation struct {
+	ID              string
+	AccountID       string
+	IdempotencyKey  string
+	RequestHash     []byte
+	OperationType   string
+	ResourceKind    string
+	ResourceID      sql.NullString
+	Phase           string
+	State           string
+	Progress        int16
+	Retrying        bool
+	NextRetryAt     sql.NullTime
+	ErrorCode       sql.NullString
+	Outcome         string
+	ResultReference sql.NullString
+	CorrelationID   string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	CompletedAt     sql.NullTime
 }
 
 type OrchestrationJob struct {
@@ -1161,16 +1349,132 @@ type PolarEvent struct {
 	CreatedAt       time.Time
 }
 
-type PreviewUrlRecord struct {
-	ID         string
-	ProjectID  string
-	PreviewKey string
-	TargetUrl  string
-	PublicUrl  string
-	State      string
-	Version    int64
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+// Replayable edge admission/detach intents containing safe binding metadata only.
+type PreviewCarrierAttachmentOutbox struct {
+	AccountID            string
+	OperationID          string
+	AttachmentGeneration int64
+	Action               string
+	Binding              []byte
+	ConfigContentHash    string
+	EdgeEndpoints        []string
+	Endpoint             string
+	AccessMode           string
+	ExpiresAt            time.Time
+	State                string
+	Attempts             int32
+	NextAttemptAt        time.Time
+	LastErrorCode        sql.NullString
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+	DeliveredAt          sql.NullTime
+}
+
+type PreviewDomain struct {
+	ID                            string
+	AccountID                     string
+	PreviewID                     string
+	PreviewGeneration             int64
+	Hostname                      string
+	MatchType                     string
+	OwnershipChallengeReference   string
+	OwnershipState                string
+	DnsTarget                     string
+	ObservedRecords               []byte
+	DnsProvider                   string
+	ExpectedRecords               []byte
+	DnsLastCheckedAt              sql.NullTime
+	DnsNextCheckAt                time.Time
+	DnsTtlSeconds                 sql.NullInt32
+	VerificationAttempts          int32
+	CertificateStrategy           string
+	CertificateReference          sql.NullString
+	CertificateState              string
+	CertificateExpiresAt          sql.NullTime
+	CertificateRenewalAttemptedAt sql.NullTime
+	CertificateFailureCode        sql.NullString
+	CaaState                      string
+	ConflictState                 string
+	LastVerifiedAt                sql.NullTime
+	Generation                    int64
+	CreatedAt                     time.Time
+	UpdatedAt                     time.Time
+	DeletedAt                     sql.NullTime
+	QuarantineUntil               sql.NullTime
+}
+
+type PreviewLease struct {
+	ID              string
+	EndpointID      string
+	Endpoint        string
+	AccountID       string
+	ActorID         string
+	OwnerDeviceID   string
+	OwnerSessionID  string
+	TargetScheme    string
+	TargetAddress   string
+	AccessMode      string
+	LeaseDeadline   time.Time
+	UserDeadline    sql.NullTime
+	AllocationState string
+	EdgeState       string
+	OriginState     string
+	TerminalState   string
+	CreatedAt       time.Time
+	ReadyAt         sql.NullTime
+	LastRenewedAt   time.Time
+	StoppedAt       sql.NullTime
+	Generation      int64
+	OwnerLastSeenAt time.Time
+}
+
+// Ephemeral preview-to-canonical-carrier binding metadata. Never stores bearer or private material.
+type PreviewLeaseCarrierAttachment struct {
+	AccountID      string
+	PreviewID      string
+	OperationID    string
+	IdempotencyKey string
+	RequestID      string
+	CorrelationID  string
+	// SHA-256 of the canonical attachment request envelope; not secret material.
+	RequestHash                          []byte
+	OwnerDeviceID                        string
+	OwnerSessionID                       string
+	HostID                               string
+	EdgeNodeID                           string
+	MachineIdentityPublicKey             string
+	MachineIdentityThumbprint            string
+	CarrierKind                          string
+	LeaseGeneration                      int64
+	TunnelID                             string
+	ConnectorID                          string
+	ConnectorSessionID                   string
+	ProcessGeneration                    int64
+	ConfigGeneration                     int64
+	RouteID                              string
+	RouteGeneration                      int64
+	ConfigContentHash                    string
+	EdgeEndpoints                        []string
+	AttachmentGeneration                 int64
+	State                                string
+	EdgeReady                            bool
+	OriginReady                          bool
+	IssuedAt                             time.Time
+	ExpiresAt                            time.Time
+	ReadyAt                              sql.NullTime
+	ReleasedAt                           sql.NullTime
+	CreatedAt                            time.Time
+	UpdatedAt                            time.Time
+	EdgeProcessEpoch                     string
+	EdgeCarrierServerSpkiSha256          sql.NullString
+	EdgeCarrierServerCertificateChainPem sql.NullString
+}
+
+type PreviewLeaseCreateOperation struct {
+	AccountID   string
+	PreviewID   string
+	OperationID string
+	CreatedAt   time.Time
 }
 
 type Project struct {
@@ -1439,6 +1743,352 @@ type TerminalSessionOperation struct {
 	CompletedAt       sql.NullTime
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+}
+
+type Tunnel struct {
+	ID                    string
+	AccountID             string
+	Name                  string
+	DesiredState          string
+	AccessMode            string
+	Generation            int64
+	StableEndpointID      string
+	StableEndpoint        string
+	CreatedByHostID       string
+	CreatedByActorID      string
+	ExpiresAt             sql.NullTime
+	SummaryCode           string
+	SummaryTransitionedAt time.Time
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	DeletedAt             sql.NullTime
+}
+
+type TunnelCertificateEdgeDistribution struct {
+	CertificateID                 string
+	EdgeNodeID                    string
+	EdgeProcessEpoch              string
+	EdgeAssignmentGeneration      int64
+	State                         string
+	ObservedCertificateGeneration int64
+	ObservedAt                    sql.NullTime
+	FailureCode                   sql.NullString
+	CreatedAt                     time.Time
+	UpdatedAt                     time.Time
+}
+
+type TunnelCertificateIssuanceLock struct {
+	DomainID         string
+	OwnerID          string
+	DomainGeneration int64
+	LeaseUntil       time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+type TunnelCertificateRecord struct {
+	ID                    string
+	DomainID              sql.NullString
+	AccountID             string
+	TunnelID              sql.NullString
+	Hostname              string
+	DomainGeneration      int64
+	CertificateGeneration int64
+	Strategy              string
+	State                 string
+	CertificateReference  string
+	MasterKeyReference    string
+	CertificateCiphertext []byte
+	PrivateKeyCiphertext  []byte
+	Fingerprint           []byte
+	Issuer                string
+	NotBefore             time.Time
+	ExpiresAt             time.Time
+	RenewalAt             time.Time
+	FailureCode           sql.NullString
+	RevokedAt             sql.NullTime
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	LeafHostname          sql.NullString
+	TargetKind            string
+	RouteID               sql.NullString
+	PreviewID             sql.NullString
+	PreviewGeneration     sql.NullInt64
+	PreviewState          sql.NullString
+	PreviewExpiresAt      sql.NullTime
+	UserAccountID         sql.NullString
+}
+
+type TunnelConfigGeneration struct {
+	TunnelID           string
+	Generation         int64
+	PreviousGeneration sql.NullInt64
+	ContentHash        []byte
+	Snapshot           []byte
+	SnapshotReference  sql.NullString
+	ActivationState    string
+	CreatedByActorID   string
+	CreatedAt          time.Time
+	ActivatedAt        sql.NullTime
+	RetainedUntil      time.Time
+}
+
+type TunnelConnector struct {
+	ID                          string
+	TunnelID                    string
+	HostID                      string
+	CredentialReference         string
+	CredentialThumbprint        string
+	RotationGeneration          int64
+	DesiredState                string
+	SoftwareVersion             sql.NullString
+	ProtocolVersion             string
+	OperatingSystem             sql.NullString
+	Architecture                sql.NullString
+	LastSessionID               sql.NullString
+	LastHeartbeatAt             sql.NullTime
+	ReadyAt                     sql.NullTime
+	DisconnectReasonCode        sql.NullString
+	LastAppliedConfigGeneration int64
+	DrainState                  string
+	Generation                  int64
+	CreatedAt                   time.Time
+	UpdatedAt                   time.Time
+	RevokedAt                   sql.NullTime
+}
+
+type TunnelConnectorActivation struct {
+	OperationID          string
+	AccountID            string
+	TunnelID             string
+	ConnectorID          string
+	HostID               string
+	CredentialGeneration int64
+	ProcessGeneration    int64
+	CreatedAt            time.Time
+}
+
+type TunnelConnectorCredentialGeneration struct {
+	ID                   string
+	ConnectorID          string
+	TunnelID             string
+	Generation           int64
+	CredentialReference  string
+	CredentialThumbprint string
+	VerifierAlgorithm    string
+	VerifierPublicKey    []byte
+	State                string
+	ValidUntil           time.Time
+	CreatedAt            time.Time
+	RevokedAt            sql.NullTime
+	SourceOperationID    sql.NullString
+}
+
+type TunnelConnectorEnrollment struct {
+	ID               string
+	AccountID        string
+	TunnelID         string
+	HostID           string
+	OperationID      string
+	TokenHash        []byte
+	Capabilities     []string
+	ExpiresAt        time.Time
+	ConsumedAt       sql.NullTime
+	ConnectorID      sql.NullString
+	CreatedByActorID string
+	CreatedAt        time.Time
+}
+
+type TunnelConnectorRotationTarget struct {
+	OperationID                  string
+	AccountID                    string
+	TunnelID                     string
+	ConnectorID                  string
+	HostID                       string
+	TargetSetHash                string
+	OldCredentialGeneration      int64
+	NewCredentialGeneration      int64
+	State                        string
+	OldIdentityKeyID             sql.NullString
+	OldIdentityKeyThumbprint     sql.NullString
+	ChallengeNonce               sql.NullString
+	ChallengeIssuedAt            sql.NullTime
+	ChallengeExpiresAt           sql.NullTime
+	OverlapUntil                 sql.NullTime
+	NewCredentialValidUntil      sql.NullTime
+	ProofSessionID               sql.NullString
+	ProofProcessGeneration       sql.NullInt64
+	NewIdentityKeyID             sql.NullString
+	NewIdentityKeyThumbprint     sql.NullString
+	NewPublicKey                 []byte
+	NewCredentialReference       sql.NullString
+	ReplacementSessionID         sql.NullString
+	ReplacementProcessGeneration sql.NullInt64
+	ConfigGeneration             sql.NullInt64
+	ConfigContentHash            []byte
+	EdgeReady                    sql.NullBool
+	RouteReady                   sql.NullBool
+	OriginReady                  sql.NullBool
+	ReadyAt                      sql.NullTime
+	RevokeNonce                  sql.NullString
+	RevokeSessionID              sql.NullString
+	RevokeProcessGeneration      sql.NullInt64
+	RevokeIssuedAt               sql.NullTime
+	RevokeDeadline               sql.NullTime
+	RevokedAt                    sql.NullTime
+	FailureCode                  sql.NullString
+	FailureMessage               sql.NullString
+	CreatedAt                    time.Time
+	UpdatedAt                    time.Time
+}
+
+type TunnelConnectorSession struct {
+	ID                      string
+	ConnectorID             string
+	ProcessGeneration       int64
+	ProtocolVersion         string
+	Capabilities            []string
+	State                   string
+	LeaseDeadline           time.Time
+	LastHeartbeatAt         time.Time
+	ReadyAt                 sql.NullTime
+	DisconnectedAt          sql.NullTime
+	DisconnectReasonCode    sql.NullString
+	AppliedConfigGeneration int64
+	RetainedUntil           time.Time
+	CreatedAt               time.Time
+	CredentialGeneration    int64
+	LastHeartbeatSentAt     sql.NullTime
+}
+
+type TunnelDomain struct {
+	ID                            string
+	AccountID                     string
+	TunnelID                      string
+	RouteID                       string
+	Hostname                      string
+	MatchType                     string
+	OwnershipChallengeReference   string
+	OwnershipState                string
+	DnsTarget                     string
+	ObservedRecords               []byte
+	CertificateStrategy           string
+	CertificateReference          sql.NullString
+	CertificateState              string
+	CertificateExpiresAt          sql.NullTime
+	CertificateRenewalAttemptedAt sql.NullTime
+	CertificateFailureCode        sql.NullString
+	CaaState                      string
+	ConflictState                 string
+	LastVerifiedAt                sql.NullTime
+	Generation                    int64
+	CreatedAt                     time.Time
+	UpdatedAt                     time.Time
+	DeletedAt                     sql.NullTime
+	DnsProvider                   string
+	ExpectedRecords               []byte
+	DnsLastCheckedAt              sql.NullTime
+	DnsNextCheckAt                time.Time
+	DnsTtlSeconds                 sql.NullInt32
+	VerificationAttempts          int32
+	QuarantineUntil               sql.NullTime
+}
+
+type TunnelEdgeRouteAssignment struct {
+	AssignmentID               string
+	RouteID                    string
+	AssignmentGeneration       int64
+	AccountID                  string
+	TunnelID                   string
+	ConnectorID                string
+	HostID                     string
+	MachineIdentityPublicKey   string
+	MachineIdentityThumbprint  string
+	ConnectorGeneration        int64
+	ConnectorSessionID         string
+	ConnectorProcessGeneration int64
+	ConfigGeneration           int64
+	ConfigContentHash          []byte
+	AccessMode                 string
+	RouteGeneration            int64
+	RouteRevision              int64
+	EdgeNodeID                 string
+	EdgeProcessEpoch           string
+	EdgeFailureDomain          string
+	State                      string
+	ObservedState              string
+	AssignedAt                 time.Time
+	ObservedAt                 sql.NullTime
+	ReleasedAt                 sql.NullTime
+	CreatedAt                  time.Time
+	UpdatedAt                  time.Time
+}
+
+type TunnelLogEntry struct {
+	ID             string
+	AccountID      string
+	TunnelID       sql.NullString
+	PreviewID      sql.NullString
+	RouteID        sql.NullString
+	ConnectorID    sql.NullString
+	SessionID      sql.NullString
+	Level          string
+	Component      string
+	Code           string
+	Message        string
+	Metadata       []byte
+	CorrelationID  string
+	OccurredAt     time.Time
+	CursorSequence sql.NullInt64
+}
+
+type TunnelPlatformCertificateTarget struct {
+	ID                            string
+	Kind                          string
+	Hostname                      string
+	AccountID                     string
+	ChallengeReference            string
+	Generation                    int64
+	DesiredState                  string
+	CertificateState              string
+	CertificateReference          sql.NullString
+	CertificateExpiresAt          sql.NullTime
+	CertificateRenewalAttemptedAt sql.NullTime
+	CertificateFailureCode        sql.NullString
+	RetryCount                    int32
+	NextRetryAt                   sql.NullTime
+	CreatedAt                     time.Time
+	UpdatedAt                     time.Time
+}
+
+type TunnelRoute struct {
+	ID                      string
+	TunnelID                string
+	Name                    string
+	Protocol                string
+	MatchType               string
+	MatchHostname           sql.NullString
+	WildcardSuffix          sql.NullString
+	PathPrefix              sql.NullString
+	Priority                int32
+	OriginScheme            string
+	OriginAddress           string
+	PreserveHost            bool
+	HostOverride            sql.NullString
+	TlsVerification         string
+	TlsServerName           sql.NullString
+	CaReference             sql.NullString
+	MtlsCredentialReference sql.NullString
+	ConnectTimeoutMs        int32
+	IdleTimeoutMs           int32
+	MaxConcurrentStreams    int32
+	DesiredState            string
+	Generation              int64
+	CreatedByActorID        string
+	UpdatedByActorID        string
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
+	DeletedAt               sql.NullTime
 }
 
 type User struct {

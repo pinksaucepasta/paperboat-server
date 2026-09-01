@@ -105,11 +105,26 @@ DELETE FROM machine_control_renewals AS renewal
 WHERE renewal.machine_id = $1
 `
 
+func (q *Queries) DeleteUserMachineControlRenewals(ctx context.Context, targetMachineID string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteUserMachineControlRenewals, targetMachineID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteUserMachineControlSessions = `-- name: DeleteUserMachineControlSessions :execrows
+DELETE FROM machine_control_sessions AS session
+WHERE session.machine_id = $1
+`
+
 // Each of the following statements is intentionally separate. The managed
 // SSH child table has a RESTRICT foreign key to its owner, so sibling data
 // modifying CTEs could fail FK checks depending on PostgreSQL snapshot order.
-func (q *Queries) DeleteUserMachineControlRenewals(ctx context.Context, targetMachineID string) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteUserMachineControlRenewals, targetMachineID)
+// The current machine-control session is a child of its renewal and must be
+// removed first so deleting the renewal cannot violate its RESTRICT FK.
+func (q *Queries) DeleteUserMachineControlSessions(ctx context.Context, targetMachineID string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteUserMachineControlSessions, targetMachineID)
 	if err != nil {
 		return 0, err
 	}
@@ -350,33 +365,6 @@ type ExpireUserMachinePairingsParams struct {
 // never remain usable after its machine has been removed.
 func (q *Queries) ExpireUserMachinePairings(ctx context.Context, arg ExpireUserMachinePairingsParams) (int64, error) {
 	result, err := q.db.Exec(ctx, expireUserMachinePairings, arg.ExpiredAt, arg.TargetMachineID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const removeControlPreviewsForEnvironment = `-- name: RemoveControlPreviewsForEnvironment :execrows
-UPDATE control_previews AS preview
-SET state = 'removed',
-    removed_at = coalesce(preview.removed_at, $1),
-    retained_until = greatest(coalesce(preview.retained_until, $1), $1),
-    version = preview.version + 1,
-    updated_at = $1
-WHERE preview.environment_id = $2
-  AND preview.state <> 'removed'
-`
-
-type RemoveControlPreviewsForEnvironmentParams struct {
-	RevocationTime      time.Time
-	TargetEnvironmentID string
-}
-
-// A removed environment must not continue advertising a preview URL. The
-// row remains until retention cleanup so existing user data and audit history
-// are preserved, but it can no longer be resolved or served.
-func (q *Queries) RemoveControlPreviewsForEnvironment(ctx context.Context, arg RemoveControlPreviewsForEnvironmentParams) (int64, error) {
-	result, err := q.db.Exec(ctx, removeControlPreviewsForEnvironment, arg.RevocationTime, arg.TargetEnvironmentID)
 	if err != nil {
 		return 0, err
 	}

@@ -16,6 +16,13 @@ The registered client id is `paperboat`. Its exact allowed Paperboat scopes are:
 - `projects:read`
 - `projects:connect`
 - `session:refresh`
+- `diagnostics:upload`
+- `previews:read`
+- `previews:write`
+- `tunnels:read`
+- `tunnels:write`
+- `operations:read`
+- `operations:write`
 
 The CLI must request that exact set. The server rejects missing, duplicate, or additional
 scopes; ordering is not significant. Token responses return a normalized space-delimited

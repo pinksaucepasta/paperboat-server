@@ -40,7 +40,25 @@ func TestHelperProfilesDoNotGrantHostedLifecycleToBYOD(t *testing.T) {
 	}
 }
 
-func TestSessionAndPreviewControlStates(t *testing.T) {
+func TestHelperContractsDoNotExposeRetiredPreviewSurface(t *testing.T) {
+	for _, path := range []string{
+		"helper/profiles.json",
+		"fixtures/helper/operations.ndjson",
+		"credentials/classes.json",
+	} {
+		b, err := os.ReadFile("../../testdata/contracts/" + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, token := range retiredPreviewContractTokens {
+			if strings.Contains(string(b), token) {
+				t.Fatalf("retired preview contract token %q remains in %s", token, path)
+			}
+		}
+	}
+}
+
+func TestSessionControlStates(t *testing.T) {
 	var session struct {
 		States map[string]struct {
 			Allow []string `json:"allow"`
@@ -49,14 +67,6 @@ func TestSessionAndPreviewControlStates(t *testing.T) {
 	readJSON(t, "states/session.json", &session)
 	if contains(session.States["running"].Allow, "deleted") || !contains(session.States["closed"].Allow, "deleted") {
 		t.Fatal("running sessions must close before control-plane deletion")
-	}
-	var preview struct {
-		Initial string         `json:"initial"`
-		HTTP    map[string]int `json:"http"`
-	}
-	readJSON(t, "states/preview.json", &preview)
-	if preview.Initial != "registering" || preview.HTTP["ready"] != 200 || preview.HTTP["expired"] != 410 || preview.HTTP["removed"] != 404 {
-		t.Fatalf("unexpected preview contract: %#v", preview)
 	}
 }
 
@@ -83,7 +93,7 @@ func TestCredentialClassesAreNonInterchangeable(t *testing.T) {
 			seenAuthority[key] = class.ID
 		}
 	}
-	for _, required := range []string{"cli_session", "helper_enrollment", "helper_identity", "connector_admission", "terminal_operation", "exec_operation", "file_transfer", "preview_registration", "config_sync", "signed_update", "edge_control", "usage_report"} {
+	for _, required := range []string{"cli_session", "helper_enrollment", "helper_identity", "connector_admission", "terminal_operation", "exec_operation", "file_transfer", "preview_launch", "config_sync", "signed_update", "edge_control", "usage_report"} {
 		if !seenID[required] {
 			t.Errorf("missing credential class %q", required)
 		}
@@ -170,4 +180,10 @@ func contains(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+var retiredPreviewContractTokens = []string{
+	"preview.public.v1",
+	"preview.register",
+	"preview_registration",
 }

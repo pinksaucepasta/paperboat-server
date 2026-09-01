@@ -23,6 +23,8 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
+	"github.com/pinksaucepasta/paperboat-server/internal/observability"
+	"github.com/pinksaucepasta/paperboat-server/internal/telemetry"
 )
 
 type readinessFunc func(context.Context) error
@@ -50,6 +52,58 @@ func TestHealthDoesNotRequireReadiness(t *testing.T) {
 	}
 	if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
 		t.Fatal("missing secure headers")
+	}
+}
+
+func TestTelemetryRouteFamilyIsFinite(t *testing.T) {
+	tests := map[string]string{
+		"/healthz":                     "health",
+		"/network-check/v1":            "health",
+		"/v1/edge/routes":              "edge_control",
+		"/install":                     "release",
+		"/tuf/root.json":               "release",
+		"/v1/previews/preview_1":       "public_api",
+		"/customer.example/token/path": "other",
+	}
+	for path, want := range tests {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		if got := telemetryRouteFamily(req); got != want {
+			t.Fatalf("path %q: got %q want %q", path, got, want)
+		}
+	}
+}
+
+func TestRouterTelemetryUsesTrustedRequestCorrelation(t *testing.T) {
+	events, err := telemetry.NewEventLog(4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer events.Close()
+	metrics := telemetry.NewMetrics()
+	observer := &telemetry.HTTPObserver{
+		Metrics: metrics,
+		Events:  events,
+		Identity: func(ctx context.Context) (string, string) {
+			return observability.RequestID(ctx), observability.CorrelationID(ctx)
+		},
+	}
+	router := NewRouter(Options{Config: config.Default(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), TelemetryHTTP: observer})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/v1/customer.example/secret-path", nil)
+	request.Header.Set("Request-Id", "untrusted/path")
+	router.ServeHTTP(recorder, request)
+	recorded := events.Snapshot()
+	if len(recorded) != 1 || recorded[0].RequestID == "" || recorded[0].CorrelationID == "" || recorded[0].RequestID == "untrusted/path" {
+		t.Fatalf("events=%#v", recorded)
+	}
+	encoded, err := recorded[0].JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, unsafe := range []string{"customer.example", "secret-path", "untrusted/path"} {
+		if strings.Contains(string(encoded), unsafe) {
+			t.Fatalf("event leaked %q: %s", unsafe, encoded)
+		}
 	}
 }
 
@@ -151,13 +205,20 @@ func TestRequestIDRejectsUnsafeClientValue(t *testing.T) {
 }
 
 func TestMetricsAreLocalOnly(t *testing.T) {
-	router := NewRouter(Options{Config: config.Default(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	typed := telemetry.NewMetrics()
+	if err := typed.IncCounter(telemetry.MetricHTTPRequests, telemetry.MetricLabels{"method": "get", "route_family": "health", "status_class": "2xx"}); err != nil {
+		t.Fatal(err)
+	}
+	router := NewRouter(Options{Config: config.Default(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), TelemetryMetrics: typed})
 	local := httptest.NewRecorder()
 	localReq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	localReq.RemoteAddr = "127.0.0.1:1234"
 	router.ServeHTTP(local, localReq)
 	if local.Code != http.StatusOK || !strings.Contains(local.Body.String(), "device_requested_total") {
 		t.Fatalf("local status = %d, body = %s", local.Code, local.Body.String())
+	}
+	if !strings.Contains(local.Body.String(), telemetry.MetricHTTPRequests) {
+		t.Fatalf("typed metrics missing: %s", local.Body.String())
 	}
 	remote := httptest.NewRecorder()
 	remoteReq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -399,6 +460,9 @@ func TestPolarWebhookReturnsRetryableStatusForRetryableBillingError(t *testing.T
 	dsn := os.Getenv("PAPERBOAT_TEST_DATABASE_DSN")
 	if dsn == "" {
 		t.Skip("set PAPERBOAT_TEST_DATABASE_DSN to run webhook handler integration tests")
+	}
+	if err := db.ValidateIsolatedTestDSN(dsn, os.Getenv("PAPERBOAT_DATABASE_DSN")); err != nil {
+		t.Fatal(err)
 	}
 	store, err := db.Open(config.Database{Driver: "postgres", DSN: dsn})
 	if err != nil {

@@ -18,10 +18,15 @@ func TestProviderTransportRecordsBoundedLatencyAndErrors(t *testing.T) {
 	providerMetrics.values = make(map[string]providerMetric)
 	providerMetrics.Unlock()
 
-	transport := InstrumentProviderTransport("polar", roundTripFunc(func(*http.Request) (*http.Response, error) {
-		time.Sleep(2 * time.Millisecond)
+	clock := []time.Time{time.Unix(100, 0), time.Unix(100, 2*int64(time.Millisecond))}
+	clockIndex := 0
+	transport := providerTransport{provider: "polar", next: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusServiceUnavailable}, nil
-	}))
+	}), now: func() time.Time {
+		value := clock[min(clockIndex, len(clock)-1)]
+		clockIndex++
+		return value
+	}}
 	request, err := http.NewRequest(http.MethodGet, "https://polar.example.test", nil)
 	if err != nil {
 		t.Fatal(err)
