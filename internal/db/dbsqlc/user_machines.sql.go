@@ -232,13 +232,14 @@ func (q *Queries) ApproveUserMachinePairing(ctx context.Context, arg ApproveUser
 
 const beginUserMachineInstallationRecovery = `-- name: BeginUserMachineInstallationRecovery :one
 UPDATE user_machine_pairings
-SET installation_recovery_operation_key = coalesce(installation_recovery_operation_key, $1),
-    expires_at = CASE WHEN installation_recovery_operation_key IS NULL THEN $2 ELSE expires_at END,
+SET state = 'consumed',
+    installation_recovery_operation_key = coalesce(installation_recovery_operation_key, $1),
+    expires_at = CASE WHEN state = 'expired' OR installation_recovery_operation_key IS NULL THEN $2 ELSE expires_at END,
     updated_at = now()
 WHERE id = $3
   AND verifier_hash = $4
   AND public_identity_key = $5
-  AND state = 'consumed'
+  AND state IN ('consumed', 'expired')
   AND installation_config_consumed_at IS NOT NULL
   AND installation_config_consumed_at > $6
 RETURNING id, verifier_hash, user_code, requested_display_name, platform, architecture, workspace_root, runtime_versions, state, approved_by_user_id, user_machine_id, installation_config_ciphertext, installation_config_nonce, installation_config_consumed_at, expires_at, approved_at, denied_at, created_at, updated_at, public_identity_key, ssh_user, ssh_port, can_reuse_runtime_identity, installation_recovery_operation_key, authenticated_setup_cli_session_id, authenticated_setup_operation_id, authenticated_setup_generation, authenticated_setup_mode, authenticated_setup_helper_enrollment_id

@@ -790,13 +790,14 @@ FOR UPDATE OF pairing;
 
 -- name: BeginUserMachineInstallationRecovery :one
 UPDATE user_machine_pairings
-SET installation_recovery_operation_key = coalesce(installation_recovery_operation_key, sqlc.arg(operation_key)),
-    expires_at = CASE WHEN installation_recovery_operation_key IS NULL THEN sqlc.arg(expires_at) ELSE expires_at END,
+SET state = 'consumed',
+    installation_recovery_operation_key = coalesce(installation_recovery_operation_key, sqlc.arg(operation_key)),
+    expires_at = CASE WHEN state = 'expired' OR installation_recovery_operation_key IS NULL THEN sqlc.arg(expires_at) ELSE expires_at END,
     updated_at = now()
 WHERE id = sqlc.arg(id)
   AND verifier_hash = sqlc.arg(verifier_hash)
   AND public_identity_key = sqlc.arg(public_identity_key)
-  AND state = 'consumed'
+  AND state IN ('consumed', 'expired')
   AND installation_config_consumed_at IS NOT NULL
   AND installation_config_consumed_at > sqlc.arg(recovery_after)
 RETURNING *;

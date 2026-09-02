@@ -713,11 +713,77 @@ func (s *Service) PrepareAuthenticatedHostSetup(ctx context.Context, userID, cli
 	expiresAt := s.now().UTC().Add(s.policy.PairingLifetime)
 	var machine UserMachine
 	var pairing dbsqlc.UserMachinePairing
+	var recoveredExistingPairing bool
 	err = s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		var loadErr error
 		machine, loadErr = s.authenticatedHostSetupMachineForUpdate(ctx, tx, userID, cliClientSessionID, machineID, in)
 		if loadErr != nil {
 			return loadErr
+		}
+		now := s.now().UTC()
+		existing, existingErr := tx.Queries().GetUserMachinePairingForVerifier(ctx, verifierHash[:])
+		if existingErr == nil {
+			if !authenticatedHostSetupPairingFieldsMatch(existing, userID, machine, in, verifierHash[:]) {
+				return ErrHostSetupOperationConflict
+			}
+			if len(existing.InstallationConfigCiphertext) == 0 {
+				if existing.State != "approved" || !existing.AuthenticatedSetupCLISessionID.Valid || existing.AuthenticatedSetupCLISessionID.String != cliClientSessionID || !now.Before(existing.ExpiresAt) {
+					return ErrHostSetupOperationConflict
+				}
+				pairing = existing
+				return nil
+			}
+			if len(existing.InstallationConfigCiphertext) > 0 {
+				materialSessionID, materialErr := s.authenticatedHostSetupMaterialForRetry(existing, machine, in)
+				if materialErr != nil {
+					return materialErr
+				}
+				if callerErr := s.authorizeAuthenticatedHostSetupRetry(ctx, tx, userID, cliClientSessionID, machine, existing, materialSessionID); callerErr != nil {
+					return callerErr
+				}
+				switch existing.State {
+				case "approved":
+					if !now.Before(existing.ExpiresAt) || existing.InstallationConfigConsumedAt.Valid {
+						return ErrHostSetupOperationConflict
+					}
+					pairing = existing
+					recoveredExistingPairing = true
+				case "consumed":
+					if now.Before(existing.ExpiresAt) {
+						pairing = existing
+						recoveredExistingPairing = true
+						break
+					}
+					fallthrough
+				case "expired":
+					if !existing.InstallationConfigConsumedAt.Valid || !existing.InstallationConfigConsumedAt.Time.After(now.Add(-installationRecoveryGrace)) {
+						return ErrHostSetupOperationConflict
+					}
+					recoveryOperationKey := existing.InstallationRecoveryOperationKey.String
+					if recoveryOperationKey == "" {
+						recoveryOperationKey = installationRecoveryOperationKey(existing.ID, existing.ExpiresAt)
+					}
+					pairing, loadErr = tx.Queries().BeginUserMachineInstallationRecovery(ctx, dbsqlc.BeginUserMachineInstallationRecoveryParams{
+						ID: existing.ID, VerifierHash: verifierHash[:], PublicIdentityKey: machine.PublicIdentityKey,
+						OperationKey:  sql.NullString{String: recoveryOperationKey, Valid: true},
+						RecoveryAfter: sql.NullTime{Time: now.Add(-installationRecoveryGrace), Valid: true},
+						ExpiresAt:     now.Add(s.policy.PairingLifetime),
+					})
+					if errors.Is(loadErr, sql.ErrNoRows) {
+						return ErrHostSetupOperationConflict
+					}
+					if loadErr != nil {
+						return loadErr
+					}
+					recoveredExistingPairing = true
+				default:
+					return ErrHostSetupOperationConflict
+				}
+				return s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "machine.host_setup_installation_prepared", ResourceType: "machine", ResourceID: machine.ID, IdempotencyKey: "machine.host_setup_installation_prepared:" + cliClientSessionID + ":" + in.OperationID, Metadata: map[string]any{"installation_generation": in.InstallationGeneration}})
+			}
+		}
+		if !errors.Is(existingErr, sql.ErrNoRows) {
+			return existingErr
 		}
 		pairing, loadErr = tx.Queries().CreateAuthenticatedHostSetupPairing(ctx, dbsqlc.CreateAuthenticatedHostSetupPairingParams{
 			ID: newID("ump"), VerifierHash: verifierHash[:], UserCode: userCode,
@@ -747,6 +813,9 @@ func (s *Service) PrepareAuthenticatedHostSetup(ctx context.Context, userID, cli
 	})
 	if err != nil {
 		return AuthenticatedHostSetupInstallation{}, err
+	}
+	if recoveredExistingPairing {
+		return AuthenticatedHostSetupInstallation{ExpiresAt: pairing.ExpiresAt}, nil
 	}
 
 	var candidateBuild installationMaterialBuild
@@ -879,7 +948,13 @@ func (s *Service) validateAuthenticatedHostSetupMachine(machine UserMachine, in 
 }
 
 func authenticatedHostSetupPairingMatches(pairing dbsqlc.UserMachinePairing, userID, cliClientSessionID string, machine UserMachine, in AuthenticatedHostSetupInput, verifierHash []byte, now time.Time) bool {
-	return pairing.AuthenticatedSetupCLISessionID.Valid && pairing.AuthenticatedSetupCLISessionID.String == cliClientSessionID &&
+	return authenticatedHostSetupPairingFieldsMatch(pairing, userID, machine, in, verifierHash) &&
+		pairing.AuthenticatedSetupCLISessionID.Valid && pairing.AuthenticatedSetupCLISessionID.String == cliClientSessionID &&
+		slices.Contains([]string{"approved", "consumed"}, pairing.State) && now.Before(pairing.ExpiresAt)
+}
+
+func authenticatedHostSetupPairingFieldsMatch(pairing dbsqlc.UserMachinePairing, userID string, machine UserMachine, in AuthenticatedHostSetupInput, verifierHash []byte) bool {
+	return pairing.AuthenticatedSetupCLISessionID.Valid &&
 		pairing.AuthenticatedSetupOperationID.Valid && pairing.AuthenticatedSetupOperationID.String == in.OperationID &&
 		pairing.AuthenticatedSetupGeneration.Valid && pairing.AuthenticatedSetupGeneration.Int64 == in.InstallationGeneration &&
 		pairing.AuthenticatedSetupMode.Valid && pairing.AuthenticatedSetupMode.String == "host" &&
@@ -888,7 +963,61 @@ func authenticatedHostSetupPairingMatches(pairing dbsqlc.UserMachinePairing, use
 		pairing.RequestedDisplayName == machine.DisplayName && pairing.Platform == machine.Platform && pairing.Architecture == machine.Architecture &&
 		pairing.WorkspaceRoot == machine.WorkspaceRoot && bytes.Equal(pairing.RuntimeVersions, machine.RuntimeVersions) && pairing.CanReuseRuntimeIdentity == in.CanReuseRuntimeIdentity &&
 		pairing.SshUser == (sql.NullString{String: in.SSHUser, Valid: in.SSHUser != ""}) && pairing.SshPort == (sql.NullInt32{Int32: int32(in.SSHPort), Valid: in.SSHPort != 0}) &&
-		slices.Contains([]string{"approved", "consumed"}, pairing.State) && now.Before(pairing.ExpiresAt)
+		pairing.PublicIdentityKey == machine.PublicIdentityKey && bytes.Equal(pairing.VerifierHash, verifierHash)
+}
+
+func (s *Service) authenticatedHostSetupMaterialForRetry(pairing dbsqlc.UserMachinePairing, machine UserMachine, in AuthenticatedHostSetupInput) (string, error) {
+	plaintext, err := secrets.Decrypt(s.encryptionKey, pairing.InstallationConfigCiphertext)
+	if err != nil {
+		return "", ErrHostSetupOperationConflict
+	}
+	binding, err := authenticatedHostSetupMaterialBindingFromPlaintext([]byte(plaintext))
+	if err != nil || binding.MachineID != machine.ID || binding.EnvironmentID != machine.EnvironmentID ||
+		binding.Generation != in.InstallationGeneration || binding.SetupMode != "host" || binding.Artifact != in.Artifact ||
+		binding.ReuseIdentity != in.CanReuseRuntimeIdentity ||
+		!s.authenticatedHostSetupMaterialMatches(pairing.InstallationConfigCiphertext, machine.ID, machine.EnvironmentID, in.InstallationGeneration, in.Artifact, pairing.AuthenticatedSetupHelperEnrollmentID) {
+		return "", ErrHostSetupOperationConflict
+	}
+	return authenticatedHostSetupMaterialSessionID([]byte(plaintext))
+}
+
+func authenticatedHostSetupMaterialSessionID(plaintext []byte) (string, error) {
+	sessionJSON, err := clientSessionFromInstallationMaterial([]byte(plaintext))
+	if err != nil || len(sessionJSON) == 0 {
+		return "", ErrInvalidHostSetupInstallation
+	}
+	var session installationClientSession
+	if err := json.Unmarshal(sessionJSON, &session); err != nil || session.Schema != "paperboat.cli-session/v1" ||
+		strings.TrimSpace(session.SessionID) == "" || strings.TrimSpace(session.AccessToken) == "" || strings.TrimSpace(session.RefreshToken) == "" {
+		return "", ErrInvalidHostSetupInstallation
+	}
+	return session.SessionID, nil
+}
+
+func (s *Service) authorizeAuthenticatedHostSetupRetry(ctx context.Context, tx *db.Tx, userID, cliClientSessionID string, machine UserMachine, pairing dbsqlc.UserMachinePairing, materialSessionID string) error {
+	if pairing.AuthenticatedSetupCLISessionID.Valid && pairing.AuthenticatedSetupCLISessionID.String == cliClientSessionID {
+		return nil
+	}
+	// Once bootstrap has switched the local profile, the original setup session
+	// may be revoked and the pairing intentionally expired. Recovery is allowed
+	// only through the exact active CLI session embedded in the encrypted
+	// material, and that session must already be bound to this machine.
+	if materialSessionID == "" || materialSessionID != cliClientSessionID || s.cliClientID == "" {
+		return ErrInvalidHostSetupInstallation
+	}
+	session, err := tx.Queries().GetActiveClientSessionForUserMachine(ctx, dbsqlc.GetActiveClientSessionForUserMachineParams{
+		ID: cliClientSessionID, UserID: userID, UserMachineID: sql.NullString{String: machine.ID, Valid: true},
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrInvalidHostSetupInstallation
+	}
+	if err != nil {
+		return err
+	}
+	if session.ClientID != s.cliClientID {
+		return ErrInvalidHostSetupInstallation
+	}
+	return nil
 }
 
 type SetupInput struct {
@@ -2331,6 +2460,7 @@ type installationMaterialBuild struct {
 	plaintext, ciphertext                         []byte
 	cliSessionID, cliAccessToken, cliRefreshToken string
 	existingCLISessionID, refreshedAccessToken    string
+	refreshedRefreshToken                         string
 	hasEnrollment                                 bool
 }
 
@@ -2529,6 +2659,7 @@ func (s *Service) provisionRecoveredUserMachine(ctx context.Context, userID stri
 	var expectedHelperID string
 	var exactArtifact *MachineArtifact
 	var authenticatedBinding *authenticatedHostSetupMaterialBinding
+	var materialSessionID string
 	if len(pairing.InstallationConfigCiphertext) > 0 {
 		plaintext, err := secrets.Decrypt(s.encryptionKey, pairing.InstallationConfigCiphertext)
 		if err != nil {
@@ -2549,9 +2680,17 @@ func (s *Service) provisionRecoveredUserMachine(ctx context.Context, userID stri
 		if err != nil {
 			return nil, ErrInstallationUnavailable
 		}
+		if len(existingClientSession) > 0 {
+			var session installationClientSession
+			if err := json.Unmarshal(existingClientSession, &session); err != nil || session.Schema != "paperboat.cli-session/v1" ||
+				session.SessionID == "" || session.AccessToken == "" || session.RefreshToken == "" {
+				return nil, ErrInstallationUnavailable
+			}
+			materialSessionID = session.SessionID
+		}
 		if pairing.AuthenticatedSetupCLISessionID.Valid {
 			binding, err := authenticatedHostSetupMaterialBindingFromPlaintext([]byte(plaintext))
-			if err != nil || binding.MachineID != machine.ID || binding.EnvironmentID != machine.EnvironmentID || binding.Generation != pairing.AuthenticatedSetupGeneration.Int64 || binding.SetupMode != "host" {
+			if err != nil || !pairing.AuthenticatedSetupGeneration.Valid || binding.MachineID != machine.ID || binding.EnvironmentID != machine.EnvironmentID || binding.Generation != pairing.AuthenticatedSetupGeneration.Int64 || binding.SetupMode != "host" {
 				return nil, ErrInstallationUnavailable
 			}
 			authenticatedBinding = &binding
@@ -2560,7 +2699,7 @@ func (s *Service) provisionRecoveredUserMachine(ctx context.Context, userID stri
 	}
 	var authorityGuard HelperEnrollmentAuthorityGuard
 	if authenticatedBinding != nil {
-		authorityGuard = s.authenticatedHostSetupRecoveryAuthorityGuard(userID, pairing, *authenticatedBinding)
+		authorityGuard = s.authenticatedHostSetupRecoveryAuthorityGuard(userID, pairing, *authenticatedBinding, materialSessionID)
 	}
 	build, err := s.buildInstallationMaterial(ctx, userID, pairing, machine, operationKey, existingClientSession, runtimeEnrolled, expectedHelperID, exactArtifact, authorityGuard)
 	if err != nil {
@@ -2568,10 +2707,11 @@ func (s *Service) provisionRecoveredUserMachine(ctx context.Context, userID stri
 	}
 	if len(existingClientSession) > 0 {
 		var session installationClientSession
-		if err := json.Unmarshal(existingClientSession, &session); err != nil || session.Schema != "paperboat.cli-session/v1" || session.SessionID == "" || session.RefreshToken == "" || s.cliClientID == "" || len(s.cliHashKey) == 0 || s.cliAccessLifetime <= 0 {
+		if err := json.Unmarshal(existingClientSession, &session); err != nil || session.Schema != "paperboat.cli-session/v1" || session.SessionID == "" || session.AccessToken == "" || session.RefreshToken == "" || s.cliClientID == "" || len(s.cliHashKey) == 0 || s.cliAccessLifetime <= 0 || s.cliRefreshLifetime <= 0 {
 			return nil, ErrInstallationUnavailable
 		}
 		session.AccessToken = oneShotToken(32)
+		session.RefreshToken = oneShotToken(32)
 		session.ExpiresIn = int(s.cliAccessLifetime / time.Second)
 		updatedMaterial, err := replaceInstallationClientSession(build.plaintext, session)
 		if err != nil {
@@ -2584,6 +2724,7 @@ func (s *Service) provisionRecoveredUserMachine(ctx context.Context, userID stri
 		}
 		build.existingCLISessionID = session.SessionID
 		build.refreshedAccessToken = session.AccessToken
+		build.refreshedRefreshToken = session.RefreshToken
 	}
 	var completed int64
 	err = s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
@@ -2628,7 +2769,13 @@ func (s *Service) provisionRecoveredUserMachine(ctx context.Context, userID stri
 			if err := tx.Queries().RevokeClientAccessTokens(ctx, dbsqlc.RevokeClientAccessTokensParams{CLIClientSessionID: build.existingCLISessionID, RevokedAt: sql.NullTime{Time: now, Valid: true}}); err != nil {
 				return err
 			}
+			if err := tx.Queries().RevokeClientRefreshTokens(ctx, dbsqlc.RevokeClientRefreshTokensParams{CLIClientSessionID: build.existingCLISessionID, RevokedAt: sql.NullTime{Time: now, Valid: true}}); err != nil {
+				return err
+			}
 			if err := tx.Queries().CreateClientAccessToken(ctx, dbsqlc.CreateClientAccessTokenParams{TokenHash: oneShotHash(s.cliHashKey, build.refreshedAccessToken), CLIClientSessionID: build.existingCLISessionID, ExpiresAt: now.Add(s.cliAccessLifetime), CreatedAt: now}); err != nil {
+				return err
+			}
+			if err := tx.Queries().CreateClientRefreshToken(ctx, dbsqlc.CreateClientRefreshTokenParams{TokenHash: oneShotHash(s.cliHashKey, build.refreshedRefreshToken), CLIClientSessionID: build.existingCLISessionID, ExpiresAt: now.Add(s.cliRefreshLifetime), CreatedAt: now}); err != nil {
 				return err
 			}
 		}
@@ -2720,7 +2867,7 @@ func (s *Service) authenticatedHostSetupMaterialMatches(ciphertext []byte, machi
 	return helperEnrollmentID.Valid && binding.EnrollmentID == helperEnrollmentID.String
 }
 
-func (s *Service) authenticatedHostSetupRecoveryAuthorityGuard(userID string, expected dbsqlc.UserMachinePairing, binding authenticatedHostSetupMaterialBinding) HelperEnrollmentAuthorityGuard {
+func (s *Service) authenticatedHostSetupRecoveryAuthorityGuard(userID string, expected dbsqlc.UserMachinePairing, binding authenticatedHostSetupMaterialBinding, materialSessionID string) HelperEnrollmentAuthorityGuard {
 	return func(ctx context.Context, tx *db.Tx, helperEnrollmentID string) error {
 		if !expected.AuthenticatedSetupCLISessionID.Valid || !expected.AuthenticatedSetupOperationID.Valid || !expected.AuthenticatedSetupGeneration.Valid ||
 			!expected.AuthenticatedSetupMode.Valid || expected.AuthenticatedSetupMode.String != "host" || !expected.InstallationRecoveryOperationKey.Valid ||
@@ -2730,13 +2877,6 @@ func (s *Service) authenticatedHostSetupRecoveryAuthorityGuard(userID string, ex
 		current, err := tx.Queries().GetUserMachinePairingForVerifier(ctx, expected.VerifierHash)
 		if err != nil {
 			if !errors.Is(err, sql.ErrNoRows) {
-				return err
-			}
-			return ErrInstallationUnavailable
-		}
-		session, err := tx.Queries().GetActiveClientSessionForInstallation(ctx, expected.AuthenticatedSetupCLISessionID.String)
-		if err != nil || session.UserID != userID {
-			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return err
 			}
 			return ErrInstallationUnavailable
@@ -2756,6 +2896,27 @@ func (s *Service) authenticatedHostSetupRecoveryAuthorityGuard(userID string, ex
 		}
 		if !authenticatedHostSetupRecoveryPairingMatches(current, expected, userID, machine, binding, s.now().UTC()) {
 			return ErrInstallationUnavailable
+		}
+		originalSession, sessionErr := tx.Queries().GetActiveClientSessionForInstallation(ctx, expected.AuthenticatedSetupCLISessionID.String)
+		if sessionErr != nil && !errors.Is(sessionErr, sql.ErrNoRows) {
+			return sessionErr
+		}
+		if sessionErr != nil || originalSession.UserID != userID {
+			if materialSessionID == "" || s.cliClientID == "" {
+				return ErrInstallationUnavailable
+			}
+			materialSession, materialErr := tx.Queries().GetActiveClientSessionForUserMachine(ctx, dbsqlc.GetActiveClientSessionForUserMachineParams{
+				ID: materialSessionID, UserID: userID, UserMachineID: sql.NullString{String: machine.ID, Valid: true},
+			})
+			if errors.Is(materialErr, sql.ErrNoRows) {
+				return ErrInstallationUnavailable
+			}
+			if materialErr != nil {
+				return materialErr
+			}
+			if materialSession.ClientID != s.cliClientID {
+				return ErrInstallationUnavailable
+			}
 		}
 		if helperEnrollmentID != "" {
 			if n, bindErr := tx.Queries().BindAuthenticatedHostSetupHelperEnrollment(ctx, dbsqlc.BindAuthenticatedHostSetupHelperEnrollmentParams{ID: expected.ID, HelperEnrollmentID: sql.NullString{String: helperEnrollmentID, Valid: true}}); bindErr != nil {

@@ -310,6 +310,33 @@ func (q *Queries) GetActiveClientSessionForInstallation(ctx context.Context, id 
 	return i, err
 }
 
+const getActiveClientSessionForUserMachine = `-- name: GetActiveClientSessionForUserMachine :one
+SELECT user_id, client_id
+FROM cli_client_sessions
+WHERE id = $1
+  AND user_id = $2
+  AND user_machine_id = $3
+  AND state = 'active'
+`
+
+type GetActiveClientSessionForUserMachineParams struct {
+	ID            string
+	UserID        string
+	UserMachineID sql.NullString
+}
+
+type GetActiveClientSessionForUserMachineRow struct {
+	UserID   string
+	ClientID string
+}
+
+func (q *Queries) GetActiveClientSessionForUserMachine(ctx context.Context, arg GetActiveClientSessionForUserMachineParams) (GetActiveClientSessionForUserMachineRow, error) {
+	row := q.db.QueryRow(ctx, getActiveClientSessionForUserMachine, arg.ID, arg.UserID, arg.UserMachineID)
+	var i GetActiveClientSessionForUserMachineRow
+	err := row.Scan(&i.UserID, &i.ClientID)
+	return i, err
+}
+
 const getClientRefreshTokenForUpdate = `-- name: GetClientRefreshTokenForUpdate :one
 SELECT rt.cli_client_session_id,rt.state,rt.expires_at,array_to_string(cs.scopes,' ') AS scopes,rt.token_hash
 FROM cli_refresh_tokens rt JOIN cli_client_sessions cs ON cs.id=rt.cli_client_session_id
