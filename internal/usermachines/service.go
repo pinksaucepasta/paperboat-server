@@ -749,6 +749,7 @@ func (s *Service) PrepareAuthenticatedHostSetup(ctx context.Context, userID, cli
 		return AuthenticatedHostSetupInstallation{}, err
 	}
 
+	var candidateBuild installationMaterialBuild
 	var candidateCiphertext []byte
 	if len(pairing.InstallationConfigCiphertext) == 0 {
 		operationKey := "authenticated-host-setup:" + pairing.ID
@@ -768,6 +769,7 @@ func (s *Service) PrepareAuthenticatedHostSetup(ctx context.Context, userID, cli
 		if buildErr != nil {
 			return AuthenticatedHostSetupInstallation{}, buildErr
 		}
+		candidateBuild = build
 		candidateCiphertext = build.ciphertext
 	}
 	err = s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
@@ -778,6 +780,9 @@ func (s *Service) PrepareAuthenticatedHostSetup(ctx context.Context, userID, cli
 		if len(current.InstallationConfigCiphertext) == 0 {
 			if len(candidateCiphertext) == 0 {
 				return ErrHostSetupOperationConflict
+			}
+			if err := s.persistInstallationCLISessionTx(ctx, tx, userID, currentMachine, candidateBuild); err != nil {
+				return err
 			}
 			if n, setErr := tx.Queries().SetUserMachineInstallationConfig(ctx, dbsqlc.SetUserMachineInstallationConfigParams{ID: current.ID, Ciphertext: candidateCiphertext}); setErr != nil {
 				return setErr
@@ -2339,6 +2344,30 @@ type installationClientSession struct {
 	Scope        string `json:"scope"`
 }
 
+func (s *Service) persistInstallationCLISessionTx(ctx context.Context, tx *db.Tx, userID string, machine UserMachine, build installationMaterialBuild) error {
+	if build.cliSessionID == "" {
+		return nil
+	}
+	now := s.now().UTC()
+	if err := tx.Queries().CreateClientSession(ctx, dbsqlc.CreateClientSessionParams{ID: build.cliSessionID, UserID: userID, ClientID: s.cliClientID, ClientLabel: "Paperboat enrollment: " + machine.DisplayName, DeviceType: "desktop", Os: machine.Platform, Scopes: s.cliScopes, CreatedAt: now, ApprovedAt: now}); err != nil {
+		return err
+	}
+	if err := tx.Queries().MarkFreshE2EEBootstrapSession(ctx, build.cliSessionID); err != nil {
+		return err
+	}
+	if bound, err := tx.Queries().BindCLIClientSessionToUserMachine(ctx, dbsqlc.BindCLIClientSessionToUserMachineParams{
+		TargetMachineID: sql.NullString{String: machine.ID, Valid: true}, TargetCLISessionID: build.cliSessionID, TargetUserID: userID,
+	}); err != nil {
+		return err
+	} else if bound != 1 {
+		return ErrInstallationUnavailable
+	}
+	if err := tx.Queries().CreateClientAccessToken(ctx, dbsqlc.CreateClientAccessTokenParams{TokenHash: oneShotHash(s.cliHashKey, build.cliAccessToken), CLIClientSessionID: build.cliSessionID, ExpiresAt: now.Add(s.cliAccessLifetime), CreatedAt: now}); err != nil {
+		return err
+	}
+	return tx.Queries().CreateClientRefreshToken(ctx, dbsqlc.CreateClientRefreshTokenParams{TokenHash: oneShotHash(s.cliHashKey, build.cliRefreshToken), CLIClientSessionID: build.cliSessionID, ExpiresAt: now.Add(s.cliRefreshLifetime), CreatedAt: now})
+}
+
 func (s *Service) buildInstallationMaterial(ctx context.Context, userID string, pairing dbsqlc.UserMachinePairing, machine UserMachine, operationKey string, existingClientSession json.RawMessage, reuseRuntimeIdentity bool, expectedHelperID string, exactArtifact *MachineArtifact, authorityGuard HelperEnrollmentAuthorityGuard) (installationMaterialBuild, error) {
 	if strings.TrimSpace(s.encryptionKey) == "" {
 		return installationMaterialBuild{}, errors.New("user-machine provisioning encryption is not configured")
@@ -2473,27 +2502,8 @@ func (s *Service) provisionApprovedUserMachineWithOperation(ctx context.Context,
 		return err
 	}
 	return s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		if build.cliSessionID != "" {
-			now := s.now().UTC()
-			if err := tx.Queries().CreateClientSession(ctx, dbsqlc.CreateClientSessionParams{ID: build.cliSessionID, UserID: userID, ClientID: s.cliClientID, ClientLabel: "Paperboat enrollment: " + machine.DisplayName, DeviceType: "desktop", Os: machine.Platform, Scopes: s.cliScopes, CreatedAt: now, ApprovedAt: now}); err != nil {
-				return err
-			}
-			if err := tx.Queries().MarkFreshE2EEBootstrapSession(ctx, build.cliSessionID); err != nil {
-				return err
-			}
-			if bound, err := tx.Queries().BindCLIClientSessionToUserMachine(ctx, dbsqlc.BindCLIClientSessionToUserMachineParams{
-				TargetMachineID: sql.NullString{String: machine.ID, Valid: true}, TargetCLISessionID: build.cliSessionID, TargetUserID: userID,
-			}); err != nil {
-				return err
-			} else if bound != 1 {
-				return ErrInstallationUnavailable
-			}
-			if err := tx.Queries().CreateClientAccessToken(ctx, dbsqlc.CreateClientAccessTokenParams{TokenHash: oneShotHash(s.cliHashKey, build.cliAccessToken), CLIClientSessionID: build.cliSessionID, ExpiresAt: now.Add(s.cliAccessLifetime), CreatedAt: now}); err != nil {
-				return err
-			}
-			if err := tx.Queries().CreateClientRefreshToken(ctx, dbsqlc.CreateClientRefreshTokenParams{TokenHash: oneShotHash(s.cliHashKey, build.cliRefreshToken), CLIClientSessionID: build.cliSessionID, ExpiresAt: now.Add(s.cliRefreshLifetime), CreatedAt: now}); err != nil {
-				return err
-			}
+		if err := s.persistInstallationCLISessionTx(ctx, tx, userID, machine, build); err != nil {
+			return err
 		}
 		n, err := tx.Queries().SetUserMachineInstallationConfig(ctx, dbsqlc.SetUserMachineInstallationConfigParams{ID: pairingID, Ciphertext: build.ciphertext})
 		if err != nil {
@@ -2623,24 +2633,7 @@ func (s *Service) provisionRecoveredUserMachine(ctx context.Context, userID stri
 			}
 		}
 		if build.cliSessionID != "" {
-			now := s.now().UTC()
-			if err := tx.Queries().CreateClientSession(ctx, dbsqlc.CreateClientSessionParams{ID: build.cliSessionID, UserID: userID, ClientID: s.cliClientID, ClientLabel: "Paperboat enrollment: " + machine.DisplayName, DeviceType: "desktop", Os: machine.Platform, Scopes: s.cliScopes, CreatedAt: now, ApprovedAt: now}); err != nil {
-				return err
-			}
-			if err := tx.Queries().MarkFreshE2EEBootstrapSession(ctx, build.cliSessionID); err != nil {
-				return err
-			}
-			if bound, err := tx.Queries().BindCLIClientSessionToUserMachine(ctx, dbsqlc.BindCLIClientSessionToUserMachineParams{
-				TargetMachineID: sql.NullString{String: machine.ID, Valid: true}, TargetCLISessionID: build.cliSessionID, TargetUserID: userID,
-			}); err != nil {
-				return err
-			} else if bound != 1 {
-				return ErrInstallationUnavailable
-			}
-			if err := tx.Queries().CreateClientAccessToken(ctx, dbsqlc.CreateClientAccessTokenParams{TokenHash: oneShotHash(s.cliHashKey, build.cliAccessToken), CLIClientSessionID: build.cliSessionID, ExpiresAt: now.Add(s.cliAccessLifetime), CreatedAt: now}); err != nil {
-				return err
-			}
-			if err := tx.Queries().CreateClientRefreshToken(ctx, dbsqlc.CreateClientRefreshTokenParams{TokenHash: oneShotHash(s.cliHashKey, build.cliRefreshToken), CLIClientSessionID: build.cliSessionID, ExpiresAt: now.Add(s.cliRefreshLifetime), CreatedAt: now}); err != nil {
+			if err := s.persistInstallationCLISessionTx(ctx, tx, userID, machine, build); err != nil {
 				return err
 			}
 		}

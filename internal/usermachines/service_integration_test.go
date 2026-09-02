@@ -257,6 +257,7 @@ func TestAuthenticatedClientToHostSetupIsBoundIdempotentAndRollsBack(t *testing.
 	service := New(store, audit.NewWriter(store), Policy{PairingLifetime: 10 * time.Minute, AllowedPlatforms: []string{"linux"}}, testSeatAuthorizer{})
 	service.ConfigureProvisioning(access.FakeClient{}, "authenticated-host-key")
 	service.ConfigureAccess(nil, "https://api.paperboat.test", 5*time.Minute)
+	service.ConfigureOneShotCLIAuth("paperboat-cli", []string{"account:read", "projects:connect", "session:refresh"}, 5*time.Minute, 24*time.Hour, "authenticated-host-cli-hash-key")
 	service.ConfigureHelperEnrollment(func(_ context.Context, gotUserID, operationKey, environmentID string, _ time.Duration) (HelperEnrollmentGrant, error) {
 		if gotUserID != userID || !strings.Contains(operationKey, clientSessionID) || environmentID == "" {
 			t.Fatalf("helper grant binding user=%q operation=%q environment=%q", gotUserID, operationKey, environmentID)
@@ -316,12 +317,34 @@ func TestAuthenticatedClientToHostSetupIsBoundIdempotentAndRollsBack(t *testing.
 		t.Fatal(err)
 	}
 	var fields struct {
-		MachineID  string `json:"user_machine_id"`
-		Generation int64  `json:"installation_generation"`
-		SetupMode  string `json:"setup_mode"`
+		MachineID     string                    `json:"user_machine_id"`
+		Generation    int64                     `json:"installation_generation"`
+		SetupMode     string                    `json:"setup_mode"`
+		ClientSession installationClientSession `json:"client_session"`
 	}
 	if err := json.Unmarshal(material, &fields); err != nil || fields.MachineID != hostMachine.ID || fields.Generation != hostMachine.InstallationGeneration || fields.SetupMode != "host" {
 		t.Fatalf("material=%s fields=%+v err=%v", material, fields, err)
+	}
+	if fields.ClientSession.SessionID == "" || fields.ClientSession.AccessToken == "" || fields.ClientSession.RefreshToken == "" {
+		t.Fatalf("authenticated Host client session is incomplete: %+v", fields.ClientSession)
+	}
+	bootstrapDeviceAuth := authservice.NewDeviceService(store, audit.NewWriter(store), config.Default().CLIAuth, []string{"authenticated-host-cli-hash-key"})
+	principal, err := bootstrapDeviceAuth.Authenticate(ctx, fields.ClientSession.AccessToken)
+	if err != nil || principal.SessionID != fields.ClientSession.SessionID || principal.User.ID != userID {
+		t.Fatalf("authenticated Host bootstrap CLI access token rejected: principal=%+v err=%v", principal, err)
+	}
+	var sessionState string
+	var freshBootstrap bool
+	var boundMachine sql.NullString
+	var accessTokens, refreshTokens int
+	if err := store.SQL().QueryRowContext(ctx, `SELECT state, fresh_e2ee_bootstrap, user_machine_id FROM paperboat.cli_client_sessions WHERE id=$1`, fields.ClientSession.SessionID).Scan(&sessionState, &freshBootstrap, &boundMachine); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SQL().QueryRowContext(ctx, `SELECT (SELECT count(*) FROM paperboat.cli_access_tokens WHERE cli_client_session_id=$1), (SELECT count(*) FROM paperboat.cli_refresh_tokens WHERE cli_client_session_id=$1)`, fields.ClientSession.SessionID).Scan(&accessTokens, &refreshTokens); err != nil {
+		t.Fatal(err)
+	}
+	if sessionState != "active" || !freshBootstrap || !boundMachine.Valid || boundMachine.String != hostMachine.ID || accessTokens != 1 || refreshTokens != 1 {
+		t.Fatalf("authenticated Host bootstrap CLI session state=%q fresh=%v machine=%v access_tokens=%d refresh_tokens=%d", sessionState, freshBootstrap, boundMachine, accessTokens, refreshTokens)
 	}
 	conflict := request
 	conflict.Verifier += "-different"
