@@ -102,8 +102,10 @@ func (r *SQLRepository) BootstrapFresh(ctx context.Context, operationID, userID,
 			return err
 		}
 		root, err := q.GetAccountE2EERootForUpdate(ctx, userID)
+		createdRoot := false
 		if errors.Is(err, sql.ErrNoRows) {
 			root, err = q.CreateAccountE2EERoot(ctx, dbsqlc.CreateAccountE2EERootParams{UserID: userID, PublicKey: rootPublic, Fingerprint: rootFingerprint[:]})
+			createdRoot = err == nil
 		}
 		if err != nil {
 			return err
@@ -139,6 +141,12 @@ func (r *SQLRepository) BootstrapFresh(ctx context.Context, operationID, userID,
 		result, err = r.registerTx(ctx, tx, operationID, userID, proposed, key, false)
 		if err != nil {
 			return err
+		}
+		if createdRoot {
+			rootOperation := sha256.Sum256([]byte("account-e2ee-root\x00" + operationID))
+			if err := r.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "account_e2ee.root_created", ResourceType: "account_e2ee_root", ResourceID: hex.EncodeToString(rootFingerprint[:]), IdempotencyKey: "root_" + hex.EncodeToString(rootOperation[:]), Metadata: map[string]any{"generation": 1}}); err != nil {
+				return err
+			}
 		}
 		return q.ConsumeFreshE2EEBootstrapSession(ctx, cliSessionID)
 	})

@@ -83,6 +83,75 @@ func TestSQLRepositoryBootstrapsRootAndCertificateAtomically(t *testing.T) {
 	}
 }
 
+func TestSQLRepositoryFreshBootstrapAddsDeviceKeyToExistingAccount(t *testing.T) {
+	dsn := os.Getenv("PAPERBOAT_TEST_DATABASE_DSN")
+	if dsn == "" {
+		t.Skip("set PAPERBOAT_TEST_DATABASE_DSN to run peer identity repository integration tests")
+	}
+	if err := db.ValidateIsolatedTestDSN(dsn, os.Getenv("PAPERBOAT_DATABASE_DSN")); err != nil {
+		t.Fatal(err)
+	}
+	store, err := db.Open(config.Database{Driver: "postgres", DSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := db.Migrate(ctx, store); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	suffix := strings.ToLower(strings.ReplaceAll(t.Name(), "/", "_")) + strings.ReplaceAll(now.Format("150405.000000000"), ".", "")
+	userID := "peer_fresh_user_" + suffix
+	firstClientID, freshClientID := "peer_first_cli_"+suffix, "peer_fresh_cli_"+suffix
+	machineID := "peer_fresh_machine_" + suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_"+userID, userID+"@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	firstPublic, _, _ := ed25519.GenerateKey(nil)
+	firstFingerprint := sha256.Sum256(firstPublic)
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.account_e2ee_roots (user_id,public_key,fingerprint) VALUES ($1,$2,$3)`, userID, firstPublic, firstFingerprint[:]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.account_e2ee_keys (key_id,user_id,public_key,fingerprint,generation) VALUES ($1,$2,$3,$4,1)`, keyIDForFingerprint(firstFingerprint), userID, firstPublic, firstFingerprint[:]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,online,public_identity_key,setup_mode) VALUES ($1,$2,$3,'fresh-device','windows','amd64','C:\\Users\\Test','offline',false,$4,'host')`, machineID, userID, "env_"+suffix, "identity_"+suffix); err != nil {
+		t.Fatal(err)
+	}
+	for _, clientID := range []string{firstClientID, freshClientID} {
+		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.cli_client_sessions (id,user_id,client_id,client_label,device_type,os,scopes,state,created_at,approved_at,user_machine_id,fresh_e2ee_bootstrap) VALUES ($1,$2,$3,'fresh root test','desktop','windows',ARRAY['projects:connect'],'active',$4,$4,$5,$6)`, clientID, userID, "client_"+clientID, now, machineID, clientID == freshClientID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	repository, err := NewSQLRepository(store, audit.NewWriter(store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, _ := NewService(repository)
+	freshPublic, freshPrivate, _ := ed25519.GenerateKey(nil)
+	raw := signedFixture(t, freshPrivate, userID, RoleCLI, freshClientID, 1, 1, now, now.Add(time.Hour))
+	freshFingerprint := sha256.Sum256(freshPublic)
+	request := BootstrapRequest{RegisterRequest: RegisterRequest{OperationID: "operation_fresh_bootstrap_" + suffix, UserID: userID, KeyID: keyIDForFingerprint(freshFingerprint), Certificate: raw, Expected: Expected{AccountID: userID, Role: RoleCLI, EndpointID: freshClientID, Generation: 1, Serial: 1}, ExpectedRootFingerprint: freshFingerprint, ExpectedCertificateFingerprint: sha256.Sum256(raw), ExpectedIssuedAt: now, ExpectedExpiresAt: now.Add(time.Hour), Now: now}, CLIClientSessionID: freshClientID, RootPublicKey: freshPublic, AllowRootReplacement: true}
+	result, err := service.Bootstrap(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.KeyID != keyIDForFingerprint(freshFingerprint) {
+		t.Fatalf("key id=%q", result.KeyID)
+	}
+	var activeKeys, freshCertificates int
+	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.account_e2ee_keys WHERE user_id=$1 AND revoked_at IS NULL`, userID).Scan(&activeKeys); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.peer_endpoint_certificates WHERE user_id=$1 AND endpoint_id=$2 AND revoked_at IS NULL`, userID, freshClientID).Scan(&freshCertificates); err != nil {
+		t.Fatal(err)
+	}
+	if activeKeys != 2 || freshCertificates != 1 {
+		t.Fatalf("active keys=%d fresh certificates=%d", activeKeys, freshCertificates)
+	}
+}
+
 func TestSQLRepositoryCLIEndpointEnrollmentReplaysOnlyBoundActiveRequests(t *testing.T) {
 	dsn := os.Getenv("PAPERBOAT_TEST_DATABASE_DSN")
 	if dsn == "" {
