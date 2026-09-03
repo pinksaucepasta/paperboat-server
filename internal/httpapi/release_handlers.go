@@ -131,7 +131,19 @@ func serveEnrollmentScript(w http.ResponseWriter, r *http.Request, files http.Ha
 			preamble = append(preamble, []byte("$env:PAPERBOAT_MACHINE_NAME='"+hostname+"';")...)
 		}
 	} else {
-		preamble = []byte("PAPERBOAT_ENROLLMENT_TOKEN='" + token + "' PAPERBOAT_MACHINE_NAME='" + hostname + "'\n")
+		// Keep the installer's shebang as the first line. POSIX shells interpret
+		// a bare assignment-only line as a command that exits successfully, so
+		// prefixing the script made `curl ... | bash` silently do nothing.
+		script := bytes.TrimPrefix(recorder.Body.Bytes(), []byte("\xef\xbb\xbf"))
+		lineEnd := bytes.IndexByte(script, '\n')
+		if lineEnd < 0 || !bytes.Equal(script[:lineEnd], []byte("#!/bin/sh")) {
+			http.Error(w, "installer unavailable", http.StatusInternalServerError)
+			return
+		}
+		preamble = append([]byte{}, script[:lineEnd+1]...)
+		preamble = append(preamble, []byte("PAPERBOAT_ENROLLMENT_TOKEN='"+token+"' PAPERBOAT_MACHINE_NAME='"+hostname+"'\nexport PAPERBOAT_ENROLLMENT_TOKEN PAPERBOAT_MACHINE_NAME\n")...)
+		recorder.Body.Reset()
+		_, _ = recorder.Body.Write(script[lineEnd+1:])
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")

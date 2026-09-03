@@ -85,6 +85,9 @@ func TestReleaseEndpointsServeInstallAndTUF(t *testing.T) {
 	if install.Code != http.StatusOK || !strings.Contains(install.Body.String(), "echo paperboat") || !strings.Contains(install.Body.String(), "PAPERBOAT_ENROLLMENT_TOKEN") {
 		t.Fatalf("install response = %d %q", install.Code, install.Body.String())
 	}
+	if !strings.HasPrefix(install.Body.String(), "#!/bin/sh\nPAPERBOAT_ENROLLMENT_TOKEN=") || !strings.Contains(install.Body.String(), "\nexport PAPERBOAT_ENROLLMENT_TOKEN PAPERBOAT_MACHINE_NAME\n") {
+		t.Fatalf("install response is not an executable POSIX script: %q", install.Body.String())
+	}
 	if got := install.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
 		t.Fatalf("install content type = %q", got)
 	}
@@ -120,6 +123,26 @@ func TestReleaseEndpointsServeInstallAndTUF(t *testing.T) {
 	}
 	if got := timestamp.Header().Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("timestamp cache control = %q", got)
+	}
+}
+
+func TestReleaseEnrollmentRejectsPOSIXInstallerWithoutShebang(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, "install"), []byte("echo unsafe\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "windows"), []byte("Write-Output safe\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	files, err := NewReleaseFiles(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := NewRouter(Options{ReleaseFiles: files})
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/install?p=4J7M9Q2V8X4N6P5R1T0W8Y2ZAB", nil))
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusInternalServerError)
 	}
 }
 
