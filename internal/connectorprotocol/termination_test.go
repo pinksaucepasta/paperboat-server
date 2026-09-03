@@ -93,7 +93,7 @@ func readTerminationHandshake(t *testing.T, client net.Conn, auth AuthRequest) W
 	return welcome
 }
 
-func waitTermination(t *testing.T, done <-chan error, events <-chan ControlTerminationEvent) (error, ControlTerminationEvent) {
+func waitTermination(t *testing.T, done <-chan error, events <-chan ControlTerminationEvent) (ControlTerminationEvent, error) {
 	t.Helper()
 	var event ControlTerminationEvent
 	select {
@@ -103,10 +103,10 @@ func waitTermination(t *testing.T, done <-chan error, events <-chan ControlTermi
 		case <-time.After(time.Second):
 			t.Fatal("termination observer did not run")
 		}
-		return err, event
+		return event, err
 	case <-time.After(time.Second):
 		t.Fatal("control transport did not terminate")
-		return nil, event
+		return event, nil
 	}
 }
 
@@ -126,7 +126,7 @@ func TestControlTransportReportsPeerEOF(t *testing.T) {
 	if err := clientSide.Close(); err != nil {
 		t.Fatal(err)
 	}
-	serveErr, event := waitTermination(t, done, events)
+	event, serveErr := waitTermination(t, done, events)
 	if serveErr != nil {
 		t.Fatalf("peer EOF serve error=%v", serveErr)
 	}
@@ -155,7 +155,7 @@ func TestControlTransportReportsExplicitDisconnect(t *testing.T) {
 	if err := clientSide.Close(); err != nil {
 		t.Fatal(err)
 	}
-	serveErr, event := waitTermination(t, done, events)
+	event, serveErr := waitTermination(t, done, events)
 	if serveErr != nil {
 		t.Fatalf("explicit disconnect serve error=%v", serveErr)
 	}
@@ -179,7 +179,7 @@ func TestControlTransportContextCancellationInterruptsBlockedRead(t *testing.T) 
 	}
 	readTerminationHandshake(t, clientSide, harness.auth)
 	cancel()
-	serveErr, event := waitTermination(t, done, events)
+	event, serveErr := waitTermination(t, done, events)
 	if serveErr != nil {
 		t.Fatalf("context cancellation serve error=%v", serveErr)
 	}
@@ -209,7 +209,7 @@ func TestControlTransportReportsProtocolError(t *testing.T) {
 		t.Fatalf("reject frame=%+v err=%v", frame, err)
 	}
 	_ = clientSide.Close()
-	serveErr, event := waitTermination(t, done, events)
+	event, serveErr := waitTermination(t, done, events)
 	if serveErr == nil || CodeOf(serveErr) != CodeUnsupportedMessage {
 		t.Fatalf("protocol serve error=%v", serveErr)
 	}
@@ -245,7 +245,7 @@ func TestControlTransportReportsLeaseExpiry(t *testing.T) {
 		t.Fatalf("reject frame=%+v err=%v", frame, err)
 	}
 	_ = clientSide.Close()
-	serveErr, event := waitTermination(t, done, events)
+	event, serveErr := waitTermination(t, done, events)
 	if serveErr == nil || CodeOf(serveErr) != CodeLeaseExpired {
 		t.Fatalf("lease serve error=%v", serveErr)
 	}
