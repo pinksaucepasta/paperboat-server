@@ -148,9 +148,9 @@ func serveEnrollmentScript(w http.ResponseWriter, r *http.Request, files http.Ha
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	body := append(preamble, bytes.TrimPrefix(recorder.Body.Bytes(), []byte("\xef\xbb\xbf"))...)
-	// PowerShell 5.1's Invoke-RestMethod can return $null for a chunked
-	// text/plain response. Advertise the exact size so the minimal dashboard
-	// command `powershell -c "iex (irm 'URL')"` is deterministic.
+	// PowerShell 5.1 can mishandle a chunked text/plain installer response.
+	// Advertise the exact size so the dashboard's direct iwr-to-file command is
+	// deterministic in the user's current PowerShell process.
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	_, _ = w.Write(body)
 }
