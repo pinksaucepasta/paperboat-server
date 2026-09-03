@@ -1203,13 +1203,7 @@ func (s *Service) CreatePairing(ctx context.Context, in PairingInput) (Pairing, 
 		err = s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 			enrollment, err := tx.Queries().GetUserMachineEnrollmentForTokenUpdate(ctx, tokenHash[:])
 			if errors.Is(err, sql.ErrNoRows) {
-				// Transitional compatibility for enrollments created before metadata
-				// was separated from the credential hash.
-				legacyHash := sha256.Sum256([]byte(token))
-				enrollment, err = tx.Queries().GetUserMachineEnrollmentForTokenUpdate(ctx, legacyHash[:])
-				if errors.Is(err, sql.ErrNoRows) {
-					return ErrEnrollmentNotFound
-				}
+				return ErrEnrollmentNotFound
 			}
 			if err != nil {
 				return err
@@ -4095,8 +4089,8 @@ func enrollmentTokenSecret(token string) (string, bool) {
 }
 
 func enrollmentTokenHash(token string) [sha256.Size]byte {
-	secret, _ := enrollmentTokenSecret(token)
-	return sha256.Sum256([]byte(secret))
+	token = strings.TrimSpace(token)
+	return sha256.Sum256([]byte(token))
 }
 
 // randomEnrollmentToken returns one URL-safe credential. The first character

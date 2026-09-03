@@ -98,14 +98,14 @@ func TestEnrollmentTokenMetadataParityAndLength(t *testing.T) {
 	}
 }
 
-func TestEnrollmentTokenMetadataDoesNotChangeCredential(t *testing.T) {
+func TestEnrollmentTokenMetadataIsPartOfCredential(t *testing.T) {
 	token, err := randomEnrollmentTokenFor("host", "posix")
 	if err != nil {
 		t.Fatal(err)
 	}
 	variant := "11" + token[2:]
-	if enrollmentTokenHash(token) != enrollmentTokenHash(variant) {
-		t.Fatal("metadata-only token variant changed the credential hash")
+	if enrollmentTokenHash(token) == enrollmentTokenHash(variant) {
+		t.Fatal("metadata-only token variant retained the credential hash")
 	}
 	changedSecret := variant[:2] + variant[2:len(variant)-1] + "0"
 	if changedSecret == variant {

@@ -1457,6 +1457,117 @@ func TestDashboardEnrollmentIsIdempotentSingleClaimAndRetrySafe(t *testing.T) {
 	}
 }
 
+func TestDashboardEnrollmentsStayBoundToTheirOwnTokenAndInstallation(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	userID := "usr_enrollment_isolation_" + suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id, workos_subject, primary_email, status) VALUES ($1,$2,$3,'active')`, userID, "workos_enrollment_isolation_"+suffix, "enrollment-isolation-"+suffix+"@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machine_entitlements (id,user_id,provider_subscription_id,product_code,state,seat_quantity,allowance_bytes,current_period_start,current_period_end) VALUES ($1,$2,$3,'connected-test','active',2,1048576,now()-interval '1 hour',now()+interval '1 hour')`, "ume_enrollment_isolation_"+suffix, userID, "sub_enrollment_isolation_"+suffix); err != nil {
+		t.Fatal(err)
+	}
+
+	service := New(store, audit.NewWriter(store), Policy{PairingLifetime: 10 * time.Minute, AllowedPlatforms: []string{"linux"}}, testSeatAuthorizer{})
+	service.ConfigureProvisioning(access.FakeClient{}, "test-enrollment-isolation-key")
+	service.ConfigureAccess(nil, "https://api.paperboat.test", 5*time.Minute)
+	service.ConfigureBootstrapCommand("pb machine bootstrap")
+	if err := service.ConfigureRuntimeRoute("runtime.example.test", 38080); err != nil {
+		t.Fatal(err)
+	}
+	configureSignedTestArtifact(t, service)
+	grantNumber := 0
+	service.ConfigureHelperEnrollment(func(context.Context, string, string, string, time.Duration) (HelperEnrollmentGrant, error) {
+		grantNumber++
+		return HelperEnrollmentGrant{
+			EnrollmentID: fmt.Sprintf("henr_enrollment_isolation_%s_%d", suffix, grantNumber),
+			HelperID:     fmt.Sprintf("hlp_enrollment_isolation_%s_%d", suffix, grantNumber),
+			Credential:   fmt.Sprintf("enrollment-isolation-credential-%d", grantNumber),
+			ExpiresAt:    time.Now().UTC().Add(10 * time.Minute),
+		}, nil
+	})
+
+	first, err := service.StartEnrollmentWithOptions(ctx, userID, "idem-enrollment-isolation-first-"+suffix, EnrollmentOptions{Role: "host", Shell: "posix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.StartEnrollmentWithOptions(ctx, userID, "idem-enrollment-isolation-second-"+suffix, EnrollmentOptions{Role: "client", Shell: "powershell"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID == second.ID || first.BootstrapToken == second.BootstrapToken || enrollmentTokenHash(first.BootstrapToken) == enrollmentTokenHash(second.BootstrapToken) {
+		t.Fatalf("independent enrollments shared identity: first=%+v second=%+v", first, second)
+	}
+
+	tamperedToken := "11" + first.BootstrapToken[2:]
+	if _, err := service.CreatePairing(ctx, PairingInput{EnrollmentToken: tamperedToken, Verifier: "verifier-enrollment-isolation-tampered-" + suffix, DisplayName: "Tampered", Platform: "linux", Architecture: "amd64", WorkspaceRoot: "/workspace-tampered", PublicIdentityKey: integrationPublicIdentityKey}); !errors.Is(err, ErrEnrollmentNotFound) {
+		t.Fatalf("metadata-tampered token error = %v, want ErrEnrollmentNotFound", err)
+	}
+
+	firstPublic, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstPublicKey := base64.RawURLEncoding.EncodeToString(firstPublic)
+	firstVerifier := "verifier-enrollment-isolation-first-" + suffix
+	firstPairing, err := service.CreatePairing(ctx, PairingInput{EnrollmentToken: first.BootstrapToken, Verifier: firstVerifier, DisplayName: "First machine", Platform: "linux", Architecture: "amd64", WorkspaceRoot: "/workspace-first", PublicIdentityKey: firstPublicKey, RuntimeVersions: json.RawMessage(`{"pb":"test"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	secondPublic, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondPublicKey := base64.RawURLEncoding.EncodeToString(secondPublic)
+	secondVerifier := "verifier-enrollment-isolation-second-" + suffix
+	secondPairing, err := service.CreatePairing(ctx, PairingInput{EnrollmentToken: second.BootstrapToken, Verifier: secondVerifier, DisplayName: "Second machine", Platform: "linux", Architecture: "amd64", WorkspaceRoot: "/workspace-second", PublicIdentityKey: secondPublicKey, RuntimeVersions: json.RawMessage(`{"pb":"test"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstPairing.ID == secondPairing.ID {
+		t.Fatalf("independent tokens shared pairing %q", firstPairing.ID)
+	}
+
+	if _, err := service.ConsumeInstallationForIdentity(ctx, firstVerifier, secondPublicKey); !errors.Is(err, ErrInstallationUnavailable) {
+		t.Fatalf("cross-identity installation consume error = %v, want ErrInstallationUnavailable", err)
+	}
+	firstMaterial, err := service.ConsumeInstallationForIdentity(ctx, firstVerifier, firstPublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondMaterial, err := service.ConsumeInstallationForIdentity(ctx, secondVerifier, secondPublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var firstDocument, secondDocument struct {
+		UserMachineID           string `json:"user_machine_id"`
+		UserMachineEnrollmentID string `json:"user_machine_enrollment_id"`
+	}
+	if err := json.Unmarshal(firstMaterial, &firstDocument); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(secondMaterial, &secondDocument); err != nil {
+		t.Fatal(err)
+	}
+	if firstDocument.UserMachineEnrollmentID != first.ID || secondDocument.UserMachineEnrollmentID != second.ID || firstDocument.UserMachineID == secondDocument.UserMachineID {
+		t.Fatalf("installation material crossed enrollment boundaries: first=%+v second=%+v", firstDocument, secondDocument)
+	}
+	firstStatus, err := service.Enrollment(ctx, userID, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondStatus, err := service.Enrollment(ctx, userID, second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstStatus.UserMachineID != firstDocument.UserMachineID || secondStatus.UserMachineID != secondDocument.UserMachineID || firstStatus.UserMachineID == secondStatus.UserMachineID {
+		t.Fatalf("enrollment status crossed machine boundaries: first=%+v second=%+v", firstStatus, secondStatus)
+	}
+}
+
 func TestDashboardEnrollmentApprovalFailureIsRetryable(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
