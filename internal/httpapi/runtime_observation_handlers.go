@@ -146,25 +146,30 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
 			return
 		}
+		// Runtime presence is durable at this point. Optional observation storage
+		// can be temporarily unavailable without making the heartbeat retry.
+		auxiliaryRejections := make([]runtimeAuxiliaryRejection, 0, 3)
 		var environmentResult environment.RuntimeResult
-		if environmentObservation != nil && req.Environment != nil {
-			environmentResult, err = environmentObservation.RecordEnvironmentObservation(r.Context(), req.EnvironmentID, req.ResourceID, req.Environment)
-			if err != nil {
-				switch {
-				case errors.Is(err, environment.ErrObservationInvalid):
-					writeError(w, r, http.StatusBadRequest, "invalid_request", "Environment observation is invalid.")
-				case errors.Is(err, environment.ErrMachineNotHost):
-					writeError(w, r, http.StatusUnprocessableEntity, "machine_not_host", "Environment variables are available only for host-capable machines.")
-				case errors.Is(err, environment.ErrMachineNotFound):
-					writeError(w, r, http.StatusNotFound, "machine_not_found", "Machine was not found.")
-				default:
-					writeError(w, r, http.StatusInternalServerError, "internal_error", "Environment bundle is unavailable.")
+		if req.Environment != nil {
+			if environmentObservation != nil {
+				environmentResult, err = environmentObservation.RecordEnvironmentObservation(r.Context(), req.EnvironmentID, req.ResourceID, req.Environment)
+				if err != nil {
+					switch {
+					case errors.Is(err, environment.ErrObservationInvalid):
+						writeError(w, r, http.StatusBadRequest, "invalid_request", "Environment observation is invalid.")
+						return
+					case errors.Is(err, environment.ErrMachineNotHost):
+						writeError(w, r, http.StatusUnprocessableEntity, "machine_not_host", "Environment variables are available only for host-capable machines.")
+						return
+					case errors.Is(err, environment.ErrMachineNotFound):
+						writeError(w, r, http.StatusNotFound, "machine_not_found", "Machine was not found.")
+						return
+					default:
+						auxiliaryRejections = append(auxiliaryRejections, runtimeAuxiliaryRejection{Observation: "environment", Code: "environment_observation_unavailable"})
+					}
 				}
-				return
 			}
 		}
-
-		auxiliaryRejections := make([]runtimeAuxiliaryRejection, 0, 2)
 		if req.Availability != nil {
 			if availability == nil {
 				writeError(w, r, http.StatusServiceUnavailable, "availability_unavailable", "Availability observation storage is unavailable.")
@@ -182,8 +187,7 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 					case errors.Is(err, usermachines.ErrAvailabilityObservationStale):
 						auxiliaryRejections = append(auxiliaryRejections, runtimeAuxiliaryRejection{Observation: "availability", Code: "availability_observation_stale"})
 					default:
-						writeError(w, r, http.StatusInternalServerError, "internal_error", "Unable to record availability observation.")
-						return
+						auxiliaryRejections = append(auxiliaryRejections, runtimeAuxiliaryRejection{Observation: "availability", Code: "availability_observation_unavailable"})
 					}
 				}
 			}
@@ -196,20 +200,19 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 				writeError(w, r, http.StatusServiceUnavailable, "update_observation_unavailable", "Update observation storage is temporarily unavailable.")
 				return
 			} else if err := updates.RecordUpdateObservation(r.Context(), req.EnvironmentID, req.ResourceID, *req.Update); err != nil {
+				code := "update_observation_unavailable"
 				switch {
 				case errors.Is(err, usermachines.ErrUpdateObservationStale):
-					auxiliaryRejections = append(auxiliaryRejections, runtimeAuxiliaryRejection{Observation: "update", Code: "update_observation_stale"})
+					code = "update_observation_stale"
 				case errors.Is(err, usermachines.ErrUpdateObservationInvalid):
-					auxiliaryRejections = append(auxiliaryRejections, runtimeAuxiliaryRejection{Observation: "update", Code: "update_observation_invalid"})
+					code = "update_observation_invalid"
 				case errors.Is(err, usermachines.ErrUpdateObservationConflict):
-					auxiliaryRejections = append(auxiliaryRejections, runtimeAuxiliaryRejection{Observation: "update", Code: "update_observation_conflict"})
+					code = "update_observation_conflict"
 				case errors.Is(err, usermachines.ErrNotFound):
 					writeError(w, r, http.StatusNotFound, "machine_not_found", "Machine was not found.")
 					return
-				default:
-					writeError(w, r, http.StatusInternalServerError, "internal_error", "Unable to record update observation.")
-					return
 				}
+				auxiliaryRejections = append(auxiliaryRejections, runtimeAuxiliaryRejection{Observation: "update", Code: code})
 			} else {
 				updateRecorded = true
 			}

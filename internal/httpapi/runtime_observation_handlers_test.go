@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pinksaucepasta/paperboat-server/internal/environment"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
 	"github.com/pinksaucepasta/paperboat-server/internal/usermachines"
 )
@@ -17,6 +18,7 @@ type fakeRuntimeObservationRepository struct {
 	verifyErr error
 	recordErr error
 	recorded  *metering.RuntimeObservation
+	observed  []metering.RuntimeObservation
 }
 
 type fakeRuntimeIdentity struct {
@@ -28,6 +30,12 @@ type fakeRuntimeIdentity struct {
 type fakeUpdateObservationRepository struct {
 	recorded *usermachines.UpdateObservation
 	err      error
+	errs     []error
+}
+
+type fakeEnvironmentObservationRepository struct {
+	err   error
+	calls int
 }
 
 type fakeAvailabilityObservationRepository struct {
@@ -42,7 +50,17 @@ func (f *fakeAvailabilityObservationRepository) RecordAvailabilityObservation(_ 
 
 func (f *fakeUpdateObservationRepository) RecordUpdateObservation(_ context.Context, _, _ string, observation usermachines.UpdateObservation) error {
 	f.recorded = &observation
+	if len(f.errs) > 0 {
+		err := f.errs[0]
+		f.errs = f.errs[1:]
+		return err
+	}
 	return f.err
+}
+
+func (f *fakeEnvironmentObservationRepository) RecordEnvironmentObservation(context.Context, string, string, *environment.Observation) (environment.RuntimeResult, error) {
+	f.calls++
+	return environment.RuntimeResult{}, f.err
 }
 
 func (f *fakeRuntimeIdentity) VerifyRuntimeObservation(_ context.Context, token string, proof, body []byte, projectID, machineID string) error {
@@ -56,6 +74,7 @@ func (f *fakeRuntimeObservationRepository) VerifyHeartbeatCredential(context.Con
 
 func (f *fakeRuntimeObservationRepository) RecordRuntimeObservation(_ context.Context, observation metering.RuntimeObservation) error {
 	f.recorded = &observation
+	f.observed = append(f.observed, observation)
 	return f.recordErr
 }
 
@@ -132,6 +151,50 @@ func TestRuntimeObservationIgnoresStaleUpdateObservation(t *testing.T) {
 	runtimeObservation(repository, nil, 10, updates).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusAccepted || !strings.Contains(recorder.Body.String(), `"update_observation_recorded":false`) || !strings.Contains(recorder.Body.String(), `"code":"update_observation_stale"`) {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestRuntimeObservationKeepsHeartbeatAcceptedAcrossFailedThenFreshUpdate(t *testing.T) {
+	const oldFailed = `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-08-29T12:00:01Z","runtime_diagnostics":{"capabilities":[],"worker_generation":4,"os_boot_id":"boot-old","worker_service_scope":"system","connector_state":"ready","connector_generation":2,"observed_at":"2026-08-29T12:00:01Z"},"update":{"schema":"paperboat.update-observation/v1","state":"failed","current_version":"2026.08.29.1","target_version":"2026.08.29.1","channel":"stable","operation_id":"update-old-failed","installation_generation":2,"worker_generation":4,"os_boot_id":"boot-old","rollback_count":0,"error_code":"update_failed","observed_at":"2026-08-29T12:00:00Z"}}`
+	const freshWorker = `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-08-29T12:00:16Z","runtime_diagnostics":{"capabilities":[],"worker_generation":5,"os_boot_id":"boot-new","worker_service_scope":"system","connector_state":"ready","connector_generation":2,"observed_at":"2026-08-29T12:00:16Z"},"update":{"schema":"paperboat.update-observation/v1","state":"healthy","current_version":"2026.08.29.1","channel":"stable","operation_id":"update-fresh-worker","installation_generation":2,"worker_generation":5,"os_boot_id":"boot-new","rollback_count":0,"observed_at":"2026-08-29T12:00:15Z"}}`
+	repository := &fakeRuntimeObservationRepository{}
+	updates := &fakeUpdateObservationRepository{errs: []error{nil, errors.New("database connection refused")}}
+	handler := runtimeObservation(repository, nil, 10, updates)
+	responses := make([]string, 0, 2)
+	for _, body := range []string{oldFailed, freshWorker} {
+		request := httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer machine-token")
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusAccepted || !strings.Contains(recorder.Body.String(), `"accepted":true`) {
+			t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+		responses = append(responses, recorder.Body.String())
+	}
+	if len(repository.observed) != 2 || updates.recorded == nil || updates.recorded.WorkerGeneration != 5 {
+		t.Fatalf("observed=%#v last update=%#v", repository.observed, updates.recorded)
+	}
+	if !strings.Contains(responses[0], `"update_observation_recorded":true`) {
+		t.Fatalf("old failed update was not recorded: %s", responses[0])
+	}
+	if !strings.Contains(responses[1], `"update_observation_recorded":false`) || !strings.Contains(responses[1], `"code":"update_observation_unavailable"`) {
+		t.Fatalf("fresh worker update storage failure was not isolated: %s", responses[1])
+	}
+}
+
+func TestRuntimeObservationKeepsHeartbeatAcceptedWhenEnvironmentStorageFails(t *testing.T) {
+	body := `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-08-29T12:00:01Z","runtime_diagnostics":{"capabilities":["environment_injection"],"worker_generation":5,"os_boot_id":"boot-new","worker_service_scope":"system","connector_state":"ready","connector_generation":2,"observed_at":"2026-08-29T12:00:01Z"},"environment":{"schema":"paperboat.environment-observation/v2","observation_seq":1,"host_recipient_key_id":"envk_` + strings.Repeat("A", 43) + `","authority":null,"global":null,"machine":null,"state":"pending","error_code":null,"observed_at":"2026-08-29T12:00:00Z"}}`
+	repository := &fakeRuntimeObservationRepository{}
+	environmentRepository := &fakeEnvironmentObservationRepository{err: errors.New("database connection refused")}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer machine-token")
+	runtimeObservation(repository, nil, 10, environmentRepository).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted || repository.recorded == nil || environmentRepository.calls != 1 {
+		t.Fatalf("status=%d recorded=%#v environment_calls=%d body=%s", recorder.Code, repository.recorded, environmentRepository.calls, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"code":"environment_observation_unavailable"`) {
+		t.Fatalf("environment storage failure was not isolated: %s", recorder.Body.String())
 	}
 }
 
