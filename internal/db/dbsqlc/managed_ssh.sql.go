@@ -33,6 +33,19 @@ func (q *Queries) AddMachineSSHHostKeyToSet(ctx context.Context, arg AddMachineS
 	return err
 }
 
+const countActiveManagedSSHClientKeysForUser = `-- name: CountActiveManagedSSHClientKeysForUser :one
+SELECT count(*) FROM managed_ssh_client_keys k
+JOIN cli_client_sessions cs ON cs.id = k.cli_client_session_id AND cs.state = 'active'
+WHERE k.user_id = $1 AND k.state = 'active'
+`
+
+func (q *Queries) CountActiveManagedSSHClientKeysForUser(ctx context.Context, userID string) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveManagedSSHClientKeysForUser, userID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createMachineSSHHostKeyOwner = `-- name: CreateMachineSSHHostKeyOwner :one
 INSERT INTO machine_ssh_host_key_owners
   (fingerprint, user_machine_id, algorithm, public_key, first_observed_at)
@@ -472,7 +485,8 @@ const listActiveManagedSSHClientKeysForUser = `-- name: ListActiveManagedSSHClie
 SELECT k.fingerprint, k.user_id, k.cli_client_session_id, k.algorithm, k.public_key, k.state, k.reconciliation_version, k.created_at, k.revoked_at, k.revocation_reason FROM managed_ssh_client_keys k
 JOIN cli_client_sessions cs ON cs.id = k.cli_client_session_id AND cs.state = 'active'
 WHERE k.user_id = $1 AND k.state = 'active'
-ORDER BY k.cli_client_session_id
+ORDER BY k.created_at DESC, k.cli_client_session_id DESC
+LIMIT 64
 `
 
 func (q *Queries) ListActiveManagedSSHClientKeysForUser(ctx context.Context, userID string) ([]ManagedSshClientKey, error) {

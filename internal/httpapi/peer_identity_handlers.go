@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -110,8 +111,9 @@ func e2eeBootstrap(service e2eeBootstrapper) http.HandlerFunc {
 		rootKeyID, rootKeyIDErr := peeridentity.KeyID(rootPublic)
 		issuedAt, issuedErr := parseCanonicalTime(document.Certificate.IssuedAt)
 		expiresAt, expiresErr := parseCanonicalTime(document.Certificate.ExpiresAt)
-		if operationID == "" || len(rootPublic) != 32 || rootErr != nil || rootKeyIDErr != nil || rootKeyID != document.Certificate.KeyID || certificateErr != nil || rootFingerprintErr != nil || fingerprintErr != nil || issuedErr != nil || expiresErr != nil || document.Certificate.Version != 1 || document.Certificate.AccountID != principal.User.ID || document.Certificate.EndpointID != principal.Client.SessionID || document.Certificate.Role != "cli" || document.Certificate.Generation != 1 || document.Certificate.Serial == 0 {
-			writeError(w, r, http.StatusBadRequest, "invalid_request", "E2EE bootstrap request is invalid.")
+		if stage := e2eeBootstrapValidationStage(operationID, document, principal, rootPublic, rootErr, rootKeyID, rootKeyIDErr, certificateErr, rootFingerprintErr, fingerprintErr, issuedErr, expiresErr); stage != "" {
+			slog.Warn("E2EE bootstrap request rejected", "request_id", requestIDFromContext(r.Context()), "stage", stage)
+			writeErrorDetails(w, r, http.StatusBadRequest, "invalid_request", "E2EE bootstrap request is invalid.", map[string]any{"stage": stage})
 			return
 		}
 		value, err := service.Bootstrap(r.Context(), peeridentity.BootstrapRequest{RegisterRequest: peeridentity.RegisterRequest{OperationID: operationID, UserID: principal.User.ID, KeyID: document.Certificate.KeyID, Certificate: certificate, Expected: peeridentity.Expected{AccountID: principal.User.ID, Role: peeridentity.RoleCLI, EndpointID: principal.Client.SessionID, Generation: 1, Serial: document.Certificate.Serial}, ExpectedRootFingerprint: rootFingerprint, ExpectedCertificateFingerprint: certificateFingerprint, ExpectedIssuedAt: issuedAt, ExpectedExpiresAt: expiresAt, Now: time.Now().UTC()}, CLIClientSessionID: principal.Client.SessionID, RootPublicKey: rootPublic, AllowRootReplacement: r.Header.Get("X-Paperboat-Fresh-Enrollment") == "1"})
@@ -125,7 +127,8 @@ func e2eeBootstrap(service e2eeBootstrapper) http.HandlerFunc {
 			case errors.Is(err, peeridentity.ErrNotCurrent):
 				code = "certificate_expired"
 			}
-			writeError(w, r, status, code, "E2EE identity could not be bootstrapped.")
+			slog.Warn("E2EE bootstrap service rejected identity", "request_id", requestIDFromContext(r.Context()), "code", code, "error_class", e2eeBootstrapErrorClass(err))
+			writeErrorDetails(w, r, status, code, "E2EE identity could not be bootstrapped.", map[string]any{"stage": "service", "reason": e2eeBootstrapErrorClass(err)})
 			return
 		}
 		trustedKeys := []trustedKeyDocument{{KeyID: value.KeyID, PublicKey: base64.RawURLEncoding.EncodeToString(rootPublic), Fingerprint: hex.EncodeToString(rootFingerprint[:]), Generation: 1}}
@@ -135,6 +138,60 @@ func e2eeBootstrap(service e2eeBootstrapper) http.HandlerFunc {
 			}
 		}
 		writeJSON(w, http.StatusCreated, SuccessResponse{Data: e2eeBootstrapDocument{KeyID: value.KeyID, TrustedKeys: trustedKeys, Certificate: certificateDocument(value)}})
+	}
+}
+
+func e2eeBootstrapValidationStage(operationID string, document e2eeBootstrapRequestDocument, principal principal, rootPublic []byte, rootErr error, rootKeyID string, rootKeyIDErr, certificateErr, rootFingerprintErr, fingerprintErr, issuedErr, expiresErr error) string {
+	switch {
+	case operationID == "":
+		return "idempotency_key"
+	case rootErr != nil:
+		return "root_public_key_encoding"
+	case len(rootPublic) != 32:
+		return "root_public_key_length"
+	case rootKeyIDErr != nil:
+		return "root_key_id_derivation"
+	case rootKeyID != document.Certificate.KeyID:
+		return "root_key_id_binding"
+	case certificateErr != nil:
+		return "certificate_encoding"
+	case rootFingerprintErr != nil:
+		return "root_fingerprint"
+	case fingerprintErr != nil:
+		return "certificate_fingerprint"
+	case issuedErr != nil:
+		return "issued_at"
+	case expiresErr != nil:
+		return "expires_at"
+	case document.Certificate.Version != 1:
+		return "version"
+	case document.Certificate.AccountID != principal.User.ID:
+		return "account_binding"
+	case document.Certificate.EndpointID != principal.Client.SessionID:
+		return "endpoint_binding"
+	case document.Certificate.Role != "cli":
+		return "role"
+	case document.Certificate.Generation != 1:
+		return "generation"
+	case document.Certificate.Serial == 0:
+		return "serial"
+	default:
+		return ""
+	}
+}
+
+func e2eeBootstrapErrorClass(err error) string {
+	switch {
+	case errors.Is(err, peeridentity.ErrConflict):
+		return "conflict"
+	case errors.Is(err, peeridentity.ErrUnavailable):
+		return "unavailable"
+	case errors.Is(err, peeridentity.ErrNotCurrent):
+		return "not_current"
+	case errors.Is(err, peeridentity.ErrInvalid):
+		return "invalid"
+	default:
+		return "internal_validation"
 	}
 }
 

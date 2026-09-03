@@ -56,7 +56,13 @@ RETURNING *;
 SELECT k.* FROM managed_ssh_client_keys k
 JOIN cli_client_sessions cs ON cs.id = k.cli_client_session_id AND cs.state = 'active'
 WHERE k.user_id = sqlc.arg(user_id) AND k.state = 'active'
-ORDER BY k.cli_client_session_id;
+ORDER BY k.created_at DESC, k.cli_client_session_id DESC
+LIMIT 64;
+
+-- name: CountActiveManagedSSHClientKeysForUser :one
+SELECT count(*) FROM managed_ssh_client_keys k
+JOIN cli_client_sessions cs ON cs.id = k.cli_client_session_id AND cs.state = 'active'
+WHERE k.user_id = sqlc.arg(user_id) AND k.state = 'active';
 
 -- name: ResolveMachineSSHHostKeyAuthorityForUpdate :one
 SELECT machine.id AS user_machine_id, machine.user_id, machine.installation_generation

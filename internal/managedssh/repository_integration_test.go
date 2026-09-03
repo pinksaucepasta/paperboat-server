@@ -2,7 +2,10 @@ package managedssh
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -201,6 +204,62 @@ func TestSQLRepositoryManagedSSHAuthorityLifecycle(t *testing.T) {
 	var forbiddenColumns int
 	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM information_schema.columns WHERE table_schema='paperboat' AND table_name IN ('managed_ssh_client_keys','machine_ssh_host_key_owners','machine_ssh_host_key_sets','machine_ssh_host_keys','machine_ssh_targets') AND column_name ~ '(private|password|secret)'`).Scan(&forbiddenColumns); err != nil || forbiddenColumns != 0 {
 		t.Fatalf("forbidden managed SSH columns=%d error=%v", forbiddenColumns, err)
+	}
+}
+
+func TestSQLRepositoryManagedSSHClientKeySetIsBounded(t *testing.T) {
+	dsn := os.Getenv("PAPERBOAT_TEST_DATABASE_DSN")
+	if dsn == "" {
+		t.Skip("set PAPERBOAT_TEST_DATABASE_DSN to run managed SSH repository integration tests")
+	}
+	if err := db.ValidateIsolatedTestDSN(dsn, os.Getenv("PAPERBOAT_DATABASE_DSN")); err != nil {
+		t.Fatal(err)
+	}
+	store, err := db.Open(config.Database{Driver: "postgres", DSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := t.Context()
+	if err := db.Migrate(ctx, store); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	suffix := strings.ToLower(strings.ReplaceAll(t.Name(), "/", "_")) + strings.ReplaceAll(now.Format("150405.000000000"), ".", "")
+	userID, machineID := "ssh_bounded_user_"+suffix, "ssh_bounded_machine_"+suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, userID, "workos_"+userID, userID+"@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,online,installation_generation) VALUES ($1,$2,$3,$4,'windows','amd64','C:\\workspace','online','occupied',true,1)`, machineID, userID, "env_"+machineID, machineID); err != nil {
+		t.Fatal(err)
+	}
+	prefix := "ssh-ed25519 " + base64.StdEncoding.EncodeToString(append([]byte{0, 0, 0, 11}, []byte("ssh-ed25519")...))
+	prefix += strings.Repeat("A", 80-len(prefix))
+	for index := 0; index < 65; index++ {
+		sessionID := fmt.Sprintf("ssh_bounded_cli_%02d_%s", index, suffix)
+		createdAt := now.Add(time.Duration(index) * time.Second)
+		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.cli_client_sessions (id,user_id,client_id,client_label,device_type,os,scopes,state,created_at,approved_at) VALUES ($1,$2,$3,'bounded key','desktop','windows',ARRAY['account:read'],'active',$4,$4)`, sessionID, userID, "client_"+sessionID, createdAt); err != nil {
+			t.Fatal(err)
+		}
+		fingerprint := sha256.Sum256([]byte(sessionID))
+		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.managed_ssh_client_keys (fingerprint,user_id,cli_client_session_id,algorithm,public_key,reconciliation_version,created_at) VALUES ($1,$2,$3,'ssh-ed25519',$4,1,$5)`, fingerprint[:], userID, sessionID, prefix+fmt.Sprintf("%02d", index), createdAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	repository, err := NewSQLRepository(store, audit.NewWriter(store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewService(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := service.ListClientKeys(ctx, ListClientKeysRequest{ActorUserID: userID, UserMachineID: machineID, MachineGeneration: 1})
+	if err != nil || len(set.Keys) != 64 {
+		t.Fatalf("keys=%d err=%v", len(set.Keys), err)
+	}
+	if !strings.HasSuffix(set.Keys[0].PublicKey, "64") || !strings.HasSuffix(set.Keys[63].PublicKey, "01") {
+		t.Fatalf("unexpected bounded order first=%q last=%q", set.Keys[0].PublicKey, set.Keys[63].PublicKey)
 	}
 }
 

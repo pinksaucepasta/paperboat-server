@@ -55,6 +55,35 @@ func TestE2EEBootstrapBindsAuthenticatedCLISession(t *testing.T) {
 	}
 }
 
+func TestE2EEBootstrapReportsSecretSafeValidationStage(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/v1/e2ee/bootstrap", bytes.NewBufferString(`{"root_public_key":"not-base64","certificate":{"version":1,"account_id":"account_01","endpoint_id":"cli_session_01","role":"cli","generation":1,"serial":1}}`))
+	request.Header.Set("Idempotency-Key", "operation_bootstrap_01")
+	request = request.WithContext(context.WithValue(request.Context(), authContextKey{}, principal{User: auth.User{ID: "account_01"}, Client: &auth.ClientPrincipal{SessionID: "cli_session_01"}}))
+	response := httptest.NewRecorder()
+	e2eeBootstrap(&recordingBootstrapper{}).ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || !bytes.Contains(response.Body.Bytes(), []byte(`"stage":"root_public_key_encoding"`)) || bytes.Contains(response.Body.Bytes(), []byte("not-base64")) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestE2EEBootstrapReportsSafeServiceErrorClass(t *testing.T) {
+	rootPublic := bytes.Repeat([]byte{3}, 32)
+	raw := bytes.Repeat([]byte{4}, 172)
+	certificateFingerprint := sha256.Sum256(raw)
+	issued := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	keyID, _ := peeridentity.KeyID(rootPublic)
+	document := e2eeBootstrapRequestDocument{RootPublicKey: base64.RawURLEncoding.EncodeToString(rootPublic), Certificate: endpointCertificateDocument{Version: 1, AccountID: "account_01", KeyID: keyID, EndpointID: "cli_session_01", Role: "cli", Generation: 1, Serial: 1, IssuedAt: issued.Format(time.RFC3339), ExpiresAt: issued.Add(time.Hour).Format(time.RFC3339), Certificate: base64.RawURLEncoding.EncodeToString(raw), CertificateFingerprint: hex.EncodeToString(certificateFingerprint[:])}}
+	body, _ := json.Marshal(document)
+	request := httptest.NewRequest(http.MethodPost, "/v1/e2ee/bootstrap", bytes.NewReader(body))
+	request.Header.Set("Idempotency-Key", "operation_bootstrap_01")
+	request = request.WithContext(context.WithValue(request.Context(), authContextKey{}, principal{User: auth.User{ID: "account_01"}, Client: &auth.ClientPrincipal{SessionID: "cli_session_01"}}))
+	response := httptest.NewRecorder()
+	e2eeBootstrap(&recordingBootstrapper{err: peeridentity.ErrInvalid}).ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || !bytes.Contains(response.Body.Bytes(), []byte(`"stage":"service"`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"reason":"invalid"`)) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func (r *recordingCertificateRegistrar) Register(_ context.Context, request peeridentity.RegisterRequest) (peeridentity.Certificate, error) {
 	r.request = request
 	return r.result, r.err
