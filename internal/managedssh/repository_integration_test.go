@@ -261,6 +261,13 @@ func TestSQLRepositoryManagedSSHClientKeySetIsBounded(t *testing.T) {
 	if !strings.HasSuffix(set.Keys[0].PublicKey, "64") || !strings.HasSuffix(set.Keys[63].PublicKey, "01") {
 		t.Fatalf("unexpected bounded order first=%q last=%q", set.Keys[0].PublicKey, set.Keys[63].PublicKey)
 	}
+	registrationSession := "ssh_bounded_cli_registration_" + suffix
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.cli_client_sessions (id,user_id,client_id,client_label,device_type,os,scopes,state,created_at,approved_at) VALUES ($1,$2,$3,'bounded registration','desktop','windows',ARRAY['projects:connect'],'active',$4,$4)`, registrationSession, userID, "client_"+registrationSession, now.Add(65*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RegisterClient(ctx, RegisterClientRequest{OperationID: "operation_bounded_capacity_" + suffix, UserID: userID, CLIClientSessionID: registrationSession, PublicKey: publicLine(t, "ed25519"), Now: now.Add(65 * time.Second)}); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("registration over account key capacity error=%v", err)
+	}
 }
 
 func TestSQLRepositoryManagedSSHKeyRevokesWithClientSessionAndAccount(t *testing.T) {

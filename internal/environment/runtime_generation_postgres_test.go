@@ -32,7 +32,7 @@ func TestPostgresRuntimeSuspendsReinstalledHostAndOnlyRoutesRevocationToRetiredK
 	if !strings.Contains(strings.ToLower(dsn), "_test") {
 		t.Fatal("PAPERBOAT_TEST_DATABASE_DSN must name an isolated *_test database")
 	}
-	vectorRaw, err := os.ReadFile("../../../testdata/contracts/environment-e2ee-v1/vectors.json")
+	vectorRaw, err := os.ReadFile("../../testdata/contracts/environment-e2ee-v1/vectors.json")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -6,8 +6,6 @@ environment lifecycle, config-repository assignment, authorization, and tunnel p
 Live terminal, upload, and preview traffic does not pass through this service.
 `paperboat-server` decides, authorizes, meters, and orchestrates.
 
-See [AGENTS.md](AGENTS.md) for repository ownership and engineering requirements.
-
 ## Development
 
 The server is a Go service backed by PostgreSQL. Application SQL is generated with `sqlc` from `internal/db/queries`,
@@ -28,6 +26,9 @@ PAPERBOAT_DATABASE_DSN='postgres://...' go run ./cmd/paperboat-server seed-catal
 
 Useful checks:
 
+Install Go and `ripgrep`; the Makefile selects the pinned Go toolchain and `sqlc`
+generator. Run these commands from the repository root.
+
 ```sh
 curl -i http://127.0.0.1:8080/healthz
 curl -i http://127.0.0.1:8080/readyz
@@ -36,6 +37,17 @@ go vet ./...
 gofmt -w .
 make check
 ```
+
+PostgreSQL integration tests require a separate, disposable PostgreSQL 17 database.
+Without `PAPERBOAT_TEST_DATABASE_DSN`, those tests are skipped by `make check`.
+Create a database whose name ends in `_test`, then run, for example:
+
+```sh
+PAPERBOAT_TEST_DATABASE_DSN='postgres://localhost:5432/paperboat_test?sslmode=disable' make check
+```
+
+Use your local test credentials if authentication is required. Never point this variable
+at an application database; integration tests can change or remove test data.
 
 ## Deployment
 

@@ -73,9 +73,9 @@ func (a *environmentRecoveryRouteAPI) StageTransitionManifest(_ context.Context,
 }
 
 func TestEnvironmentRecoveryRoutesAllowProposedManagerAndRequireCryptographicDocuments(t *testing.T) {
-	vectorRaw, err := os.ReadFile("../../../testdata/contracts/environment-e2ee-v1/vectors.json")
+	vectorRaw, err := os.ReadFile("../../testdata/contracts/environment-e2ee-v1/vectors.json")
 	if err != nil {
-		t.Skip("shared Paperboat ENV E2EE vector is unavailable")
+		t.Fatal(err)
 	}
 	var vector struct {
 		RootPublic  string `json:"root_public"`

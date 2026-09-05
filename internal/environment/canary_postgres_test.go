@@ -28,9 +28,9 @@ func TestPostgresOpaqueCanaryNeverAppearsInServerSurfaces(t *testing.T) {
 	if !strings.Contains(strings.ToLower(dsn), "_test") {
 		t.Fatal("PAPERBOAT_TEST_DATABASE_DSN must name an isolated *_test database")
 	}
-	vectorRaw, err := os.ReadFile("../../../testdata/contracts/environment-e2ee-v1/vectors.json")
+	vectorRaw, err := os.ReadFile("../../testdata/contracts/environment-e2ee-v1/vectors.json")
 	if err != nil {
-		t.Skip("shared Paperboat ENV E2EE vector is unavailable")
+		t.Fatal(err)
 	}
 	var vector struct {
 		RootPublic         string            `json:"root_public"`

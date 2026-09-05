@@ -3,7 +3,6 @@ package contracttest
 import (
 	"bufio"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,20 +10,12 @@ import (
 	"github.com/xeipuuv/gojsonschema"
 )
 
-// TestPrivateAccessV1SchemaVectors is kept beside the other shared contract
-// tests so the canonical validator and every consumer snapshot can exercise
-// the same grant, authorize, decision, and safe-error envelopes. The local
-// snapshot is optional until the workspace contract owner syncs it.
+// TestPrivateAccessV1SchemaVectors exercises the local grant, authorize,
+// decision, and safe-error fixture envelopes.
 func TestPrivateAccessV1SchemaVectors(t *testing.T) {
-	familyRoot := os.Getenv("PAPERBOAT_PREVIEW_TUNNEL_CONTRACT_ROOT")
-	if familyRoot == "" {
-		familyRoot = filepath.Join("..", "..", "testdata", "contracts", "preview-tunnel-v1")
-	}
+	familyRoot := filepath.Join("..", "..", "testdata", "contracts", "preview-tunnel-v1")
 	schemaBytes, err := os.ReadFile(filepath.Join(familyRoot, "schemas", "private_access.schema.json"))
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			t.Skip("private access contract snapshot is not synced yet")
-		}
 		t.Fatal(err)
 	}
 	schema, err := gojsonschema.NewSchema(gojsonschema.NewBytesLoader(schemaBytes))

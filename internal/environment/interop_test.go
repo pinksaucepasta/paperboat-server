@@ -13,11 +13,8 @@ import (
 )
 
 func TestSharedVectorInterop(t *testing.T) {
-	raw, err := os.ReadFile("../../../testdata/contracts/environment-e2ee-v1/vectors.json")
+	raw, err := os.ReadFile("../../testdata/contracts/environment-e2ee-v1/vectors.json")
 	if err != nil {
-		if os.IsNotExist(err) {
-			t.Skip("shared paperboat ENV E2EE vector is not checked out beside paperboat-server")
-		}
 		t.Fatal(err)
 	}
 	var vector struct {

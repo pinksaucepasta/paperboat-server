@@ -1,0 +1,209 @@
+{
+  "version": 1,
+  "schema": "paperboat.preview-tunnel/v1",
+  "cases": [
+    {
+      "id": "resources-config-snapshot-truncated",
+      "family": "resources",
+      "fixture_case": "tunnel-config-snapshot-wire-vocabulary",
+      "operation": "truncate",
+      "expected": "decode_rejected"
+    },
+    {
+      "id": "resources-config-snapshot-corrupt",
+      "family": "resources",
+      "fixture_case": "tunnel-config-snapshot-wire-vocabulary",
+      "operation": "corrupt",
+      "expected": "schema_rejected"
+    },
+    {
+      "id": "attachment-snapshot-truncated",
+      "family": "attachment",
+      "fixture_case": "complete-edge-snapshot",
+      "operation": "truncate",
+      "expected": "decode_rejected"
+    },
+    {
+      "id": "attachment-snapshot-corrupt",
+      "family": "attachment",
+      "fixture_case": "complete-edge-snapshot",
+      "operation": "corrupt",
+      "expected": "schema_rejected"
+    },
+    {
+      "id": "private-access-snapshot-truncated",
+      "family": "private_access",
+      "fixture_case": "complete-accessor-carrier-snapshot",
+      "operation": "truncate",
+      "expected": "decode_rejected"
+    },
+    {
+      "id": "private-access-snapshot-corrupt",
+      "family": "private_access",
+      "fixture_case": "complete-accessor-carrier-snapshot",
+      "operation": "corrupt",
+      "expected": "schema_rejected"
+    },
+    {
+      "id": "dispatch-envelope-truncated",
+      "family": "dispatch",
+      "fixture_case": "dispatch-request-canonical",
+      "operation": "truncate",
+      "expected": "decode_rejected"
+    },
+    {
+      "id": "dispatch-envelope-corrupt",
+      "family": "dispatch",
+      "fixture_case": "dispatch-request-canonical",
+      "operation": "corrupt",
+      "expected": "schema_rejected"
+    },
+    {
+      "id": "resources-duplicate-json-key",
+      "family": "resources",
+      "fixture_case": "tunnel-durable-stable-identity",
+      "operation": "duplicate_key",
+      "expected": "duplicate_key_rejected"
+    },
+    {
+      "id": "dispatch-duplicate-json-key",
+      "family": "dispatch",
+      "fixture_case": "dispatch-outcome-accepted",
+      "operation": "duplicate_key",
+      "expected": "duplicate_key_rejected"
+    },
+    {
+      "id": "attachment-duplicate-json-key",
+      "family": "attachment",
+      "fixture_case": "carrier-admission",
+      "operation": "duplicate_key",
+      "expected": "duplicate_key_rejected"
+    },
+    {
+      "id": "private-access-duplicate-json-key",
+      "family": "private_access",
+      "fixture_case": "allow-preview-access",
+      "operation": "duplicate_key",
+      "expected": "duplicate_key_rejected"
+    },
+    {
+      "id": "resources-mixed-version",
+      "family": "resources",
+      "fixture_case": "tunnel-durable-stable-identity",
+      "operation": "mixed_version",
+      "expected": "schema_rejected"
+    },
+    {
+      "id": "dispatch-mixed-version",
+      "family": "dispatch",
+      "fixture_case": "dispatch-outcome-accepted",
+      "operation": "mixed_version",
+      "expected": "schema_rejected"
+    },
+    {
+      "id": "attachment-mixed-version",
+      "family": "attachment",
+      "fixture_case": "carrier-admission",
+      "operation": "mixed_version",
+      "expected": "schema_rejected"
+    },
+    {
+      "id": "private-access-mixed-version",
+      "family": "private_access",
+      "fixture_case": "allow-preview-access",
+      "operation": "mixed_version",
+      "expected": "schema_rejected"
+    },
+    {
+      "id": "resources-domains-over-limit",
+      "family": "resources",
+      "fixture_case": "preview-public-session-owned",
+      "operation": "over_limit_domains",
+      "expected": "schema_rejected"
+    },
+    {
+      "id": "resources-safe-metadata-over-limit",
+      "family": "resources",
+      "fixture_case": "event-resumable-safe",
+      "operation": "over_limit_metadata",
+      "expected": "schema_rejected"
+    },
+    {
+      "id": "dispatch-target-over-limit",
+      "family": "dispatch",
+      "fixture_case": "dispatch-request-canonical",
+      "operation": "over_limit_target",
+      "expected": "schema_rejected"
+    },
+    {
+      "id": "attachment-aliases-over-limit",
+      "family": "attachment",
+      "fixture_case": "carrier-admission",
+      "operation": "over_limit_aliases",
+      "expected": "schema_rejected"
+    },
+    {
+      "id": "private-access-admissions-over-limit",
+      "family": "private_access",
+      "fixture_case": "complete-accessor-carrier-snapshot",
+      "operation": "over_limit_admissions",
+      "expected": "schema_rejected"
+    },
+    {
+      "id": "resources-generation-replay-stale",
+      "family": "resources",
+      "fixture_case": "tunnel-durable-stable-identity",
+      "operation": "replay_stale_generation",
+      "expected": "ledger_rejected"
+    },
+    {
+      "id": "dispatch-generation-replay-stale",
+      "family": "dispatch",
+      "fixture_case": "dispatch-outcome-ready",
+      "operation": "replay_stale_generation",
+      "expected": "ledger_rejected"
+    },
+    {
+      "id": "attachment-generation-replay-stale",
+      "family": "attachment",
+      "fixture_case": "server-detachment",
+      "operation": "replay_stale_generation",
+      "expected": "ledger_rejected"
+    },
+    {
+      "id": "private-access-generation-replay-stale",
+      "family": "private_access",
+      "fixture_case": "complete-accessor-carrier-snapshot",
+      "operation": "replay_stale_generation",
+      "expected": "ledger_rejected"
+    },
+    {
+      "id": "resources-secret-rejected",
+      "family": "resources",
+      "fixture_case": "log-entry-resumable-redacted",
+      "operation": "secret",
+      "expected": "schema_rejected"
+    },
+    {
+      "id": "dispatch-secret-rejected",
+      "family": "dispatch",
+      "fixture_case": "dispatch-outcome-accepted",
+      "operation": "secret",
+      "expected": "schema_rejected"
+    },
+    {
+      "id": "attachment-secret-rejected",
+      "family": "attachment",
+      "fixture_case": "complete-edge-snapshot",
+      "operation": "secret",
+      "expected": "schema_rejected"
+    },
+    {
+      "id": "private-access-secret-rejected",
+      "family": "private_access",
+      "fixture_case": "allow-preview-access",
+      "operation": "secret",
+      "expected": "schema_rejected"
+    }
+  ]
+}

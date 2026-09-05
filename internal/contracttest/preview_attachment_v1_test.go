@@ -11,10 +11,7 @@ import (
 )
 
 func TestPreviewAttachmentV1SchemaVectors(t *testing.T) {
-	familyRoot := os.Getenv("PAPERBOAT_PREVIEW_TUNNEL_CONTRACT_ROOT")
-	if familyRoot == "" {
-		familyRoot = filepath.Join("..", "..", "testdata", "contracts", "preview-tunnel-v1")
-	}
+	familyRoot := filepath.Join("..", "..", "testdata", "contracts", "preview-tunnel-v1")
 	schemaBytes, err := os.ReadFile(filepath.Join(familyRoot, "schemas", "attachment.schema.json"))
 	if err != nil {
 		t.Fatal(err)

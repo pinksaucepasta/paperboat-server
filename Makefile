@@ -20,10 +20,7 @@ TOPOLOGY_TERMINAL_CASE ?= TestPeerTerminalPingUsesProductionWSSConnector
 load-env = set -a; [ -f $(ENV_FILE) ] && . ./$(ENV_FILE); set +a
 config-arg = $(if $(strip $(CONFIG)),-config $(CONFIG),)
 
-.PHONY: binary-size-check build check clean contracts control-storm dependencies doctor fmt fmt-check generate generate-check license-check metrics-check metrics-generate migrate paperboat-test race reproducible-builds run scenario-matrix-check scenario-matrix-generate seed-catalogs source-policy static-analysis test tidy topology-matrix topology-direct-smoke topology-fault-smoke topology-host-service-smoke topology-preview-direct-smoke topology-preview-relay-smoke topology-preview-wss-smoke topology-regional-selection-smoke topology-relay-smoke topology-reverse-file-direct-smoke topology-reverse-file-h2-smoke topology-selection-smoke topology-smoke topology-ssh-direct-smoke topology-ssh-relay-smoke topology-ssh-wss-smoke topology-stun-smoke topology-terminal-cancel-direct-smoke topology-terminal-cancel-relay-smoke topology-terminal-cancel-smoke topology-terminal-direct-smoke topology-terminal-ping-smoke topology-terminal-relay-smoke topology-terminal-workflow-smoke topology-wss-smoke verification verify-toolchain vet vulnerability-check
-
-contracts:
-	@./testdata/contracts/validate.sh
+.PHONY: binary-size-check build check clean control-storm dependencies fmt fmt-check generate generate-check license-check metrics-check metrics-generate migrate race reproducible-builds run scenario-matrix-check scenario-matrix-generate seed-catalogs source-policy static-analysis test tidy topology-matrix topology-direct-smoke topology-fault-smoke topology-host-service-smoke topology-preview-direct-smoke topology-preview-relay-smoke topology-preview-wss-smoke topology-regional-selection-smoke topology-relay-smoke topology-reverse-file-direct-smoke topology-reverse-file-h2-smoke topology-selection-smoke topology-smoke topology-ssh-direct-smoke topology-ssh-relay-smoke topology-ssh-wss-smoke topology-stun-smoke topology-terminal-cancel-direct-smoke topology-terminal-cancel-relay-smoke topology-terminal-cancel-smoke topology-terminal-direct-smoke topology-terminal-ping-smoke topology-terminal-relay-smoke topology-terminal-workflow-smoke topology-wss-smoke verification verify-toolchain vet vulnerability-check
 
 dependencies:
 	@./tools/verify-dependencies.sh
@@ -62,7 +59,7 @@ generate:
 generate-check:
 	@before="$$(git diff -- internal/db/dbsqlc)"; $(MAKE) generate >/dev/null; test "$$(git diff -- internal/db/dbsqlc)" = "$$before" || { echo "generated sqlc output is stale; run make generate" >&2; git diff -- internal/db/dbsqlc; exit 1; }
 
-check: verify-toolchain contracts dependencies source-policy metrics-check scenario-matrix-check fmt-check generate-check vet test build
+check: verify-toolchain dependencies source-policy metrics-check scenario-matrix-check fmt-check generate-check vet test build
 
 scenario-matrix-generate:
 	$(GO) run ./tools/scenario-matrix testdata/topology/scenarios.json internal/testtopology/topology_test.go .github/generated/topology-matrix.json
@@ -94,13 +91,6 @@ license-check: verify-toolchain
 
 control-storm:
 	@./tools/run-control-storm.sh
-
-paperboat-test:
-	@mkdir -p bin
-	$(GO) build -o bin/paperboat-test ./cmd/paperboat-test
-
-doctor:
-	$(GO) run ./cmd/paperboat-test doctor
 
 topology-matrix:
 	@tools/topology-matrix.sh
