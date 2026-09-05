@@ -7,7 +7,7 @@
 
 CONFIG ?=
 ENV_FILE ?= .env.local
-GO_VERSION := 1.26.6
+GO_VERSION := 1.27.1
 SQLC_VERSION := v1.30.0
 GO_ROOT := $(shell GOTOOLCHAIN=go$(GO_VERSION) go env GOROOT)
 export PATH := $(GO_ROOT)/bin:$(PATH)

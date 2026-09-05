@@ -22,7 +22,7 @@ import (
 	docker "github.com/ory/dockertest/v3/docker"
 )
 
-const topologyGoImage = "golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36"
+const topologyGoImage = "golang:1.27.1-bookworm@sha256:648f440f42a0958804efb24df176f806f9d353b41f1c0627f666428e40310f6b"
 
 const topologyNetToolsImage = "nicolaka/netshoot@sha256:a20c2531bf35436ed3766cd6cfe89d352b050ccc4d7005ce6400adf97503da1b"
 
@@ -41,7 +41,7 @@ const topologyAlpinePackageBaseURL = "https://dl-cdn.alpinelinux.org/alpine/v3.1
 
 func TestSplitDigestImageRequiresExactSHA256(t *testing.T) {
 	repository, tag, err := splitDigestImage(topologyGoImage)
-	if err != nil || repository != "golang:1.26.6-bookworm@sha256" || len(tag) != 64 {
+	if err != nil || repository != "golang:1.27.1-bookworm@sha256" || len(tag) != 64 {
 		t.Fatalf("split = %q %q %v", repository, tag, err)
 	}
 	repository, tag, err = splitDigestImage(topologyNetToolsImage)
