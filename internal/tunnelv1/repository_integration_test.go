@@ -112,6 +112,57 @@ VALUES ($1, $2, $3, $4, 'linux', 'amd64', '/workspace', 'online', 'occupied', $5
 	}); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("public TCP patch error = %v, want ErrInvalidInput", err)
 	}
+	publicTCPEndpointID := testutil.EndpointUUID("repository-public-tcp:" + suffix)
+	publicTCPHash := sha256.Sum256([]byte("create-public-tcp:" + suffix))
+	publicTCP, err := repository.Create(ctx, CreateRecord{
+		OperationID: "op_create_public_tcp_" + suffix, TunnelID: "tun_public_tcp_" + suffix,
+		StableEndpointID: publicTCPEndpointID, StableEndpoint: "https://" + publicTCPEndpointID + ".tunnels.example.test",
+		AccountID: accountID, Name: "public-tcp-" + suffix, AccessMode: AccessPublic,
+		Origin: OriginRequest{Scheme: "tcp", Address: "127.0.0.1:5432"}, IdempotencyKey: "create-public-tcp:" + suffix,
+		RequestHash: publicTCPHash, ActorID: accountID, AuditActorID: hostID, ActorType: "host", HostID: hostID,
+		RequestID: "req_create_public_tcp_" + suffix, CorrelationID: "corr_create_public_tcp_" + suffix,
+		SourceDeviceID: hostID, AuditEventID: "aud_create_public_tcp_" + suffix,
+		PublicTCPPortMin: 24567, PublicTCPPortMax: 24567, NewID: func(string) (string, error) { return "listener_public_tcp_" + suffix, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listenerID string
+	var publicPort int
+	if err := database.SQL().QueryRowContext(ctx, `SELECT public_tcp_listener_id,public_tcp_port FROM paperboat.tunnel_routes WHERE tunnel_id=$1`, publicTCP.Tunnel.ID).Scan(&listenerID, &publicPort); err != nil {
+		t.Fatal(err)
+	}
+	if listenerID != "listener_public_tcp_"+suffix || publicPort != 24567 {
+		t.Fatalf("public TCP reservation = %q/%d", listenerID, publicPort)
+	}
+	generation := publicTCP.Tunnel.Generation
+	for index, state := range []string{DesiredPaused, DesiredActive, DesiredDeleted} {
+		hash := sha256.Sum256([]byte(state + suffix))
+		result, transitionErr := repository.Transition(ctx, StateRecord{OperationID: fmt.Sprintf("op_tcp_state_%d_%s", index, suffix), AuditEventID: fmt.Sprintf("aud_tcp_state_%d_%s", index, suffix), TunnelID: publicTCP.Tunnel.ID, AccountID: accountID, DesiredState: state, ExpectedGeneration: generation, IdempotencyKey: fmt.Sprintf("tcp-state-%d:%s", index, suffix), RequestHash: hash, ActorID: accountID, AuditActorID: hostID, ActorType: "host", RequestID: fmt.Sprintf("req_tcp_state_%d_%s", index, suffix), CorrelationID: "corr_tcp_state_" + suffix, SourceDeviceID: hostID})
+		if transitionErr != nil {
+			t.Fatal(transitionErr)
+		}
+		generation = result.Tunnel.Generation
+		if state != DesiredDeleted {
+			var stablePort int
+			if err := database.SQL().QueryRowContext(ctx, `SELECT public_tcp_port FROM paperboat.tunnel_routes WHERE tunnel_id=$1`, publicTCP.Tunnel.ID).Scan(&stablePort); err != nil || stablePort != publicPort {
+				t.Fatalf("stable port after %s = %d, %v", state, stablePort, err)
+			}
+		}
+	}
+	reuseEndpointID := testutil.EndpointUUID("repository-public-tcp-reuse:" + suffix)
+	reuseHash := sha256.Sum256([]byte("reuse-public-tcp:" + suffix))
+	reused, err := repository.Create(ctx, CreateRecord{OperationID: "op_reuse_public_tcp_" + suffix, TunnelID: "tun_reuse_public_tcp_" + suffix, StableEndpointID: reuseEndpointID, StableEndpoint: "https://" + reuseEndpointID + ".tunnels.example.test", AccountID: accountID, Name: "tcp-reuse-" + suffix, AccessMode: AccessPublic, Origin: OriginRequest{Scheme: "tcp", Address: "127.0.0.1:5432"}, IdempotencyKey: "reuse-public-tcp:" + suffix, RequestHash: reuseHash, ActorID: accountID, AuditActorID: hostID, ActorType: "host", HostID: hostID, RequestID: "req_reuse_tcp_" + suffix, CorrelationID: "corr_reuse_tcp_" + suffix, SourceDeviceID: hostID, AuditEventID: "aud_reuse_tcp_" + suffix, PublicTCPPortMin: 24567, PublicTCPPortMax: 24567, NewID: func(string) (string, error) { return "listener_reused_" + suffix, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reusedListener string
+	if err := database.SQL().QueryRowContext(ctx, `SELECT public_tcp_listener_id,public_tcp_port FROM paperboat.tunnel_routes WHERE tunnel_id=$1`, reused.Tunnel.ID).Scan(&reusedListener, &publicPort); err != nil {
+		t.Fatal(err)
+	}
+	if publicPort != 24567 || reusedListener == listenerID {
+		t.Fatalf("reused reservation = %q/%d", reusedListener, publicPort)
+	}
 	var auditActorType, auditActorID string
 	var auditActorUserID sql.NullString
 	if err := database.SQL().QueryRowContext(ctx, `

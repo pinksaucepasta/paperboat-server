@@ -1039,6 +1039,11 @@ UPDATE control_tunnel_nodes
 SET state = CASE WHEN sqlc.arg(draining)::boolean THEN 'draining' WHEN state = 'registered' AND sqlc.arg(ready)::boolean THEN 'ready' ELSE state END,
     ready = CASE WHEN state = 'draining' OR sqlc.arg(draining)::boolean THEN false ELSE sqlc.arg(ready) END,
     observation = coalesce(sqlc.arg(observation)::jsonb, '{}'::jsonb),
+    capacity_used = CASE WHEN roles @> ARRAY['edge']::text[] THEN LEAST(capacity_limit,
+      (SELECT count(DISTINCT a.connector_id) FROM tunnel_edge_route_assignments a
+       WHERE a.edge_node_id=control_tunnel_nodes.id AND a.edge_process_epoch=control_tunnel_nodes.process_epoch
+         AND a.state IN ('staged','active'))) ELSE capacity_used END,
+    capacity_observed_at = CASE WHEN roles @> ARRAY['edge']::text[] THEN sqlc.arg(now) ELSE capacity_observed_at END,
     last_heartbeat_at = sqlc.arg(now), version = version + 1, updated_at = sqlc.arg(now)
 WHERE id = sqlc.arg(id) AND process_epoch = sqlc.arg(process_epoch) AND state NOT IN ('offline','retired')
 RETURNING *;
@@ -1110,7 +1115,7 @@ SELECT sqlc.arg(assignment_id), r.id, sqlc.arg(assignment_generation), t.account
        c.id, c.host_id, m.public_identity_key, sqlc.arg(machine_identity_thumbprint),
        c.generation, session.id, session.process_generation, config.generation,
        config.content_hash, t.access_mode, r.generation, r.generation, node.id, node.process_epoch,
-       node.edge_pool, 'staged', 'pending', sqlc.arg(now), sqlc.arg(now)
+       node.failure_domain, 'staged', 'pending', sqlc.arg(now), sqlc.arg(now)
 FROM tunnel_routes AS r
 JOIN tunnels AS t ON t.id = r.tunnel_id AND t.account_id = sqlc.arg(account_id)
 JOIN tunnel_connectors AS c
@@ -1127,11 +1132,11 @@ JOIN control_tunnel_nodes AS node
   ON node.id = sqlc.arg(edge_node_id) AND node.process_epoch = sqlc.arg(edge_process_epoch)
 WHERE r.id = sqlc.arg(route_id)
   AND r.tunnel_id = sqlc.arg(tunnel_id)
-  AND r.protocol IN ('http','private_tcp')
+  AND r.protocol IN ('http','tcp','private_tcp')
   AND btrim(sqlc.arg(assignment_id)) = sqlc.arg(assignment_id)
   AND sqlc.arg(assignment_id) ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{2,127}$'
-  AND btrim(node.edge_pool) = node.edge_pool
-  AND node.edge_pool ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
+  AND btrim(node.failure_domain) = node.failure_domain
+  AND node.failure_domain ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
   AND r.desired_state = 'active'
   AND t.desired_state = 'active'
   AND (t.expires_at IS NULL OR t.expires_at > sqlc.arg(now))
@@ -1142,14 +1147,24 @@ WHERE r.id = sqlc.arg(route_id)
   AND session.process_generation = sqlc.arg(connector_process_generation)
   AND session.state IN ('authenticating','ready')
   AND session.last_heartbeat_at IS NOT NULL
-  AND session.last_heartbeat_at > sqlc.arg(now) - interval '2 minutes'
+  AND session.last_heartbeat_at > sqlc.arg(now) - interval '15 seconds'
   AND session.lease_deadline > sqlc.arg(now)
   AND session.applied_config_generation = config.generation
   AND config.activation_state = 'active'
   AND config.content_hash = sqlc.arg(config_content_hash)
   AND node.state = 'ready' AND node.ready = true
+  AND node.registry_expires_at > sqlc.arg(now)
+  AND node.roles @> ARRAY['edge']::text[]
+  AND node.transports @> ARRAY['http3','http2']::text[]
+  AND node.drain_deadline IS NULL
+  AND (node.allowed_account_ids IS NULL OR t.account_id = ANY(node.allowed_account_ids))
+  AND node.capacity_observed_at > sqlc.arg(now) - interval '15 seconds'
+  AND (node.capacity_used < node.capacity_limit-node.capacity_limit/10
+       OR EXISTS (SELECT 1 FROM tunnel_edge_route_assignments admitted
+                  WHERE admitted.route_id=r.id AND admitted.connector_id=c.id AND admitted.edge_node_id=node.id
+                    AND admitted.state IN ('staged','active')))
   AND node.last_heartbeat_at IS NOT NULL
-  AND node.last_heartbeat_at > sqlc.arg(now) - interval '2 minutes'
+  AND node.last_heartbeat_at > sqlc.arg(now) - interval '15 seconds'
   AND NOT EXISTS (
     SELECT 1
     FROM tunnel_edge_route_assignments AS prior
@@ -1176,8 +1191,36 @@ WHERE tunnel_edge_route_assignments.route_id = EXCLUDED.route_id
   AND tunnel_edge_route_assignments.state = 'staged'
 RETURNING *;
 
+-- name: RetireUnavailableTunnelEdgeAssignmentsV1 :execrows
+-- Retire authority before replacement selection so a recovered former edge
+-- cannot rejoin a placement without a fresh generation and readiness handshake.
+UPDATE tunnel_edge_route_assignments a
+SET state='draining', observed_state='draining', updated_at=sqlc.arg(now)
+WHERE a.state IN ('staged','active') AND NOT EXISTS (
+ SELECT 1 FROM control_tunnel_nodes n
+ JOIN tunnel_connectors c ON c.id=a.connector_id
+ JOIN tunnel_connector_sessions session ON session.id=a.connector_session_id
+ JOIN tunnel_routes r ON r.id=a.route_id
+ JOIN tunnels t ON t.id=a.tunnel_id
+ WHERE n.id=a.edge_node_id AND n.process_epoch=a.edge_process_epoch
+   AND n.state='ready' AND n.ready AND n.drain_deadline IS NULL
+   AND n.last_heartbeat_at>sqlc.arg(now)::timestamptz-interval '15 seconds'
+   AND n.registry_expires_at>sqlc.arg(now)
+   AND n.roles @> ARRAY['edge']::text[]
+   AND (n.allowed_account_ids IS NULL OR a.account_id=ANY(n.allowed_account_ids))
+   AND c.desired_state='active' AND c.drain_state='accepting' AND c.revoked_at IS NULL
+   AND c.last_session_id=session.id AND c.generation=a.connector_generation
+   AND c.last_applied_config_generation=a.config_generation
+   AND session.state IN ('authenticating','ready') AND session.lease_deadline>sqlc.arg(now)
+   AND session.last_heartbeat_at>sqlc.arg(now)::timestamptz-interval '15 seconds'
+   AND session.process_generation=a.connector_process_generation
+   AND r.desired_state='active' AND r.generation=a.route_generation AND r.deleted_at IS NULL
+   AND t.desired_state='active' AND t.deleted_at IS NULL AND t.access_mode=a.access_mode
+   AND (t.expires_at IS NULL OR t.expires_at>sqlc.arg(now))
+);
+
 -- name: ListReadyTunnelEdgeRouteCandidatesV1 :many
--- Pick authenticated, config-applied connector sessions and one ready edge
+-- Pick authenticated, config-applied connector sessions and up to two ready edges
 -- process. A staged assignment bootstraps the data carrier; it cannot become
 -- active until connector readiness and an exact edge ready observation.
 SELECT t.account_id,
@@ -1196,7 +1239,7 @@ SELECT t.account_id,
        config.content_hash AS config_content_hash,
        node.id AS edge_node_id,
        node.process_epoch AS edge_process_epoch,
-       node.edge_pool AS edge_failure_domain
+       node.failure_domain::text AS edge_failure_domain
 FROM tunnels AS t
 JOIN tunnel_routes AS r ON r.tunnel_id = t.id
 JOIN tunnel_connectors AS c ON c.tunnel_id = t.id
@@ -1209,29 +1252,58 @@ JOIN user_machines AS m
 JOIN tunnel_config_generations AS config
   ON config.tunnel_id = t.id AND config.generation = session.applied_config_generation
 JOIN LATERAL (
-  SELECT candidate_node.*
-  FROM control_tunnel_nodes AS candidate_node
-  WHERE candidate_node.state = 'ready' AND candidate_node.ready = true
-    AND candidate_node.last_heartbeat_at IS NOT NULL
-    AND candidate_node.last_heartbeat_at > sqlc.arg(now)::timestamptz - interval '2 minutes'
-  ORDER BY candidate_node.id, candidate_node.process_epoch
-  LIMIT 1
+  SELECT ranked.* FROM (
+    SELECT DISTINCT ON (candidate_node.failure_domain) candidate_node.*,
+      EXISTS (SELECT 1 FROM tunnel_edge_route_assignments existing
+              WHERE existing.route_id=r.id AND existing.connector_id=c.id
+                AND existing.edge_node_id=candidate_node.id
+                AND existing.edge_process_epoch=candidate_node.process_epoch
+                AND existing.state IN ('staged','active')) AS retained
+    FROM control_tunnel_nodes AS candidate_node
+    WHERE candidate_node.state = 'ready' AND candidate_node.ready = true
+      AND candidate_node.last_heartbeat_at > sqlc.arg(now)::timestamptz - interval '15 seconds'
+      AND candidate_node.registry_expires_at > sqlc.arg(now)
+      AND candidate_node.capacity_observed_at > sqlc.arg(now)::timestamptz - interval '15 seconds'
+      AND (candidate_node.capacity_used < candidate_node.capacity_limit - candidate_node.capacity_limit/10
+           OR EXISTS (SELECT 1 FROM tunnel_edge_route_assignments admitted
+                      WHERE admitted.route_id=r.id AND admitted.connector_id=c.id
+                        AND admitted.edge_node_id=candidate_node.id AND admitted.edge_process_epoch=candidate_node.process_epoch
+                        AND admitted.state IN ('staged','active')))
+      AND candidate_node.roles @> ARRAY['edge']::text[]
+      AND candidate_node.transports @> ARRAY['http3','http2']::text[]
+      AND candidate_node.drain_deadline IS NULL
+      AND candidate_node.failure_domain IS NOT NULL
+      AND (candidate_node.allowed_account_ids IS NULL OR t.account_id=ANY(candidate_node.allowed_account_ids))
+    ORDER BY candidate_node.failure_domain, retained DESC, candidate_node.id
+  ) ranked
+  ORDER BY ranked.retained DESC, ranked.id
+  LIMIT 2
 ) AS node ON true
 WHERE t.desired_state = 'active'
   AND (t.expires_at IS NULL OR t.expires_at > sqlc.arg(now)::timestamptz)
   AND r.desired_state = 'active'
-  AND r.protocol IN ('http','private_tcp')
+  AND r.protocol IN ('http','tcp','private_tcp')
   AND c.desired_state = 'active'
   AND c.drain_state = 'accepting'
   AND c.last_session_id IS NOT NULL
   AND session.state IN ('authenticating','ready')
   AND session.last_heartbeat_at IS NOT NULL
-  AND session.last_heartbeat_at > sqlc.arg(now)::timestamptz - interval '2 minutes'
+  AND session.last_heartbeat_at > sqlc.arg(now)::timestamptz - interval '15 seconds'
   AND session.lease_deadline > sqlc.arg(now)::timestamptz
   AND session.applied_config_generation = config.generation
   AND c.last_applied_config_generation = config.generation
   AND config.activation_state = 'active'
-ORDER BY r.id, c.id
+  AND NOT EXISTS (
+    SELECT 1 FROM tunnel_edge_route_assignments current
+    WHERE current.route_id=r.id AND current.connector_id=c.id
+      AND current.edge_node_id=node.id AND current.edge_process_epoch=node.process_epoch
+      AND current.connector_session_id=session.id AND current.connector_generation=c.generation
+      AND current.connector_process_generation=session.process_generation
+      AND current.config_generation=config.generation AND current.config_content_hash=config.content_hash
+      AND current.route_generation=r.generation AND current.access_mode=t.access_mode
+      AND current.state IN ('staged','active')
+  )
+ORDER BY r.id, c.id, node.id
 LIMIT sqlc.arg(row_limit);
 
 -- name: SupersedeStaleStagedTunnelEdgeRouteAssignmentV1 :execrows
@@ -1244,6 +1316,7 @@ UPDATE tunnel_edge_route_assignments AS stale
 SET state = 'draining', observed_state = 'draining', updated_at = sqlc.arg(now)
 WHERE stale.route_id = sqlc.arg(route_id)
   AND stale.connector_id = sqlc.arg(connector_id)
+  AND stale.edge_node_id = sqlc.arg(edge_node_id)
   AND stale.state = 'staged'
   AND (
     stale.account_id IS DISTINCT FROM sqlc.arg(account_id)
@@ -1307,7 +1380,7 @@ FROM locked;
 -- Promotion is the ready-new-before-drain fence.  It atomically makes the
 -- staged assignment current and leaves the prior assignment draining.
 WITH candidate AS (
-  SELECT a.assignment_id, a.route_id, a.connector_id
+  SELECT a.assignment_id, a.route_id, a.connector_id, a.edge_node_id
   FROM tunnel_edge_route_assignments AS a
   WHERE a.assignment_id = sqlc.arg(assignment_id)
     AND a.route_id = sqlc.arg(route_id)
@@ -1318,6 +1391,7 @@ WITH candidate AS (
   SET state = 'draining', observed_state = 'draining', updated_at = sqlc.arg(now)
   FROM candidate AS c
   WHERE a.route_id = c.route_id AND a.connector_id = c.connector_id
+    AND a.edge_node_id = c.edge_node_id
     AND a.state = 'active' AND a.assignment_id <> c.assignment_id
   RETURNING a.assignment_id
 ), promoted AS (
@@ -1354,7 +1428,7 @@ SELECT a.assignment_id,
        a.edge_node_id,
        a.edge_process_epoch,
        a.edge_failure_domain,
-       CASE WHEN r.protocol = 'private_tcp' THEN 'tunnel_private_tcp' ELSE 'tunnel_http_wss' END AS kind,
+       CASE WHEN r.protocol = 'private_tcp' THEN 'tunnel_private_tcp' WHEN r.protocol = 'tcp' THEN 'tunnel_tcp' ELSE 'tunnel_http_wss' END AS kind,
        (CASE WHEN r.match_type = 'one_label_wildcard' THEN '*.' || r.wildcard_suffix ELSE COALESCE(r.match_hostname, '') END)::text AS public_host,
        r.match_type,
        r.match_hostname,
@@ -1362,6 +1436,8 @@ SELECT a.assignment_id,
        r.path_prefix,
        r.priority,
        r.protocol,
+       r.public_tcp_listener_id,
+       r.public_tcp_port,
        r.origin_scheme,
        r.preserve_host,
        r.host_override,
@@ -1402,7 +1478,7 @@ WHERE a.edge_node_id = sqlc.arg(edge_node_id)
       t.desired_state = 'active'
       AND (t.expires_at IS NULL OR t.expires_at > sqlc.arg(now))
       AND r.desired_state = 'active'
-      AND r.protocol IN ('http','private_tcp')
+      AND r.protocol IN ('http','tcp','private_tcp')
       AND c.desired_state = 'active' AND c.drain_state = 'accepting'
       AND c.generation = a.connector_generation
       AND c.last_session_id = session.id
@@ -1413,13 +1489,18 @@ WHERE a.edge_node_id = sqlc.arg(edge_node_id)
         OR (a.state = 'active' AND session.state = 'ready')
       )
       AND session.last_heartbeat_at IS NOT NULL
-      AND session.last_heartbeat_at > sqlc.arg(now) - interval '2 minutes'
+      AND session.last_heartbeat_at > sqlc.arg(now) - interval '15 seconds'
       AND session.lease_deadline > sqlc.arg(now)
       AND session.applied_config_generation = a.config_generation
       AND config.activation_state = 'active'
       AND config.content_hash = a.config_content_hash
       AND node.process_epoch = a.edge_process_epoch
       AND node.state = 'ready' AND node.ready = true
+  AND node.registry_expires_at > sqlc.arg(now)
+  AND node.roles @> ARRAY['edge']::text[]
+  AND node.transports @> ARRAY['http3','http2']::text[]
+  AND node.drain_deadline IS NULL
+  AND (node.allowed_account_ids IS NULL OR t.account_id = ANY(node.allowed_account_ids))
     )
   )
 ORDER BY a.route_id, a.assignment_generation, a.assignment_id;
@@ -1473,8 +1554,13 @@ WHERE a.route_id = sqlc.arg(route_id)
       AND config.content_hash = a.config_content_hash
       AND node.process_epoch = a.edge_process_epoch
       AND node.state = 'ready' AND node.ready = true
+  AND node.registry_expires_at > sqlc.arg(now)
+  AND node.roles @> ARRAY['edge']::text[]
+  AND node.transports @> ARRAY['http3','http2']::text[]
+  AND node.drain_deadline IS NULL
+  AND (node.allowed_account_ids IS NULL OR t.account_id = ANY(node.allowed_account_ids))
       AND node.last_heartbeat_at IS NOT NULL
-      AND node.last_heartbeat_at > sqlc.arg(now) - interval '2 minutes'
+      AND node.last_heartbeat_at > sqlc.arg(now) - interval '15 seconds'
     )
   )
 RETURNING a.*;

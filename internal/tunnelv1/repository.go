@@ -57,25 +57,29 @@ type TunnelRepository interface {
 }
 
 type CreateRecord struct {
-	OperationID      string
-	TunnelID         string
-	StableEndpointID string
-	StableEndpoint   string
-	AccountID        string
-	Name             string
-	AccessMode       string
-	Origin           OriginRequest
-	ExpiresAt        sql.NullTime
-	IdempotencyKey   string
-	RequestHash      [sha256.Size]byte
-	ActorID          string
-	AuditActorID     string
-	ActorType        string
-	HostID           string
-	RequestID        string
-	CorrelationID    string
-	SourceDeviceID   string
-	AuditEventID     string
+	OperationID         string
+	TunnelID            string
+	StableEndpointID    string
+	StableEndpoint      string
+	AccountID           string
+	Name                string
+	AccessMode          string
+	Origin              OriginRequest
+	ExpiresAt           sql.NullTime
+	IdempotencyKey      string
+	RequestHash         [sha256.Size]byte
+	ActorID             string
+	AuditActorID        string
+	ActorType           string
+	HostID              string
+	RequestID           string
+	CorrelationID       string
+	SourceDeviceID      string
+	AuditEventID        string
+	PublicTCPListenerID string
+	PublicTCPPortMin    int32
+	PublicTCPPortMax    int32
+	NewID               func(string) (string, error)
 }
 
 type PatchRecord struct {
@@ -299,21 +303,15 @@ func (r *SQLRepository) Patch(ctx context.Context, input PatchRecord) (MutationR
 		if current.Generation != input.ExpectedGeneration {
 			return ErrGenerationConflict
 		}
-		// A public endpoint cannot expose a TCP route. Check the durable route
-		// rows in this SERIALIZABLE transaction immediately before the tunnel
-		// CAS so a concurrent route mutation cannot turn this into a public
-		// TCP tunnel between validation and commit.
-		effectiveAccessMode := current.AccessMode
-		if input.AccessMode != nil {
-			effectiveAccessMode = *input.AccessMode
-		}
-		if effectiveAccessMode == AccessPublic {
-			hasPrivateTCPRoute, routeErr := queries.HasActivePrivateTCPRouteV1(ctx, current.ID)
+		// Changing audience must never silently convert a private TCP route into
+		// a publication (or hide a public listener behind private semantics).
+		if input.AccessMode != nil && *input.AccessMode != current.AccessMode {
+			hasTCPRoute, routeErr := queries.HasActivePrivateTCPRouteV1(ctx, current.ID)
 			if routeErr != nil {
 				return translate(routeErr)
 			}
-			if hasPrivateTCPRoute {
-				return fmt.Errorf("%w: public access is not allowed for a TCP route", ErrInvalidInput)
+			if hasTCPRoute {
+				return fmt.Errorf("%w: remove TCP routes before changing tunnel access mode", ErrInvalidInput)
 			}
 		}
 		changed := patchChanges(current, input)
@@ -404,6 +402,11 @@ func (r *SQLRepository) Transition(ctx context.Context, input StateRecord) (Muta
 				return translate(updateErr)
 			}
 			current = updated
+			if input.DesiredState == DesiredDeleted {
+				if err := queries.DeleteAllTunnelRoutesV1(ctx, dbsqlc.DeleteAllTunnelRoutesV1Params{TunnelID: input.TunnelID, Now: sql.NullTime{Time: now, Valid: true}}); err != nil {
+					return translate(err)
+				}
+			}
 			if err := createResourceConfigGeneration(ctx, queries, current, input.ActorID, now); err != nil {
 				return err
 			}
@@ -615,11 +618,21 @@ func createInitialRoute(ctx context.Context, queries *dbsqlc.Queries, input Crea
 		tlsVerification = "system"
 	}
 	if input.Origin.Scheme == "tcp" {
-		protocol = "private_tcp"
-		// Private TCP is an unhosted catch-all route. A managed hostname would
-		// imply a public HTTP binding and violate the route wire contract.
-		matchType = "catch_all"
-		matchHostname = sql.NullString{}
+		preserveHost = false
+		if input.AccessMode == AccessPrivate {
+			protocol = "private_tcp"
+			matchType = "catch_all"
+			matchHostname = sql.NullString{}
+		} else {
+			protocol = "tcp"
+			if input.NewID == nil {
+				return dbsqlc.TunnelRoute{}, ErrInvalidInput
+			}
+			input.PublicTCPListenerID, err = input.NewID("lst")
+			if err != nil {
+				return dbsqlc.TunnelRoute{}, err
+			}
+		}
 	}
 	return queries.CreatePreviewTunnelRoute(ctx, dbsqlc.CreatePreviewTunnelRouteParams{
 		ID: newRouteID(tunnel.ID), TunnelID: tunnel.ID, Name: "default", Protocol: protocol,
@@ -628,6 +641,7 @@ func createInitialRoute(ctx context.Context, queries *dbsqlc.Queries, input Crea
 		PreserveHost: preserveHost, HostOverride: hostOverride, TlsVerification: tlsVerification,
 		ConnectTimeoutMs: 10000, IdleTimeoutMs: 90000, MaxConcurrentStreams: 128,
 		DesiredState: DesiredActive, CreatedByActorID: input.ActorID, UpdatedByActorID: input.ActorID, Now: now,
+		PublicTcpListenerID: nullableString(input.PublicTCPListenerID), PublicTcpPortMin: input.PublicTCPPortMin, PublicTcpPortMax: input.PublicTCPPortMax,
 	})
 }
 
@@ -863,9 +877,6 @@ func validateCreateRecord(input CreateRecord) error {
 	}
 	if input.AccessMode != AccessPublic && input.AccessMode != AccessPrivate {
 		return fmt.Errorf("%w: access mode is invalid", ErrInvalidInput)
-	}
-	if input.Origin.Scheme == "tcp" && input.AccessMode != AccessPrivate {
-		return fmt.Errorf("%w: tcp origins require private access", ErrInvalidInput)
 	}
 	return validateOrigin(input.Origin)
 }

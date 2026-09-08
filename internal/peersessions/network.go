@@ -319,6 +319,13 @@ func (s *NetworkService) Configuration(ctx context.Context, in NetworkConfigRequ
 		peers = append(peers, *p)
 	}
 	claims := map[string]any{"version": 1, "iss": s.issuer, "aud": "paperboat-network", "iat": now.Unix(), "exp": expiry.Unix(), "generation": generation, "self": bindingMap(self), "peers": peers}
+	relayPairs, err := deviceRelayPairs(ctx, tx, self, now, expiry)
+	if err != nil {
+		return NetworkConfigResult{}, err
+	}
+	if len(relayPairs) != 0 {
+		claims["relay_pairs"] = relayPairs
+	}
 	token, err := s.signer.SignNetworkConfiguration(claims)
 	if err != nil {
 		return NetworkConfigResult{}, err
@@ -334,17 +341,14 @@ func (s *NetworkService) Configuration(ctx context.Context, in NetworkConfigRequ
 		return NetworkConfigResult{}, ErrUnavailable
 	}
 	relayPeers := make([]map[string]any, 0, len(peers))
-	allDisco := self.DiscoPublicKey != ""
 	for _, peer := range peers {
 		entry := map[string]any{"wireguard_public_key": peer.Identity.WireGuardPublicKey, "scopes": peer.Scopes}
 		if peer.Identity.DiscoPublicKey != "" {
 			entry["disco_public_key"] = peer.Identity.DiscoPublicKey
-		} else {
-			allDisco = false
 		}
 		relayPeers = append(relayPeers, entry)
 	}
-	relayGrants, err := s.relayGrants(ctx, tx, self, relayPeers, allDisco, generation, now, expiry)
+	relayGrants, err := s.relayGrants(ctx, tx, self, relayPeers, generation, now, expiry)
 	if err != nil {
 		return NetworkConfigResult{}, err
 	}
@@ -354,8 +358,82 @@ func (s *NetworkService) Configuration(ctx context.Context, in NetworkConfigRequ
 	return NetworkConfigResult{Configuration: token, CandidateSet: candidates, RelayGrants: relayGrants}, nil
 }
 
-func (s *NetworkService) relayGrants(ctx context.Context, tx *sql.Tx, self networkBinding, peers []map[string]any, allDisco bool, generation int64, now, authorityExpiry time.Time) ([]string, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT id,node_generation,process_epoch,registry_expires_at,roles @> ARRAY['peer_relay']::text[] AND transports @> ARRAY['peer_relay_udp']::text[],peer_relay_wireguard_public_key,peer_relay_disco_public_key,host(peer_relay_virtual_address) FROM paperboat.control_tunnel_nodes WHERE region IS NOT NULL AND (allowed_account_ids IS NULL OR $1=ANY(allowed_account_ids)) AND state='ready' AND ready AND last_heartbeat_at>$2::timestamptz-interval '15 seconds' AND registry_expires_at>$2::timestamptz AND capacity_observed_at>$2::timestamptz-interval '15 seconds' AND capacity_used<capacity_limit-capacity_limit/10 AND drain_deadline IS NULL AND roles @> ARRAY['relay']::text[] AND transports @> ARRAY['derp_quic']::text[] ORDER BY region,id LIMIT 33`, self.AccountID, now)
+func deviceRelayPairs(ctx context.Context, tx *sql.Tx, self networkBinding, now, authorityExpiry time.Time) ([]map[string]any, error) {
+	if self.Role != "machine" {
+		return nil, nil
+	}
+	var enabled bool
+	if err := tx.QueryRowContext(ctx, `SELECT configured_capabilities @> ARRAY['peer_relay']::text[] FROM paperboat.user_machines WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL AND deleted_at IS NULL`, self.EndpointID, self.AccountID).Scan(&enabled); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if !enabled {
+		return nil, nil
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id,cli_client_session_id,user_machine_id,expires_at FROM paperboat.user_machine_access_sessions WHERE user_id=$1 AND state='active' AND revoked_at IS NULL AND expires_at>$2 ORDER BY id LIMIT 17`, self.AccountID, now)
+	if err != nil {
+		return nil, err
+	}
+	type relayPairRow struct {
+		resourceID, firstID, secondID string
+		expires                       time.Time
+	}
+	var pending []relayPairRow
+	for rows.Next() {
+		if len(pending) == 16 {
+			rows.Close()
+			return nil, ErrResourceLimit
+		}
+		var row relayPairRow
+		if err := rows.Scan(&row.resourceID, &row.firstID, &row.secondID, &row.expires); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		pending = append(pending, row)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	result := make([]map[string]any, 0, len(pending))
+	for _, row := range pending {
+		if row.firstID == self.EndpointID || row.secondID == self.EndpointID {
+			continue
+		}
+		first, firstExpiry, err := loadNetworkBinding(ctx, tx, self.AccountID, row.firstID, now)
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, ErrUnavailable) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		second, secondExpiry, err := loadNetworkBinding(ctx, tx, self.AccountID, row.secondID, now)
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, ErrUnavailable) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		pairExpiry := row.expires
+		for _, candidate := range []time.Time{authorityExpiry, firstExpiry, secondExpiry} {
+			if candidate.Before(pairExpiry) {
+				pairExpiry = candidate
+			}
+		}
+		result = append(result, map[string]any{"resource_kind": "machine_access", "resource_id": row.resourceID, "resource_generation": 1, "first": bindingMap(first), "second": bindingMap(second), "expires_at": pairExpiry.Unix()})
+	}
+	return result, nil
+}
+
+func (s *NetworkService) relayGrants(ctx context.Context, tx *sql.Tx, self networkBinding, peers []map[string]any, generation int64, now, authorityExpiry time.Time) ([]string, error) {
+	deviceRelay, controlPeers, selfRelay, err := deviceRelayAuthority(ctx, tx, self)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id,node_generation,process_epoch,registry_expires_at FROM paperboat.control_tunnel_nodes WHERE region IS NOT NULL AND (allowed_account_ids IS NULL OR $1=ANY(allowed_account_ids)) AND state='ready' AND ready AND last_heartbeat_at>$2::timestamptz-interval '15 seconds' AND registry_expires_at>$2::timestamptz AND capacity_observed_at>$2::timestamptz-interval '15 seconds' AND capacity_used<capacity_limit-capacity_limit/10 AND drain_deadline IS NULL AND roles @> ARRAY['relay']::text[] AND transports @> ARRAY['derp_quic']::text[] ORDER BY region,id LIMIT 33`, self.AccountID, now)
 	if err != nil {
 		return nil, err
 	}
@@ -368,10 +446,7 @@ func (s *NetworkService) relayGrants(ctx context.Context, tx *sql.Tx, self netwo
 		var nodeID, processEpoch string
 		var nodeGeneration int64
 		var nodeExpiry time.Time
-		var peerRelay bool
-		var relayWG, relayDisco []byte
-		var relayAddress sql.NullString
-		if err := rows.Scan(&nodeID, &nodeGeneration, &processEpoch, &nodeExpiry, &peerRelay, &relayWG, &relayDisco, &relayAddress); err != nil {
+		if err := rows.Scan(&nodeID, &nodeGeneration, &processEpoch, &nodeExpiry); err != nil {
 			return nil, err
 		}
 		expires := now.Add(time.Minute)
@@ -385,8 +460,11 @@ func (s *NetworkService) relayGrants(ctx context.Context, tx *sql.Tx, self netwo
 		if self.DiscoPublicKey != "" {
 			claims["disco_public_key"] = self.DiscoPublicKey
 		}
-		if peerRelay && allDisco && len(relayWG) == 32 && len(relayDisco) == 32 && relayAddress.Valid {
-			claims["peer_relay"] = map[string]any{"wireguard_public_key": base64.RawURLEncoding.EncodeToString(relayWG), "disco_public_key": base64.RawURLEncoding.EncodeToString(relayDisco), "virtual_address": relayAddress.String}
+		if len(controlPeers) != 0 {
+			claims["relay_control_peers"] = controlPeers
+		}
+		if !selfRelay && deviceRelay != nil {
+			claims["peer_relay"] = deviceRelay
 		}
 		grant, err := s.signer.SignRelayGrant(claims)
 		if err != nil {
@@ -401,6 +479,54 @@ func (s *NetworkService) relayGrants(ctx context.Context, tx *sql.Tx, self netwo
 		return nil, err
 	}
 	return grants, nil
+}
+
+func deviceRelayAuthority(ctx context.Context, tx *sql.Tx, self networkBinding) (map[string]any, []string, bool, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT n.endpoint_id,n.wireguard_public_key,n.disco_public_key,host(n.virtual_address),coalesce(n.role='machine' AND m.configured_capabilities @> ARRAY['peer_relay']::text[] AND m.observed_capabilities @> ARRAY['peer_relay']::text[] AND m.online,false)
+		FROM paperboat.peer_network_identities n LEFT JOIN paperboat.user_machines m ON m.id=n.machine_id AND m.user_id=n.user_id AND m.installation_generation=n.machine_generation AND m.revoked_at IS NULL AND m.deleted_at IS NULL AND m.state IN ('online','offline')
+		WHERE n.user_id=$1 AND n.revoked_at IS NULL AND ((n.role='cli' AND EXISTS(SELECT 1 FROM paperboat.cli_client_sessions c WHERE c.id=n.endpoint_id AND c.user_id=n.user_id AND c.state='active' AND c.revoked_at IS NULL)) OR m.id IS NOT NULL) ORDER BY n.endpoint_id LIMIT 18`, self.AccountID)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	defer rows.Close()
+	var candidate map[string]any
+	var allKeys []string
+	selfRelay := false
+	for rows.Next() {
+		var endpoint, address string
+		var wg, disco []byte
+		var relay bool
+		if err := rows.Scan(&endpoint, &wg, &disco, &address, &relay); err != nil {
+			return nil, nil, false, err
+		}
+		if len(wg) != 32 || len(disco) != 32 {
+			continue
+		}
+		keyValue := base64.RawURLEncoding.EncodeToString(wg)
+		if endpoint != self.EndpointID {
+			allKeys = append(allKeys, keyValue)
+		}
+		if endpoint == self.EndpointID {
+			selfRelay = relay
+			continue
+		}
+		if relay && candidate == nil {
+			candidate = map[string]any{"wireguard_public_key": keyValue, "disco_public_key": base64.RawURLEncoding.EncodeToString(disco), "virtual_address": address}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, false, err
+	}
+	if len(allKeys) > 16 {
+		return nil, nil, false, ErrResourceLimit
+	}
+	if selfRelay {
+		return nil, allKeys, true, nil
+	}
+	if candidate != nil {
+		return candidate, []string{candidate["wireguard_public_key"].(string)}, false, nil
+	}
+	return nil, nil, false, nil
 }
 
 type regionalNode struct {

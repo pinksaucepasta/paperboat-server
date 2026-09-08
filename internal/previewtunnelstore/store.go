@@ -408,7 +408,7 @@ func validateCreateTunnel(input CreateTunnelInput) error {
 	if err := validateManagedEndpoint(input.StableEndpoint, input.StableEndpointID); err != nil {
 		return err
 	}
-	if input.AccessMode != "public" && input.AccessMode != "private" {
+	if input.AccessMode != "public" && input.AccessMode != "private" && input.AccessMode != "team" {
 		return fmt.Errorf("%w: unsupported access mode", ErrInvalidInput)
 	}
 	if !validActorType(input.ActorType) {

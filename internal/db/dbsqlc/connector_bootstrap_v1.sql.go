@@ -39,29 +39,46 @@ func (q *Queries) GetTunnelManagedEndpointForConnectorBootstrapV1(ctx context.Co
 const listReadyConnectorCarrierNodesV1 = `-- name: ListReadyConnectorCarrierNodesV1 :many
 SELECT id AS edge_node_id,
        process_epoch AS edge_process_epoch,
-       relay_region AS failure_domain,
+       failure_domain,
        carrier_endpoint_host,
        carrier_endpoint_tcp_port,
        carrier_endpoint_quic_port,
        carrier_server_spki_sha256,
        carrier_server_certificate_chain_pem,
-       last_heartbeat_at
+       last_heartbeat_at,
+       LEAST(registry_expires_at,last_heartbeat_at+interval '15 seconds')::timestamptz AS valid_until
 FROM control_tunnel_nodes
 WHERE state = 'ready'
   AND ready = true
-  AND last_heartbeat_at > $1::timestamptz - interval '2 minutes'
+  AND last_heartbeat_at > $1::timestamptz - interval '15 seconds'
+  AND registry_expires_at > $1
+  AND roles @> ARRAY['edge']::text[]
+  AND transports @> ARRAY['http3','http2']::text[]
+  AND drain_deadline IS NULL
+  AND (allowed_account_ids IS NULL OR $2::text=ANY(allowed_account_ids))
+  AND EXISTS (
+    SELECT 1 FROM tunnel_edge_route_assignments a
+    WHERE a.edge_node_id=control_tunnel_nodes.id AND a.edge_process_epoch=control_tunnel_nodes.process_epoch
+      AND a.account_id=$2 AND a.connector_id=$3
+      AND a.connector_session_id=$4 AND a.config_generation=$5
+      AND a.state IN ('staged','active')
+  )
   AND carrier_endpoint_host IS NOT NULL
   AND carrier_endpoint_tcp_port IS NOT NULL
   AND carrier_endpoint_quic_port IS NOT NULL
   AND carrier_server_spki_sha256 IS NOT NULL
   AND carrier_server_certificate_chain_pem IS NOT NULL
-ORDER BY relay_region, id, process_epoch
-LIMIT $2
+ORDER BY id, process_epoch
+LIMIT $6
 `
 
 type ListReadyConnectorCarrierNodesV1Params struct {
-	Now      time.Time
-	RowLimit int32
+	Now              time.Time
+	AccountID        string
+	ConnectorID      string
+	SessionID        string
+	ConfigGeneration int64
+	RowLimit         int32
 }
 
 type ListReadyConnectorCarrierNodesV1Row struct {
@@ -74,10 +91,18 @@ type ListReadyConnectorCarrierNodesV1Row struct {
 	CarrierServerSpkiSha256          sql.NullString
 	CarrierServerCertificateChainPem sql.NullString
 	LastHeartbeatAt                  sql.NullTime
+	ValidUntil                       time.Time
 }
 
 func (q *Queries) ListReadyConnectorCarrierNodesV1(ctx context.Context, arg ListReadyConnectorCarrierNodesV1Params) ([]ListReadyConnectorCarrierNodesV1Row, error) {
-	rows, err := q.db.Query(ctx, listReadyConnectorCarrierNodesV1, arg.Now, arg.RowLimit)
+	rows, err := q.db.Query(ctx, listReadyConnectorCarrierNodesV1,
+		arg.Now,
+		arg.AccountID,
+		arg.ConnectorID,
+		arg.SessionID,
+		arg.ConfigGeneration,
+		arg.RowLimit,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -95,6 +120,7 @@ func (q *Queries) ListReadyConnectorCarrierNodesV1(ctx context.Context, arg List
 			&i.CarrierServerSpkiSha256,
 			&i.CarrierServerCertificateChainPem,
 			&i.LastHeartbeatAt,
+			&i.ValidUntil,
 		); err != nil {
 			return nil, err
 		}

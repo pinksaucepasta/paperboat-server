@@ -38,6 +38,8 @@ type ResourceService struct {
 	credentialLifetime       time.Duration
 	allowInsecureDevelopment bool
 	challengeZone            string
+	publicTCPPortMin         int32
+	publicTCPPortMax         int32
 }
 
 type connectorCredentialProofBinding struct {
@@ -136,13 +138,19 @@ func NewResourceService(repository ResourceRepository, config ResourceConfig) (*
 	if lifetime < time.Hour || lifetime > connectorprotocol.MaxRotationCredentialLifetime || overlap >= lifetime {
 		return nil, fmt.Errorf("credential lifetime is out of bounds")
 	}
+	if config.PublicTCPPortMin == 0 && config.PublicTCPPortMax == 0 {
+		config.PublicTCPPortMin, config.PublicTCPPortMax = 20000, 29999
+	}
+	if config.PublicTCPPortMin < 1024 || config.PublicTCPPortMax > 65535 || config.PublicTCPPortMin > config.PublicTCPPortMax {
+		return nil, fmt.Errorf("public TCP port range is invalid")
+	}
 	challengeZone := strings.TrimSpace(config.ChallengeZone)
 	if challengeZone != "" {
 		if _, wildcard, zoneErr := tunnelcert.NormalizeChallengeZone(challengeZone); zoneErr != nil || wildcard {
 			return nil, fmt.Errorf("challenge zone is invalid")
 		}
 	}
-	return &ResourceService{repository: repository, cursors: cursors, now: now, newID: newID, enrollmentTTL: ttl, rotationOverlap: overlap, credentialLifetime: lifetime, allowInsecureDevelopment: config.AllowInsecureDevelopment, challengeZone: challengeZone}, nil
+	return &ResourceService{repository: repository, cursors: cursors, now: now, newID: newID, enrollmentTTL: ttl, rotationOverlap: overlap, credentialLifetime: lifetime, allowInsecureDevelopment: config.AllowInsecureDevelopment, challengeZone: challengeZone, publicTCPPortMin: config.PublicTCPPortMin, publicTCPPortMax: config.PublicTCPPortMax}, nil
 }
 
 func (s *ResourceService) authorize(request previewtunnelapi.RequestContext, action string, requireHost bool) error {
@@ -223,6 +231,13 @@ func (s *ResourceService) CreateRoute(ctx context.Context, request previewtunnel
 		DesiredState: "active", IdempotencyKey: input.Mutation.IdempotencyKey, RequestHash: input.Mutation.RequestHash,
 		ActorID: request.Actor.ActorID, AuditActorID: auditActorIDForActor(request.Actor), ActorType: auditActorType(request.Actor), RequestID: request.RequestID,
 		CorrelationID: request.CorrelationID, SourceDeviceID: request.Actor.DeviceID, Now: s.now().UTC()}
+	if record.Protocol == "tcp" {
+		record.PublicTCPListenerID, err = s.newID("lst")
+		if err != nil {
+			return RouteMutationResult{}, err
+		}
+		record.PublicTCPPortMin, record.PublicTCPPortMax = s.publicTCPPortMin, s.publicTCPPortMax
+	}
 	if record.RouteID == "" {
 		return RouteMutationResult{}, fmt.Errorf("%w: route identity allocation failed", ErrInvalidInput)
 	}
@@ -347,11 +362,21 @@ func (s *ResourceService) CreateDomain(ctx context.Context, request previewtunne
 	if strings.TrimSpace(input.RouteID) == "" {
 		return DomainMutationResult{}, fmt.Errorf("%w: route_id is required", ErrInvalidInput)
 	}
+	route, err := s.repository.GetResourceRoute(ctx, request.Actor.AccountID, tunnelID, input.RouteID)
+	if err != nil {
+		return DomainMutationResult{}, err
+	}
+	if route.DeletedAt.Valid || route.DesiredState == "deleted" {
+		return DomainMutationResult{}, ErrRouteNotFound
+	}
+	if route.Protocol == "tcp" && (!route.PublicTcpPort.Valid || route.PublicTcpPort.Int32 < 1024) {
+		return DomainMutationResult{}, fmt.Errorf("%w: public TCP route has no assigned listener port", ErrInvalidInput)
+	}
 	provider, err := validateDNSProvider(input.Provider)
 	if err != nil {
 		return DomainMutationResult{}, err
 	}
-	certificateStrategy, err := normalizeDomainCertificateStrategy(input.CertificateStrategy, matchType)
+	certificateStrategy, err := normalizeDomainCertificateStrategy(input.CertificateStrategy, matchType, route.Protocol)
 	if err != nil {
 		return DomainMutationResult{}, err
 	}
@@ -428,6 +453,10 @@ func (s *ResourceService) DomainInstructions(ctx context.Context, request previe
 	if domain.DeletedAt.Valid {
 		return DNSInstructions{}, ErrDomainNotFound
 	}
+	route, err := s.repository.GetResourceRoute(ctx, request.Actor.AccountID, tunnelID, domain.RouteID)
+	if err != nil {
+		return DNSInstructions{}, err
+	}
 	name := domain.Hostname
 	recordName := name
 	verificationState := wireDomainState(domain.OwnershipState, domain.ConflictState)
@@ -443,7 +472,15 @@ func (s *ResourceService) DomainInstructions(ctx context.Context, request previe
 		records = append(records, DNSRecordInstruction{Name: "_acme-challenge." + base, Type: "CNAME", Value: challengeTarget, TTL: 300})
 		note += " For managed TLS, also add the shown _acme-challenge CNAME; Paperboat writes the TXT token only under its authoritative challenge zone."
 	}
-	return DNSInstructions{Schema: Schema, Kind: "dns_instructions", TunnelID: tunnelID, DomainID: domain.ID, Hostname: name, Provider: provider, Records: records, CertificateStrategy: domain.CertificateStrategy, VerificationState: verificationState, Note: note}, nil
+	publicTCPPort := int32(0)
+	if route.Protocol == "tcp" {
+		if !route.PublicTcpPort.Valid || route.PublicTcpPort.Int32 < 1024 {
+			return DNSInstructions{}, ErrDNSInstructionsUnavailable
+		}
+		publicTCPPort = route.PublicTcpPort.Int32
+		note += fmt.Sprintf(" Connect an ordinary TCP client to %s:%d. This hostname does not route by TLS SNI; Paperboat passes application TLS through unchanged, and no HTTP edge certificate secures this connection.", strings.TrimPrefix(name, "*."), publicTCPPort)
+	}
+	return DNSInstructions{Schema: Schema, Kind: "dns_instructions", TunnelID: tunnelID, DomainID: domain.ID, Hostname: name, Provider: provider, Records: records, CertificateStrategy: domain.CertificateStrategy, VerificationState: verificationState, PublicTCPPort: publicTCPPort, Note: note}, nil
 }
 
 func normalizeDNSProvider(value string) string {
@@ -468,8 +505,14 @@ func validateDNSProvider(value string) (string, error) {
 	}
 }
 
-func normalizeDomainCertificateStrategy(value, matchType string) (string, error) {
+func normalizeDomainCertificateStrategy(value, matchType, protocol string) (string, error) {
 	strategy := strings.ToLower(strings.TrimSpace(value))
+	if protocol == "tcp" {
+		if strategy == "" || strategy == "none" {
+			return "none", nil
+		}
+		return "", fmt.Errorf("%w: public TCP domains do not use HTTP edge certificates", ErrInvalidInput)
+	}
 	if strategy == "" {
 		strategy = "managed"
 	}
@@ -481,6 +524,8 @@ func normalizeDomainCertificateStrategy(value, matchType string) (string, error)
 			return "", fmt.Errorf("%w: on_demand_leaf requires a one-label wildcard hostname", ErrInvalidInput)
 		}
 		return strategy, nil
+	case "none":
+		return "", fmt.Errorf("%w: HTTP domains require managed certificates", ErrInvalidInput)
 	default:
 		return "", fmt.Errorf("%w: certificate strategy is unsupported", ErrInvalidInput)
 	}
@@ -855,7 +900,7 @@ func routeView(row dbsqlc.TunnelRoute) RouteView {
 	return RouteView{Schema: Schema, Kind: "route", ID: row.ID, TunnelID: row.TunnelID, Name: row.Name, Protocol: wireProtocol(row.Protocol), HostMatch: hostMatch,
 		PathPrefix: nullStringPointer(row.PathPrefix), Origin: origin, Priority: row.Priority, ConnectTimeoutMS: row.ConnectTimeoutMs, IdleTimeoutMS: row.IdleTimeoutMs,
 		MaxConcurrentStreams: row.MaxConcurrentStreams, DesiredState: row.DesiredState, Generation: row.Generation,
-		ETag: previewtunnelapi.ETag("route", row.ID, row.Generation)}
+		ETag: previewtunnelapi.ETag("route", row.ID, row.Generation), PublicTCPListenerID: nullStringValue(row.PublicTcpListenerID), PublicTCPPort: row.PublicTcpPort.Int32}
 }
 
 func domainView(row dbsqlc.TunnelDomain) DomainView {
@@ -1078,6 +1123,9 @@ func normalizeRouteCreate(input RouteCreateRequest) (normalizedRouteCreate, erro
 	if protocol == "tcp_private" && (matchType != "catch_all" || hostname.Valid || wildcard.Valid || pathPrefix.Valid) {
 		return normalizedRouteCreate{}, fmt.Errorf("%w: tcp_private requires a catch-all host match without a path prefix", ErrInvalidInput)
 	}
+	if protocol == "tcp" && (origin.Scheme != "tcp" || matchType != "managed" || !hostname.Valid || wildcard.Valid || pathPrefix.Valid) {
+		return normalizedRouteCreate{}, fmt.Errorf("%w: public tcp requires a managed hostname, tcp origin, and no path prefix", ErrInvalidInput)
+	}
 	if protocol == "http" && origin.Scheme == "tcp" {
 		return normalizedRouteCreate{}, fmt.Errorf("%w: HTTP protocol cannot target a tcp origin", ErrInvalidInput)
 	}
@@ -1205,8 +1253,10 @@ func normalizeWireProtocol(value string) (string, error) {
 		return "http", nil
 	case "tcp_private":
 		return "tcp_private", nil
+	case "tcp":
+		return "tcp", nil
 	default:
-		return "", fmt.Errorf("%w: protocol must be http or tcp_private", ErrInvalidInput)
+		return "", fmt.Errorf("%w: protocol must be http, tcp, or tcp_private", ErrInvalidInput)
 	}
 }
 

@@ -105,7 +105,7 @@ func admissionFromValues(now time.Time, accountID, resourceKind, resourceID, tun
 	if routeGeneration <= 0 || sessionGeneration <= 0 || processGeneration <= 0 || configGeneration <= 0 || assignmentGeneration <= 0 || installationGeneration <= 0 || !expiresAt.After(now.UTC()) || protocol != "http" && protocol != "private_tcp" || !accessorConfigHashPattern.MatchString(configContentHash) || connectorprotocol.ValidateOpaqueEpoch(edgeEpoch) != nil || len(endpoints) != 2 || !accessorConfigHashPattern.MatchString(edgeCarrierServerSPKISHA256) || len(edgeCarrierServerCertificateChainPEM) == 0 || len(edgeCarrierServerCertificateChainPEM) > 64<<10 {
 		return AccessorAdmission{}, ErrInvalid
 	}
-	for index, scheme := range []string{"tls", "quic"} {
+	for index, scheme := range []string{"h2", "h3"} {
 		endpoint, err := url.Parse(endpoints[index])
 		port, portErr := strconv.Atoi(endpoint.Port())
 		if err != nil || endpoint.Scheme != scheme || endpoint.Hostname() == "" || endpoint.User != nil || portErr != nil || port < 1 || port > 65535 || endpoint.Path != "" || endpoint.RawQuery != "" || endpoint.Fragment != "" {

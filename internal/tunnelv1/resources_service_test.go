@@ -293,6 +293,32 @@ func TestResourceServiceRouteNormalizationAndCanonicalWireVocabulary(t *testing.
 	}
 }
 
+func TestResourceServicePublicTCPAllocatesListenerIdentity(t *testing.T) {
+	repo := &fakeResourceRepository{}
+	service := resourceServiceForTest(t, repo, 0)
+	hostname := "11111111-1111-4111-8111-111111111111.tunnels.example.test"
+	_, err := service.CreateRoute(context.Background(), testRequest(false), "tun_1", RouteCreateRequest{
+		Name: "database", Protocol: "tcp", MatchType: "managed_exact", Hostname: hostname,
+		Origin:   RouteOriginRequest{Scheme: "tcp", Address: "127.0.0.1:5432"},
+		Mutation: ResourceMutationInput{IdempotencyKey: "route_tcp_1", RequestHash: testHash()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo.createRoute.Protocol != "tcp" || repo.createRoute.MatchType != "managed" || repo.createRoute.Hostname.String != hostname || repo.createRoute.PublicTCPListenerID == "" || repo.createRoute.PublicTCPPortMin != 20000 || repo.createRoute.PublicTCPPortMax != 29999 {
+		t.Fatalf("public TCP route projection = %+v", repo.createRoute)
+	}
+	row := resourceRoute("route_tcp_1", "tcp", "managed")
+	row.MatchHostname = sql.NullString{String: hostname, Valid: true}
+	row.OriginScheme, row.OriginAddress = "tcp", "127.0.0.1:5432"
+	row.PublicTcpListenerID = sql.NullString{String: "listener_1", Valid: true}
+	row.PublicTcpPort = sql.NullInt32{Int32: 24000, Valid: true}
+	view := routeView(row)
+	if view.PublicTCPListenerID != "listener_1" || view.PublicTCPPort != 24000 {
+		t.Fatalf("route view = %+v", view)
+	}
+}
+
 func TestResourceServicePatchCarriesFullOriginTLSAndLimitProjection(t *testing.T) {
 	repo := &fakeResourceRepository{}
 	service := resourceServiceForTest(t, repo, 0)
@@ -427,7 +453,7 @@ func TestResourceServiceListCursorsAreScopedAndTailBounded(t *testing.T) {
 }
 
 func TestResourceServiceDomainInstructionsUsePersistedStateAndSupportApex(t *testing.T) {
-	repo := &fakeResourceRepository{domain: resourceDomain("dom_1", "foo.example.co.uk", "verified", "clear")}
+	repo := &fakeResourceRepository{domain: resourceDomain("dom_1", "foo.example.co.uk", "verified", "clear"), route: resourceRoute("rte_1", "http", "managed")}
 	service := resourceServiceForTest(t, repo, 0)
 	instructions, err := service.DomainInstructions(context.Background(), testRequest(false), "tun_1", "dom_1")
 	if err != nil {
@@ -447,6 +473,45 @@ func TestResourceServiceDomainInstructionsUsePersistedStateAndSupportApex(t *tes
 	instructions, err = service.DomainInstructions(context.Background(), testRequest(false), "tun_1", "dom_1")
 	if err != nil || instructions.VerificationState != "waiting_dns" {
 		t.Fatalf("wildcard instructions = %+v, %v", instructions, err)
+	}
+}
+
+func TestResourceServicePublicTCPDomainUsesDNSWithoutHTTPTLS(t *testing.T) {
+	route := resourceRoute("rte_1", "tcp", "managed")
+	route.PublicTcpListenerID = sql.NullString{String: "listener_1", Valid: true}
+	route.PublicTcpPort = sql.NullInt32{Int32: 25432, Valid: true}
+	domain := resourceDomain("dom_1", "db.example.test", "verified", "clear")
+	domain.CertificateStrategy = "none"
+	domain.CertificateState = "not_applicable"
+	repo := &fakeResourceRepository{route: route, domain: domain}
+	service := resourceServiceForTest(t, repo, 0)
+
+	_, err := service.CreateDomain(context.Background(), testRequest(false), "tun_1", DomainCreateRequest{
+		Hostname: "db.example.test", RouteID: "rte_1", Mutation: ResourceMutationInput{IdempotencyKey: "tcp-domain", RequestHash: testHash()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo.createDomain.CertificateStrategy != "none" {
+		t.Fatalf("TCP certificate strategy = %q", repo.createDomain.CertificateStrategy)
+	}
+
+	instructions, err := service.DomainInstructions(context.Background(), testRequest(false), "tun_1", "dom_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instructions.PublicTCPPort != 25432 || instructions.CertificateStrategy != "none" || len(instructions.Records) != 1 || strings.Contains(instructions.Note, "_acme-challenge") {
+		t.Fatalf("TCP instructions = %+v", instructions)
+	}
+	for _, required := range []string{"db.example.test:25432", "passes application TLS through unchanged", "does not route by TLS SNI"} {
+		if !strings.Contains(instructions.Note, required) {
+			t.Fatalf("TCP instructions omit %q: %q", required, instructions.Note)
+		}
+	}
+	if _, err := service.CreateDomain(context.Background(), testRequest(false), "tun_1", DomainCreateRequest{
+		Hostname: "db2.example.test", RouteID: "rte_1", CertificateStrategy: "managed", Mutation: ResourceMutationInput{IdempotencyKey: "tcp-domain-managed", RequestHash: testHash()},
+	}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("managed HTTP certificate on TCP route error = %v", err)
 	}
 }
 

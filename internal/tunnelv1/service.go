@@ -25,12 +25,14 @@ import (
 var tunnelNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$`)
 
 type Service struct {
-	repository    TunnelRepository
-	endpoint      EndpointBuilder
-	cursors       *tunnelCursorCodec
-	now           func() time.Time
-	newID         func(string) (string, error)
-	newEndpointID func() (string, error)
+	repository       TunnelRepository
+	endpoint         EndpointBuilder
+	cursors          *tunnelCursorCodec
+	now              func() time.Time
+	newID            func(string) (string, error)
+	newEndpointID    func() (string, error)
+	publicTCPPortMin int32
+	publicTCPPortMax int32
 }
 
 // API is the narrow lifecycle surface consumed by the HTTP router. Route,
@@ -69,7 +71,13 @@ func NewService(repository TunnelRepository, config Config) (*Service, error) {
 	if endpointIDGenerator == nil {
 		endpointIDGenerator = randomEndpointUUID
 	}
-	return &Service{repository: repository, endpoint: config.EndpointBuilder, cursors: cursors, now: now, newID: idGenerator, newEndpointID: endpointIDGenerator}, nil
+	if config.PublicTCPPortMin == 0 && config.PublicTCPPortMax == 0 {
+		config.PublicTCPPortMin, config.PublicTCPPortMax = 20000, 29999
+	}
+	if config.PublicTCPPortMin < 1024 || config.PublicTCPPortMax > 65535 || config.PublicTCPPortMin > config.PublicTCPPortMax {
+		return nil, errors.New("public TCP port range is invalid")
+	}
+	return &Service{repository: repository, endpoint: config.EndpointBuilder, cursors: cursors, now: now, newID: idGenerator, newEndpointID: endpointIDGenerator, publicTCPPortMin: config.PublicTCPPortMin, publicTCPPortMax: config.PublicTCPPortMax}, nil
 }
 
 // NewEndpointBuilder creates a deployment-specific stable hostname builder.
@@ -114,9 +122,6 @@ func (s *Service) CreateTunnel(ctx context.Context, request previewtunnelapi.Req
 		return MutationResult{}, err
 	}
 	input.Origin = origin
-	if origin.Scheme == "tcp" && accessMode != AccessPrivate {
-		return MutationResult{}, fmt.Errorf("%w: tcp origins require private access", ErrInvalidInput)
-	}
 	if input.ExpiresAt != nil && !input.ExpiresAt.After(now) {
 		return MutationResult{}, fmt.Errorf("%w: expires_at must be in the future", ErrInvalidInput)
 	}
@@ -163,7 +168,7 @@ func (s *Service) CreateTunnel(ctx context.Context, request previewtunnelapi.Req
 		ExpiresAt: expiresAt, IdempotencyKey: input.IdempotencyKey, RequestHash: input.RequestHash,
 		ActorID: request.Actor.ActorID, AuditActorID: auditActorIDForActor(request.Actor), ActorType: auditActorType(request.Actor), HostID: request.Actor.HostID,
 		RequestID: request.RequestID, CorrelationID: request.CorrelationID, SourceDeviceID: request.Actor.DeviceID,
-		AuditEventID: auditID,
+		AuditEventID: auditID, PublicTCPPortMin: s.publicTCPPortMin, PublicTCPPortMax: s.publicTCPPortMax, NewID: s.newID,
 	})
 	if err != nil {
 		return MutationResult{}, err
@@ -515,8 +520,8 @@ func normalizeAccessMode(value string) (string, error) {
 	if value == "" {
 		return AccessPublic, nil
 	}
-	if value != AccessPublic && value != AccessPrivate {
-		return "", fmt.Errorf("%w: access_mode must be public or private", ErrInvalidInput)
+	if value != AccessPublic && value != AccessPrivate && value != "team" {
+		return "", fmt.Errorf("%w: access_mode must be public, private or team", ErrInvalidInput)
 	}
 	return value, nil
 }

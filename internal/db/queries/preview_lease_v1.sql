@@ -201,7 +201,27 @@ WITH candidates AS (
   FROM preview_leases AS source
   WHERE source.terminal_state = 'active'
     AND source.lease_deadline > sqlc.arg(now)
-    AND source.owner_last_seen_at <= sqlc.arg(owner_cutoff)
+    AND (source.owner_last_seen_at <= sqlc.arg(owner_cutoff)
+      OR (starts_with(source.owner_session_id, 'lazy_') AND NOT EXISTS (
+        SELECT 1 FROM lazy_access_policies policy
+        JOIN lazy_runtime_owners runtime ON runtime.machine_id=policy.machine_id
+        JOIN user_machines machine ON machine.id=policy.machine_id
+        JOIN lazy_activations activation ON activation.policy_id=policy.id
+        WHERE 'https://'||policy.hostname=source.endpoint
+          AND policy.account_id=source.account_id AND policy.machine_id=source.owner_device_id
+          AND policy.target_scheme=source.target_scheme AND policy.target_address=source.target_address AND policy.access_mode=source.access_mode
+          AND activation.state IN ('running','ready')
+          AND (activation.preview_id IS NULL OR activation.preview_id=source.id)
+          AND policy.deleted_at IS NULL AND policy.expires_at>sqlc.arg(now)
+          AND policy.generation=activation.policy_generation
+          AND runtime.boot_id=activation.boot_id AND runtime.expires_at>sqlc.arg(now)
+          AND source.owner_session_id='lazy_'||runtime.boot_id
+          AND runtime.account_id=policy.account_id
+          AND runtime.installation_generation=policy.installation_generation
+          AND machine.installation_generation=policy.installation_generation
+          AND machine.environment_id=policy.environment_id AND machine.seat_state='occupied' AND machine.state NOT IN ('revoked','deleted')
+          AND machine.user_id=policy.account_id AND machine.deleted_at IS NULL AND machine.revoked_at IS NULL
+      )))
   ORDER BY source.owner_last_seen_at, source.id
   LIMIT sqlc.arg(row_limit)
 )

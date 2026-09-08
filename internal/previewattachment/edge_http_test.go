@@ -136,7 +136,7 @@ func TestEdgeAdmissionPullReturnsCompleteEnvelopeAndExactDetachCommand(t *testin
 	}
 }
 
-func TestCarrierDetachmentFromOutboxRejectsPrivateRoute(t *testing.T) {
+func TestCarrierDetachmentFromOutboxPreservesRestrictedBinding(t *testing.T) {
 	now := testNow()
 	resolution := testResolution(now)
 	req := testRequest()
@@ -152,8 +152,12 @@ func TestCarrierDetachmentFromOutboxRejectsPrivateRoute(t *testing.T) {
 		EdgeEndpoints: attachment.EdgeEndpoints, Endpoint: attachment.Endpoint,
 		ExpiresAt: attachment.ExpiresAt, State: "pending",
 	}
-	if _, err := carrierDetachmentFromOutbox(item, now); !errors.Is(err, ErrAdmissionUnavailable) {
-		t.Fatalf("private detachment error = %v, want ErrAdmissionUnavailable", err)
+	for _, audience := range []string{"private", "team"} {
+		item.AccessMode = audience
+		detached, err := carrierDetachmentFromOutbox(item, now)
+		if err != nil || detached.Binding != item.Binding || detached.AttachmentGeneration != item.AttachmentGeneration || detached.Reason != "server_detach" {
+			t.Fatalf("restricted detachment lost its exact binding: %v", err)
+		}
 	}
 }
 

@@ -225,14 +225,19 @@ type RootResolver interface {
 	Root(context.Context, string) (peeridentity.AccountRoot, error)
 }
 type Service struct {
-	db    *db.DB
-	audit *audit.Writer
-	roots RootResolver
-	now   func() time.Time
+	db                  *db.DB
+	audit               *audit.Writer
+	roots               RootResolver
+	passwordVaultIssuer string
+	now                 func() time.Time
 }
 
-func NewService(store *db.DB, writer *audit.Writer, roots RootResolver) *Service {
-	return &Service{db: store, audit: writer, roots: roots, now: func() time.Time { return time.Now().UTC() }}
+func NewService(store *db.DB, writer *audit.Writer, roots RootResolver, passwordVaultIssuer ...string) *Service {
+	issuer := ""
+	if len(passwordVaultIssuer) == 1 {
+		issuer = passwordVaultIssuer[0]
+	}
+	return &Service{db: store, audit: writer, roots: roots, passwordVaultIssuer: issuer, now: func() time.Time { return time.Now().UTC() }}
 }
 func (s *Service) SetClock(now func() time.Time) {
 	if now != nil {

@@ -301,16 +301,17 @@ func TestOriginValidationRejectsURLsMalformedPortsAndHeaderInjection(t *testing.
 	}
 }
 
-func TestCreateTunnelRejectsPublicTCPButAllowsPrivateTCP(t *testing.T) {
+func TestCreateTunnelAllowsExplicitPublicAndPrivateTCP(t *testing.T) {
 	input := CreateTunnelRequest{
 		Name: "tcp-demo", Origin: OriginRequest{Scheme: "tcp", Address: "127.0.0.1:5432"},
 		MutationInput: MutationInput{IdempotencyKey: "op_tcp_1", RequestHash: testHash()},
 	}
 	service := testService(t, &fakeTunnelRepository{}, sequentialID())
-	if _, err := service.CreateTunnel(context.Background(), testRequest(true), input); !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("public TCP error = %v, want ErrInvalidInput", err)
+	if result, err := service.CreateTunnel(context.Background(), testRequest(true), input); err != nil || result.Tunnel.AccessMode != AccessPublic {
+		t.Fatalf("public TCP create = %#v, %v", result, err)
 	}
 	input.AccessMode = AccessPrivate
+	service = testService(t, &fakeTunnelRepository{}, sequentialID())
 	result, err := service.CreateTunnel(context.Background(), testRequest(true), input)
 	if err != nil || result.Tunnel.AccessMode != AccessPrivate {
 		t.Fatalf("private TCP create = %#v, %v", result, err)

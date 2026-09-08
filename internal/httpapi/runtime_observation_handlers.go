@@ -12,8 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pinksaucepasta/paperboat-server/internal/accessdescriptor"
 	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
 	"github.com/pinksaucepasta/paperboat-server/internal/environment"
+	"github.com/pinksaucepasta/paperboat-server/internal/lazyaccess"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
 	"github.com/pinksaucepasta/paperboat-server/internal/usermachines"
 )
@@ -34,8 +36,14 @@ type updateObservationRepository interface {
 	RecordUpdateObservation(context.Context, string, string, usermachines.UpdateObservation) error
 }
 
-type runtimeEnvironmentObservationRepository interface {
-	RecordEnvironmentObservation(context.Context, string, string, *environment.Observation) (environment.RuntimeResult, error)
+type deviceCapabilitiesRepository interface {
+	DeviceCapabilitiesEnabled() bool
+	ResolveDeviceCapabilities(context.Context, string, string) (usermachines.DeviceCapabilityPolicy, error)
+	RecordDeviceCapabilitiesObservation(context.Context, string, string, usermachines.DeviceCapabilitiesObservation) error
+}
+
+type runtimeVaultProjectionRepository interface {
+	RecordVaultProjectionObservation(context.Context, string, string, *environment.VaultProjectionObservation) (*environment.VaultProjectionBundle, error)
 }
 
 type runtimeAuxiliaryRejection struct {
@@ -44,28 +52,52 @@ type runtimeAuxiliaryRejection struct {
 }
 
 func runtimeObservation(repo runtimeObservationRepository, identities runtimeIdentityVerifier, _ int, observationSinks ...any) http.HandlerFunc {
+	var transferPolicy interface {
+		RuntimeFileTransferPolicy() accessdescriptor.FileTransferPolicy
+	}
+	var lazyRuntime interface {
+		RecordLazyRuntimeObservation(context.Context, string, string, lazyaccess.RuntimeObservation) error
+	}
 	var availability availabilityObservationRepository
 	var updates updateObservationRepository
-	var environmentObservation runtimeEnvironmentObservationRepository
+	var deviceCapabilities deviceCapabilitiesRepository
+	var vaultProjectionObservation runtimeVaultProjectionRepository
 	for _, sink := range observationSinks {
+		if candidate, ok := sink.(interface {
+			RecordLazyRuntimeObservation(context.Context, string, string, lazyaccess.RuntimeObservation) error
+		}); ok {
+			lazyRuntime = candidate
+		}
+		if candidate, ok := sink.(interface {
+			RuntimeFileTransferPolicy() accessdescriptor.FileTransferPolicy
+		}); ok {
+			transferPolicy = candidate
+		}
+		if candidate, ok := sink.(runtimeVaultProjectionRepository); ok {
+			vaultProjectionObservation = candidate
+		}
 		if candidate, ok := sink.(availabilityObservationRepository); ok {
 			availability = candidate
 		}
 		if candidate, ok := sink.(updateObservationRepository); ok {
 			updates = candidate
 		}
-		if candidate, ok := sink.(runtimeEnvironmentObservationRepository); ok {
-			environmentObservation = candidate
+		if candidate, ok := sink.(deviceCapabilitiesRepository); ok {
+			if candidate.DeviceCapabilitiesEnabled() {
+				deviceCapabilities = candidate
+			}
 		}
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		noStore(w)
 		var req struct {
-			EnvironmentID      string                                `json:"environment_id"`
-			ResourceID         string                                `json:"resource_id"`
-			ReporterVersion    string                                `json:"reporter_version"`
-			SampledAt          time.Time                             `json:"sampled_at"`
-			Availability       *usermachines.AvailabilityObservation `json:"availability"`
+			LazyRuntime        *lazyaccess.RuntimeObservation              `json:"lazy_runtime,omitempty"`
+			EnvironmentID      string                                      `json:"environment_id"`
+			ResourceID         string                                      `json:"resource_id"`
+			ReporterVersion    string                                      `json:"reporter_version"`
+			SampledAt          time.Time                                   `json:"sampled_at"`
+			Availability       *usermachines.AvailabilityObservation       `json:"availability"`
+			DeviceCapabilities *usermachines.DeviceCapabilitiesObservation `json:"device_capabilities"`
 			RuntimeDiagnostics *struct {
 				Capabilities        []string  `json:"capabilities"`
 				WorkerGeneration    uint64    `json:"worker_generation"`
@@ -77,7 +109,7 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 			} `json:"runtime_diagnostics"`
 			RelayLatency *metering.RelayLatencyVector    `json:"relay_latency,omitempty"`
 			Update       *usermachines.UpdateObservation `json:"update,omitempty"`
-			Environment  *environment.Observation        `json:"environment,omitempty"`
+			Environment  json.RawMessage                 `json:"environment,omitempty"`
 		}
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20+1))
 		decoder := json.NewDecoder(bytes.NewReader(body))
@@ -99,9 +131,14 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 			return
 		}
 		hasEnvironmentCapability := req.RuntimeDiagnostics != nil && slices.Contains(req.RuntimeDiagnostics.Capabilities, "environment_injection")
-		environmentMember, environmentMarshalErr := json.Marshal(req.Environment)
-		if req.Environment != nil && req.RuntimeDiagnostics == nil || !validEnvironmentObservationShape(body, hasEnvironmentCapability, req.Environment) || environmentMarshalErr != nil || (req.Environment != nil && (len(environmentMember) > 4<<10 || environment.ValidateObservation(*req.Environment) != nil)) {
-			writeError(w, r, http.StatusBadRequest, "invalid_request", "Environment observation is invalid.")
+		var projectionEnvironment *environment.VaultProjectionObservation
+		if len(req.Environment) > 0 {
+			if req.RuntimeDiagnostics == nil || !validVaultProjectionObservationShape(req.Environment, hasEnvironmentCapability, &projectionEnvironment) {
+				writeError(w, r, http.StatusBadRequest, "invalid_request", "Environment observation is invalid.")
+				return
+			}
+		} else if hasEnvironmentCapability {
+			writeError(w, r, http.StatusBadRequest, "invalid_request", "Environment observation is required for this capability.")
 			return
 		}
 		got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
@@ -121,6 +158,16 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 			}
 			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
 			return
+		}
+		if req.LazyRuntime != nil {
+			if lazyRuntime == nil || identities == nil || r.Header.Get("X-Paperboat-Machine-Proof") == "" {
+				writeError(w, r, 403, "lazy_registration_denied", "Signed current machine identity is required for port sharing.")
+				return
+			}
+			if err := lazyRuntime.RecordLazyRuntimeObservation(r.Context(), req.EnvironmentID, req.ResourceID, *req.LazyRuntime); err != nil {
+				lazyPolicyError(w, r, err)
+				return
+			}
 		}
 		observation := metering.RuntimeObservation{
 			ProjectID:       req.EnvironmentID,
@@ -149,24 +196,18 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 		// Runtime presence is durable at this point. Optional observation storage
 		// can be temporarily unavailable without making the heartbeat retry.
 		auxiliaryRejections := make([]runtimeAuxiliaryRejection, 0, 3)
-		var environmentResult environment.RuntimeResult
-		if req.Environment != nil {
-			if environmentObservation != nil {
-				environmentResult, err = environmentObservation.RecordEnvironmentObservation(r.Context(), req.EnvironmentID, req.ResourceID, req.Environment)
+		var projectionBundle *environment.VaultProjectionBundle
+		if projectionEnvironment != nil {
+			if vaultProjectionObservation == nil {
+				auxiliaryRejections = append(auxiliaryRejections, runtimeAuxiliaryRejection{Observation: "environment", Code: "environment_observation_unavailable"})
+			} else {
+				projectionBundle, err = vaultProjectionObservation.RecordVaultProjectionObservation(r.Context(), req.EnvironmentID, req.ResourceID, projectionEnvironment)
 				if err != nil {
-					switch {
-					case errors.Is(err, environment.ErrObservationInvalid):
+					if errors.Is(err, environment.ErrObservationInvalid) {
 						writeError(w, r, http.StatusBadRequest, "invalid_request", "Environment observation is invalid.")
 						return
-					case errors.Is(err, environment.ErrMachineNotHost):
-						writeError(w, r, http.StatusUnprocessableEntity, "machine_not_host", "Environment variables are available only for host-capable machines.")
-						return
-					case errors.Is(err, environment.ErrMachineNotFound):
-						writeError(w, r, http.StatusNotFound, "machine_not_found", "Machine was not found.")
-						return
-					default:
-						auxiliaryRejections = append(auxiliaryRejections, runtimeAuxiliaryRejection{Observation: "environment", Code: "environment_observation_unavailable"})
 					}
+					auxiliaryRejections = append(auxiliaryRejections, runtimeAuxiliaryRejection{Observation: "environment", Code: "environment_observation_unavailable"})
 				}
 			}
 		}
@@ -190,6 +231,22 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 						auxiliaryRejections = append(auxiliaryRejections, runtimeAuxiliaryRejection{Observation: "availability", Code: "availability_observation_unavailable"})
 					}
 				}
+			}
+		}
+		if req.DeviceCapabilities != nil {
+			if deviceCapabilities == nil {
+				writeError(w, r, http.StatusServiceUnavailable, "capabilities_unavailable", "Device capability observation storage is unavailable.")
+				return
+			}
+			if err := deviceCapabilities.RecordDeviceCapabilitiesObservation(r.Context(), req.ResourceID, req.EnvironmentID, *req.DeviceCapabilities); err != nil {
+				code := "capabilities_observation_unavailable"
+				if errors.Is(err, usermachines.ErrCapabilitiesInvalid) {
+					code = "capabilities_observation_invalid"
+				}
+				if errors.Is(err, usermachines.ErrCapabilitiesObservationStale) {
+					code = "capabilities_observation_stale"
+				}
+				auxiliaryRejections = append(auxiliaryRejections, runtimeAuxiliaryRejection{Observation: "device_capabilities", Code: code})
 			}
 		}
 		updateRecorded := false
@@ -218,49 +275,29 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 			}
 		}
 		response := map[string]any{"accepted": true, "update_observation_recorded": updateRecorded}
+		if transferPolicy != nil {
+			response["file_transfer_policy"] = transferPolicy.RuntimeFileTransferPolicy()
+		}
+		if deviceCapabilities != nil {
+			policy, policyErr := deviceCapabilities.ResolveDeviceCapabilities(r.Context(), req.ResourceID, req.EnvironmentID)
+			if policyErr != nil {
+				writeError(w, r, http.StatusServiceUnavailable, "capabilities_unavailable", "Device capability policy is temporarily unavailable.")
+				return
+			}
+			response["device_capabilities"] = policy
+		}
 		if len(auxiliaryRejections) > 0 {
 			response["auxiliary_rejections"] = auxiliaryRejections
 		}
-		if environmentObservation != nil && req.Environment != nil && environmentResult.Bundle != nil {
-			response["environment_bundle"] = environmentResult.Bundle
+		if projectionBundle != nil {
+			response["environment_bundle"] = projectionBundle
 		}
 		writeJSON(w, http.StatusAccepted, SuccessResponse{Data: response})
 	}
 }
 
-func validEnvironmentObservationShape(body []byte, capability bool, observation *environment.Observation) bool {
-	var outer map[string]json.RawMessage
-	if json.Unmarshal(body, &outer) != nil {
-		return false
-	}
-	raw, present := outer["environment"]
-	if !present {
-		return !capability
-	}
-	if observation == nil || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return false
-	}
-	// The first authenticated host observation requests its encrypted bundle
-	// before it can advertise usable environment injection. Accept only that
-	// pending genesis shape without the capability; binding and machine identity
-	// remain validated by the normal authenticated observation path below.
-	if !capability && (observation.State != "pending" || observation.Authority != nil || observation.Global != nil || observation.Machine != nil) {
-		return false
-	}
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(raw, &fields) != nil || fields == nil {
-		return false
-	}
-	for _, name := range []string{"schema", "observation_seq", "host_recipient_key_id", "authority", "global", "machine", "state", "error_code", "observed_at"} {
-		if _, ok := fields[name]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
 func validObservedCapabilities(capabilities []string) bool {
-	allowed := []string{"file_receive", "preview_launch", "terminal_host", "codex_host", "session_host", "keep_awake", "environment_injection"}
+	allowed := []string{"file_receive", "preview_launch", "terminal_host", "codex_host", "session_host", "ssh_host", "peer_relay", "keep_awake", "environment_injection"}
 	if len(capabilities) > len(allowed) {
 		return false
 	}
@@ -287,4 +324,27 @@ func normalizeStatusTimestamps(statusUpdated, sampledAt, serverNow time.Time) (t
 		return observed, observed, true
 	}
 	return statusUpdated, observed, true
+}
+
+// The replacement observation has one exact v1 shape; never reinterpret it as
+// a retained authority observation after a failure.
+func validVaultProjectionObservationShape(raw []byte, capability bool, out **environment.VaultProjectionObservation) bool {
+	if len(raw) == 0 || len(raw) > 4096 {
+		return false
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil || len(fields) != 8 {
+		return false
+	}
+	for _, name := range []string{"schema", "observation_seq", "host_recipient_key_id", "projection", "fence_generation", "state", "error_code", "observed_at"} {
+		if _, ok := fields[name]; !ok {
+			return false
+		}
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(out) != nil || *out == nil || !(*out).Valid() {
+		return false
+	}
+	return capability || ((*out).State == "pending" && (*out).Projection == nil)
 }

@@ -20,7 +20,8 @@
       "cookieSession": {
         "type": "apiKey",
         "in": "cookie",
-        "name": "paperboat_session"
+        "name": "__Host-pb-session",
+        "description": "Production trusted-browser session cookie. Secure, HttpOnly, Path=/, SameSite=Lax, and no Domain attribute. HTTP development uses a separate pb-dev-session cookie and configuration."
       },
       "csrfHeader": {
         "type": "apiKey",
@@ -61,6 +62,556 @@
         ],
         "properties": {
           "data": {}
+        }
+      },
+      "BrowserAccessIssueRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "transaction_id"
+        ],
+        "properties": {
+          "transaction_id": {
+            "type": "string",
+            "pattern": "^bat_[A-Za-z0-9_-]{43}$"
+          }
+        }
+      },
+      "BrowserAccessIssueResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "transaction_id",
+          "handoff",
+          "callback_origin",
+          "expires_at"
+        ],
+        "properties": {
+          "transaction_id": {
+            "type": "string",
+            "pattern": "^bat_[A-Za-z0-9_-]{43}$"
+          },
+          "handoff": {
+            "type": "string",
+            "pattern": "^bah_[A-Za-z0-9_-]{43}$",
+            "writeOnly": true
+          },
+          "callback_origin": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https://"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "BrowserAccessBeginRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "host",
+          "return_path"
+        ],
+        "properties": {
+          "host": {
+            "type": "string",
+            "maxLength": 253
+          },
+          "return_path": {
+            "type": "string",
+            "maxLength": 2048,
+            "pattern": "^/(?!/)"
+          }
+        }
+      },
+      "BrowserAccessBeginResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "transaction_id",
+          "state",
+          "expires_at"
+        ],
+        "properties": {
+          "transaction_id": {
+            "type": "string",
+            "pattern": "^bat_[A-Za-z0-9_-]{43}$"
+          },
+          "state": {
+            "type": "string",
+            "pattern": "^bas_[A-Za-z0-9_-]{43}$",
+            "writeOnly": true
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "BrowserAccessRedeemRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "transaction_id",
+          "state",
+          "handoff",
+          "host"
+        ],
+        "properties": {
+          "transaction_id": {
+            "type": "string",
+            "pattern": "^bat_[A-Za-z0-9_-]{43}$"
+          },
+          "state": {
+            "type": "string",
+            "pattern": "^bas_[A-Za-z0-9_-]{43}$",
+            "writeOnly": true
+          },
+          "handoff": {
+            "type": "string",
+            "pattern": "^bah_[A-Za-z0-9_-]{43}$",
+            "writeOnly": true
+          },
+          "host": {
+            "type": "string",
+            "maxLength": 253
+          }
+        }
+      },
+      "BrowserAccessRedeemResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "token",
+          "return_path",
+          "expires_at"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "writeOnly": true
+          },
+          "return_path": {
+            "type": "string",
+            "maxLength": 2048,
+            "pattern": "^/(?!/)"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "BrowserAccessAuthorizeRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "token",
+          "host",
+          "resource_kind",
+          "resource_id",
+          "route_id"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "writeOnly": true
+          },
+          "host": {
+            "type": "string",
+            "maxLength": 253
+          },
+          "resource_kind": {
+            "type": "string",
+            "enum": [
+              "preview",
+              "tunnel",
+              "lazy_policy"
+            ]
+          },
+          "resource_id": {
+            "type": "string"
+          },
+          "route_id": {
+            "type": "string"
+          },
+          "credential_kind": {
+            "type": "string",
+            "enum": [
+              "browser",
+              "machine"
+            ],
+            "default": "browser"
+          }
+        }
+      },
+      "BrowserMachineCredentialRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "host",
+          "resource_kind",
+          "resource_id",
+          "route_id"
+        ],
+        "properties": {
+          "host": {
+            "type": "string",
+            "maxLength": 253
+          },
+          "resource_kind": {
+            "type": "string",
+            "enum": [
+              "preview",
+              "tunnel",
+              "lazy_policy"
+            ]
+          },
+          "resource_id": {
+            "type": "string"
+          },
+          "route_id": {
+            "type": "string"
+          }
+        }
+      },
+      "BrowserMachineCredentialResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "credential_id",
+          "token",
+          "expires_at"
+        ],
+        "properties": {
+          "credential_id": {
+            "type": "string",
+            "pattern": "^bac_[A-Za-z0-9_-]{43}$"
+          },
+          "token": {
+            "type": "string",
+            "pattern": "^bam_[A-Za-z0-9_-]{43}$",
+            "writeOnly": true
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "At most five minutes after issuance."
+          }
+        }
+      },
+      "BrowserIngressBinding": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "environment_id",
+          "account_id",
+          "tunnel_id",
+          "lifecycle",
+          "resource_generation",
+          "route_id",
+          "route_generation",
+          "target_id",
+          "target_generation",
+          "host_id",
+          "installation_generation",
+          "audience",
+          "connection_method",
+          "protocol",
+          "hostname",
+          "path_prefix",
+          "origin_scheme",
+          "origin_address",
+          "tls_server_name",
+          "tls_verification",
+          "ca_reference",
+          "mtls_credential_reference",
+          "publication_id",
+          "publication_generation",
+          "listener_id",
+          "public_port"
+        ],
+        "properties": {
+          "environment_id": {
+            "type": "string"
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "tunnel_id": {
+            "type": "string"
+          },
+          "lifecycle": {
+            "type": "string",
+            "enum": [
+              "ephemeral",
+              "durable"
+            ]
+          },
+          "resource_generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "route_id": {
+            "type": "string"
+          },
+          "route_generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "target_id": {
+            "type": "string"
+          },
+          "target_generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "host_id": {
+            "type": "string"
+          },
+          "installation_generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "audience": {
+            "type": "string",
+            "enum": [
+              "public",
+              "private",
+              "team"
+            ]
+          },
+          "connection_method": {
+            "const": "edge"
+          },
+          "protocol": {
+            "type": "string",
+            "enum": [
+              "http",
+              "tcp"
+            ]
+          },
+          "hostname": {
+            "type": "string"
+          },
+          "path_prefix": {
+            "type": "string"
+          },
+          "origin_scheme": {
+            "type": "string",
+            "enum": [
+              "http",
+              "https",
+              "h2c",
+              "unix",
+              "tcp"
+            ]
+          },
+          "origin_address": {
+            "type": "string"
+          },
+          "tls_server_name": {
+            "type": "string"
+          },
+          "tls_verification": {
+            "type": "string",
+            "enum": [
+              "not_applicable",
+              "system",
+              "custom_ca"
+            ]
+          },
+          "ca_reference": {
+            "type": "string"
+          },
+          "mtls_credential_reference": {
+            "type": "string"
+          },
+          "publication_id": {
+            "type": "string"
+          },
+          "publication_generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "listener_id": {
+            "type": "string"
+          },
+          "public_port": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          }
+        }
+      },
+      "BrowserIngressDecision": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "binding",
+          "decision_id",
+          "policy_generation",
+          "edge_node_id",
+          "edge_process_epoch",
+          "connector_id",
+          "session_id",
+          "process_generation",
+          "config_generation",
+          "assignment_generation",
+          "principal_id",
+          "grant_id",
+          "grant_generation",
+          "membership_generation",
+          "action",
+          "issued_at",
+          "expires_at"
+        ],
+        "properties": {
+          "binding": {
+            "$ref": "#/components/schemas/BrowserIngressBinding"
+          },
+          "decision_id": {
+            "type": "string"
+          },
+          "policy_generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "edge_node_id": {
+            "type": "string"
+          },
+          "edge_process_epoch": {
+            "type": "string"
+          },
+          "connector_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "process_generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "config_generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "assignment_generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "principal_id": {
+            "type": "string"
+          },
+          "grant_id": {
+            "type": "string"
+          },
+          "grant_generation": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "membership_generation": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "action": {
+            "const": "view"
+          },
+          "issued_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ConnectorStreamOpen": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "protocol",
+          "version",
+          "account_id",
+          "tunnel_id",
+          "connector_id",
+          "session_id",
+          "process_generation",
+          "generation",
+          "route_id",
+          "request_id",
+          "kind"
+        ],
+        "properties": {
+          "protocol": {
+            "const": "paperboat.connector"
+          },
+          "version": {
+            "const": "1.0"
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "tunnel_id": {
+            "type": "string"
+          },
+          "connector_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "process_generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "route_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "connector_ready",
+              "tcp_public",
+              "http_browser",
+              "http",
+              "https",
+              "h2c",
+              "websocket",
+              "sse",
+              "grpc",
+              "tcp_private",
+              "private_access_http",
+              "private_access_tcp"
+            ]
+          }
+        }
+      },
+      "BrowserIngressAuthorizeRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "decision",
+          "open"
+        ],
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/BrowserIngressDecision"
+          },
+          "open": {
+            "$ref": "#/components/schemas/ConnectorStreamOpen"
+          }
         }
       },
       "NetworkCheckRegions": {
@@ -4589,13 +5140,23 @@
             "$ref": "#/components/schemas/UpdateObservation"
           },
           "environment": {
-            "$ref": "#/components/schemas/EnvironmentObservation"
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/EnvironmentObservation"
+              },
+              {
+                "$ref": "#/components/schemas/EnvironmentVaultProjectionObservation"
+              }
+            ]
           },
           "environment_id": {
             "type": "string"
           },
           "resource_id": {
             "type": "string"
+          },
+          "lazy_runtime": {
+            "$ref": "#/components/schemas/LazyRuntimeObservation"
           }
         }
       },
@@ -5598,7 +6159,7 @@
             "minItems": 2,
             "maxItems": 2,
             "uniqueItems": true,
-            "description": "Exactly one authority-only tls:// endpoint and one authority-only quic:// endpoint.",
+            "description": "Exactly one authority-only h2:// endpoint and one authority-only h3:// endpoint.",
             "items": {
               "type": "string",
               "format": "uri",
@@ -5607,12 +6168,12 @@
             "allOf": [
               {
                 "contains": {
-                  "pattern": "^tls://"
+                  "pattern": "^h2://"
                 }
               },
               {
                 "contains": {
-                  "pattern": "^quic://"
+                  "pattern": "^h3://"
                 }
               }
             ]
@@ -6052,6 +6613,56 @@
           }
         }
       },
+      "EnvironmentPasswordVault": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "issuer",
+          "account_id",
+          "generation",
+          "document_id",
+          "envelope"
+        ],
+        "properties": {
+          "issuer": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "account_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "document_id": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "envelope": {
+            "type": "string",
+            "maxLength": 352256,
+            "description": "Canonical unpadded base64url unified password/recovery vault envelope. Its signed header includes the user's X25519 sharing public key for individually addressed team grants. The service validates credential delegations, the vault-writer signature, and public generation/epoch transitions but never receives credential roots or decrypted keys."
+          }
+        }
+      },
+      "EnvironmentPasswordVaultPut": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "envelope"
+        ],
+        "properties": {
+          "envelope": {
+            "type": "string",
+            "maxLength": 352256
+          }
+        }
+      },
       "EnvironmentManifestMutation": {
         "type": "object",
         "additionalProperties": false,
@@ -6394,7 +7005,8 @@
             "additionalProperties": false,
             "required": [
               "accepted",
-              "update_observation_recorded"
+              "update_observation_recorded",
+              "file_transfer_policy"
             ],
             "properties": {
               "accepted": {
@@ -6411,7 +7023,17 @@
                 }
               },
               "environment_bundle": {
-                "$ref": "#/components/schemas/EnvironmentBundle"
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/EnvironmentBundle"
+                  },
+                  {
+                    "$ref": "#/components/schemas/EnvironmentVaultProjectionBundle"
+                  }
+                ]
+              },
+              "file_transfer_policy": {
+                "$ref": "#/components/schemas/FileTransferPolicy"
               }
             }
           }
@@ -6935,6 +7557,1314 @@
             }
           }
         }
+      },
+      "EnvironmentVaultScope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "owner_kind",
+          "owner_id",
+          "machine_id",
+          "key_epoch",
+          "revision",
+          "document_id",
+          "envelope",
+          "writer_public"
+        ],
+        "properties": {
+          "owner_kind": {
+            "type": "string",
+            "enum": [
+              "personal",
+              "team"
+            ]
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "machine_id": {
+            "type": "string"
+          },
+          "key_epoch": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "document_id": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "envelope": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "maxLength": 352256
+          },
+          "writer_public": {
+            "type": "string"
+          }
+        }
+      },
+      "EnvironmentVaultScopePut": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operation_id",
+          "envelope"
+        ],
+        "properties": {
+          "operation_id": {
+            "type": "string"
+          },
+          "envelope": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "maxLength": 352256
+          }
+        }
+      },
+      "EnvironmentVaultPersonalScopes": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "key_epoch",
+          "scopes",
+          "rotation_required"
+        ],
+        "properties": {
+          "key_epoch": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "scopes": {
+            "type": "array",
+            "maxItems": 513,
+            "items": {
+              "$ref": "#/components/schemas/EnvironmentVaultPersonalScopeHead"
+            }
+          },
+          "rotation_required": {
+            "type": "boolean"
+          }
+        }
+      },
+      "EnvironmentVaultTeamMember": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "account_id",
+          "membership_generation",
+          "role",
+          "active",
+          "grant_epoch",
+          "env_permission"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "membership_generation": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "owner",
+              "admin",
+              "member"
+            ]
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "grant_epoch": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "env_permission": {
+            "type": "string",
+            "enum": [
+              "",
+              "read",
+              "write"
+            ]
+          }
+        }
+      },
+      "EnvironmentVaultTeam": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "team_id",
+          "owner_account",
+          "generation",
+          "key_epoch",
+          "members",
+          "scope",
+          "rotation_required"
+        ],
+        "properties": {
+          "team_id": {
+            "type": "string"
+          },
+          "owner_account": {
+            "type": "string"
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "key_epoch": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EnvironmentVaultTeamMember"
+            },
+            "maxItems": 128
+          },
+          "scope": {
+            "$ref": "#/components/schemas/EnvironmentVaultScope"
+          },
+          "rotation_required": {
+            "type": "boolean"
+          }
+        }
+      },
+      "EnvironmentVaultTeamCreate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operation_id",
+          "team_id",
+          "vault_envelope",
+          "scope_envelope",
+          "grant_envelope"
+        ],
+        "properties": {
+          "operation_id": {
+            "type": "string"
+          },
+          "team_id": {
+            "type": "string"
+          },
+          "vault_envelope": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "maxLength": 352256
+          },
+          "scope_envelope": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "maxLength": 352256
+          },
+          "grant_envelope": {
+            "type": "string"
+          },
+          "expected_team_generation": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        }
+      },
+      "EnvironmentVaultMemberGrant": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operation_id",
+          "account_id",
+          "expected_team_generation",
+          "expected_membership_generation",
+          "grant_envelope"
+        ],
+        "properties": {
+          "operation_id": {
+            "type": "string"
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "expected_team_generation": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "expected_membership_generation": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "grant_envelope": {
+            "type": "string"
+          }
+        }
+      },
+      "EnvironmentVaultTeamRotate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operation_id",
+          "expected_team_generation",
+          "remove_account_ids",
+          "scope_envelope",
+          "vault_envelope",
+          "grant_envelopes"
+        ],
+        "properties": {
+          "operation_id": {
+            "type": "string"
+          },
+          "expected_team_generation": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "remove_account_ids": {
+            "type": "array",
+            "maxItems": 128,
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          },
+          "scope_envelope": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "maxLength": 352256
+          },
+          "vault_envelope": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "maxLength": 352256
+          },
+          "grant_envelopes": {
+            "type": "array",
+            "maxItems": 128,
+            "items": {
+              "type": "string"
+            }
+          },
+          "confirm_total_loss": {
+            "type": "boolean"
+          }
+        }
+      },
+      "EnvironmentVaultGrant": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "team_id",
+          "membership_generation",
+          "team_epoch",
+          "document_id",
+          "envelope",
+          "sender_writer_public"
+        ],
+        "properties": {
+          "team_id": {
+            "type": "string"
+          },
+          "membership_generation": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "team_epoch": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "document_id": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "envelope": {
+            "type": "string"
+          },
+          "sender_writer_public": {
+            "type": "string"
+          }
+        }
+      },
+      "EnvironmentVaultGrants": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "grants"
+        ],
+        "properties": {
+          "grants": {
+            "type": "array",
+            "maxItems": 128,
+            "items": {
+              "$ref": "#/components/schemas/EnvironmentVaultGrant"
+            }
+          }
+        }
+      },
+      "EnvironmentVaultSharing": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "account_id",
+          "vault_generation",
+          "writer_public",
+          "sharing_public"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "vault_generation": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "writer_public": {
+            "type": "string"
+          },
+          "sharing_public": {
+            "type": "string"
+          }
+        }
+      },
+      "EnvironmentVaultGrantAck": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "vault_document_id"
+        ],
+        "properties": {
+          "vault_document_id": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        }
+      },
+      "EnvironmentVaultPersonalReset": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operation_id",
+          "expected_vault_document_id",
+          "vault_envelope",
+          "scope_envelopes",
+          "confirm_total_loss"
+        ],
+        "properties": {
+          "operation_id": {
+            "type": "string"
+          },
+          "expected_vault_document_id": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "vault_envelope": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "maxLength": 352256
+          },
+          "scope_envelopes": {
+            "type": "array",
+            "maxItems": 513,
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "maxLength": 352256
+            }
+          },
+          "confirm_total_loss": {
+            "const": true
+          }
+        }
+      },
+      "EnvironmentVaultGrantAcknowledged": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "acknowledged"
+        ],
+        "properties": {
+          "acknowledged": {
+            "const": true
+          }
+        }
+      },
+      "EnvironmentVaultPersonalScopeHead": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "owner_kind",
+          "owner_id",
+          "machine_id",
+          "key_epoch",
+          "revision",
+          "document_id",
+          "envelope",
+          "writer_public"
+        ],
+        "properties": {
+          "owner_kind": {
+            "type": "string",
+            "enum": [
+              "personal",
+              "team"
+            ]
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "machine_id": {
+            "type": "string"
+          },
+          "key_epoch": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "document_id": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "envelope": {
+            "const": ""
+          },
+          "writer_public": {
+            "type": "string"
+          }
+        }
+      },
+      "EnvironmentVaultHostSelection": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "owner_kind",
+          "owner_id",
+          "name"
+        ],
+        "properties": {
+          "owner_kind": {
+            "type": "string",
+            "enum": [
+              "personal",
+              "team"
+            ]
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 128,
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          }
+        }
+      },
+      "EnvironmentVaultProjectionBundle": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "account_id",
+          "machine_id",
+          "installation_generation",
+          "host_key_generation",
+          "host_public",
+          "writer_public",
+          "fence_generation",
+          "selection_generation",
+          "projection_revision",
+          "document_id",
+          "envelope",
+          "state"
+        ],
+        "properties": {
+          "schema": {
+            "const": "paperboat.environment-projection-bundle/v1"
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "machine_id": {
+            "type": "string"
+          },
+          "installation_generation": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "host_key_generation": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "host_public": {
+            "type": "string"
+          },
+          "writer_public": {
+            "type": "string"
+          },
+          "fence_generation": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "selection_generation": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "projection_revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "document_id": {
+            "type": "string"
+          },
+          "envelope": {
+            "type": "string",
+            "maxLength": 436907
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "ready",
+              "revoked"
+            ]
+          }
+        }
+      },
+      "EnvironmentVaultHost": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "bundle",
+          "selection"
+        ],
+        "properties": {
+          "bundle": {
+            "$ref": "#/components/schemas/EnvironmentVaultProjectionBundle"
+          },
+          "selection": {
+            "type": "array",
+            "maxItems": 128,
+            "items": {
+              "$ref": "#/components/schemas/EnvironmentVaultHostSelection"
+            }
+          }
+        }
+      },
+      "EnvironmentVaultHostKeyRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operation_id",
+          "installation_generation",
+          "host_key_generation",
+          "host_public"
+        ],
+        "properties": {
+          "operation_id": {
+            "type": "string"
+          },
+          "installation_generation": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "host_key_generation": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "host_public": {
+            "type": "string"
+          }
+        }
+      },
+      "EnvironmentVaultHostProvision": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operation_id",
+          "expected_selection_generation",
+          "selection",
+          "envelope"
+        ],
+        "properties": {
+          "operation_id": {
+            "type": "string"
+          },
+          "expected_selection_generation": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "selection": {
+            "type": "array",
+            "maxItems": 128,
+            "items": {
+              "$ref": "#/components/schemas/EnvironmentVaultHostSelection"
+            }
+          },
+          "envelope": {
+            "type": "string",
+            "maxLength": 436907
+          }
+        }
+      },
+      "EnvironmentVaultProjectionObservation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "observation_seq",
+          "host_recipient_key_id",
+          "projection",
+          "fence_generation",
+          "state",
+          "error_code",
+          "observed_at"
+        ],
+        "properties": {
+          "schema": {
+            "const": "paperboat.environment-projection-observation/v1"
+          },
+          "observation_seq": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "host_recipient_key_id": {
+            "type": "string"
+          },
+          "projection": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "revision",
+                  "document_id"
+                ],
+                "properties": {
+                  "revision": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "document_id": {
+                    "type": "string"
+                  }
+                }
+              }
+            ]
+          },
+          "fence_generation": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "applied",
+              "failed",
+              "revoked"
+            ]
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 64
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "EnvironmentVaultScopeDocument": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "machine_id",
+          "document_id"
+        ],
+        "properties": {
+          "machine_id": {
+            "type": "string"
+          },
+          "document_id": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        }
+      },
+      "EnvironmentVaultPersonalRotate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operation_id",
+          "expected_vault_document_id",
+          "vault_envelope",
+          "scope_documents"
+        ],
+        "properties": {
+          "operation_id": {
+            "type": "string"
+          },
+          "expected_vault_document_id": {
+            "type": "string"
+          },
+          "vault_envelope": {
+            "type": "string",
+            "maxLength": 352256
+          },
+          "scope_documents": {
+            "type": "array",
+            "maxItems": 513,
+            "items": {
+              "$ref": "#/components/schemas/EnvironmentVaultScopeDocument"
+            }
+          }
+        }
+      },
+      "EnvironmentVaultPersonalScopeStage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expected_vault_document_id",
+          "machine_id",
+          "envelope"
+        ],
+        "properties": {
+          "expected_vault_document_id": {
+            "type": "string"
+          },
+          "machine_id": {
+            "type": "string"
+          },
+          "envelope": {
+            "type": "string",
+            "maxLength": 352256
+          }
+        }
+      },
+      "EnvironmentVaultRotationAborted": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "aborted"
+        ],
+        "properties": {
+          "aborted": {
+            "const": true
+          }
+        }
+      },
+      "TeamMember": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "membership_generation": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "owner",
+              "admin",
+              "member"
+            ]
+          },
+          "active": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "account_id",
+          "membership_generation",
+          "role",
+          "active"
+        ]
+      },
+      "TeamGrant": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "resource_kind": {
+            "type": "string"
+          },
+          "resource_id": {
+            "type": "string"
+          },
+          "permission": {
+            "type": "string"
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "active": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "account_id",
+          "resource_kind",
+          "resource_id",
+          "permission",
+          "generation",
+          "active"
+        ]
+      },
+      "TeamTeam": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "team_id": {
+            "type": "string"
+          },
+          "owner_account": {
+            "type": "string"
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "deleted": {
+            "type": "boolean"
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TeamMember"
+            }
+          },
+          "grants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TeamGrant"
+            }
+          }
+        },
+        "required": [
+          "team_id",
+          "owner_account",
+          "generation",
+          "deleted",
+          "members",
+          "grants"
+        ]
+      },
+      "TeamCreateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "operation_id": {
+            "type": "string"
+          },
+          "team_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "team_id"
+        ]
+      },
+      "TeamMutationRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "operation_id": {
+            "type": "string"
+          },
+          "expected_generation": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "role",
+              "remove",
+              "leave",
+              "transfer",
+              "delete"
+            ]
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "confirmation": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "expected_generation",
+          "action"
+        ]
+      },
+      "TeamInviteRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "operation_id": {
+            "type": "string"
+          },
+          "expected_generation": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "account_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "expected_generation",
+          "account_id"
+        ]
+      },
+      "TeamAcceptRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "operation_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id"
+        ]
+      },
+      "TeamInvitation": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "invitation_id": {
+            "type": "string"
+          },
+          "team_id": {
+            "type": "string"
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "invitation_id",
+          "team_id",
+          "account_id",
+          "role",
+          "expires_at",
+          "generation"
+        ]
+      },
+      "TeamGrantRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "operation_id": {
+            "type": "string"
+          },
+          "expected_generation": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "resource_kind": {
+            "type": "string"
+          },
+          "resource_id": {
+            "type": "string"
+          },
+          "permission": {
+            "type": "string"
+          },
+          "active": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "operation_id",
+          "expected_generation",
+          "account_id",
+          "resource_kind",
+          "resource_id",
+          "permission",
+          "active"
+        ]
+      },
+      "TeamAttachRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "operation_id": {
+            "type": "string"
+          },
+          "expected_generation": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "resource_kind": {
+            "type": "string"
+          },
+          "resource_id": {
+            "type": "string"
+          },
+          "active": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "operation_id",
+          "expected_generation",
+          "resource_kind",
+          "resource_id",
+          "active"
+        ]
+      },
+      "TeamDecision": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "team_id": {
+            "type": "string"
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "team_generation": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "membership_generation": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "grant_generation": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "binding_generation": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "resource_kind": {
+            "type": "string"
+          },
+          "resource_id": {
+            "type": "string"
+          },
+          "permission": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "team_id",
+          "account_id",
+          "role",
+          "team_generation",
+          "membership_generation",
+          "grant_generation",
+          "binding_generation",
+          "resource_kind",
+          "resource_id",
+          "permission"
+        ]
+      },
+      "TeamCancelRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "operation_id": {
+            "type": "string"
+          },
+          "expected_generation": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "role",
+              "remove",
+              "leave",
+              "transfer",
+              "delete"
+            ]
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "confirmation": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "expected_generation"
+        ]
+      },
+      "LazyPolicyTarget": {
+        "type": "object",
+        "required": [
+          "scheme",
+          "address"
+        ],
+        "properties": {
+          "scheme": {
+            "enum": [
+              "http",
+              "https",
+              "h2c"
+            ]
+          },
+          "address": {
+            "type": "string",
+            "description": "Exact loopback host:port. A replacement application at this address is expected to inherit port sharing."
+          }
+        },
+        "additionalProperties": false
+      },
+      "LazyPolicyRequest": {
+        "type": "object",
+        "required": [
+          "machine_id",
+          "target",
+          "access_mode",
+          "expires_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "machine_id": {
+            "type": "string"
+          },
+          "expected_generation": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          },
+          "target": {
+            "$ref": "#/components/schemas/LazyPolicyTarget"
+          },
+          "access_mode": {
+            "enum": [
+              "private",
+              "team"
+            ]
+          },
+          "ownership_mode": {
+            "const": "persistent_port",
+            "default": "persistent_port"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "LazyRuntimeObservation": {
+        "type": "object",
+        "required": [
+          "schema",
+          "boot_id",
+          "installation_generation",
+          "started_at"
+        ],
+        "properties": {
+          "schema": {
+            "const": "paperboat.lazy-runtime/v1"
+          },
+          "boot_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{16,64}$"
+          },
+          "installation_generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
       }
     },
     "responses": {
@@ -7134,9 +9064,86 @@
       "post": {
         "summary": "Issue an exact native private route credential",
         "description": "CLI-only. Resolves current private preview or tunnel desired state and binds one short-lived native stream credential to its exact loopback target and generations. It never returns edge or connector authority.",
-        "security": [{"bearerAccess": []}],
-        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["operation_id"], "oneOf": [{"required": ["resource_kind", "resource_id", "route_id", "protocol"]}, {"required": ["selector"]}], "properties": {"operation_id": {"type": "string"}, "resource_kind": {"type": "string", "enum": ["preview", "tunnel"]}, "resource_id": {"type": "string"}, "route_id": {"type": "string"}, "protocol": {"type": "string", "enum": ["http", "tcp"]}, "selector": {"type": "string", "maxLength": 256}}}}}},
-        "responses": {"200": {"description": "Current exact native target and short-lived credential."}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}},
+        "security": [
+          {
+            "bearerAccess": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "operation_id"
+                ],
+                "oneOf": [
+                  {
+                    "required": [
+                      "resource_kind",
+                      "resource_id",
+                      "route_id",
+                      "protocol"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "selector"
+                    ]
+                  }
+                ],
+                "properties": {
+                  "operation_id": {
+                    "type": "string"
+                  },
+                  "resource_kind": {
+                    "type": "string",
+                    "enum": [
+                      "preview",
+                      "tunnel"
+                    ]
+                  },
+                  "resource_id": {
+                    "type": "string"
+                  },
+                  "route_id": {
+                    "type": "string"
+                  },
+                  "protocol": {
+                    "type": "string",
+                    "enum": [
+                      "http",
+                      "tcp"
+                    ]
+                  },
+                  "selector": {
+                    "type": "string",
+                    "maxLength": 256
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Current exact native target and short-lived credential."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
         "operationId": "post_v1_native_private_access_grants"
       }
     },
@@ -11943,6 +13950,119 @@
         "operationId": "get_v1_environment_scopes"
       }
     },
+    "/v1/environment-vault": {
+      "get": {
+        "summary": "Get the authenticated account's encrypted ENV credential vault",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:read"
+        ],
+        "responses": {
+          "200": {
+            "description": "Current encrypted vault and authenticated head.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/EnvironmentPasswordVault"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "description": "The vault has not been initialized. The error has code not_found and details.issuer contains the configured canonical credential issuer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "get_v1_environment_vault"
+      },
+      "put": {
+        "summary": "Commit the authenticated account's encrypted ENV password vault successor",
+        "description": "The canonical signed envelope carries its generation, exact previous document digest, fixed writer key, password credential epoch, and optional recovery credential epoch. Generation one uses an all-zero previous digest and credential epochs one. Credential changes advance only their own epoch by exactly one. Exact document retries are idempotent.",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnvironmentPasswordVaultPut"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Committed encrypted vault and authenticated head.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/EnvironmentPasswordVault"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "put_v1_environment_vault"
+      }
+    },
     "/v1/environment-variables/{name}": {
       "parameters": [
         {
@@ -15316,8 +17436,8 @@
     },
     "/v1/machines/setup": {
       "post": {
-        "summary": "Set up this client machine",
-        "description": "Registers or transitions the authenticated CLI machine to client or host mode using its stable Ed25519 identity. Client mode provisions restricted file and preview authority without reserving a host seat.",
+        "summary": "Set up this device",
+        "description": "Registers or transitions the authenticated CLI device to the unified service composition using its stable Ed25519 identity.",
         "security": [
           {
             "bearerAccess": []
@@ -15334,7 +17454,6 @@
                 "type": "object",
                 "additionalProperties": false,
                 "required": [
-                  "setup_mode",
                   "display_name",
                   "platform",
                   "architecture",
@@ -15343,13 +17462,6 @@
                   "runtime_versions"
                 ],
                 "properties": {
-                  "setup_mode": {
-                    "type": "string",
-                    "enum": [
-                      "client",
-                      "host"
-                    ]
-                  },
                   "display_name": {
                     "type": "string",
                     "minLength": 1,
@@ -15441,7 +17553,7 @@
       ],
       "post": {
         "summary": "Prepare authenticated Host installation material",
-        "description": "Idempotently issues verifier-bound installation material for the exact authenticated CLI session, machine identity, Host setup mode, and installation generation after the release artifact has been verified locally.",
+        "description": "Idempotently issues verifier-bound installation material for the exact authenticated CLI session, machine identity, unified service composition, and installation generation after the release artifact has been verified locally.",
         "security": [
           {
             "bearerAccess": []
@@ -15473,7 +17585,6 @@
                   "verifier",
                   "public_identity_key",
                   "installation_generation",
-                  "setup_mode",
                   "artifact"
                 ],
                 "properties": {
@@ -15490,9 +17601,6 @@
                   "installation_generation": {
                     "type": "integer",
                     "minimum": 1
-                  },
-                  "setup_mode": {
-                    "const": "host"
                   },
                   "artifact": {
                     "type": "object",
@@ -16407,6 +18515,108 @@
           }
         },
         "operationId": "post_v1_user_machines_machine_id_disconnect"
+      }
+    },
+    "/v1/machines/{machine_id}/capabilities": {
+      "parameters": [
+        {
+          "name": "machine_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "$ref": "#/components/parameters/IdempotencyKey"
+        }
+      ],
+      "put": {
+        "summary": "Set incoming device capabilities",
+        "description": "Updates the authoritative desired capability set. Peer relay is opt-in and disabled unless explicitly selected.",
+        "security": [
+          {
+            "cookieSession": [],
+            "csrfHeader": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "expected_version",
+                  "desired"
+                ],
+                "properties": {
+                  "expected_version": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 0
+                  },
+                  "desired": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "terminal",
+                      "managed_ssh",
+                      "file_receive",
+                      "preview_tunnel",
+                      "peer_relay"
+                    ],
+                    "properties": {
+                      "terminal": {
+                        "type": "boolean"
+                      },
+                      "managed_ssh": {
+                        "type": "boolean"
+                      },
+                      "file_receive": {
+                        "type": "boolean"
+                      },
+                      "preview_tunnel": {
+                        "type": "boolean"
+                      },
+                      "peer_relay": {
+                        "type": "boolean"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Device capability policy accepted."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "put_v1_machines_machine_id_capabilities"
       }
     },
     "/v1/machines/{machine_id}/availability-policy": {
@@ -19902,6 +22112,2258 @@
             "$ref": "#/components/responses/Error"
           }
         }
+      }
+    },
+    "/v1/environment/scopes": {
+      "get": {
+        "operationId": "get__v1_environment_scopes",
+        "summary": "List authenticated personal encrypted scopes and current account key epoch",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:read"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated current state or exact committed operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/EnvironmentVaultPersonalScopes"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/environment/scopes/{kind}/{owner_id}": {
+      "get": {
+        "operationId": "get__v1_environment_scopes_kind_owner_id",
+        "summary": "Get an authorized encrypted personal or team scope",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:read"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated current state or exact committed operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/EnvironmentVaultScope"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "owner_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "machine_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "put": {
+        "operationId": "put__v1_environment_scopes_kind_owner_id",
+        "summary": "CAS one signed encrypted scope and invalidate dependent host projections",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated current state or exact committed operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/EnvironmentVaultScope"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "owner_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "machine_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnvironmentVaultScopePut"
+              }
+            }
+          }
+        },
+        "description": "Requires browser CSRF protection or an authorized bearer. Operation IDs bind exact request bytes. No password, recovery code, plaintext ENV or device private keys are accepted."
+      }
+    },
+    "/v1/environment/users/{account_id}/sharing": {
+      "get": {
+        "operationId": "get__v1_environment_users_account_id_sharing",
+        "summary": "Resolve public sharing and writer keys for an explicitly selected recipient",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:read"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated current state or exact committed operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/EnvironmentVaultSharing"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/environment/teams": {
+      "post": {
+        "operationId": "post__v1_environment_teams",
+        "summary": "Atomically create a team, owner grant, encrypted scope and owner vault successor",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated current state or exact committed operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/EnvironmentVaultTeam"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnvironmentVaultTeamCreate"
+              }
+            }
+          }
+        },
+        "description": "Requires browser CSRF protection or an authorized bearer. Operation IDs bind exact request bytes. No password, recovery code, plaintext ENV or device private keys are accepted."
+      }
+    },
+    "/v1/environment/teams/{team_id}": {
+      "get": {
+        "operationId": "get__v1_environment_teams_team_id",
+        "summary": "Read team membership and encrypted scope",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:read"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated current state or exact committed operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/EnvironmentVaultTeam"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "team_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/environment/teams/{team_id}/members": {
+      "post": {
+        "operationId": "post__v1_environment_teams_team_id_members",
+        "summary": "Explicitly add a member or regrant existing membership",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated current state or exact committed operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/EnvironmentVaultTeam"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "team_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnvironmentVaultMemberGrant"
+              }
+            }
+          }
+        },
+        "description": "Requires browser CSRF protection or an authorized bearer. Operation IDs bind exact request bytes. No password, recovery code, plaintext ENV or device private keys are accepted."
+      }
+    },
+    "/v1/environment/teams/{team_id}/rotate": {
+      "post": {
+        "operationId": "post__v1_environment_teams_team_id_rotate",
+        "summary": "Atomically rotate team ciphertext, exact recipient grants and the initiating member vault",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated current state or exact committed operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/EnvironmentVaultTeam"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "team_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnvironmentVaultTeamRotate"
+              }
+            }
+          }
+        },
+        "description": "Any active granted member can rotate unchanged membership. Only the owner can remove members or explicitly reset lost team keys. Rotation clears the team rotation-required fence; host projections remain pending until explicitly reprovisioned. The initiating member vault successor commits with the new scope and exact remaining-recipient grant set."
+      }
+    },
+    "/v1/environment/grants": {
+      "get": {
+        "operationId": "get__v1_environment_grants",
+        "summary": "Get current individually encrypted team grants",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:read"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated current state or exact committed operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/EnvironmentVaultGrants"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/environment/grants/{document_id}/ack": {
+      "post": {
+        "operationId": "post__v1_environment_grants_document_id_ack",
+        "summary": "Acknowledge a grant after committing its key into the current vault",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated current state or exact committed operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/EnvironmentVaultGrantAcknowledged"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnvironmentVaultGrantAck"
+              }
+            }
+          }
+        },
+        "description": "Requires browser CSRF protection or an authorized bearer. Operation IDs bind exact request bytes. No password, recovery code, plaintext ENV or device private keys are accepted."
+      }
+    },
+    "/v1/environment-vault/reset": {
+      "post": {
+        "operationId": "post__v1_environment_vault_reset",
+        "summary": "Explicitly reset lost personal keys and fence old sharing and host delivery",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated current state or exact committed operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/EnvironmentPasswordVault"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnvironmentVaultPersonalReset"
+              }
+            }
+          }
+        },
+        "description": "Requires browser CSRF protection or an authorized bearer. Operation IDs bind exact request bytes. No password, recovery code, plaintext ENV or device private keys are accepted."
+      }
+    },
+    "/v1/environment/hosts/{machine_id}/key": {
+      "post": {
+        "operationId": "post__v1_environment_hosts_machine_id_key",
+        "summary": "Register an independent host ENV recipient using machine proof",
+        "security": [
+          {
+            "bearerMachineControl": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "machine_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Paperboat-Machine-Proof",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated host state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/EnvironmentVaultProjectionBundle"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "description": "Machine-control signature binds the exact method, path, body, machine and installation. Human login alone cannot register a host key. Explicit reprovision changes the pinned vault writer after reset.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnvironmentVaultHostKeyRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/environment/hosts/{machine_id}": {
+      "get": {
+        "operationId": "get__v1_environment_hosts_machine_id",
+        "summary": "Get authenticated host selection and encrypted projection",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "machine_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated host state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/EnvironmentVaultHost"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-required-bearer-scopes": [
+          "projects:read"
+        ]
+      },
+      "put": {
+        "operationId": "put__v1_environment_hosts_machine_id",
+        "summary": "Provision a signed least-privilege host projection",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "machine_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated host state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/EnvironmentVaultProjectionBundle"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnvironmentVaultHostProvision"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/environment/rotate-personal": {
+      "post": {
+        "operationId": "post__v1_environment_rotate_personal",
+        "summary": "Atomically rotate personal keys, staged encrypted scopes and vault while preserving credentials",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "responses": {
+          "200": {
+            "description": "Exact accepted mutation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/EnvironmentPasswordVault"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnvironmentVaultPersonalRotate"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/environment/rotate-personal/{operation_id}/scopes": {
+      "put": {
+        "operationId": "put__v1_environment_rotate_personal_operation_id_scopes",
+        "summary": "Stage one exact encrypted scope successor for personal rotation",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "responses": {
+          "200": {
+            "description": "Exact accepted mutation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/EnvironmentVaultScopeDocument"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "operation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnvironmentVaultPersonalScopeStage"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/environment/rotate-personal/{operation_id}": {
+      "delete": {
+        "operationId": "delete__v1_environment_rotate_personal_operation_id",
+        "summary": "Discard the named pending personal rotation ciphertext without changing active keys",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "responses": {
+          "200": {
+            "description": "Exact accepted mutation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/EnvironmentVaultRotationAborted"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "operation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/teams": {
+      "get": {
+        "operationId": "team_list",
+        "summary": "Team list",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:read"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated current state or exact committed operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/TeamTeam"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "description": "Current shared team authority. Roles do not grant resource use or decryption. Mutations require browser CSRF or scoped bearer authentication and exact operation IDs; generation conflicts require refresh."
+      },
+      "post": {
+        "operationId": "team_create",
+        "summary": "Team create",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated current state or exact committed operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TeamTeam"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "description": "Current shared team authority. Roles do not grant resource use or decryption. Mutations require browser CSRF or scoped bearer authentication and exact operation IDs; generation conflicts require refresh.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TeamCreateRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/teams/{team_id}": {
+      "get": {
+        "operationId": "team_get",
+        "summary": "Team get",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:read"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated current state or exact committed operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TeamTeam"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "description": "Current shared team authority. Roles do not grant resource use or decryption. Mutations require browser CSRF or scoped bearer authentication and exact operation IDs; generation conflicts require refresh.",
+        "parameters": [
+          {
+            "name": "team_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/teams/{team_id}/actions": {
+      "post": {
+        "operationId": "team_mutate",
+        "summary": "Team mutate",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated current state or exact committed operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TeamTeam"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "description": "Current shared team authority. Roles do not grant resource use or decryption. Mutations require browser CSRF or scoped bearer authentication and exact operation IDs; generation conflicts require refresh.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TeamMutationRequest"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "team_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/teams/{team_id}/invitations": {
+      "post": {
+        "operationId": "team_invite",
+        "summary": "Team invite",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated current state or exact committed operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TeamInvitation"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "description": "Current shared team authority. Roles do not grant resource use or decryption. Mutations require browser CSRF or scoped bearer authentication and exact operation IDs; generation conflicts require refresh.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TeamInviteRequest"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "team_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/team-invitations/{invitation_id}/accept": {
+      "post": {
+        "operationId": "team_accept",
+        "summary": "Team accept",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated current state or exact committed operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TeamTeam"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "description": "Current shared team authority. Roles do not grant resource use or decryption. Mutations require browser CSRF or scoped bearer authentication and exact operation IDs; generation conflicts require refresh.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TeamAcceptRequest"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "invitation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/teams/{team_id}/invitations/{invitation_id}/cancel": {
+      "post": {
+        "operationId": "team_cancel",
+        "summary": "Team cancel",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated current state or exact committed operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TeamTeam"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "description": "Current shared team authority. Roles do not grant resource use or decryption. Mutations require browser CSRF or scoped bearer authentication and exact operation IDs; generation conflicts require refresh.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TeamCancelRequest"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "team_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "invitation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/teams/{team_id}/grants": {
+      "post": {
+        "operationId": "team_grant",
+        "summary": "Team grant",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated current state or exact committed operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TeamTeam"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "description": "Current shared team authority. Roles do not grant resource use or decryption. Mutations require browser CSRF or scoped bearer authentication and exact operation IDs; generation conflicts require refresh.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TeamGrantRequest"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "team_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/browser-access/issue": {
+      "post": {
+        "operationId": "browser_access_issue",
+        "summary": "Issue a single-use browser handoff",
+        "description": "Trusted dashboard only. Rechecks the signed-in principal's exact current resource authority and returns a 30-second handoff bound to the transaction, session, resource generation, and exact HTTPS callback origin. Never place the handoff in a URL or browser storage.",
+        "security": [
+          {
+            "cookieSession": [],
+            "csrfHeader": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BrowserAccessIssueRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Single-use handoff issued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/BrowserAccessIssueResult"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/browser-access/machine-credentials": {
+      "post": {
+        "operationId": "browser_access_machine_credential_issue",
+        "summary": "Issue an exact machine browser-access credential",
+        "description": "Authenticated CLI or trusted dashboard operation. Issues a credential valid for at most five minutes and bound to the exact hostname, resource, route, principal, generations, and use action. APIs and webhooks do not redirect to browser login.",
+        "security": [
+          {
+            "cookieSession": [],
+            "csrfHeader": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BrowserMachineCredentialRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "One-time-visible scoped machine credential.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/BrowserMachineCredentialResult"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/edge/browser-access/{operation}": {
+      "post": {
+        "operationId": "edge_browser_access",
+        "summary": "Begin, redeem, or authorize browser access",
+        "description": "Authenticated edge-only boundary. begin creates a 120-second transaction, redeem atomically consumes one handoff, and authorize rechecks current browser or explicitly selected machine authority. Unauthenticated non-navigation requests, APIs, WebSockets, and restricted webhook POSTs receive 401 rather than a login redirect; explicit public webhooks remain application-signature-verified.",
+        "security": [
+          {
+            "bearerEdgeControl": []
+          }
+        ],
+        "x-edge-only": true,
+        "parameters": [
+          {
+            "name": "operation",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "begin",
+                "redeem",
+                "authorize",
+                "activate"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/BrowserAccessBeginRequest"
+                  },
+                  {
+                    "$ref": "#/components/schemas/BrowserAccessRedeemRequest"
+                  },
+                  {
+                    "$ref": "#/components/schemas/BrowserAccessAuthorizeRequest"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Operation-specific BrowserAccessBeginResult, BrowserAccessRedeemResult, or BrowserIngressDecision.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/BrowserAccessBeginResult"
+                    },
+                    {
+                      "$ref": "#/components/schemas/BrowserAccessRedeemResult"
+                    },
+                    {
+                      "$ref": "#/components/schemas/BrowserIngressDecision"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/browser-access/ingress/authorize": {
+      "post": {
+        "operationId": "browser_access_ingress_authorize",
+        "summary": "Reauthorize a restricted connector stream",
+        "description": "Machine-proof-only boundary. Rechecks the exact non-public decision and connector StreamOpen against current resource, route, generation, machine installation, edge process, grant, and membership authority. Paperboat-Access-Token is the dedicated machine credential header at the edge; application Authorization is preserved.",
+        "security": [
+          {
+            "bearerMachineControl": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/MachineIdentity"
+          },
+          {
+            "$ref": "#/components/parameters/MachineProof"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BrowserIngressAuthorizeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Current decision, capped by the ten-second authorization lifetime.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/BrowserIngressDecision"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/teams/{team_id}/resources": {
+      "post": {
+        "operationId": "team_attach",
+        "summary": "Team attach",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated current state or exact committed operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TeamTeam"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "description": "Current shared team authority. Roles do not grant resource use or decryption. Mutations require browser CSRF or scoped bearer authentication and exact operation IDs; generation conflicts require refresh.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TeamAttachRequest"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "team_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/lazy-policies": {
+      "put": {
+        "summary": "Approve or update an exact private/team port policy without activating forwarding",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LazyPolicyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Policy reserved; no origin probe or application startup"
+          },
+          "400": {
+            "description": "Invalid exact target or policy"
+          },
+          "404": {
+            "description": "Owned machine unavailable"
+          },
+          "409": {
+            "description": "Stale policy or changed installation"
+          },
+          "429": {
+            "description": "Environment target limit reached"
+          }
+        },
+        "operationId": "upsert_lazy_policy"
+      }
+    },
+    "/v1/lazy-policies/{policy_id}": {
+      "parameters": [
+        {
+          "name": "policy_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "summary": "Read a current owned port policy",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Policy"
+          },
+          "404": {
+            "description": "Unavailable policy"
+          }
+        },
+        "operationId": "get_lazy_policy"
+      },
+      "delete": {
+        "summary": "Revoke policy and permanently tombstone its reserved name",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "expected_generation"
+                ],
+                "properties": {
+                  "expected_generation": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Policy revoked"
+          },
+          "409": {
+            "description": "Policy changed"
+          }
+        },
+        "operationId": "delete_lazy_policy"
       }
     }
   }

@@ -37,30 +37,32 @@ type TXTResolver interface {
 }
 
 type CloudflareDNSConfig struct {
-	BaseURL         string
-	ZoneID          string
-	TokenReference  string
-	TokenSource     DNSSecretSource
-	HTTPClient      *http.Client
-	Resolver        TXTResolver
-	PropagationWait time.Duration
-	PollInterval    time.Duration
-	MaxAttempts     int
+	BaseURL          string
+	ZoneID           string
+	TokenReference   string
+	TokenSource      DNSSecretSource
+	HTTPClient       *http.Client
+	Resolver         TXTResolver
+	PropagationWait  time.Duration
+	PollInterval     time.Duration
+	MaxAttempts      int
+	AddressAdmission CloudflareAddressAdmission
 }
 
 // CloudflareDNSProvider is deliberately record-scoped. It never accepts a
 // raw token in its public constructor and never returns the token or an API
 // response body to callers.
 type CloudflareDNSProvider struct {
-	baseURL         *url.URL
-	zoneID          string
-	tokenReference  string
-	tokens          DNSSecretSource
-	httpClient      *http.Client
-	resolver        TXTResolver
-	propagationWait time.Duration
-	pollInterval    time.Duration
-	maxAttempts     int
+	baseURL          *url.URL
+	zoneID           string
+	tokenReference   string
+	tokens           DNSSecretSource
+	httpClient       *http.Client
+	resolver         TXTResolver
+	propagationWait  time.Duration
+	pollInterval     time.Duration
+	maxAttempts      int
+	addressAdmission CloudflareAddressAdmission
 }
 
 func NewCloudflareDNSProvider(config CloudflareDNSConfig) (*CloudflareDNSProvider, error) {
@@ -105,7 +107,8 @@ func NewCloudflareDNSProvider(config CloudflareDNSConfig) (*CloudflareDNSProvide
 	if resolver == nil {
 		resolver = net.DefaultResolver
 	}
-	return &CloudflareDNSProvider{baseURL: parsed, zoneID: config.ZoneID, tokenReference: config.TokenReference, tokens: config.TokenSource, httpClient: client, resolver: resolver, propagationWait: propagationWait, pollInterval: pollInterval, maxAttempts: maxAttempts}, nil
+	addressAdmission := config.AddressAdmission
+	return &CloudflareDNSProvider{baseURL: parsed, zoneID: config.ZoneID, tokenReference: config.TokenReference, tokens: config.TokenSource, httpClient: client, resolver: resolver, propagationWait: propagationWait, pollInterval: pollInterval, maxAttempts: maxAttempts, addressAdmission: addressAdmission}, nil
 }
 
 func (p *CloudflareDNSProvider) Present(ctx context.Context, record DNS01Record) (DNS01Record, error) {

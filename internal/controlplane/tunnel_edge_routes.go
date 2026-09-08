@@ -152,6 +152,8 @@ func tunnelEdgeRouteJSON(row dbsqlc.ListTunnelEdgeRouteAssignmentsForNodeV1Row) 
 		"path_prefix":                  nullableTunnelEdgeText(row.PathPrefix),
 		"priority":                     row.Priority,
 		"protocol":                     row.Protocol,
+		"public_tcp_listener_id":       nullableTunnelEdgeText(row.PublicTcpListenerID),
+		"public_tcp_port":              nullableTunnelEdgeInt32(row.PublicTcpPort),
 		"origin_scheme":                row.OriginScheme,
 		"preserve_host":                row.PreserveHost,
 		"host_override":                nullableTunnelEdgeText(row.HostOverride),
@@ -185,4 +187,11 @@ func nullableTunnelEdgeText(value sql.NullString) any {
 		return nil
 	}
 	return value.String
+}
+
+func nullableTunnelEdgeInt32(value sql.NullInt32) any {
+	if !value.Valid {
+		return nil
+	}
+	return value.Int32
 }

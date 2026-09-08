@@ -399,6 +399,37 @@ func (q *Queries) FulfillPeerEndpointEnrollmentRequest(ctx context.Context, arg 
 	return i, err
 }
 
+const getAccountE2EEKeyByCLISessionForUpdate = `-- name: GetAccountE2EEKeyByCLISessionForUpdate :one
+SELECT key_id, user_id, public_key, fingerprint, generation, cli_client_session_id, user_machine_id, created_at, updated_at, revoked_at, revocation_reason FROM account_e2ee_keys
+WHERE user_id = $1
+  AND cli_client_session_id = $2
+FOR UPDATE
+`
+
+type GetAccountE2EEKeyByCLISessionForUpdateParams struct {
+	UserID             string
+	CLIClientSessionID sql.NullString
+}
+
+func (q *Queries) GetAccountE2EEKeyByCLISessionForUpdate(ctx context.Context, arg GetAccountE2EEKeyByCLISessionForUpdateParams) (AccountE2eeKey, error) {
+	row := q.db.QueryRow(ctx, getAccountE2EEKeyByCLISessionForUpdate, arg.UserID, arg.CLIClientSessionID)
+	var i AccountE2eeKey
+	err := row.Scan(
+		&i.KeyID,
+		&i.UserID,
+		&i.PublicKey,
+		&i.Fingerprint,
+		&i.Generation,
+		&i.CLIClientSessionID,
+		&i.UserMachineID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.RevokedAt,
+		&i.RevocationReason,
+	)
+	return i, err
+}
+
 const getAccountE2EEKeyByFingerprintForUpdate = `-- name: GetAccountE2EEKeyByFingerprintForUpdate :one
 SELECT key_id, user_id, public_key, fingerprint, generation, cli_client_session_id, user_machine_id, created_at, updated_at, revoked_at, revocation_reason FROM account_e2ee_keys
 WHERE user_id = $1 AND fingerprint = $2
@@ -548,19 +579,20 @@ func (q *Queries) GetActivePeerEndpointCertificateForUpdate(ctx context.Context,
 	return i, err
 }
 
-const getFreshEnrollmentClientSession = `-- name: GetFreshEnrollmentClientSession :one
+const getDeviceEnrollmentClientSession = `-- name: GetDeviceEnrollmentClientSession :one
 SELECT user_id FROM cli_client_sessions
 WHERE id = $1 AND user_id = $2
-  AND state = 'active' AND fresh_e2ee_bootstrap = true
+  AND state = 'active'
+FOR UPDATE
 `
 
-type GetFreshEnrollmentClientSessionParams struct {
+type GetDeviceEnrollmentClientSessionParams struct {
 	ID     string
 	UserID string
 }
 
-func (q *Queries) GetFreshEnrollmentClientSession(ctx context.Context, arg GetFreshEnrollmentClientSessionParams) (string, error) {
-	row := q.db.QueryRow(ctx, getFreshEnrollmentClientSession, arg.ID, arg.UserID)
+func (q *Queries) GetDeviceEnrollmentClientSession(ctx context.Context, arg GetDeviceEnrollmentClientSessionParams) (string, error) {
+	row := q.db.QueryRow(ctx, getDeviceEnrollmentClientSession, arg.ID, arg.UserID)
 	var user_id string
 	err := row.Scan(&user_id)
 	return user_id, err

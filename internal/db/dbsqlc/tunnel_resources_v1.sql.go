@@ -334,7 +334,9 @@ VALUES
   ($1, $2, $3, $4,
    $5, $6,
    $7, 'pending', $8,
-   $9::jsonb, $10, 'pending', 'unknown', 'clear',
+   $9::jsonb, $10,
+   CASE WHEN $10 = 'none' THEN 'not_applicable' ELSE 'pending' END,
+   CASE WHEN $10 = 'none' THEN 'not_applicable' ELSE 'unknown' END, 'clear',
    1, $11, $11, $12,
    $13::jsonb, $11)
 RETURNING id, account_id, tunnel_id, route_id, hostname, match_type, ownership_challenge_reference, ownership_state, dns_target, observed_records, certificate_strategy, certificate_reference, certificate_state, certificate_expires_at, certificate_renewal_attempted_at, certificate_failure_code, caa_state, conflict_state, last_verified_at, generation, created_at, updated_at, deleted_at, dns_provider, expected_records, dns_last_checked_at, dns_next_check_at, dns_ttl_seconds, verification_attempts, quarantine_until
@@ -478,12 +480,28 @@ func (q *Queries) CreateTunnelLogEntryV1(ctx context.Context, arg CreateTunnelLo
 }
 
 const createTunnelRouteV1 = `-- name: CreateTunnelRouteV1 :one
+WITH allocator AS MATERIALIZED (
+  SELECT pg_advisory_xact_lock(1885686836)
+  WHERE $4::text = 'tcp'
+), public_port AS MATERIALIZED (
+  SELECT candidate::integer AS port
+  FROM generate_series($26::integer, $27::integer) AS candidate
+  WHERE $4::text = 'tcp'
+    AND (SELECT count(*) FROM allocator) = 1
+    AND NOT EXISTS (
+      SELECT 1 FROM tunnel_routes
+      WHERE public_tcp_port = candidate AND desired_state <> 'deleted'
+    )
+  ORDER BY candidate
+  LIMIT 1
+)
 INSERT INTO tunnel_routes
   (id, tunnel_id, name, protocol, match_type, match_hostname, wildcard_suffix,
    path_prefix, priority, origin_scheme, origin_address, preserve_host,
    host_override, tls_verification, tls_server_name, ca_reference,
    mtls_credential_reference, connect_timeout_ms, idle_timeout_ms,
    max_concurrent_streams, desired_state, created_by_actor_id,
+   public_tcp_listener_id, public_tcp_port,
    updated_by_actor_id, created_at, updated_at)
 VALUES
   ($1, $2, $3, $4,
@@ -495,14 +513,15 @@ VALUES
    $18, $19,
    $20, $21,
    $22, $23,
-   $24, $24)
+   (SELECT port FROM public_port), $24,
+   $25, $25)
 RETURNING id, tunnel_id, name, protocol, match_type, match_hostname,
           wildcard_suffix, path_prefix, priority, origin_scheme, origin_address,
           preserve_host, host_override, tls_verification, tls_server_name,
           ca_reference, mtls_credential_reference, connect_timeout_ms,
           idle_timeout_ms, max_concurrent_streams, desired_state, generation,
           created_by_actor_id, updated_by_actor_id, created_at, updated_at,
-          deleted_at
+          deleted_at, public_tcp_listener_id, public_tcp_port
 `
 
 type CreateTunnelRouteV1Params struct {
@@ -528,8 +547,11 @@ type CreateTunnelRouteV1Params struct {
 	MaxConcurrentStreams    int32
 	DesiredState            string
 	CreatedByActorID        string
+	PublicTcpListenerID     sql.NullString
 	UpdatedByActorID        string
 	Now                     time.Time
+	PublicTcpPortMin        int32
+	PublicTcpPortMax        int32
 }
 
 func (q *Queries) CreateTunnelRouteV1(ctx context.Context, arg CreateTunnelRouteV1Params) (TunnelRoute, error) {
@@ -556,8 +578,11 @@ func (q *Queries) CreateTunnelRouteV1(ctx context.Context, arg CreateTunnelRoute
 		arg.MaxConcurrentStreams,
 		arg.DesiredState,
 		arg.CreatedByActorID,
+		arg.PublicTcpListenerID,
 		arg.UpdatedByActorID,
 		arg.Now,
+		arg.PublicTcpPortMin,
+		arg.PublicTcpPortMax,
 	)
 	var i TunnelRoute
 	err := row.Scan(
@@ -588,8 +613,26 @@ func (q *Queries) CreateTunnelRouteV1(ctx context.Context, arg CreateTunnelRoute
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.PublicTcpListenerID,
+		&i.PublicTcpPort,
 	)
 	return i, err
+}
+
+const deleteAllTunnelRoutesV1 = `-- name: DeleteAllTunnelRoutesV1 :exec
+UPDATE tunnel_routes
+SET desired_state = 'deleted', deleted_at = $1, updated_at = $1, generation = generation + 1
+WHERE tunnel_id = $2 AND desired_state <> 'deleted'
+`
+
+type DeleteAllTunnelRoutesV1Params struct {
+	Now      sql.NullTime
+	TunnelID string
+}
+
+func (q *Queries) DeleteAllTunnelRoutesV1(ctx context.Context, arg DeleteAllTunnelRoutesV1Params) error {
+	_, err := q.db.Exec(ctx, deleteAllTunnelRoutesV1, arg.Now, arg.TunnelID)
+	return err
 }
 
 const deleteTunnelDomainV1 = `-- name: DeleteTunnelDomainV1 :one
@@ -674,7 +717,7 @@ RETURNING id, tunnel_id, name, protocol, match_type, match_hostname,
           ca_reference, mtls_credential_reference, connect_timeout_ms,
           idle_timeout_ms, max_concurrent_streams, desired_state, generation,
           created_by_actor_id, updated_by_actor_id, created_at, updated_at,
-          deleted_at
+          deleted_at, public_tcp_listener_id, public_tcp_port
 `
 
 type DeleteTunnelRouteV1Params struct {
@@ -722,6 +765,8 @@ func (q *Queries) DeleteTunnelRouteV1(ctx context.Context, arg DeleteTunnelRoute
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.PublicTcpListenerID,
+		&i.PublicTcpPort,
 	)
 	return i, err
 }
@@ -1121,7 +1166,8 @@ SELECT r.id, r.tunnel_id, r.name, r.protocol, r.match_type, r.match_hostname,
        r.tls_server_name, r.ca_reference, r.mtls_credential_reference,
        r.connect_timeout_ms, r.idle_timeout_ms, r.max_concurrent_streams,
        r.desired_state, r.generation, r.created_by_actor_id,
-       r.updated_by_actor_id, r.created_at, r.updated_at, r.deleted_at
+       r.updated_by_actor_id, r.created_at, r.updated_at, r.deleted_at,
+       r.public_tcp_listener_id, r.public_tcp_port
 FROM tunnel_routes AS r
 JOIN tunnels AS t ON t.id = r.tunnel_id
 WHERE r.id = $1
@@ -1166,6 +1212,8 @@ func (q *Queries) GetTunnelRouteV1(ctx context.Context, arg GetTunnelRouteV1Para
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.PublicTcpListenerID,
+		&i.PublicTcpPort,
 	)
 	return i, err
 }
@@ -1276,7 +1324,7 @@ SELECT id, tunnel_id, name, protocol, match_type, match_hostname,
        ca_reference, mtls_credential_reference, connect_timeout_ms,
        idle_timeout_ms, max_concurrent_streams, desired_state, generation,
        created_by_actor_id, updated_by_actor_id, created_at, updated_at,
-       deleted_at
+       deleted_at, public_tcp_listener_id, public_tcp_port
 FROM tunnel_routes
 WHERE tunnel_id = $1
   AND desired_state = 'active'
@@ -1321,6 +1369,8 @@ func (q *Queries) ListActiveTunnelRoutesForSnapshotV1(ctx context.Context, tunne
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeletedAt,
+			&i.PublicTcpListenerID,
+			&i.PublicTcpPort,
 		); err != nil {
 			return nil, err
 		}
@@ -1637,7 +1687,7 @@ SELECT r.id, r.tunnel_id, r.name, r.protocol, r.match_type, r.match_hostname,
        r.ca_reference, r.mtls_credential_reference, r.connect_timeout_ms,
        r.idle_timeout_ms, r.max_concurrent_streams, r.desired_state, r.generation,
        r.created_by_actor_id, r.updated_by_actor_id, r.created_at, r.updated_at,
-       r.deleted_at
+       r.deleted_at, r.public_tcp_listener_id, r.public_tcp_port
 FROM tunnel_routes AS r
 JOIN tunnels AS t ON t.id = r.tunnel_id
 WHERE r.tunnel_id = $1
@@ -1705,6 +1755,8 @@ func (q *Queries) ListTunnelRoutesV1(ctx context.Context, arg ListTunnelRoutesV1
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeletedAt,
+			&i.PublicTcpListenerID,
+			&i.PublicTcpPort,
 		); err != nil {
 			return nil, err
 		}
@@ -2047,7 +2099,7 @@ RETURNING id, tunnel_id, name, protocol, match_type, match_hostname,
           ca_reference, mtls_credential_reference, connect_timeout_ms,
           idle_timeout_ms, max_concurrent_streams, desired_state, generation,
           created_by_actor_id, updated_by_actor_id, created_at, updated_at,
-          deleted_at
+          deleted_at, public_tcp_listener_id, public_tcp_port
 `
 
 type UpdateTunnelRouteV1Params struct {
@@ -2171,6 +2223,8 @@ func (q *Queries) UpdateTunnelRouteV1(ctx context.Context, arg UpdateTunnelRoute
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.PublicTcpListenerID,
+		&i.PublicTcpPort,
 	)
 	return i, err
 }

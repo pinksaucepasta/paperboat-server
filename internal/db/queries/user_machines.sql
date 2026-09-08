@@ -650,6 +650,41 @@ SET state = 'ready', updated_at = now()
 WHERE user_machine_id = sqlc.arg(user_machine_id)
   AND state IN ('approved','material_issued','installing','connecting');
 
+-- name: GetUserMachineCapabilityOperation :one
+SELECT * FROM user_machine_capability_operations
+WHERE user_id = sqlc.arg(user_id) AND user_machine_id = sqlc.arg(user_machine_id)
+  AND idempotency_key = sqlc.arg(idempotency_key);
+
+-- name: CreateUserMachineCapabilityOperation :one
+INSERT INTO user_machine_capability_operations
+  (id,user_machine_id,user_id,idempotency_key,request_hash,expected_version,resulting_version,configured_capabilities,result)
+VALUES
+  (sqlc.arg(id),sqlc.arg(user_machine_id),sqlc.arg(user_id),sqlc.arg(idempotency_key),sqlc.arg(request_hash),sqlc.arg(expected_version),sqlc.arg(resulting_version),sqlc.arg(configured_capabilities),sqlc.arg(result))
+RETURNING *;
+
+-- name: SetUserMachineCapabilities :execrows
+UPDATE user_machines
+SET configured_capabilities = sqlc.arg(configured_capabilities),
+    capabilities_desired_version = capabilities_desired_version + 1,
+    capabilities_status = CASE WHEN online THEN 'pending' ELSE 'offline' END,
+    capabilities_error_code = NULL,
+    updated_at = now(), version = version + 1
+WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id)
+  AND capabilities_desired_version = sqlc.arg(expected_version)
+  AND deleted_at IS NULL AND state NOT IN ('revoked','deleted');
+
+-- name: RecordUserMachineCapabilitiesObservation :execrows
+UPDATE user_machines
+SET observed_capabilities = sqlc.arg(observed_capabilities),
+    capabilities_observed_version = sqlc.arg(observed_version),
+    capabilities_status = sqlc.arg(status),
+    capabilities_error_code = sqlc.narg(error_code),
+    updated_at = now(), version = version + 1
+WHERE id = sqlc.arg(id) AND environment_id = sqlc.arg(environment_id)
+  AND capabilities_desired_version = sqlc.arg(observed_version)
+  AND capabilities_observed_version <= sqlc.arg(observed_version)
+  AND deleted_at IS NULL AND state NOT IN ('revoked','deleted');
+
 -- name: RecordUserMachineRuntimeDiagnostics :execrows
 UPDATE user_machines
 SET worker_generation = sqlc.arg(worker_generation),

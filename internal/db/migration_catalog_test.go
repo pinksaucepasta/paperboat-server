@@ -34,6 +34,23 @@ func TestEmbeddedMigrationVersionsAreUnique(t *testing.T) {
 	}
 }
 
+func TestEnvironmentPasswordVaultMigrationStoresOnlyBoundedCiphertext(t *testing.T) {
+	body, err := migrationsFS.ReadFile("migrations/158_environment_password_vaults.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range [][]byte{[]byte("account_id text PRIMARY KEY REFERENCES users(id)"), []byte("generation BETWEEN 1 AND 9007199254740991"), []byte("document_id text"), []byte("envelope bytea"), []byte("octet_length(envelope) BETWEEN 1 AND 264192"), []byte("-- +goose Down")} {
+		if !bytes.Contains(body, required) {
+			t.Fatalf("password vault migration missing %q", required)
+		}
+	}
+	for _, forbidden := range [][]byte{[]byte("salt bytea"), []byte("nonce bytea"), []byte("plaintext")} {
+		if bytes.Contains(bytes.ToLower(body), forbidden) {
+			t.Fatalf("password vault migration contains secret-derived column %q", forbidden)
+		}
+	}
+}
+
 func TestPeerRelayIdentityMigrationIsAllOrNoneAndAddressBound(t *testing.T) {
 	body, err := migrationsFS.ReadFile("migrations/154_peer_relay_identity.sql")
 	if err != nil {

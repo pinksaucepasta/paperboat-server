@@ -150,7 +150,7 @@ func TestNetworkAuthorityProductionIdentityAndAccessLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertRegionalCandidates(t, initialCLIConfig.CandidateSet, userID, cliID, regionalNodeID, 1)
-	assertRelayGrant(t, initialCLIConfig.RelayGrants, userID, cliID, regionalNodeID, "epoch_"+suffix, 1, cliPublic, cliDisco, cliFingerprint, nil, nil, 0, relayWG, relayDisco)
+	assertRelayGrant(t, initialCLIConfig.RelayGrants, userID, cliID, regionalNodeID, "epoch_"+suffix, 1, cliPublic, cliDisco, cliFingerprint, nil, nil, 0, nil, nil)
 	if _, err = store.SQL().ExecContext(ctx, `UPDATE paperboat.control_tunnel_nodes SET state='draining',ready=false,drain_deadline=$2 WHERE id=$1`, regionalNodeID, now.Add(30*time.Second)); err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,19 @@ func TestNetworkAuthorityProductionIdentityAndAccessLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertRelayGrant(t, cliConfig.RelayGrants, userID, cliID, regionalNodeID, "epoch_"+suffix, 1, cliPublic, cliDisco, cliFingerprint, machinePublic, machineDisco, 3, relayWG, relayDisco)
+	assertRelayGrant(t, cliConfig.RelayGrants, userID, cliID, regionalNodeID, "epoch_"+suffix, 1, cliPublic, cliDisco, cliFingerprint, machinePublic, machineDisco, 3, nil, nil)
+	if _, err = store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machines SET configured_capabilities=array_append(configured_capabilities,'peer_relay'),observed_capabilities=array_append(observed_capabilities,'peer_relay') WHERE id=$1`, machineID); err != nil {
+		t.Fatal(err)
+	}
+	deviceRelayConfig, err := service.Configuration(ctx, NetworkConfigRequest{OperationID: "operation_device_relay_cli_" + suffix, UserID: userID, EndpointID: cliID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRelayGrant(t, deviceRelayConfig.RelayGrants, userID, cliID, regionalNodeID, "epoch_"+suffix, 1, cliPublic, cliDisco, cliFingerprint, machinePublic, machineDisco, 3, machinePublic, machineDisco)
+	deviceRelayClaims := networkClaims(t, deviceRelayConfig.RelayGrants[0])
+	if peers, ok := deviceRelayClaims["relay_control_peers"].([]any); !ok || len(peers) != 1 || peers[0] != base64.RawURLEncoding.EncodeToString(machinePublic) {
+		t.Fatalf("device relay control peers=%v", deviceRelayClaims["relay_control_peers"])
+	}
 	exerciseAdditiveAccessRelayAuthority(t, store, userID, cliID)
 	if _, err = store.SQL().ExecContext(ctx, `UPDATE paperboat.peer_network_identities SET disco_public_key=NULL WHERE user_id=$1 AND endpoint_id=$2`, userID, machineID); err != nil {
 		t.Fatal(err)
@@ -217,6 +229,10 @@ func TestNetworkAuthorityProductionIdentityAndAccessLifecycle(t *testing.T) {
 	machineConfig, err := service.Configuration(ctx, NetworkConfigRequest{OperationID: "operation_config_machine_" + suffix, UserID: userID, EndpointID: machineID})
 	if err != nil {
 		t.Fatal(err)
+	}
+	machineRelayClaims := networkClaims(t, machineConfig.RelayGrants[0])
+	if _, exists := machineRelayClaims["peer_relay"]; exists {
+		t.Fatalf("relay device was instructed to allocate through itself: %v", machineRelayClaims)
 	}
 	assertNetworkConfig(t, cliConfig.Configuration, cliID, machineID, "dial", 3)
 	assertNetworkConfig(t, machineConfig.Configuration, machineID, cliID, "accept", 3)
@@ -252,7 +268,7 @@ func TestNetworkAuthorityProductionIdentityAndAccessLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertNetworkConfig(t, expired.Configuration, cliID, "", "", 0)
-	assertRelayGrant(t, expired.RelayGrants, userID, cliID, regionalNodeID, "epoch_"+suffix, 1, cliPublic, cliDisco, cliFingerprint, nil, nil, 0, relayWG, relayDisco)
+	assertRelayGrant(t, expired.RelayGrants, userID, cliID, regionalNodeID, "epoch_"+suffix, 1, cliPublic, cliDisco, cliFingerprint, nil, nil, 0, nil, nil)
 	if _, err = store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machine_access_sessions SET expires_at=$2,updated_at=$3 WHERE id=$1`, accessID, grantExpiry, now); err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +280,7 @@ func TestNetworkAuthorityProductionIdentityAndAccessLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertNetworkConfig(t, revoked.Configuration, cliID, "", "", 0)
-	assertRelayGrant(t, revoked.RelayGrants, userID, cliID, regionalNodeID, "epoch_"+suffix, 1, cliPublic, cliDisco, cliFingerprint, nil, nil, 0, relayWG, relayDisco)
+	assertRelayGrant(t, revoked.RelayGrants, userID, cliID, regionalNodeID, "epoch_"+suffix, 1, cliPublic, cliDisco, cliFingerprint, nil, nil, 0, nil, nil)
 	if networkGeneration(t, revoked.Configuration) <= networkGeneration(t, cliConfig.Configuration) {
 		t.Fatal("revocation did not advance configuration generation")
 	}
@@ -375,8 +391,12 @@ func assertRelayGrant(t *testing.T, tokens []string, accountID, endpointID, node
 	if claims["wireguard_public_key"] != base64.RawURLEncoding.EncodeToString(selfKey) || claims["disco_public_key"] != base64.RawURLEncoding.EncodeToString(selfDisco) || claims["quic_certificate_fingerprint"] != hex.EncodeToString(fingerprint[:]) || claims["exp"].(float64)-claims["iat"].(float64) > 60 {
 		t.Fatalf("relay identity/lifetime=%v", claims)
 	}
-	descriptor := claims["peer_relay"].(map[string]any)
-	if descriptor["wireguard_public_key"] != base64.RawURLEncoding.EncodeToString(relayWG) || descriptor["disco_public_key"] != base64.RawURLEncoding.EncodeToString(relayDisco) || descriptor["virtual_address"] == "" {
+	descriptor, hasDescriptor := claims["peer_relay"].(map[string]any)
+	if relayWG == nil || relayDisco == nil {
+		if hasDescriptor {
+			t.Fatalf("unconfigured account received peer relay descriptor=%v", descriptor)
+		}
+	} else if !hasDescriptor || descriptor["wireguard_public_key"] != base64.RawURLEncoding.EncodeToString(relayWG) || descriptor["disco_public_key"] != base64.RawURLEncoding.EncodeToString(relayDisco) || descriptor["virtual_address"] == "" {
 		t.Fatalf("peer relay descriptor=%v", descriptor)
 	}
 	peers := claims["peers"].([]any)

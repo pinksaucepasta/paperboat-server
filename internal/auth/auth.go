@@ -20,10 +20,13 @@ import (
 )
 
 const (
-	SessionCookieName    = "paperboat_session"
-	CSRFCookieName       = "paperboat_csrf"
-	OAuthStateCookieName = "paperboat_oauth_state"
-	CSRFHeaderName       = "X-CSRF-Token"
+	SessionCookieName       = "__Host-pb-session"
+	CSRFCookieName          = "__Host-pb-csrf"
+	OAuthStateCookieName    = "__Host-pb-oauth-state"
+	DevSessionCookieName    = "pb-dev-session"
+	DevCSRFCookieName       = "pb-dev-csrf"
+	DevOAuthStateCookieName = "pb-dev-oauth-state"
+	CSRFHeaderName          = "X-CSRF-Token"
 )
 
 type Role string
@@ -70,22 +73,28 @@ type CallbackInput struct {
 }
 
 type Service struct {
-	db           *db.DB
-	audit        *audit.Writer
-	verifier     WorkOSVerifier
-	sessionKeys  []string
-	cookieSecure bool
-	now          func() time.Time
+	db            *db.DB
+	audit         *audit.Writer
+	verifier      WorkOSVerifier
+	sessionKeys   []string
+	cookieSecure  bool
+	trustedOrigin string
+	now           func() time.Time
 }
 
-func NewService(store *db.DB, auditWriter *audit.Writer, verifier WorkOSVerifier, sessionKeys []string, cookieSecure bool) *Service {
+func NewService(store *db.DB, auditWriter *audit.Writer, verifier WorkOSVerifier, sessionKeys []string, cookieSecure bool, trustedOrigin ...string) *Service {
+	origin := ""
+	if len(trustedOrigin) > 0 {
+		origin = strings.TrimSuffix(strings.TrimSpace(trustedOrigin[0]), "/")
+	}
 	return &Service{
-		db:           store,
-		audit:        auditWriter,
-		verifier:     verifier,
-		sessionKeys:  sessionKeys,
-		cookieSecure: cookieSecure,
-		now:          func() time.Time { return time.Now().UTC() },
+		db:            store,
+		audit:         auditWriter,
+		verifier:      verifier,
+		sessionKeys:   sessionKeys,
+		cookieSecure:  cookieSecure,
+		trustedOrigin: origin,
+		now:           func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -147,7 +156,7 @@ func (s *Service) ValidateOAuthState(r *http.Request, state string) error {
 	if state == "" {
 		return ErrOAuthState
 	}
-	cookie, err := r.Cookie(OAuthStateCookieName)
+	cookie, err := singleCookie(r, s.oauthStateCookieName())
 	if err != nil || strings.TrimSpace(cookie.Value) == "" {
 		return ErrOAuthState
 	}
@@ -165,7 +174,7 @@ func (s *Service) ValidateOAuthState(r *http.Request, state string) error {
 }
 
 func (s *Service) AuthenticateRequest(ctx context.Context, r *http.Request) (User, Session, error) {
-	cookie, err := r.Cookie(SessionCookieName)
+	cookie, err := singleCookie(r, s.sessionCookieName())
 	if err != nil || strings.TrimSpace(cookie.Value) == "" {
 		return User{}, Session{}, ErrUnauthenticated
 	}
@@ -247,26 +256,26 @@ func (s *Service) Logout(ctx context.Context, r *http.Request) error {
 }
 
 func (s *Service) SetSessionCookies(w http.ResponseWriter, session Session) {
-	http.SetCookie(w, &http.Cookie{Name: SessionCookieName, Value: session.Token, Path: "/", HttpOnly: true, Secure: s.cookieSecure, SameSite: http.SameSiteLaxMode, Expires: session.ExpiresAt})
-	http.SetCookie(w, &http.Cookie{Name: CSRFCookieName, Value: session.CSRFToken, Path: "/", HttpOnly: false, Secure: s.cookieSecure, SameSite: http.SameSiteLaxMode, Expires: session.ExpiresAt})
+	http.SetCookie(w, &http.Cookie{Name: s.sessionCookieName(), Value: session.Token, Path: "/", HttpOnly: true, Secure: s.cookieSecure, SameSite: http.SameSiteLaxMode, Expires: session.ExpiresAt})
+	http.SetCookie(w, &http.Cookie{Name: s.csrfCookieName(), Value: session.CSRFToken, Path: "/", Secure: s.cookieSecure, SameSite: http.SameSiteLaxMode, Expires: session.ExpiresAt})
 }
 
 func (s *Service) SetCSRFCookie(w http.ResponseWriter, token string, expiresAt time.Time) {
-	http.SetCookie(w, &http.Cookie{Name: CSRFCookieName, Value: token, Path: "/", HttpOnly: false, Secure: s.cookieSecure, SameSite: http.SameSiteLaxMode, Expires: expiresAt})
+	http.SetCookie(w, &http.Cookie{Name: s.csrfCookieName(), Value: token, Path: "/", Secure: s.cookieSecure, SameSite: http.SameSiteLaxMode, Expires: expiresAt})
 }
 
 func (s *Service) SetOAuthStateCookie(w http.ResponseWriter, state string) {
-	http.SetCookie(w, &http.Cookie{Name: OAuthStateCookieName, Value: state, Path: "/", HttpOnly: true, Secure: s.cookieSecure, SameSite: http.SameSiteLaxMode, Expires: s.now().Add(10 * time.Minute), MaxAge: 600})
+	http.SetCookie(w, &http.Cookie{Name: s.oauthStateCookieName(), Value: state, Path: "/", HttpOnly: true, Secure: s.cookieSecure, SameSite: http.SameSiteLaxMode, Expires: s.now().Add(10 * time.Minute), MaxAge: 600})
 }
 
 func (s *Service) ClearSessionCookies(w http.ResponseWriter) {
-	clearCookie(w, SessionCookieName, true, s.cookieSecure)
-	clearCookie(w, CSRFCookieName, false, s.cookieSecure)
-	clearCookie(w, OAuthStateCookieName, true, s.cookieSecure)
+	clearCookie(w, s.sessionCookieName(), true, s.cookieSecure)
+	clearCookie(w, s.csrfCookieName(), false, s.cookieSecure)
+	clearCookie(w, s.oauthStateCookieName(), true, s.cookieSecure)
 }
 
 func (s *Service) ClearOAuthStateCookie(w http.ResponseWriter) {
-	clearCookie(w, OAuthStateCookieName, true, s.cookieSecure)
+	clearCookie(w, s.oauthStateCookieName(), true, s.cookieSecure)
 }
 
 func clearCookie(w http.ResponseWriter, name string, httpOnly bool, secure bool) {
@@ -278,7 +287,7 @@ func clearCookiePath(w http.ResponseWriter, name, path string, httpOnly, secure 
 }
 
 func (s *Service) CSRFToken(r *http.Request) (string, bool) {
-	cookie, err := r.Cookie(CSRFCookieName)
+	cookie, err := singleCookie(r, s.csrfCookieName())
 	if err != nil || cookie.Value == "" {
 		return "", false
 	}
@@ -286,7 +295,7 @@ func (s *Service) CSRFToken(r *http.Request) (string, bool) {
 }
 
 func (s *Service) ValidateCSRF(ctx context.Context, r *http.Request) error {
-	cookie, err := r.Cookie(CSRFCookieName)
+	cookie, err := singleCookie(r, s.csrfCookieName())
 	if err != nil || strings.TrimSpace(cookie.Value) == "" {
 		return ErrCSRF
 	}
@@ -294,7 +303,7 @@ func (s *Service) ValidateCSRF(ctx context.Context, r *http.Request) error {
 	if header == "" || !hmac.Equal([]byte(header), []byte(cookie.Value)) {
 		return ErrCSRF
 	}
-	sessionCookie, err := r.Cookie(SessionCookieName)
+	sessionCookie, err := singleCookie(r, s.sessionCookieName())
 	if err != nil {
 		return ErrCSRF
 	}
@@ -306,6 +315,63 @@ func (s *Service) ValidateCSRF(ctx context.Context, r *http.Request) error {
 		return ErrCSRF
 	}
 	return nil
+}
+
+// ValidateBrowserRequest enforces the exact trusted browser origin on unsafe
+// cookie-authenticated requests. An unset origin fails closed.
+func (s *Service) ValidateBrowserRequest(r *http.Request) error {
+	if !unsafeMethod(r.Method) {
+		return nil
+	}
+	origins := r.Header.Values("Origin")
+	if s.trustedOrigin == "" || len(origins) != 1 || origins[0] != s.trustedOrigin {
+		return ErrOrigin
+	}
+	for _, name := range []string{SessionCookieName, CSRFCookieName, OAuthStateCookieName, DevSessionCookieName, DevCSRFCookieName, DevOAuthStateCookieName} {
+		if _, err := singleCookie(r, name); err != nil && !errors.Is(err, http.ErrNoCookie) {
+			return ErrDuplicateCookie
+		}
+	}
+	return nil
+}
+
+func (s *Service) sessionCookieName() string {
+	if s.cookieSecure {
+		return SessionCookieName
+	}
+	return DevSessionCookieName
+}
+func (s *Service) csrfCookieName() string {
+	if s.cookieSecure {
+		return CSRFCookieName
+	}
+	return DevCSRFCookieName
+}
+func (s *Service) oauthStateCookieName() string {
+	if s.cookieSecure {
+		return OAuthStateCookieName
+	}
+	return DevOAuthStateCookieName
+}
+
+func singleCookie(r *http.Request, name string) (*http.Cookie, error) {
+	cookies := r.CookiesNamed(name)
+	if len(cookies) == 0 {
+		return nil, http.ErrNoCookie
+	}
+	if len(cookies) != 1 {
+		return nil, ErrDuplicateCookie
+	}
+	return cookies[0], nil
+}
+
+func unsafeMethod(method string) bool {
+	switch strings.ToUpper(method) {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return false
+	default:
+		return true
+	}
 }
 
 func (s *Service) HasActiveEntitlement(ctx context.Context, userID string) (bool, error) {
@@ -331,6 +397,8 @@ var (
 	ErrUnauthenticated = errors.New("unauthenticated")
 	ErrCSRF            = errors.New("csrf validation failed")
 	ErrOAuthState      = errors.New("oauth state validation failed")
+	ErrOrigin          = errors.New("browser origin validation failed")
+	ErrDuplicateCookie = errors.New("duplicate reserved cookie")
 )
 
 func (s *Service) signValue(value string) (string, error) {

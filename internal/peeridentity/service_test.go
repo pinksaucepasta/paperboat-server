@@ -103,12 +103,12 @@ func TestServiceRejectsBeforePersistence(t *testing.T) {
 	rootFingerprint := sha256.Sum256(rootPublic)
 	repository.root = AccountRoot{Keys: []AccountKey{{KeyID: keyIDForFingerprint(rootFingerprint), PublicKey: rootPublic, Fingerprint: rootFingerprint, Generation: 1}}}
 	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
-	raw := signedFixture(t, rootPrivate, "account_01", RoleCLI, "cli_01", 1, 1, now.Add(-time.Minute), now.Add(time.Hour))
+	raw := signedFixture(t, rootPrivate, "account_01", RoleMachine, "machine_01", 1, 1, now.Add(-time.Minute), now.Add(time.Hour))
 	raw[len(raw)-1] ^= 1
 	certificateFingerprint := sha256.Sum256(raw)
 	_, err := service.Register(context.Background(), RegisterRequest{
 		OperationID: "operation_endpoint_01", UserID: "account_01", KeyID: repository.root.Keys[0].KeyID,
-		Certificate: raw, Expected: Expected{AccountID: "account_01", Role: RoleCLI, EndpointID: "cli_01", Generation: 1},
+		Certificate: raw, Expected: Expected{AccountID: "account_01", Role: RoleMachine, EndpointID: "machine_01", Generation: 1},
 		ExpectedRootFingerprint: repository.root.Keys[0].Fingerprint, ExpectedCertificateFingerprint: certificateFingerprint,
 		ExpectedIssuedAt: now.Add(-time.Minute), ExpectedExpiresAt: now.Add(time.Hour), Now: now,
 	})
@@ -118,6 +118,18 @@ func TestServiceRejectsBeforePersistence(t *testing.T) {
 	var typedNil *recordingRepository
 	if _, err := NewService(typedNil); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("typed nil error=%v", err)
+	}
+}
+
+func TestServiceRejectsCLIEnrollmentThroughRegister(t *testing.T) {
+	repository := &recordingRepository{}
+	service, _ := NewService(repository)
+	_, err := service.Register(context.Background(), RegisterRequest{
+		OperationID: "operation_endpoint_01", UserID: "account_01",
+		Expected: Expected{AccountID: "account_01", Role: RoleCLI, EndpointID: "other_cli", Generation: 1}, Now: time.Now(),
+	})
+	if !errors.Is(err, ErrInvalid) || repository.operation != "" {
+		t.Fatalf("error=%v repository=%+v", err, repository)
 	}
 }
 

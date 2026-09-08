@@ -103,7 +103,7 @@ func installScript(files http.Handler) http.HandlerFunc {
 }
 
 func enrollmentTokenUsesPowerShell(token string) bool {
-	return len(token) == 26 && strings.Contains("13579ACEGIKMOQSUWY", token[1:2])
+	return len(token) == 26 && strings.Contains("13579ACEGIKMOQSUWY", token[:1])
 }
 
 func serveEnrollmentScript(w http.ResponseWriter, r *http.Request, files http.Handler, path string, powershell bool) {

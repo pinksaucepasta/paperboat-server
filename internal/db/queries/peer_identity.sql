@@ -13,10 +13,11 @@ FOR UPDATE;
 SELECT * FROM account_e2ee_roots
 WHERE user_id = sqlc.arg(user_id) AND revoked_at IS NULL;
 
--- name: GetFreshEnrollmentClientSession :one
+-- name: GetDeviceEnrollmentClientSession :one
 SELECT user_id FROM cli_client_sessions
 WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id)
-  AND state = 'active' AND fresh_e2ee_bootstrap = true;
+  AND state = 'active'
+FOR UPDATE;
 
 -- name: GetFreshEnrollmentMachineID :one
 SELECT client_session.user_machine_id
@@ -50,6 +51,12 @@ FOR UPDATE;
 -- name: GetAccountE2EEKeyByIDForUpdate :one
 SELECT * FROM account_e2ee_keys
 WHERE user_id = sqlc.arg(user_id) AND key_id = sqlc.arg(key_id)
+FOR UPDATE;
+
+-- name: GetAccountE2EEKeyByCLISessionForUpdate :one
+SELECT * FROM account_e2ee_keys
+WHERE user_id = sqlc.arg(user_id)
+  AND cli_client_session_id = sqlc.arg(cli_client_session_id)
 FOR UPDATE;
 
 -- name: ListActiveAccountE2EEKeys :many

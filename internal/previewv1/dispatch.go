@@ -30,32 +30,40 @@ var (
 // to the selected host. Its field order and canonical hash are part of the
 // host/server protocol. RequestHash excludes itself and covers every other
 // field, including LeaseETag.
+type LazyBinding struct {
+	PolicyID               string `json:"policy_id"`
+	PolicyGeneration       int64  `json:"policy_generation"`
+	InstallationGeneration int64  `json:"installation_generation"`
+	BootID                 string `json:"boot_id"`
+}
+
 type DispatchRequest struct {
-	Schema             string     `json:"schema"`
-	Kind               string     `json:"kind"`
-	PreviewID          string     `json:"preview_id"`
-	OperationID        string     `json:"operation_id"`
-	AccountID          string     `json:"account_id"`
-	ActorID            string     `json:"actor_id"`
-	OwnerDeviceID      string     `json:"owner_device_id"`
-	OwnerSessionID     string     `json:"owner_session_id"`
-	Target             Target     `json:"target"`
-	AccessMode         string     `json:"access_mode"`
-	Endpoint           string     `json:"endpoint"`
-	LeaseDeadline      time.Time  `json:"lease_deadline"`
-	UserDeadline       *time.Time `json:"user_deadline,omitempty"`
-	LeaseETag          string     `json:"lease_etag"`
-	State              string     `json:"state"`
-	AllocationState    string     `json:"allocation_state"`
-	EdgeState          string     `json:"edge_state"`
-	OriginState        string     `json:"origin_state"`
-	CreatedAt          time.Time  `json:"created_at"`
-	LastRenewedAt      time.Time  `json:"last_renewed_at"`
-	ExpectedGeneration int64      `json:"expected_generation"`
-	IdempotencyKey     string     `json:"idempotency_key"`
-	RequestID          string     `json:"request_id"`
-	CorrelationID      string     `json:"correlation_id"`
-	RequestHash        string     `json:"request_hash"`
+	Lazy               *LazyBinding `json:"lazy,omitempty"`
+	Schema             string       `json:"schema"`
+	Kind               string       `json:"kind"`
+	PreviewID          string       `json:"preview_id"`
+	OperationID        string       `json:"operation_id"`
+	AccountID          string       `json:"account_id"`
+	ActorID            string       `json:"actor_id"`
+	OwnerDeviceID      string       `json:"owner_device_id"`
+	OwnerSessionID     string       `json:"owner_session_id"`
+	Target             Target       `json:"target"`
+	AccessMode         string       `json:"access_mode"`
+	Endpoint           string       `json:"endpoint"`
+	LeaseDeadline      time.Time    `json:"lease_deadline"`
+	UserDeadline       *time.Time   `json:"user_deadline,omitempty"`
+	LeaseETag          string       `json:"lease_etag"`
+	State              string       `json:"state"`
+	AllocationState    string       `json:"allocation_state"`
+	EdgeState          string       `json:"edge_state"`
+	OriginState        string       `json:"origin_state"`
+	CreatedAt          time.Time    `json:"created_at"`
+	LastRenewedAt      time.Time    `json:"last_renewed_at"`
+	ExpectedGeneration int64        `json:"expected_generation"`
+	IdempotencyKey     string       `json:"idempotency_key"`
+	RequestID          string       `json:"request_id"`
+	CorrelationID      string       `json:"correlation_id"`
+	RequestHash        string       `json:"request_hash"`
 }
 
 // DispatchOutcome is the only response data accepted from a host. A host may
@@ -127,6 +135,9 @@ func (r DispatchRequest) canonicalHashInput(machineID string) ([]byte, error) {
 	r.IdempotencyKey = strings.TrimSpace(r.IdempotencyKey)
 	r.RequestID = strings.TrimSpace(r.RequestID)
 	r.CorrelationID = strings.TrimSpace(r.CorrelationID)
+	if r.Lazy != nil && (!validDispatchID(r.Lazy.PolicyID) || r.Lazy.PolicyGeneration < 1 || r.Lazy.InstallationGeneration < 1 || !validLazyBoot(r.Lazy.BootID) || r.AccessMode == "public" || r.OwnerSessionID != "lazy_"+r.Lazy.BootID) {
+		return nil, ErrDispatchInvalid
+	}
 	if r.Schema != Schema || r.Kind != PreviewDispatchKind || !validDispatchID(r.PreviewID) || !validDispatchID(r.OperationID) || !validDispatchID(r.AccountID) || !validDispatchID(r.ActorID) || !validDispatchID(r.OwnerDeviceID) || r.OwnerDeviceID != strings.TrimSpace(machineID) || !validDispatchID(r.OwnerSessionID) || r.ExpectedGeneration < 1 {
 		return nil, ErrDispatchInvalid
 	}
@@ -136,7 +147,7 @@ func (r DispatchRequest) canonicalHashInput(machineID string) ([]byte, error) {
 	if !previewtunnelstore.ValidPreviewTargetV1(r.Target.Scheme, r.Target.Address, r.AccessMode) {
 		return nil, ErrDispatchInvalid
 	}
-	if r.AccessMode != "public" && r.AccessMode != "private" || !validDispatchEndpoint(r.Endpoint) {
+	if r.AccessMode != "public" && r.AccessMode != "private" && r.AccessMode != "team" || !validDispatchEndpoint(r.Endpoint) {
 		return nil, ErrDispatchInvalid
 	}
 	if r.LeaseDeadline.IsZero() || r.UserDeadline != nil && r.UserDeadline.IsZero() || r.CreatedAt.IsZero() || r.LastRenewedAt.IsZero() || r.LastRenewedAt.Before(r.CreatedAt) {
@@ -146,31 +157,32 @@ func (r DispatchRequest) canonicalHashInput(machineID string) ([]byte, error) {
 		return nil, ErrDispatchInvalid
 	}
 	return json.Marshal(struct {
-		Schema             string     `json:"schema"`
-		Kind               string     `json:"kind"`
-		PreviewID          string     `json:"preview_id"`
-		OperationID        string     `json:"operation_id"`
-		AccountID          string     `json:"account_id"`
-		ActorID            string     `json:"actor_id"`
-		OwnerDeviceID      string     `json:"owner_device_id"`
-		OwnerSessionID     string     `json:"owner_session_id"`
-		Target             Target     `json:"target"`
-		AccessMode         string     `json:"access_mode"`
-		Endpoint           string     `json:"endpoint"`
-		LeaseDeadline      time.Time  `json:"lease_deadline"`
-		UserDeadline       *time.Time `json:"user_deadline,omitempty"`
-		LeaseETag          string     `json:"lease_etag"`
-		State              string     `json:"state"`
-		AllocationState    string     `json:"allocation_state"`
-		EdgeState          string     `json:"edge_state"`
-		OriginState        string     `json:"origin_state"`
-		CreatedAt          time.Time  `json:"created_at"`
-		LastRenewedAt      time.Time  `json:"last_renewed_at"`
-		ExpectedGeneration int64      `json:"expected_generation"`
-		IdempotencyKey     string     `json:"idempotency_key"`
-		RequestID          string     `json:"request_id"`
-		CorrelationID      string     `json:"correlation_id"`
-	}{r.Schema, r.Kind, r.PreviewID, r.OperationID, r.AccountID, r.ActorID, r.OwnerDeviceID, r.OwnerSessionID, r.Target, r.AccessMode, r.Endpoint, r.LeaseDeadline.UTC(), utcDispatchTime(r.UserDeadline), r.LeaseETag, r.State, r.AllocationState, r.EdgeState, r.OriginState, r.CreatedAt.UTC(), r.LastRenewedAt.UTC(), r.ExpectedGeneration, r.IdempotencyKey, r.RequestID, r.CorrelationID})
+		Lazy               *LazyBinding `json:"lazy,omitempty"`
+		Schema             string       `json:"schema"`
+		Kind               string       `json:"kind"`
+		PreviewID          string       `json:"preview_id"`
+		OperationID        string       `json:"operation_id"`
+		AccountID          string       `json:"account_id"`
+		ActorID            string       `json:"actor_id"`
+		OwnerDeviceID      string       `json:"owner_device_id"`
+		OwnerSessionID     string       `json:"owner_session_id"`
+		Target             Target       `json:"target"`
+		AccessMode         string       `json:"access_mode"`
+		Endpoint           string       `json:"endpoint"`
+		LeaseDeadline      time.Time    `json:"lease_deadline"`
+		UserDeadline       *time.Time   `json:"user_deadline,omitempty"`
+		LeaseETag          string       `json:"lease_etag"`
+		State              string       `json:"state"`
+		AllocationState    string       `json:"allocation_state"`
+		EdgeState          string       `json:"edge_state"`
+		OriginState        string       `json:"origin_state"`
+		CreatedAt          time.Time    `json:"created_at"`
+		LastRenewedAt      time.Time    `json:"last_renewed_at"`
+		ExpectedGeneration int64        `json:"expected_generation"`
+		IdempotencyKey     string       `json:"idempotency_key"`
+		RequestID          string       `json:"request_id"`
+		CorrelationID      string       `json:"correlation_id"`
+	}{r.Lazy, r.Schema, r.Kind, r.PreviewID, r.OperationID, r.AccountID, r.ActorID, r.OwnerDeviceID, r.OwnerSessionID, r.Target, r.AccessMode, r.Endpoint, r.LeaseDeadline.UTC(), utcDispatchTime(r.UserDeadline), r.LeaseETag, r.State, r.AllocationState, r.EdgeState, r.OriginState, r.CreatedAt.UTC(), r.LastRenewedAt.UTC(), r.ExpectedGeneration, r.IdempotencyKey, r.RequestID, r.CorrelationID})
 }
 
 func utcDispatchTime(value *time.Time) *time.Time {
@@ -249,4 +261,16 @@ func validDispatchState(state, allocation, edge, origin string) bool {
 		(allocation == "pending" || allocation == "ready" || allocation == "failed" || allocation == "released") &&
 		(edge == "pending" || edge == "ready" || edge == "degraded" || edge == "down") &&
 		(origin == "unknown" || origin == "ready" || origin == "unavailable")
+}
+
+func validLazyBoot(value string) bool {
+	if len(value) < 16 || len(value) > 64 {
+		return false
+	}
+	for _, c := range value {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
 }

@@ -38,6 +38,10 @@ func workOSCallback(service *auth.Service) http.HandlerFunc {
 		State       string `json:"state"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
+		if err := service.ValidateBrowserRequest(r); err != nil {
+			writeError(w, r, http.StatusForbidden, "origin_failed", "Browser origin validation failed.")
+			return
+		}
 		var body request
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON.")
@@ -132,6 +136,12 @@ func mePayload(user auth.User) map[string]any {
 
 func requireAuth(service *auth.Service, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if unsafeMethod(r.Method) {
+			if err := service.ValidateBrowserRequest(r); err != nil {
+				writeError(w, r, http.StatusForbidden, "origin_failed", "Browser origin validation failed.")
+				return
+			}
+		}
 		user, session, err := service.AuthenticateRequest(r.Context(), r)
 		if errors.Is(err, auth.ErrUnauthenticated) {
 			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.")

@@ -631,11 +631,23 @@ func (q *Queries) CreatePreviewTunnelOperation(ctx context.Context, arg CreatePr
 }
 
 const createPreviewTunnelRoute = `-- name: CreatePreviewTunnelRoute :one
+WITH allocator AS MATERIALIZED (
+  SELECT pg_advisory_xact_lock(1885686836)
+  WHERE $4::text = 'tcp'
+), public_port AS MATERIALIZED (
+  SELECT candidate::integer AS port
+  FROM generate_series($26::integer, $27::integer) AS candidate
+  WHERE $4::text = 'tcp'
+    AND (SELECT count(*) FROM allocator) = 1
+    AND NOT EXISTS (SELECT 1 FROM tunnel_routes WHERE public_tcp_port = candidate AND desired_state <> 'deleted')
+  ORDER BY candidate LIMIT 1
+)
 INSERT INTO tunnel_routes
   (id, tunnel_id, name, protocol, match_type, match_hostname, wildcard_suffix, path_prefix,
    priority, origin_scheme, origin_address, preserve_host, host_override, tls_verification,
    tls_server_name, ca_reference, mtls_credential_reference, connect_timeout_ms,
    idle_timeout_ms, max_concurrent_streams, desired_state, created_by_actor_id,
+   public_tcp_listener_id, public_tcp_port,
    updated_by_actor_id, created_at, updated_at)
 VALUES
   ($1, $2, $3, $4, $5,
@@ -644,8 +656,9 @@ VALUES
    $14, $15, $16,
    $17, $18, $19,
    $20, $21, $22,
-   $23, $24, $24)
-RETURNING id, tunnel_id, name, protocol, match_type, match_hostname, wildcard_suffix, path_prefix, priority, origin_scheme, origin_address, preserve_host, host_override, tls_verification, tls_server_name, ca_reference, mtls_credential_reference, connect_timeout_ms, idle_timeout_ms, max_concurrent_streams, desired_state, generation, created_by_actor_id, updated_by_actor_id, created_at, updated_at, deleted_at
+   $23, (SELECT port FROM public_port),
+   $24, $25, $25)
+RETURNING id, tunnel_id, name, protocol, match_type, match_hostname, wildcard_suffix, path_prefix, priority, origin_scheme, origin_address, preserve_host, host_override, tls_verification, tls_server_name, ca_reference, mtls_credential_reference, connect_timeout_ms, idle_timeout_ms, max_concurrent_streams, desired_state, generation, created_by_actor_id, updated_by_actor_id, created_at, updated_at, deleted_at, public_tcp_listener_id, public_tcp_port
 `
 
 type CreatePreviewTunnelRouteParams struct {
@@ -671,8 +684,11 @@ type CreatePreviewTunnelRouteParams struct {
 	MaxConcurrentStreams    int32
 	DesiredState            string
 	CreatedByActorID        string
+	PublicTcpListenerID     sql.NullString
 	UpdatedByActorID        string
 	Now                     time.Time
+	PublicTcpPortMin        int32
+	PublicTcpPortMax        int32
 }
 
 func (q *Queries) CreatePreviewTunnelRoute(ctx context.Context, arg CreatePreviewTunnelRouteParams) (TunnelRoute, error) {
@@ -699,8 +715,11 @@ func (q *Queries) CreatePreviewTunnelRoute(ctx context.Context, arg CreatePrevie
 		arg.MaxConcurrentStreams,
 		arg.DesiredState,
 		arg.CreatedByActorID,
+		arg.PublicTcpListenerID,
 		arg.UpdatedByActorID,
 		arg.Now,
+		arg.PublicTcpPortMin,
+		arg.PublicTcpPortMax,
 	)
 	var i TunnelRoute
 	err := row.Scan(
@@ -731,6 +750,8 @@ func (q *Queries) CreatePreviewTunnelRoute(ctx context.Context, arg CreatePrevie
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.PublicTcpListenerID,
+		&i.PublicTcpPort,
 	)
 	return i, err
 }

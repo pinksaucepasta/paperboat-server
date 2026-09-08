@@ -545,8 +545,8 @@ func routeForAccessMode(accessMode string) (string, string) {
 	switch accessMode {
 	case accessModePublic:
 		return accessModePublic, publicRouteKind
-	case accessModePrivate:
-		return accessModePrivate, privateRouteKind
+	case accessModePrivate, "team":
+		return accessMode, privateRouteKind
 	default:
 		return "", ""
 	}
@@ -557,9 +557,8 @@ func routeKindForAccessMode(accessMode string) string {
 	return kind
 }
 
-// validateAccessModeAndRoute keeps a private preview from being normalized to
-// the public route. The current canonical edge admission policy has no private
-// authorizer, so private admissions fail closed until that verifier exists.
+// Restricted audiences always use the restricted route kind. Viewer authority
+// is checked independently before a browser stream may reach its origin.
 func validateAccessModeAndRoute(accessMode, routeKind string) error {
 	_, want := routeForAccessMode(accessMode)
 	if want == "" {
@@ -567,9 +566,6 @@ func validateAccessModeAndRoute(accessMode, routeKind string) error {
 	}
 	if routeKind != "" && routeKind != want {
 		return fmt.Errorf("%w: route kind does not match access mode", ErrInvalid)
-	}
-	if accessMode == accessModePrivate {
-		return fmt.Errorf("%w: private preview route policy is unavailable", ErrAdmissionUnavailable)
 	}
 	return nil
 }
@@ -831,7 +827,7 @@ func endpointHostname(value string) string {
 
 func validateEdgeEndpoints(endpoints []string) error {
 	if len(endpoints) != 2 {
-		return fmt.Errorf("%w: exactly one tls and one quic edge endpoint are required", ErrConflict)
+		return fmt.Errorf("%w: exactly one h2 and one h3 edge endpoint are required", ErrConflict)
 	}
 	seen := make(map[string]struct{}, len(endpoints))
 	schemes := make(map[string]struct{}, len(endpoints))
@@ -845,7 +841,7 @@ func validateEdgeEndpoints(endpoints []string) error {
 		}
 		scheme := strings.ToLower(u.Scheme)
 		switch scheme {
-		case "tls", "quic":
+		case "h2", "h3":
 		default:
 			return fmt.Errorf("%w: unsupported edge endpoint scheme %q", ErrInvalid, u.Scheme)
 		}
@@ -860,7 +856,7 @@ func validateEdgeEndpoints(endpoints []string) error {
 		schemes[scheme] = struct{}{}
 	}
 	if len(schemes) != 2 {
-		return fmt.Errorf("%w: exactly one tls and one quic edge endpoint are required", ErrConflict)
+		return fmt.Errorf("%w: exactly one h2 and one h3 edge endpoint are required", ErrConflict)
 	}
 	return nil
 }

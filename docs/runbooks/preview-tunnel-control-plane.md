@@ -291,3 +291,41 @@ is terminal, desired and observed generations agree, old sessions are fenced,
 bounded retry queues are draining, and no secret entered logs or evidence. For
 user-visible diagnostics, follow the `pb tunnel doctor` support-bundle flow and
 review its redaction manifest before upload.
+
+### Lazy private/team port sharing
+
+`PUT /v1/lazy-policies` reserves an exact loopback HTTP, HTTPS or h2c target for an
+owned machine. Supply `machine_id`, `target`, `access_mode` (`private` or `team`),
+and `expires_at`; `expected_generation: 0` creates a policy. Updates supply its
+`id` and current `expected_generation`. Port sharing follows replacement listeners
+at the same approved address. It does not start applications or wake machines.
+
+The response contains the stable hostname and policy generation. Owner reads use
+`GET /v1/lazy-policies/{policy_id}`; revocation uses `DELETE` with
+`{"expected_generation": N}`. Revocation tombstones the hostname permanently.
+Expiry stops permission while retaining the reservation for owner inspection and
+reapproval. Re-enrollment requires owner reapproval of the new installation.
+Team use additionally requires an explicit `lazy_policy` binding and `use` grant
+through the existing team API. Membership or URL knowledge alone is insufficient.
+Scoped machine credentials use resource kind `lazy_policy` and the policy ID for
+both `resource_id` and `route_id`.
+
+Authenticated first requests coalesce at the server before any application body
+is read. Only the current daemon registration may receive the exact-target lease.
+Readiness uses a bounded `HEAD /` against the exact origin; protocol failures and
+5xx responses are unavailable, and redirects are not followed. The existing
+ephemeral preview engine owns forwarding and cleanup: five minutes
+with zero streams retires forwarding, eight hours caps an instance (earlier policy
+or credential deadlines win), and streams are capped at one hour and current
+authorization. A later authorized request can reactivate the reserved name.
+Neither traffic nor a listening application extends expired authority.
+
+Activation is bounded to ten seconds, with a three-second origin connection
+budget, four concurrent activations per environment, sixteen per account and
+thirty-two waiters per activation. Admission exhaustion returns 429 with
+`Retry-After: 1`. Authenticated failures distinguish `host_offline`,
+`origin_unavailable`, `activation_timeout`, `generation_conflict` and
+`forwarding_failed`. No partially forwarded request is replayed automatically.
+
+Production browser rollout still requires Task26's hostname/PSL isolation gate.
+These APIs and development checks do not waive that gate or provision DNS/TLS.

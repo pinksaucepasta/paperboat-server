@@ -20,6 +20,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
+	"github.com/pinksaucepasta/paperboat-server/internal/environment"
 	"github.com/pinksaucepasta/paperboat-server/internal/observability"
 )
 
@@ -469,6 +470,9 @@ func (s *DeviceService) revokeTx(ctx context.Context, tx *db.Tx, sid, reason str
 
 func (s *DeviceService) RevokeClient(ctx context.Context, userID, sid, reason string) error {
 	err := s.inTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := environment.LockVaultMutationsTx(ctx, tx); err != nil {
+			return err
+		}
 		owner, err := tx.Queries().GetClientSessionOwnerForUpdate(ctx, sid)
 		if err != nil {
 			return err
@@ -476,7 +480,17 @@ func (s *DeviceService) RevokeClient(ctx context.Context, userID, sid, reason st
 		if owner != userID {
 			return sql.ErrNoRows
 		}
-		return s.revokeTx(ctx, tx, sid, reason)
+		var active bool
+		if err := tx.QueryRow(ctx, `SELECT revoked_at IS NULL FROM cli_client_sessions WHERE id=$1`, sid).Scan(&active); err != nil {
+			return err
+		}
+		if err := s.revokeTx(ctx, tx, sid, reason); err != nil {
+			return err
+		}
+		if active {
+			return environment.RequirePersonalRotationTx(ctx, tx, userID)
+		}
+		return nil
 	})
 	if err != nil {
 		return err

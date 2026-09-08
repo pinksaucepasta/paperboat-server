@@ -47,7 +47,6 @@ func userMachinePairings(service *usermachines.Service) http.HandlerFunc {
 
 func machineSetup(service *usermachines.Service) http.HandlerFunc {
 	type request struct {
-		SetupMode          string          `json:"setup_mode"`
 		DisplayName        string          `json:"display_name"`
 		Platform           string          `json:"platform"`
 		Architecture       string          `json:"architecture"`
@@ -72,7 +71,7 @@ func machineSetup(service *usermachines.Service) http.HandlerFunc {
 		machine, err := service.Setup(r.Context(), principal.User.ID, usermachines.SetupInput{
 			DisplayName: body.DisplayName, Platform: body.Platform, Architecture: body.Architecture,
 			WorkspaceRoot: body.WorkspaceRoot, PublicIdentityKey: body.PublicIdentityKey,
-			RuntimeVersions: body.RuntimeVersions, SetupMode: body.SetupMode,
+			RuntimeVersions: body.RuntimeVersions, SetupMode: "host",
 			AcceptBetaPlatform: body.AcceptBetaPlatform,
 		})
 		switch {
@@ -95,7 +94,6 @@ func authenticatedHostSetupInstallation(service *usermachines.Service) http.Hand
 		Verifier                string                       `json:"verifier"`
 		PublicIdentityKey       string                       `json:"public_identity_key"`
 		InstallationGeneration  int64                        `json:"installation_generation"`
-		SetupMode               string                       `json:"setup_mode"`
 		Artifact                usermachines.MachineArtifact `json:"artifact"`
 		SSHUser                 string                       `json:"ssh_user,omitempty"`
 		SSHPort                 uint16                       `json:"ssh_port,omitempty"`
@@ -117,7 +115,7 @@ func authenticatedHostSetupInstallation(service *usermachines.Service) http.Hand
 		result, err := service.PrepareAuthenticatedHostSetup(r.Context(), principal.User.ID, principal.Client.SessionID, r.PathValue("machine_id"), usermachines.AuthenticatedHostSetupInput{
 			OperationID: r.Header.Get("Idempotency-Key"), Verifier: body.Verifier,
 			PublicIdentityKey: body.PublicIdentityKey, InstallationGeneration: body.InstallationGeneration,
-			SetupMode: body.SetupMode, Artifact: body.Artifact, SSHUser: body.SSHUser, SSHPort: body.SSHPort,
+			SetupMode: "host", Artifact: body.Artifact, SSHUser: body.SSHUser, SSHPort: body.SSHPort,
 			CanReuseRuntimeIdentity: body.CanReuseRuntimeIdentity,
 		})
 		switch {
@@ -144,19 +142,20 @@ func userMachineEnrollmentStart(service *usermachines.Service) http.HandlerFunc 
 			return
 		}
 		var body struct {
-			Role  string `json:"role"`
 			Shell string `json:"shell"`
 		}
 		if r.Body != nil {
-			_ = json.NewDecoder(r.Body).Decode(&body)
-		}
-		if body.Role == "" {
-			body.Role = "host"
+			decoder := json.NewDecoder(io.LimitReader(r.Body, 1025))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+				writeError(w, r, http.StatusBadRequest, "validation_failed", "Request body accepts only the installer shell.")
+				return
+			}
 		}
 		if body.Shell == "" {
 			body.Shell = "posix"
 		}
-		result, err := service.StartEnrollmentWithOptions(r.Context(), p.User.ID, r.Header.Get("Idempotency-Key"), usermachines.EnrollmentOptions{Role: body.Role, Shell: body.Shell})
+		result, err := service.StartEnrollmentWithOptions(r.Context(), p.User.ID, r.Header.Get("Idempotency-Key"), usermachines.EnrollmentOptions{Shell: body.Shell})
 		if err != nil {
 			if errors.Is(err, usermachines.ErrIdempotencyKeyRequired) {
 				writeError(w, r, http.StatusBadRequest, "idempotency_key_required", "A valid Idempotency-Key header is required.")
@@ -230,17 +229,18 @@ func userMachineEnrollmentRetry(service *usermachines.Service) http.HandlerFunc 
 			return
 		}
 		var body struct {
-			Role  string `json:"role"`
 			Shell string `json:"shell"`
 		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		if body.Role == "" {
-			body.Role = "host"
+		decoder := json.NewDecoder(io.LimitReader(r.Body, 1025))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, r, http.StatusBadRequest, "validation_failed", "Request body accepts only the installer shell.")
+			return
 		}
 		if body.Shell == "" {
 			body.Shell = "posix"
 		}
-		result, err := service.RetryEnrollmentWithOptions(r.Context(), p.User.ID, r.PathValue("enrollment_id"), usermachines.EnrollmentOptions{Role: body.Role, Shell: body.Shell})
+		result, err := service.RetryEnrollmentWithOptions(r.Context(), p.User.ID, r.PathValue("enrollment_id"), usermachines.EnrollmentOptions{Shell: body.Shell})
 		if err != nil {
 			writeError(w, r, http.StatusConflict, "user_machine_enrollment_not_retryable", "User-machine enrollment cannot be retried in its current state.")
 			return

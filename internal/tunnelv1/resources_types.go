@@ -23,6 +23,8 @@ type ResourceConfig struct {
 	EnrollmentTTL            time.Duration
 	RotationOverlap          time.Duration
 	CredentialLifetime       time.Duration
+	PublicTCPPortMin         int32
+	PublicTCPPortMax         int32
 	AllowInsecureDevelopment bool
 }
 
@@ -180,6 +182,8 @@ type RouteView struct {
 	DesiredState         string         `json:"desired_state"`
 	Generation           int64          `json:"generation"`
 	ETag                 string         `json:"etag"`
+	PublicTCPListenerID  string         `json:"public_tcp_listener_id,omitempty"`
+	PublicTCPPort        int32          `json:"public_tcp_port,omitempty"`
 }
 
 type RoutePage struct {
@@ -344,6 +348,7 @@ type DNSInstructions struct {
 	Records             []DNSRecordInstruction `json:"records"`
 	CertificateStrategy string                 `json:"certificate_strategy"`
 	VerificationState   string                 `json:"verification_state"`
+	PublicTCPPort       int32                  `json:"public_tcp_port,omitempty"`
 	Note                string                 `json:"note"`
 }
 
@@ -418,6 +423,9 @@ type RouteRecord struct {
 	SourceDeviceID       string
 	Now                  time.Time
 	CredentialLifetime   time.Duration
+	PublicTCPListenerID  string
+	PublicTCPPortMin     int32
+	PublicTCPPortMax     int32
 	NameSet              bool
 	ProtocolSet          bool
 	MatchTypeSet         bool

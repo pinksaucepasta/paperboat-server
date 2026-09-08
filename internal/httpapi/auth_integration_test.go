@@ -304,13 +304,13 @@ func newAuthIntegrationRouter(t *testing.T) (*db.DB, http.Handler) {
 	}
 	resetIntegrationTables(t, store)
 	auditWriter := audit.NewWriter(store)
-	service := auth.NewService(store, auditWriter, auth.FakeWorkOSVerifier{}, []string{"test-session-key"}, false)
+	service := auth.NewService(store, auditWriter, auth.FakeWorkOSVerifier{}, []string{"test-session-key"}, true, "https://login.pprbt.dev")
 	deviceService := auth.NewDeviceService(store, auditWriter, config.Default().CLIAuth, []string{"test-device-hash-key"})
 	billingService := billing.NewService(billing.NewRepository(store), billing.FakePolarClient{}, auditWriter)
 	userMachineService := usermachines.New(store, auditWriter, usermachines.Policy{PairingLifetime: 10 * time.Minute}, billingService)
 	userMachineService.ConfigureProvisioning(nil, "test-enrollment-key")
 	cfg := config.Default()
-	return store, NewRouter(Options{
+	return store, authTestOriginHandler{next: NewRouter(Options{
 		Config: cfg,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		ReadinessChecker: readinessFunc(func(context.Context) error {
@@ -320,7 +320,16 @@ func newAuthIntegrationRouter(t *testing.T) (*db.DB, http.Handler) {
 		DeviceAuth: deviceService,
 		Billing:    billingService,
 		Machines:   userMachineService,
-	})
+	})}
+}
+
+type authTestOriginHandler struct{ next http.Handler }
+
+func (h authTestOriginHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if unsafeMethod(r.Method) && r.Header.Get("Origin") == "" {
+		r.Header.Set("Origin", "https://login.pprbt.dev")
+	}
+	h.next.ServeHTTP(w, r)
 }
 
 func resetIntegrationTables(t *testing.T, store *db.DB) {

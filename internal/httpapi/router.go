@@ -26,6 +26,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/favorites"
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
+	"github.com/pinksaucepasta/paperboat-server/internal/lazyaccess"
 	"github.com/pinksaucepasta/paperboat-server/internal/managedssh"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
 	"github.com/pinksaucepasta/paperboat-server/internal/mint"
@@ -53,6 +54,8 @@ type ProbeRegionReader interface {
 }
 
 type Options struct {
+	BrowserAccess          *BrowserAccessHandlers
+	Teams                  teamAPI
 	Config                 config.Config
 	Logger                 *slog.Logger
 	ReadinessChecker       ReadinessChecker
@@ -101,6 +104,8 @@ type Options struct {
 	ReleaseAuthority       *releaseauthority.Service
 	PreviewTunnelAPI       PreviewTunnelAPI
 	PreviewLeases          PreviewLeaseAPI
+	LazyPolicies           LazyPolicyAPI
+	LazyActivation         *lazyaccess.Activator
 	PreviewDomains         previewdomain.API
 	Tunnels                tunnelv1.API
 	TunnelResources        tunnelv1.ResourceAPI
@@ -120,19 +125,6 @@ type Options struct {
 	TelemetryHTTP             *telemetry.HTTPObserver
 	TelemetryMetrics          *telemetry.Metrics
 	TelemetryDiagnostics      *telemetry.Diagnostics
-}
-
-func registerEnvironmentTransitionRoutes(mux *http.ServeMux, service environmentVariableAPI, read, write func(http.Handler) http.Handler) {
-	// Authority recovery is authenticated by the root-signed authority
-	// document (or abort authorization) and staged manifests are signed by the
-	// proposed authority. A replacement manager is intentionally not present in
-	// the active authority yet, so active-manager middleware must not run before
-	// these cryptographic checks.
-	mux.Handle("POST /v1/environment-authority/transitions", write(environmentTransitionPost(service)))
-	mux.Handle("GET /v1/environment-authority/transitions/{transition_id}", read(environmentTransitionGet(service)))
-	mux.Handle("POST /v1/environment-authority/transitions/{transition_id}/abort", write(environmentTransitionAbort(service)))
-	mux.Handle("PUT /v1/environment-authority/transitions/{transition_id}/scopes/global", write(environmentTransitionStage(service, false)))
-	mux.Handle("PUT /v1/environment-authority/transitions/{transition_id}/scopes/machines/{machine_id}", write(environmentTransitionStage(service, true)))
 }
 
 // tunnelCreateAuth mirrors the preview machine-auth boundary: machine
@@ -200,6 +192,9 @@ func NewRouter(opts Options) http.Handler {
 			}
 			previewWrite := func(next http.Handler) http.Handler {
 				return requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope("previews:write", requireCSRF(opts.Auth, next)))
+			}
+			if opts.LazyPolicies != nil {
+				registerLazyPolicyRoutes(mux, opts.LazyPolicies, previewRead, previewWrite)
 			}
 			previewMutation := func(next http.Handler) http.Handler {
 				return previewLeaseMutationAuth(opts.Auth, opts.DeviceAuth, opts.RuntimeIdentity, next)
@@ -448,6 +443,15 @@ func NewRouter(opts Options) http.Handler {
 				mux.Handle("DELETE /v1/machines/{machine_id}/config-assignment/consent", requireAuth(opts.Auth, requireCSRF(opts.Auth, configConsentRemove(opts.ConfigAssignments))))
 				mux.Handle("DELETE /v1/machines/{machine_id}/config-assignment", configAuth("projects:connect", requireCSRF(opts.Auth, configAssignmentClear(opts.ConfigAssignments))))
 			}
+			if opts.Teams != nil {
+				secure := func(scope string, next http.Handler) http.Handler {
+					if opts.DeviceAuth != nil {
+						return requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope(scope, next))
+					}
+					return requireAuth(opts.Auth, next)
+				}
+				registerTeamRoutes(mux, opts.Teams, func(h http.Handler) http.Handler { return secure("projects:read", h) }, func(h http.Handler) http.Handler { return secure("projects:connect", requireCSRF(opts.Auth, h)) })
+			}
 			if opts.EnvironmentVariables != nil {
 				environmentAuth := func(scope string, next http.Handler) http.Handler {
 					var secured http.Handler
@@ -467,30 +471,10 @@ func NewRouter(opts Options) http.Handler {
 				environmentRead := func(next http.Handler) http.Handler {
 					return environmentAuth("projects:read", next)
 				}
-				managerWrite := func(next http.Handler) http.Handler {
-					return environmentWrite(environmentManagerAuthorized(opts.EnvironmentVariables, next))
-				}
-				mux.Handle("GET /v1/environment-variables", environmentRead(environmentVariablesList(opts.EnvironmentVariables, false)))
-				mux.Handle("GET /v1/environment-scopes", environmentRead(environmentScopesList(opts.EnvironmentVariables)))
-				mux.Handle("GET /v1/environment-variables/{name}", environmentRead(environmentVariableGet(opts.EnvironmentVariables, false)))
-				mux.Handle("GET /v1/machines/{machine_id}/environment-variables", environmentRead(environmentVariablesList(opts.EnvironmentVariables, true)))
-				mux.Handle("GET /v1/machines/{machine_id}/environment-variables/{name}", environmentRead(environmentVariableGet(opts.EnvironmentVariables, true)))
-				// Recovery clients must fetch the existing opaque envelope before
-				// their replacement manager binding becomes active. Account auth may
-				// read ciphertext; only an active ENV manager may mutate it.
-				mux.Handle("GET /v1/environment-manifests/global", environmentRead(environmentManifestGet(opts.EnvironmentVariables, false)))
-				mux.Handle("PUT /v1/environment-manifests/global", managerWrite(environmentManifestPut(opts.EnvironmentVariables, false)))
-				mux.Handle("GET /v1/environment-manifests/machines/{machine_id}", environmentRead(environmentManifestGet(opts.EnvironmentVariables, true)))
-				mux.Handle("PUT /v1/environment-manifests/machines/{machine_id}", managerWrite(environmentManifestPut(opts.EnvironmentVariables, true)))
-				mux.Handle("GET /v1/environment-authority", environmentRead(environmentAuthorityGet(opts.EnvironmentVariables)))
-				mux.Handle("GET /v1/environment-authority/documents", environmentRead(environmentAuthorityDocuments(opts.EnvironmentVariables)))
-				enrollmentPost := environmentEnrollmentPost(opts.EnvironmentVariables)
-				mux.Handle("POST /v1/environment-key-enrollments", environmentEnrollmentMachineOrHuman(opts.RuntimeIdentity, environmentWrite(enrollmentPost), enrollmentPost))
-				mux.Handle("GET /v1/environment-key-enrollments/pending", environmentRead(environmentEnrollmentPending(opts.EnvironmentVariables)))
-				enrollmentProof := environmentEnrollmentProof(opts.EnvironmentVariables)
-				mux.Handle("PUT /v1/environment-key-enrollments/{request_id}/proof", environmentEnrollmentMachineOrHuman(opts.RuntimeIdentity, environmentWrite(enrollmentProof), enrollmentProof))
-				mux.Handle("POST /v1/environment-key-enrollments/{request_id}/approve", environmentWrite(environmentEnrollmentApprove(opts.EnvironmentVariables)))
-				registerEnvironmentTransitionRoutes(mux, opts.EnvironmentVariables, environmentRead, environmentWrite)
+				mux.Handle("GET /v1/environment-vault", environmentRead(environmentPasswordVaultGet(opts.EnvironmentVariables)))
+				mux.Handle("PUT /v1/environment-vault", environmentWrite(environmentPasswordVaultPut(opts.EnvironmentVariables)))
+				registerEnvironmentVaultScopeRoutes(mux, opts.EnvironmentVariables, environmentRead, environmentWrite)
+				registerEnvironmentVaultHostRoutes(mux, opts.EnvironmentVariables, opts.RuntimeIdentity, environmentRead, environmentWrite)
 			}
 		}
 		if opts.Machines != nil {
@@ -532,6 +516,7 @@ func NewRouter(opts Options) http.Handler {
 			mux.Handle("POST /v1/machines/{machine_id}/maintenance-approvals/{approval_id}/approve", userMachineAuth("projects:connect", requireCSRF(opts.Auth, userMachineMaintenanceApprovalDecision(opts.Machines, "approved"))))
 			mux.Handle("POST /v1/machines/{machine_id}/maintenance-approvals/{approval_id}/reject", userMachineAuth("projects:connect", requireCSRF(opts.Auth, userMachineMaintenanceApprovalDecision(opts.Machines, "rejected"))))
 			mux.Handle("PUT /v1/machines/{machine_id}/availability-policy", userMachineAuth("projects:connect", requireCSRF(opts.Auth, userMachineAvailabilityPolicy(opts.Machines))))
+			mux.Handle("PUT /v1/machines/{machine_id}/capabilities", userMachineAuth("projects:connect", requireCSRF(opts.Auth, userMachineCapabilities(opts.Machines))))
 			if opts.DeviceAuth != nil {
 				mux.Handle("POST /v1/machines/{machine_id}/connection-descriptor", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", userMachineConnectionDescriptor(opts.Machines))))
 				mux.Handle("POST /v1/machines/{machine_id}/exec-descriptor", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", userMachineExecDescriptor(opts.Machines))))
@@ -576,7 +561,7 @@ func NewRouter(opts Options) http.Handler {
 			mux.HandleFunc("POST /v1/webhooks/polar", polarWebhook(opts.Billing, opts.Config.Secrets.PolarWebhookSecret, opts.Config.Billing.PolarWebhookTolerance))
 		}
 		if opts.MeteringRepo != nil {
-			mux.HandleFunc("POST /v1/runtime-observations", runtimeObservation(opts.MeteringRepo, opts.RuntimeIdentity, opts.Config.ConfigSync.SummaryLimit, opts.Machines, opts.EnvironmentVariables))
+			mux.HandleFunc("POST /v1/runtime-observations", runtimeObservation(opts.MeteringRepo, opts.RuntimeIdentity, opts.Config.ConfigSync.SummaryLimit, opts.Machines, opts.EnvironmentVariables, opts.LazyActivation))
 		}
 		mux.HandleFunc("/", notFound)
 		handler = mux
@@ -707,6 +692,12 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 			return requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope("account:read", next))
 		}
 		return requireAuth(opts.Auth, next)
+	}
+	if opts.BrowserAccess != nil {
+		mux.Handle("POST /v1/browser-access/machine-credentials", requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope("projects:connect", requireCSRF(opts.Auth, http.HandlerFunc(opts.BrowserAccess.MachineCredential)))))
+		mux.Handle("POST /v1/browser-access/issue", requireAuth(opts.Auth, requireCSRF(opts.Auth, http.HandlerFunc(opts.BrowserAccess.Issue))))
+		mux.HandleFunc("POST /v1/edge/browser-access/{operation}", opts.BrowserAccess.EdgeRequest)
+		mux.HandleFunc("POST /v1/browser-access/ingress/authorize", opts.BrowserAccess.MachineRequest)
 	}
 	mux.HandleFunc("GET /v1/auth/workos/state", workOSState(opts.Auth))
 	mux.HandleFunc("POST /v1/auth/workos/callback", workOSCallback(opts.Auth))
@@ -961,6 +952,8 @@ func bodyLimit(limit int64, next http.Handler) http.Handler {
 		requestLimit := limit
 		if strings.HasPrefix(r.URL.Path, "/v1/environment-") || strings.Contains(r.URL.Path, "/environment-manifests/") {
 			requestLimit = 3 << 20
+		} else if strings.HasPrefix(r.URL.Path, "/v1/environment/") {
+			requestLimit = 2 << 20
 		}
 		if r.Body != nil && requestLimit > 0 {
 			r.Body = http.MaxBytesReader(w, r.Body, requestLimit)

@@ -17,7 +17,7 @@ import (
 )
 
 func TestRuntimePendingEnvironmentHandshakeDoesNotClaimCapability(t *testing.T) {
-	base := `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-09-07T13:40:00Z","runtime_diagnostics":{"capabilities":["terminal_host"],"worker_generation":5,"os_boot_id":"boot-1","worker_service_scope":"user","connector_state":"unavailable","connector_generation":0,"observed_at":"2026-09-07T13:40:00Z"},"environment":{"schema":"` + environment.ObservationSchema + `","observation_seq":1,"host_recipient_key_id":"envk_` + strings.Repeat("A", 43) + `","authority":null,"global":null,"machine":null,"state":"pending","error_code":null,"observed_at":"2026-09-07T13:40:00Z"}}`
+	base := `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-09-07T13:40:00Z","runtime_diagnostics":{"capabilities":["terminal_host"],"worker_generation":5,"os_boot_id":"boot-1","worker_service_scope":"user","connector_state":"unavailable","connector_generation":0,"observed_at":"2026-09-07T13:40:00Z"},"environment":{"schema":"` + environment.VaultProjectionObservationSchema + `","observation_seq":1,"host_recipient_key_id":"envk_` + strings.Repeat("A", 43) + `","projection":null,"fence_generation":0,"state":"pending","error_code":null,"observed_at":"2026-09-07T13:40:00Z"}}`
 	noDiagnostics := base[:strings.Index(base, `,"runtime_diagnostics"`)] + base[strings.Index(base, `,"environment"`):]
 	for _, test := range []struct {
 		name, body string
@@ -26,11 +26,11 @@ func TestRuntimePendingEnvironmentHandshakeDoesNotClaimCapability(t *testing.T) 
 	}{
 		{"initial handshake", base, nil, http.StatusAccepted},
 		{"unauthorized machine", base, controlplane.ErrHelperProof, http.StatusUnauthorized},
-		{"missing document member", strings.Replace(base, `,"global":null`, "", 1), nil, http.StatusBadRequest},
+		{"missing document member", strings.Replace(base, `,"projection":null`, "", 1), nil, http.StatusBadRequest},
 		{"invalid recipient", strings.Replace(base, "envk_", "invalid_", 1), nil, http.StatusBadRequest},
 		{"missing runtime diagnostics", noDiagnostics, nil, http.StatusBadRequest},
 		{"applied without capability", strings.Replace(base, `"state":"pending"`, `"state":"applied"`, 1), nil, http.StatusBadRequest},
-		{"authority without capability", strings.Replace(base, `"authority":null`, `"authority":{"generation":1,"authority_id":"sha256:`+strings.Repeat("a", 64)+`"}`, 1), nil, http.StatusBadRequest},
+		{"projection without capability", strings.Replace(base, `"projection":null`, `"projection":{"revision":1,"document_id":"sha256:`+strings.Repeat("a", 64)+`"}`, 1), nil, http.StatusBadRequest},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			repo := &fakeRuntimeObservationRepository{}
@@ -104,9 +104,9 @@ func (f *fakeUpdateObservationRepository) RecordUpdateObservation(_ context.Cont
 	return f.err
 }
 
-func (f *fakeEnvironmentObservationRepository) RecordEnvironmentObservation(context.Context, string, string, *environment.Observation) (environment.RuntimeResult, error) {
+func (f *fakeEnvironmentObservationRepository) RecordVaultProjectionObservation(context.Context, string, string, *environment.VaultProjectionObservation) (*environment.VaultProjectionBundle, error) {
 	f.calls++
-	return environment.RuntimeResult{}, f.err
+	return nil, f.err
 }
 
 func (f *fakeRuntimeIdentity) VerifyRuntimeObservation(_ context.Context, token string, proof, body []byte, projectID, machineID string) error {
@@ -229,7 +229,7 @@ func TestRuntimeObservationKeepsHeartbeatAcceptedAcrossFailedThenFreshUpdate(t *
 }
 
 func TestRuntimeObservationKeepsHeartbeatAcceptedWhenEnvironmentStorageFails(t *testing.T) {
-	body := `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-08-29T12:00:01Z","runtime_diagnostics":{"capabilities":["environment_injection"],"worker_generation":5,"os_boot_id":"boot-new","worker_service_scope":"system","connector_state":"ready","connector_generation":2,"observed_at":"2026-08-29T12:00:01Z"},"environment":{"schema":"paperboat.environment-observation/v2","observation_seq":1,"host_recipient_key_id":"envk_` + strings.Repeat("A", 43) + `","authority":null,"global":null,"machine":null,"state":"pending","error_code":null,"observed_at":"2026-08-29T12:00:00Z"}}`
+	body := `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-08-29T12:00:01Z","runtime_diagnostics":{"capabilities":["environment_injection"],"worker_generation":5,"os_boot_id":"boot-new","worker_service_scope":"system","connector_state":"ready","connector_generation":2,"observed_at":"2026-08-29T12:00:01Z"},"environment":{"schema":"paperboat.environment-projection-observation/v1","observation_seq":1,"host_recipient_key_id":"envk_` + strings.Repeat("A", 43) + `","projection":null,"fence_generation":0,"state":"pending","error_code":null,"observed_at":"2026-08-29T12:00:00Z"}}`
 	repository := &fakeRuntimeObservationRepository{}
 	environmentRepository := &fakeEnvironmentObservationRepository{err: errors.New("database connection refused")}
 	recorder := httptest.NewRecorder()
@@ -395,7 +395,7 @@ func TestValidObservedCapabilitiesRejectsUnknownAndDuplicates(t *testing.T) {
 }
 
 func TestRuntimeEnvironmentObservationRequiresEveryDocumentMember(t *testing.T) {
-	base := `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-08-06T12:00:01Z","runtime_diagnostics":{"capabilities":["environment_injection"],"worker_generation":4,"os_boot_id":"boot-1","worker_service_scope":"system","connector_state":"ready","connector_generation":2,"observed_at":"2026-08-06T12:00:01Z"},"environment":{"schema":"paperboat.environment-observation/v2","observation_seq":1,"host_recipient_key_id":"envk_` + strings.Repeat("A", 43) + `","authority":null,"global":null,"machine":null,"state":"pending","error_code":null,"observed_at":"2026-08-06T12:00:00Z"}}`
+	base := `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-08-06T12:00:01Z","runtime_diagnostics":{"capabilities":["environment_injection"],"worker_generation":4,"os_boot_id":"boot-1","worker_service_scope":"system","connector_state":"ready","connector_generation":2,"observed_at":"2026-08-06T12:00:01Z"},"environment":{"schema":"paperboat.environment-projection-observation/v1","observation_seq":1,"host_recipient_key_id":"envk_` + strings.Repeat("A", 43) + `","projection":null,"fence_generation":0,"state":"pending","error_code":null,"observed_at":"2026-08-06T12:00:00Z"}}`
 	for name, body := range map[string]string{
 		"complete":            base,
 		"missing state":       strings.Replace(base, `,"state":"pending"`, "", 1),
@@ -420,7 +420,7 @@ func TestRuntimeEnvironmentObservationRequiresEveryDocumentMember(t *testing.T) 
 
 func TestRuntimeEnvironmentObservationRejectsPlaintextValueCanary(t *testing.T) {
 	const canary = "ENV_CANARY_RUNTIME_PLAINTEXT_MUST_NOT_CROSS"
-	base := `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-08-06T12:00:01Z","runtime_diagnostics":{"capabilities":["environment_injection"],"worker_generation":4,"os_boot_id":"boot-1","worker_service_scope":"system","connector_state":"ready","connector_generation":2,"observed_at":"2026-08-06T12:00:01Z"},"environment":{"schema":"paperboat.environment-observation/v2","observation_seq":1,"host_recipient_key_id":"envk_` + strings.Repeat("A", 43) + `","authority":null,"global":null,"machine":null,"state":"pending","error_code":null,"observed_at":"2026-08-06T12:00:00Z","value":"` + canary + `"}}`
+	base := `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-08-06T12:00:01Z","runtime_diagnostics":{"capabilities":["environment_injection"],"worker_generation":4,"os_boot_id":"boot-1","worker_service_scope":"system","connector_state":"ready","connector_generation":2,"observed_at":"2026-08-06T12:00:01Z"},"environment":{"schema":"paperboat.environment-projection-observation/v1","observation_seq":1,"host_recipient_key_id":"envk_` + strings.Repeat("A", 43) + `","projection":null,"fence_generation":0,"state":"pending","error_code":null,"observed_at":"2026-08-06T12:00:00Z","value":"` + canary + `"}}`
 	repository := &fakeRuntimeObservationRepository{}
 	request := httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(base))
 	request.Header.Set("Authorization", "Bearer machine-token")

@@ -101,8 +101,8 @@ func (i *DBPreviewCarrierIssuer) IssuePreviewCarrier(ctx context.Context, in Pre
 	// configuration generation change.
 	configHash := previewCarrierConfigHash(in, node.id, ids)
 	endpoints := []string{
-		"tls://" + net.JoinHostPort(node.host, fmt.Sprint(node.tcpPort)),
-		"quic://" + net.JoinHostPort(node.host, fmt.Sprint(node.quicPort)),
+		"h2://" + net.JoinHostPort(node.host, fmt.Sprint(node.tcpPort)),
+		"h3://" + net.JoinHostPort(node.host, fmt.Sprint(node.quicPort)),
 	}
 	carrier := CarrierSnapshot{
 		AccountID: in.Lease.AccountID, HostID: in.Lease.OwnerDeviceID, Ephemeral: true,

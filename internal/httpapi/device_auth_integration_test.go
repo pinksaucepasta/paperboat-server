@@ -10,9 +10,10 @@ import (
 	"testing"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/auth"
+	"github.com/pinksaucepasta/paperboat-server/internal/config"
 )
 
-var cliScopes = []string{"account:read", "clients:revoke", "projects:read", "projects:connect", "session:refresh"}
+var cliScopes = config.Default().CLIAuth.AllowedScopes
 
 func TestDeviceAuthorizationApprovalBearerRefreshAndReplay(t *testing.T) {
 	store, router := newAuthIntegrationRouter(t)
@@ -227,7 +228,7 @@ func TestUnknownRevokeTokenAndApprovalCodeMatchContract(t *testing.T) {
 }
 
 func TestBrowserLogoutKeepsCLIClientActiveAndDeleteReturnsNoContent(t *testing.T) {
-	_, router := newAuthIntegrationRouter(t)
+	store, router := newAuthIntegrationRouter(t)
 	cookies := loginCookies(t, router, "workos_logout_scope:logout-scope@example.com:Logout Scope")
 	grant := authorizeDevice(t, router)
 
@@ -240,6 +241,23 @@ func TestBrowserLogoutKeepsCLIClientActiveAndDeleteReturnsNoContent(t *testing.T
 		t.Fatalf("approve status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	tokens := pollDevice(t, router, grant.DeviceCode, http.StatusOK)
+	accountID := userIDByEmail(t, store, "logout-scope@example.com")
+	// This opaque row marks initialized custody; envelope crypto has separate tests.
+	if _, err := store.SQL().Exec(`INSERT INTO paperboat.environment_password_vaults(account_id,generation,document_id,envelope) VALUES($1,1,'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','opaque-test-envelope')`, accountID); err != nil {
+		t.Fatal(err)
+	}
+	teamID := "team_logout_hook"
+	for _, q := range []string{`INSERT INTO paperboat.teams(team_id,owner_account,generation) VALUES($1,$2,1)`, `INSERT INTO paperboat.team_members(team_id,account_id,membership_generation,role,active) VALUES($1,$2,1,'member',true)`} {
+		if _, err := store.SQL().Exec(q, teamID, accountID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.SQL().Exec(`INSERT INTO paperboat.environment_vault_teams(team_id,key_epoch) SELECT $1,1 WHERE $2<>''`, teamID, accountID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().Exec(`INSERT INTO paperboat.environment_vault_team_members(team_id,account_id,grant_epoch) VALUES($1,$2,1)`, teamID, accountID); err != nil {
+		t.Fatal(err)
+	}
 
 	req = httptest.NewRequest(http.MethodPost, "/v1/auth/logout", nil)
 	addCookies(req, cookies)
@@ -258,6 +276,10 @@ func TestBrowserLogoutKeepsCLIClientActiveAndDeleteReturnsNoContent(t *testing.T
 		t.Fatalf("CLI after browser logout status=%d body=%s", rec.Code, rec.Body.String())
 	}
 
+	var rotationRequired bool
+	if err := store.SQL().QueryRow(`SELECT COALESCE((SELECT rotation_required FROM paperboat.environment_vault_personal_epochs WHERE account_id=$1),false)`, accountID).Scan(&rotationRequired); err != nil || rotationRequired {
+		t.Fatal("routine browser logout required key rotation", err)
+	}
 	req = httptest.NewRequest(http.MethodDelete, "/v1/auth/cli-client-sessions/"+tokens.CLIClientSessionID, nil)
 	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
 	rec = httptest.NewRecorder()
@@ -265,6 +287,13 @@ func TestBrowserLogoutKeepsCLIClientActiveAndDeleteReturnsNoContent(t *testing.T
 	if rec.Code != http.StatusNoContent || rec.Body.Len() != 0 {
 		t.Fatalf("delete status=%d body=%q, want empty 204", rec.Code, rec.Body.String())
 	}
+	if err := store.SQL().QueryRow(`SELECT rotation_required FROM paperboat.environment_vault_personal_epochs WHERE account_id=$1`, accountID).Scan(&rotationRequired); err != nil || !rotationRequired {
+		t.Fatal("explicit CLI revocation omitted personal rotation fence", err)
+	}
+	if err := store.SQL().QueryRow(`SELECT rotation_required FROM paperboat.environment_vault_teams WHERE team_id=$1`, teamID).Scan(&rotationRequired); err != nil || !rotationRequired {
+		t.Fatal("explicit CLI revocation omitted team rotation fence", err)
+	}
+
 }
 
 func TestUserMachineMutationsAcceptScopedBearerAndRequireCookieCSRF(t *testing.T) {
@@ -343,7 +372,7 @@ func TestMachineEnrollmentRoutesAcceptScopedBearerAndRequireCookieCSRF(t *testin
 	tokens := authorizeCLI(t, router, cookies)
 
 	start := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/machine-enrollments", strings.NewReader(`{"role":"client","shell":"posix"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/machine-enrollments", strings.NewReader(`{"shell":"posix"}`))
 	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
 	req.Header.Set("Idempotency-Key", "machine-enrollment-bearer")
 	router.ServeHTTP(start, req)
@@ -381,7 +410,7 @@ func TestMachineEnrollmentRoutesAcceptScopedBearerAndRequireCookieCSRF(t *testin
 	}
 
 	missingCSRF := httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/v1/machine-enrollments", strings.NewReader(`{"role":"client","shell":"posix"}`))
+	req = httptest.NewRequest(http.MethodPost, "/v1/machine-enrollments", strings.NewReader(`{"shell":"posix"}`))
 	addCookies(req, cookies)
 	req.Header.Set("Idempotency-Key", "machine-enrollment-cookie")
 	router.ServeHTTP(missingCSRF, req)

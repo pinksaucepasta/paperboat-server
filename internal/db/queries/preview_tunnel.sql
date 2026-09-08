@@ -69,11 +69,23 @@ WHERE id = sqlc.arg(id) AND account_id = sqlc.arg(account_id)
 RETURNING *;
 
 -- name: CreatePreviewTunnelRoute :one
+WITH allocator AS MATERIALIZED (
+  SELECT pg_advisory_xact_lock(1885686836)
+  WHERE sqlc.arg(protocol)::text = 'tcp'
+), public_port AS MATERIALIZED (
+  SELECT candidate::integer AS port
+  FROM generate_series(sqlc.arg(public_tcp_port_min)::integer, sqlc.arg(public_tcp_port_max)::integer) AS candidate
+  WHERE sqlc.arg(protocol)::text = 'tcp'
+    AND (SELECT count(*) FROM allocator) = 1
+    AND NOT EXISTS (SELECT 1 FROM tunnel_routes WHERE public_tcp_port = candidate AND desired_state <> 'deleted')
+  ORDER BY candidate LIMIT 1
+)
 INSERT INTO tunnel_routes
   (id, tunnel_id, name, protocol, match_type, match_hostname, wildcard_suffix, path_prefix,
    priority, origin_scheme, origin_address, preserve_host, host_override, tls_verification,
    tls_server_name, ca_reference, mtls_credential_reference, connect_timeout_ms,
    idle_timeout_ms, max_concurrent_streams, desired_state, created_by_actor_id,
+   public_tcp_listener_id, public_tcp_port,
    updated_by_actor_id, created_at, updated_at)
 VALUES
   (sqlc.arg(id), sqlc.arg(tunnel_id), sqlc.arg(name), sqlc.arg(protocol), sqlc.arg(match_type),
@@ -82,6 +94,7 @@ VALUES
    sqlc.arg(tls_verification), sqlc.narg(tls_server_name), sqlc.narg(ca_reference),
    sqlc.narg(mtls_credential_reference), sqlc.arg(connect_timeout_ms), sqlc.arg(idle_timeout_ms),
    sqlc.arg(max_concurrent_streams), sqlc.arg(desired_state), sqlc.arg(created_by_actor_id),
+   sqlc.narg(public_tcp_listener_id), (SELECT port FROM public_port),
    sqlc.arg(updated_by_actor_id), sqlc.arg(now), sqlc.arg(now))
 RETURNING *;
 

@@ -51,14 +51,14 @@ func TestRandomEnrollmentTokenMatchesInstallerContract(t *testing.T) {
 	}
 }
 
-func TestEnvironmentInjectionIsHostOnlyMachineCapability(t *testing.T) {
+func TestEnvironmentInjectionRemainsInInternalServiceComposition(t *testing.T) {
 	client := configuredCapabilities("client")
 	if slices.Contains(client, "environment_injection") || len(client) != 2 {
 		t.Fatalf("client capabilities = %v, want the unchanged two-capability set", client)
 	}
 	host := configuredCapabilities("host")
-	if !slices.Contains(host, "environment_injection") || len(host) != 7 {
-		t.Fatalf("host capabilities = %v, want environment_injection plus six existing capabilities", host)
+	if !slices.Contains(host, "environment_injection") || len(host) != 8 {
+		t.Fatalf("host capabilities = %v, want environment_injection plus seven existing capabilities", host)
 	}
 
 	resolved := mapCapabilities([]string{"environment_injection"}, []string{"environment_injection"})
@@ -76,38 +76,36 @@ func TestEnvironmentInjectionIsHostOnlyMachineCapability(t *testing.T) {
 
 func TestEnrollmentTokenMetadataParityAndLength(t *testing.T) {
 	tests := []struct {
-		role, shell         string
-		roleEven, shellEven bool
+		shell string
+		even  bool
 	}{
-		{role: "host", shell: "posix", roleEven: true, shellEven: true},
-		{role: "host", shell: "powershell", roleEven: true, shellEven: false},
-		{role: "client", shell: "posix", roleEven: false, shellEven: true},
-		{role: "client", shell: "powershell", roleEven: false, shellEven: false},
+		{shell: "posix", even: true},
+		{shell: "powershell", even: false},
 	}
 	for _, test := range tests {
-		token, err := randomEnrollmentTokenFor(test.role, test.shell)
+		token, err := randomEnrollmentTokenFor(test.shell)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if len(token) != 26 {
-			t.Fatalf("%s/%s token length = %d, want 26", test.role, test.shell, len(token))
+			t.Fatalf("%s token length = %d, want 26", test.shell, len(token))
 		}
-		if enrollmentCharacterEven(token[0]) != test.roleEven || enrollmentCharacterEven(token[1]) != test.shellEven {
-			t.Fatalf("%s/%s token metadata = %q, wrong parity", test.role, test.shell, token[:2])
+		if enrollmentCharacterEven(token[0]) != test.even {
+			t.Fatalf("%s token metadata = %q, wrong parity", test.shell, token[:1])
 		}
 	}
 }
 
 func TestEnrollmentTokenMetadataIsPartOfCredential(t *testing.T) {
-	token, err := randomEnrollmentTokenFor("host", "posix")
+	token, err := randomEnrollmentTokenFor("posix")
 	if err != nil {
 		t.Fatal(err)
 	}
-	variant := "11" + token[2:]
+	variant := "1" + token[1:]
 	if enrollmentTokenHash(token) == enrollmentTokenHash(variant) {
 		t.Fatal("metadata-only token variant retained the credential hash")
 	}
-	changedSecret := variant[:2] + variant[2:len(variant)-1] + "0"
+	changedSecret := variant[:1] + variant[1:len(variant)-1] + "0"
 	if changedSecret == variant {
 		changedSecret = variant[:len(variant)-1] + "1"
 	}

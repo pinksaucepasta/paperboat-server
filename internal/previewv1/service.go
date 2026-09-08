@@ -117,14 +117,17 @@ type Target struct {
 // is computed from the original JSON at the HTTP boundary so duplicate-field
 // and idempotency semantics are preserved.
 type CreateRequest struct {
-	OwnerDeviceID  string
-	OwnerSessionID string
-	Target         Target
-	AccessMode     string
-	ExpiresAt      *time.Time
-	Domains        []string
-	IdempotencyKey string
-	RequestHash    [sha256.Size]byte
+	// ReservedEndpoint and Lazy are supplied only by authorized lazy activation.
+	ReservedEndpoint string
+	Lazy             *LazyBinding
+	OwnerDeviceID    string
+	OwnerSessionID   string
+	Target           Target
+	AccessMode       string
+	ExpiresAt        *time.Time
+	Domains          []string
+	IdempotencyKey   string
+	RequestHash      [sha256.Size]byte
 }
 
 type MutationRequest struct {
@@ -263,6 +266,9 @@ func (s *Service) Create(ctx context.Context, request previewtunnelapi.RequestCo
 	if err := s.authorize(request, "write"); err != nil {
 		return CreateResult{}, err
 	}
+	if strings.HasPrefix(input.OwnerSessionID, "lazy_") != (input.Lazy != nil) {
+		return CreateResult{}, ErrInvalidInput
+	}
 	if err := validateCreateRequest(input); err != nil {
 		return CreateResult{}, err
 	}
@@ -279,8 +285,8 @@ func (s *Service) Create(ctx context.Context, request previewtunnelapi.RequestCo
 	}
 	now := s.now().UTC()
 	accessMode := normalizedAccessMode(input.AccessMode)
-	if accessMode != "public" && accessMode != "private" {
-		return CreateResult{}, fmt.Errorf("%w: access_mode must be public or private", ErrInvalidInput)
+	if accessMode != "public" && accessMode != "private" && accessMode != "team" {
+		return CreateResult{}, fmt.Errorf("%w: access_mode must be public, private or team", ErrInvalidInput)
 	}
 	if !previewtunnelstore.ValidPreviewTargetV1(input.Target.Scheme, strings.TrimSpace(input.Target.Address), accessMode) {
 		return CreateResult{}, fmt.Errorf("%w: target is not valid for its scheme and access mode", ErrInvalidInput)
@@ -308,6 +314,9 @@ func (s *Service) Create(ctx context.Context, request previewtunnelapi.RequestCo
 			return CreateResult{}, fmt.Errorf("allocate preview endpoint identity: %w", err)
 		}
 		endpoint, err := s.randomEndpoint()
+		if input.ReservedEndpoint != "" {
+			endpoint = input.ReservedEndpoint
+		}
 		if err != nil {
 			return CreateResult{}, err
 		}
@@ -337,7 +346,7 @@ func (s *Service) Create(ctx context.Context, request previewtunnelapi.RequestCo
 			createResult := CreateResult{Preview: view, Operation: operationView(result.Operation, request.RequestID),
 				ETag: previewtunnelapi.ETag(Kind, result.Lease.ID, result.Lease.Generation), Replayed: result.Replayed}
 			if s.dispatcher != nil && createOperationNeedsDispatch(createResult.Operation, result.Replayed) {
-				if dispatchErr := s.dispatchCreatedLease(ctx, request, input.IdempotencyKey, createResult); dispatchErr != nil {
+				if dispatchErr := s.dispatchCreatedLease(ctx, request, input.IdempotencyKey, createResult, input.Lazy); dispatchErr != nil {
 					return CreateResult{}, dispatchErr
 				}
 			}
@@ -372,8 +381,9 @@ func createOperationNeedsDispatch(operation previewtunnelapi.Operation, replayed
 		(operation.Error.Code == "operation_outcome_uncertain" || operation.Error.Code == "preview_dispatch_uncertain" || operation.Error.Outcome == "uncertain")
 }
 
-func (s *Service) dispatchCreatedLease(ctx context.Context, request previewtunnelapi.RequestContext, idempotencyKey string, created CreateResult) error {
+func (s *Service) dispatchCreatedLease(ctx context.Context, request previewtunnelapi.RequestContext, idempotencyKey string, created CreateResult, lazy *LazyBinding) error {
 	dispatch := DispatchRequest{
+		Lazy:   lazy,
 		Schema: Schema, Kind: PreviewDispatchKind, PreviewID: created.Preview.ID, OperationID: created.Operation.ID,
 		AccountID: created.Preview.AccountID, ActorID: created.Preview.ActorID, OwnerDeviceID: created.Preview.OwnerDeviceID,
 		OwnerSessionID: created.Preview.OwnerSessionID, Target: created.Preview.Target, AccessMode: created.Preview.AccessMode,

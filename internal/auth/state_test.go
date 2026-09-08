@@ -18,7 +18,7 @@ func TestOAuthStateExpiresServerSide(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.AddCookie(&http.Cookie{Name: OAuthStateCookieName, Value: state})
+	req.AddCookie(&http.Cookie{Name: DevOAuthStateCookieName, Value: state})
 	if err := service.ValidateOAuthState(req, state); err != nil {
 		t.Fatalf("fresh state rejected: %v", err)
 	}

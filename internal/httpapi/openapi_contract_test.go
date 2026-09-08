@@ -607,7 +607,7 @@ func stringSetFrom(values []string) map[string]bool {
 	return set
 }
 
-func TestMachineSetupOpenAPIOnlyExposesHostAndClientModes(t *testing.T) {
+func TestMachineSetupOpenAPIUsesUnifiedDeviceModel(t *testing.T) {
 	raw, err := os.ReadFile("../../docs/openapi.json")
 	if err != nil {
 		t.Fatal(err)
@@ -642,12 +642,8 @@ func TestMachineSetupOpenAPIOnlyExposesHostAndClientModes(t *testing.T) {
 	if !ok {
 		t.Fatal("machine setup properties are missing")
 	}
-	setupMode, ok := properties["setup_mode"].(map[string]any)
-	if !ok {
-		t.Fatal("machine setup mode schema is missing")
-	}
-	if got := stringSet(t, setupMode["enum"], "machine setup mode enum"); !reflect.DeepEqual(got, map[string]bool{"client": true, "host": true}) {
-		t.Fatalf("machine setup mode enum = %#v, want client and host", got)
+	if _, exists := properties["setup_mode"]; exists {
+		t.Fatal("machine setup still exposes a host/client mode")
 	}
 	architecture, ok := properties["architecture"].(map[string]any)
 	if !ok {

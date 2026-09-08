@@ -83,7 +83,7 @@ func TestSQLRepositoryBootstrapsRootAndCertificateAtomically(t *testing.T) {
 	}
 }
 
-func TestSQLRepositoryFreshBootstrapAddsDeviceKeyToExistingAccount(t *testing.T) {
+func TestSQLRepositoryAuthenticatedDeviceEnrollmentAddsOneBoundKey(t *testing.T) {
 	dsn := os.Getenv("PAPERBOAT_TEST_DATABASE_DSN")
 	if dsn == "" {
 		t.Skip("set PAPERBOAT_TEST_DATABASE_DSN to run peer identity repository integration tests")
@@ -120,7 +120,7 @@ func TestSQLRepositoryFreshBootstrapAddsDeviceKeyToExistingAccount(t *testing.T)
 		t.Fatal(err)
 	}
 	for _, clientID := range []string{firstClientID, freshClientID} {
-		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.cli_client_sessions (id,user_id,client_id,client_label,device_type,os,scopes,state,created_at,approved_at,user_machine_id,fresh_e2ee_bootstrap) VALUES ($1,$2,$3,'fresh root test','desktop','windows',ARRAY['projects:connect'],'active',$4,$4,$5,$6)`, clientID, userID, "client_"+clientID, now, machineID, clientID == freshClientID); err != nil {
+		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.cli_client_sessions (id,user_id,client_id,client_label,device_type,os,scopes,state,created_at,approved_at,user_machine_id,fresh_e2ee_bootstrap) VALUES ($1,$2,$3,'device identity test','desktop','windows',ARRAY['projects:connect'],'active',$4,$4,$5,false)`, clientID, userID, "client_"+clientID, now, machineID); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -139,6 +139,23 @@ func TestSQLRepositoryFreshBootstrapAddsDeviceKeyToExistingAccount(t *testing.T)
 	}
 	if result.KeyID != keyIDForFingerprint(freshFingerprint) {
 		t.Fatalf("key id=%q", result.KeyID)
+	}
+	replayed, err := service.Bootstrap(ctx, request)
+	if err != nil || replayed.Fingerprint != result.Fingerprint {
+		t.Fatalf("exact retry=%+v err=%v", replayed, err)
+	}
+	otherPublic, otherPrivate, _ := ed25519.GenerateKey(nil)
+	otherRaw := signedFixture(t, otherPrivate, userID, RoleCLI, freshClientID, 1, 1, now, now.Add(time.Hour))
+	otherFingerprint := sha256.Sum256(otherPublic)
+	conflict := request
+	conflict.OperationID = "operation_other_device_key_" + suffix
+	conflict.KeyID = keyIDForFingerprint(otherFingerprint)
+	conflict.Certificate = otherRaw
+	conflict.ExpectedRootFingerprint = otherFingerprint
+	conflict.ExpectedCertificateFingerprint = sha256.Sum256(otherRaw)
+	conflict.RootPublicKey = otherPublic
+	if _, err := service.Bootstrap(ctx, conflict); !errors.Is(err, ErrConflict) {
+		t.Fatalf("second signing key for session err=%v", err)
 	}
 	var activeKeys, freshCertificates int
 	if err := store.SQL().QueryRowContext(ctx, `SELECT count(*) FROM paperboat.account_e2ee_keys WHERE user_id=$1 AND revoked_at IS NULL`, userID).Scan(&activeKeys); err != nil {

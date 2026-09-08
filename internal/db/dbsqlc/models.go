@@ -6,6 +6,7 @@ package dbsqlc
 
 import (
 	"database/sql"
+	"net/netip"
 	"time"
 )
 
@@ -137,6 +138,83 @@ type BillingUncertainRecovery struct {
 	RequestHash    []byte
 	ActorUserID    sql.NullString
 	CreatedAt      time.Time
+}
+
+type BrowserAccessSession struct {
+	GrantID                 string
+	TokenHash               []byte
+	AccountID               string
+	Hostname                string
+	ResourceKind            string
+	ResourceID              string
+	ResourceGeneration      int64
+	PreviewOwnerSessionID   sql.NullString
+	OwnerAccountID          string
+	AccessMode              string
+	TeamID                  sql.NullString
+	TeamGeneration          sql.NullInt64
+	MembershipGeneration    sql.NullInt64
+	BindingGeneration       sql.NullInt64
+	GrantGeneration         sql.NullInt64
+	TrustedSessionID        string
+	TrustedSessionVersion   int64
+	TrustedSessionExpiresAt time.Time
+	IssuedAt                time.Time
+	LastSeenAt              time.Time
+	AbsoluteExpiresAt       time.Time
+	ExpiresAt               time.Time
+	RevokedAt               sql.NullTime
+}
+
+type BrowserAccessTransaction struct {
+	TransactionID           string
+	StateHash               []byte
+	Hostname                string
+	ReturnPath              string
+	AccountID               sql.NullString
+	ResourceKind            sql.NullString
+	ResourceID              sql.NullString
+	ResourceGeneration      sql.NullInt64
+	PreviewOwnerSessionID   sql.NullString
+	OwnerAccountID          sql.NullString
+	AccessMode              sql.NullString
+	TeamID                  sql.NullString
+	TeamGeneration          sql.NullInt64
+	MembershipGeneration    sql.NullInt64
+	BindingGeneration       sql.NullInt64
+	GrantGeneration         sql.NullInt64
+	TrustedSessionID        sql.NullString
+	TrustedSessionVersion   sql.NullInt64
+	TrustedSessionExpiresAt sql.NullTime
+	HandoffHash             []byte
+	HandoffExpiresAt        sql.NullTime
+	IssuedAt                sql.NullTime
+	RedeemedAt              sql.NullTime
+	CreatedAt               time.Time
+	ExpiresAt               time.Time
+}
+
+type BrowserMachineCredential struct {
+	CredentialID          string
+	TokenHash             []byte
+	AccountID             string
+	Hostname              string
+	ResourceKind          string
+	ResourceID            string
+	RouteID               string
+	Action                string
+	ResourceGeneration    int64
+	PreviewOwnerSessionID sql.NullString
+	OwnerAccountID        string
+	AccessMode            string
+	TeamID                sql.NullString
+	TeamGeneration        sql.NullInt64
+	MembershipGeneration  sql.NullInt64
+	BindingGeneration     sql.NullInt64
+	GrantGeneration       sql.NullInt64
+	IssuedAt              time.Time
+	ExpiresAt             time.Time
+	RevokedAt             sql.NullTime
 }
 
 type CLIAccessToken struct {
@@ -581,6 +659,22 @@ type ControlTunnelNode struct {
 	CarrierEndpointQuicPort          sql.NullInt32
 	CarrierServerSpkiSha256          sql.NullString
 	CarrierServerCertificateChainPem sql.NullString
+	NodeGeneration                   int64
+	Region                           sql.NullString
+	FailureDomain                    sql.NullString
+	Roles                            []string
+	Transports                       []string
+	CapacityLimit                    int64
+	CapacityUsed                     int64
+	CapacityObservedAt               sql.NullTime
+	RegistryExpiresAt                sql.NullTime
+	AllowedAccountIds                []string
+	PeerRelayWireguardPublicKey      []byte
+	PeerRelayDiscoPublicKey          []byte
+	PeerRelayVirtualAddress          *netip.Addr
+	PublicIngressIpv4                *netip.Addr
+	PublicIngressIpv6                *netip.Addr
+	PublicIngressVerifiedAt          sql.NullTime
 }
 
 type ControlUsageCounter struct {
@@ -703,6 +797,30 @@ type DiagnosticUploadIntent struct {
 	ObjectEtag         sql.NullString
 }
 
+type EdgeDnsProviderBudget struct {
+	ZoneID       string
+	Tokens       float64
+	RefilledAt   time.Time
+	BlockedUntil time.Time
+}
+
+type EdgeDnsPublication struct {
+	Hostname              string
+	OwnerID               string
+	ResourceGeneration    int64
+	ReadinessVersion      string
+	ObservedAt            time.Time
+	ValidUntil            sql.NullTime
+	PublicationGeneration int64
+	DesiredAddresses      []byte
+	ProviderRecords       []byte
+	State                 string
+	FailureCode           sql.NullString
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	VerifiedAt            sql.NullTime
+}
+
 type EnvironmentAuthority struct {
 	AccountID           string
 	Generation          int64
@@ -822,6 +940,15 @@ type EnvironmentObservation struct {
 	ReceivedAt          time.Time
 }
 
+type EnvironmentPasswordVault struct {
+	AccountID  string
+	Generation int64
+	DocumentID string
+	Envelope   []byte
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
 type EnvironmentScope struct {
 	ID                  string
 	AccountID           string
@@ -865,6 +992,100 @@ type EnvironmentTransitionManifest struct {
 	Envelope        []byte
 	Names           []string
 	CreatedAt       time.Time
+}
+
+type EnvironmentVaultHost struct {
+	MachineID              string
+	AccountID              string
+	InstallationGeneration int64
+	HostKeyGeneration      int64
+	HostPublic             []byte
+	WriterPublic           []byte
+	SelectionGeneration    int64
+	Selection              []byte
+	ProjectionRevision     int64
+	DocumentID             string
+	Envelope               []byte
+	AppliedFenceGeneration int64
+	ObservationSeq         int64
+	ObservationDigest      []byte
+	Observation            []byte
+}
+
+type EnvironmentVaultOperation struct {
+	AccountID     string
+	OperationID   string
+	RequestDigest []byte
+	Result        []byte
+	CreatedAt     time.Time
+}
+
+type EnvironmentVaultPersonalEpoch struct {
+	AccountID        string
+	KeyEpoch         int64
+	RotationRequired bool
+}
+
+type EnvironmentVaultPersonalRotation struct {
+	AccountID               string
+	OperationID             string
+	ExpectedVaultDocumentID string
+}
+
+type EnvironmentVaultPersonalRotationScope struct {
+	AccountID   string
+	OperationID string
+	MachineID   string
+	DocumentID  string
+	Envelope    []byte
+}
+
+type EnvironmentVaultProjectionFence struct {
+	MachineID  string
+	Generation int64
+}
+
+type EnvironmentVaultProjectionSource struct {
+	MachineID       string
+	OwnerKind       string
+	OwnerID         string
+	SourceMachineID string
+}
+
+type EnvironmentVaultScope struct {
+	OwnerKind    string
+	OwnerID      string
+	MachineID    string
+	KeyEpoch     int64
+	Revision     int64
+	DocumentID   string
+	Envelope     []byte
+	WriterPublic []byte
+}
+
+type EnvironmentVaultTeam struct {
+	TeamID           string
+	KeyEpoch         int64
+	RotationRequired bool
+}
+
+type EnvironmentVaultTeamGrant struct {
+	TeamID                   string
+	AccountID                string
+	MembershipGeneration     int64
+	TeamEpoch                int64
+	RecipientVaultGeneration int64
+	RecipientSharingPublic   []byte
+	DocumentID               string
+	Envelope                 []byte
+	SenderWriterPublic       []byte
+	Acknowledged             bool
+}
+
+type EnvironmentVaultTeamMember struct {
+	TeamID     string
+	AccountID  string
+	GrantEpoch int64
 }
 
 type FeatureFlag struct {
@@ -1008,6 +1229,57 @@ type HostedReadinessObservation struct {
 	Evidence           []byte
 	ObservedAt         time.Time
 	CreatedAt          time.Time
+}
+
+type LazyAccessPolicy struct {
+	ID                     string
+	Hostname               string
+	AccountID              string
+	EnvironmentID          string
+	MachineID              string
+	InstallationGeneration int64
+	Generation             int64
+	TargetScheme           string
+	TargetAddress          string
+	AccessMode             string
+	OwnershipMode          string
+	ExpiresAt              time.Time
+	DeletedAt              sql.NullTime
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+}
+
+type LazyActivation struct {
+	PolicyID         string
+	PolicyGeneration int64
+	BootID           string
+	ActivationID     string
+	Deadline         time.Time
+	PreviewID        sql.NullString
+	State            string
+	ErrorCode        string
+	CooldownUntil    time.Time
+}
+
+type LazyActivationWaiter struct {
+	WaiterID     string
+	ActivationID string
+	ExpiresAt    time.Time
+}
+
+type LazyEnvironmentIdentity struct {
+	EnvironmentID    string
+	EnvironmentLabel string
+	CreatedAt        time.Time
+}
+
+type LazyRuntimeOwner struct {
+	MachineID              string
+	AccountID              string
+	InstallationGeneration int64
+	BootID                 string
+	StartedAt              time.Time
+	ExpiresAt              time.Time
 }
 
 type MachineControlRenewal struct {
@@ -1245,6 +1517,34 @@ type PeerEndpointEnrollmentRequest struct {
 	CreatedAt              time.Time
 	ExpiresAt              time.Time
 	FulfilledAt            sql.NullTime
+}
+
+type PeerNetworkIdentity struct {
+	UserID                     string
+	EndpointID                 string
+	Role                       string
+	MachineID                  sql.NullString
+	EndpointGeneration         int64
+	MachineGeneration          int64
+	KeyGeneration              int64
+	WireguardPublicKey         []byte
+	QuicCertificateFingerprint []byte
+	VirtualAddress             netip.Addr
+	ConfigGeneration           int64
+	RevokedAt                  sql.NullTime
+	CreatedAt                  time.Time
+	UpdatedAt                  time.Time
+	DiscoPublicKey             []byte
+	RelayRevocationGeneration  int64
+}
+
+type PeerNetworkRegistrationOperation struct {
+	OperationID   string
+	UserID        string
+	EndpointID    string
+	RequestHash   []byte
+	KeyGeneration int64
+	CreatedAt     time.Time
 }
 
 type PeerRelayAllocation struct {
@@ -1731,6 +2031,58 @@ type Subscription struct {
 	PendingPlanVersionID   sql.NullString
 }
 
+type Team struct {
+	TeamID       string
+	OwnerAccount string
+	Generation   int64
+	DeletedAt    sql.NullTime
+}
+
+type TeamInvitation struct {
+	InvitationID     string
+	TeamID           string
+	RecipientAccount string
+	CreatedBy        string
+	ExpiresAt        time.Time
+	AcceptedAt       sql.NullTime
+	CancelledAt      sql.NullTime
+}
+
+type TeamMember struct {
+	TeamID               string
+	AccountID            string
+	MembershipGeneration int64
+	Role                 string
+	Active               bool
+}
+
+type TeamOperation struct {
+	AccountID     string
+	OperationID   string
+	RequestDigest []byte
+	Result        []byte
+	CreatedAt     time.Time
+}
+
+type TeamResourceBinding struct {
+	TeamID       string
+	ResourceKind string
+	ResourceID   string
+	OwnerAccount string
+	Active       bool
+	Generation   int64
+}
+
+type TeamResourceGrant struct {
+	TeamID       string
+	AccountID    string
+	ResourceKind string
+	ResourceID   string
+	Permission   string
+	Generation   int64
+	Active       bool
+}
+
 type TerminalSessionOperation struct {
 	ID                string
 	ProjectID         string
@@ -2089,6 +2441,8 @@ type TunnelRoute struct {
 	CreatedAt               time.Time
 	UpdatedAt               time.Time
 	DeletedAt               sql.NullTime
+	PublicTcpListenerID     sql.NullString
+	PublicTcpPort           sql.NullInt32
 }
 
 type User struct {
@@ -2173,6 +2527,10 @@ type UserMachine struct {
 	RelayLatencyGeneration        int64
 	RelayLatencyObservedAt        sql.NullTime
 	RelayLatencyVector            []byte
+	CapabilitiesDesiredVersion    int64
+	CapabilitiesObservedVersion   int64
+	CapabilitiesStatus            string
+	CapabilitiesErrorCode         sql.NullString
 }
 
 type UserMachineAccessSession struct {
@@ -2229,6 +2587,19 @@ type UserMachineBandwidthTopup struct {
 	ConsumedAt      sql.NullTime
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+}
+
+type UserMachineCapabilityOperation struct {
+	ID                     string
+	UserMachineID          string
+	UserID                 string
+	IdempotencyKey         string
+	RequestHash            []byte
+	ExpectedVersion        int64
+	ResultingVersion       int64
+	ConfiguredCapabilities []string
+	Result                 []byte
+	CreatedAt              time.Time
 }
 
 type UserMachineEnrollment struct {

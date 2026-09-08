@@ -22,8 +22,8 @@ const (
 )
 
 // ReconcileTunnelEdgeRouteAssignments publishes connector-ready HTTP and
-// private TCP routes
-// to one ready edge process.  Candidate selection and the immutable assignment
+// TCP routes
+// to at most two ready edge processes in distinct failure domains.  Candidate selection and the immutable assignment
 // write happen in one serializable transaction.  This makes a concurrent
 // connector replacement, config activation, route mutation, or edge process
 // replacement either win as a complete assignment or get retried by the next
@@ -38,6 +38,9 @@ func (s *EdgeService) ReconcileTunnelEdgeRouteAssignments(ctx context.Context, b
 	now := s.clock().UTC()
 	staged := 0
 	err := s.store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if _, err := tx.Queries().RetireUnavailableTunnelEdgeAssignmentsV1(ctx, now); err != nil {
+			return err
+		}
 		candidates, err := tx.Queries().ListReadyTunnelEdgeRouteCandidatesV1(ctx, dbsqlc.ListReadyTunnelEdgeRouteCandidatesV1Params{
 			Now: now, RowLimit: batchSize,
 		})

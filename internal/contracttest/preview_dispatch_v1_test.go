@@ -99,7 +99,7 @@ func TestPreviewDispatchV1SchemaVectors(t *testing.T) {
 	if err := scanner.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if seenValid != 3 || seenInvalid != 3 {
+	if seenValid != 4 || seenInvalid != 5 {
 		t.Fatalf("unexpected fixture coverage: valid=%d invalid=%d", seenValid, seenInvalid)
 	}
 }

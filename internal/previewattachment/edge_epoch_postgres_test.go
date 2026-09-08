@@ -292,7 +292,7 @@ func (f previewCarrierPostgresFixture) attachment(index int, processEpoch string
 		Endpoint: fmt.Sprintf("https://carrier-epoch-%s-%c.preview.example.test", f.suffix, 'a'+rune(index-1)),
 		Target:   Target{Scheme: "http", Address: "127.0.0.1:3000"}, AccessMode: "public",
 		ConfigContentHash:    "sha256:" + strings.Repeat("a", 64),
-		EdgeEndpoints:        []string{"tls://edge.example.test:25001", "quic://edge.example.test:25002"},
+		EdgeEndpoints:        []string{"h2://edge.example.test:25001", "h3://edge.example.test:25002"},
 		AttachmentGeneration: 1, IssuedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(20 * time.Minute), State: StatePending,
 	}
 }

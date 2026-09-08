@@ -78,12 +78,10 @@ func (r *SQLRepository) Bootstrap(ctx context.Context, operationID, userID strin
 	return result, err
 }
 
-// BootstrapFresh is the one-shot dashboard enrollment ceremony. The CLI
-// session is created transactionally with installation material and is marked
-// by its enrollment label, so only that short-lived session can add a trusted
-// device key after a machine wipe. Existing endpoint certificates remain
-// valid because the account trust set is append-only until a device is
-// explicitly removed.
+// BootstrapFresh registers one device signing key for the authenticated CLI
+// session. The v1 name is retained for compatibility. Active CLI sessions are
+// already the result of account authentication and any required setup
+// approval. Existing identities remain valid until explicitly revoked.
 func (r *SQLRepository) BootstrapFresh(ctx context.Context, operationID, userID, cliSessionID string, rootPublic ed25519.PublicKey, proposed Certificate) (Certificate, error) {
 	if r == nil || ctx == nil || len(operationID) < 16 || len(operationID) > 256 || !identifierExpr.MatchString(userID) || !identifierExpr.MatchString(cliSessionID) || len(rootPublic) != ed25519.PublicKeySize || proposed.Role != RoleCLI || proposed.EndpointID != cliSessionID || proposed.AccountID != userID {
 		return Certificate{}, ErrInvalid
@@ -95,7 +93,7 @@ func (r *SQLRepository) BootstrapFresh(ctx context.Context, operationID, userID,
 	var result Certificate
 	err := r.store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		q := tx.Queries()
-		if _, err := q.GetFreshEnrollmentClientSession(ctx, dbsqlc.GetFreshEnrollmentClientSessionParams{ID: cliSessionID, UserID: userID}); err != nil {
+		if _, err := q.GetDeviceEnrollmentClientSession(ctx, dbsqlc.GetDeviceEnrollmentClientSessionParams{ID: cliSessionID, UserID: userID}); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrConflict
 			}
@@ -112,6 +110,13 @@ func (r *SQLRepository) BootstrapFresh(ctx context.Context, operationID, userID,
 		}
 		if root.RevokedAt.Valid || root.Generation != 1 {
 			return ErrConflict
+		}
+		boundKey, boundErr := q.GetAccountE2EEKeyByCLISessionForUpdate(ctx, dbsqlc.GetAccountE2EEKeyByCLISessionForUpdateParams{UserID: userID, CLIClientSessionID: sql.NullString{String: cliSessionID, Valid: true}})
+		if boundErr == nil && (!bytes.Equal(boundKey.Fingerprint, rootFingerprint[:]) || boundKey.RevokedAt.Valid) {
+			return ErrConflict
+		}
+		if boundErr != nil && !errors.Is(boundErr, sql.ErrNoRows) {
+			return boundErr
 		}
 		key, err := q.GetAccountE2EEKeyByFingerprintForUpdate(ctx, dbsqlc.GetAccountE2EEKeyByFingerprintForUpdateParams{UserID: userID, Fingerprint: rootFingerprint[:]})
 		if errors.Is(err, sql.ErrNoRows) {
@@ -148,7 +153,7 @@ func (r *SQLRepository) BootstrapFresh(ctx context.Context, operationID, userID,
 				return err
 			}
 		}
-		return q.ConsumeFreshE2EEBootstrapSession(ctx, cliSessionID)
+		return nil
 	})
 	return result, err
 }

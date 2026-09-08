@@ -228,7 +228,7 @@ func NewService(repository Repository) (*Service, error) {
 func (s *Service) Register(ctx context.Context, request RegisterRequest) (Certificate, error) {
 	if s == nil || ctx == nil || len(request.OperationID) < 16 || len(request.OperationID) > 256 ||
 		!identifierExpr.MatchString(request.UserID) || request.Expected.AccountID != request.UserID ||
-		request.Expected.EndpointID == "" || request.Expected.Role.String() == "" ||
+		request.Expected.EndpointID == "" || request.Expected.Role != RoleMachine ||
 		request.Expected.Generation == 0 || request.Now.IsZero() {
 		return Certificate{}, ErrInvalid
 	}

@@ -50,14 +50,15 @@ type Config struct {
 }
 
 type HTTPConfig struct {
-	Address           string        `json:"address"`
-	PublicBaseURL     string        `json:"public_base_url"`
-	AllowedOrigins    []string      `json:"allowed_origins"`
-	ReadHeaderTimeout time.Duration `json:"read_header_timeout"`
-	RequestTimeout    time.Duration `json:"request_timeout"`
-	ShutdownTimeout   time.Duration `json:"shutdown_timeout"`
-	MaxBodyBytes      int64         `json:"max_body_bytes"`
-	TrustedProxyCIDRs []string      `json:"trusted_proxy_cidrs"`
+	BrowserLoginOrigin string        `json:"browser_login_origin"`
+	Address            string        `json:"address"`
+	PublicBaseURL      string        `json:"public_base_url"`
+	AllowedOrigins     []string      `json:"allowed_origins"`
+	ReadHeaderTimeout  time.Duration `json:"read_header_timeout"`
+	RequestTimeout     time.Duration `json:"request_timeout"`
+	ShutdownTimeout    time.Duration `json:"shutdown_timeout"`
+	MaxBodyBytes       int64         `json:"max_body_bytes"`
+	TrustedProxyCIDRs  []string      `json:"trusted_proxy_cidrs"`
 }
 
 // NormalizeIssuer returns the canonical server identity used in CLI
@@ -128,7 +129,9 @@ type Preview struct {
 }
 
 type Tunnel struct {
-	BaseDomain string `json:"base_domain"`
+	BaseDomain       string `json:"base_domain"`
+	PublicTCPPortMin int    `json:"public_tcp_port_min"`
+	PublicTCPPortMax int    `json:"public_tcp_port_max"`
 }
 
 // Certificates contains references and public endpoints only. It never
@@ -367,7 +370,7 @@ func Default() Config {
 		UserMachines:      UserMachines{PairingLifetime: 10 * time.Minute, OfflineAfter: 2 * time.Minute, AllowedPlatforms: []string{"darwin", "linux", "windows"}, RuntimeListenPort: 38080},
 		TerminalSessions:  TerminalSessions{MaxActivePerProject: 20, OperationTimeout: 15 * time.Second, RetryBackoff: time.Second, WorkerInterval: time.Second, MaxAttemptsBeforeAlert: 10},
 		Preview:           Preview{BaseDomain: "preview.localhost"},
-		Tunnel:            Tunnel{BaseDomain: "tunnels.localhost"},
+		Tunnel:            Tunnel{BaseDomain: "tunnels.localhost", PublicTCPPortMin: 20000, PublicTCPPortMax: 29999},
 		ConfigSync: ConfigSync{
 			Mode:             "disabled",
 			ManifestContract: "paperboat-manifest-v1", ManifestMaxBytes: 256 << 10,
@@ -455,6 +458,12 @@ func (c Config) Validate() error {
 	}
 	if c.HTTP.ReadHeaderTimeout <= 0 || c.HTTP.RequestTimeout <= 0 || c.HTTP.ShutdownTimeout <= 0 {
 		errs = append(errs, fmt.Errorf("http timeouts must be positive"))
+	}
+	if c.HTTP.BrowserLoginOrigin != "" {
+		origin, e := url.Parse(c.HTTP.BrowserLoginOrigin)
+		if e != nil || origin.Host == "" || origin.User != nil || origin.Path != "" || origin.RawQuery != "" || origin.Fragment != "" || (origin.Scheme != "https" && (origin.Scheme != "http" || c.Environment == EnvironmentProduction)) {
+			errs = append(errs, fmt.Errorf("http.browser_login_origin must be an exact trusted origin; production requires HTTPS"))
+		}
 	}
 	if c.HTTP.MaxBodyBytes <= 0 {
 		errs = append(errs, fmt.Errorf("http.max_body_bytes must be positive"))
@@ -639,6 +648,9 @@ func (c Config) Validate() error {
 	if !validEndpointBaseDomain(c.Tunnel.BaseDomain) {
 		errs = append(errs, fmt.Errorf("tunnel.base_domain must be a DNS hostname"))
 	}
+	if c.Tunnel.PublicTCPPortMin < 1024 || c.Tunnel.PublicTCPPortMax > 65535 || c.Tunnel.PublicTCPPortMin > c.Tunnel.PublicTCPPortMax {
+		errs = append(errs, fmt.Errorf("tunnel public TCP port range must be within 1024-65535 and nonempty"))
+	}
 	if err := c.Certificates.Validate(c.Environment); err != nil {
 		errs = append(errs, err)
 	}
@@ -812,6 +824,7 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_ENV", (*string)(&c.Environment))
 	setString("PAPERBOAT_HTTP_ADDRESS", &c.HTTP.Address)
 	setString("PAPERBOAT_PUBLIC_BASE_URL", &c.HTTP.PublicBaseURL)
+	setString("PAPERBOAT_BROWSER_LOGIN_ORIGIN", &c.HTTP.BrowserLoginOrigin)
 	setString("PAPERBOAT_DATABASE_DRIVER", &c.Database.Driver)
 	setString("PAPERBOAT_DATABASE_DSN", &c.Database.DSN)
 	setString("PAPERBOAT_CATALOG_SEED_FILE", &c.Catalogs.SeedFile)
@@ -875,6 +888,20 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	}
 	setString("PAPERBOAT_PREVIEW_BASE_DOMAIN", &c.Preview.BaseDomain)
 	setString("PAPERBOAT_TUNNEL_BASE_DOMAIN", &c.Tunnel.BaseDomain)
+	if value, ok := lookup("PAPERBOAT_TUNNEL_PUBLIC_TCP_PORT_MIN"); ok {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("parse PAPERBOAT_TUNNEL_PUBLIC_TCP_PORT_MIN: %w", err)
+		}
+		c.Tunnel.PublicTCPPortMin = parsed
+	}
+	if value, ok := lookup("PAPERBOAT_TUNNEL_PUBLIC_TCP_PORT_MAX"); ok {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("parse PAPERBOAT_TUNNEL_PUBLIC_TCP_PORT_MAX: %w", err)
+		}
+		c.Tunnel.PublicTCPPortMax = parsed
+	}
 	setString("PAPERBOAT_CERTIFICATES_DIRECTORY_URL", &c.Certificates.DirectoryURL)
 	setString("PAPERBOAT_CERTIFICATES_ACCOUNT_KID", &c.Certificates.AccountKID)
 	setString("PAPERBOAT_CERTIFICATES_ACCOUNT_EMAIL", &c.Certificates.AccountEmail)

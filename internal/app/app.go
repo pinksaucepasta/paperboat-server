@@ -16,6 +16,8 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/auth"
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
+	"github.com/pinksaucepasta/paperboat-server/internal/browseraccess"
+	"github.com/pinksaucepasta/paperboat-server/internal/browseringress"
 	"github.com/pinksaucepasta/paperboat-server/internal/catalog"
 	"github.com/pinksaucepasta/paperboat-server/internal/codexsessions"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
@@ -28,6 +30,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
 	"github.com/pinksaucepasta/paperboat-server/internal/httpapi"
+	"github.com/pinksaucepasta/paperboat-server/internal/lazyaccess"
 	"github.com/pinksaucepasta/paperboat-server/internal/managedssh"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
 	"github.com/pinksaucepasta/paperboat-server/internal/mint"
@@ -46,6 +49,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 	"github.com/pinksaucepasta/paperboat-server/internal/releaseauthority"
 	"github.com/pinksaucepasta/paperboat-server/internal/releases"
+	"github.com/pinksaucepasta/paperboat-server/internal/teams"
 	"github.com/pinksaucepasta/paperboat-server/internal/telemetry"
 	"github.com/pinksaucepasta/paperboat-server/internal/terminalsessions"
 	"github.com/pinksaucepasta/paperboat-server/internal/tunnelcert"
@@ -166,6 +170,11 @@ func New(opts Options) (*App, error) {
 		_ = store.Close()
 		return nil, fmt.Errorf("configure preview lease service: %w", err)
 	}
+	lazyPolicyService, err := lazyaccess.NewService(store, opts.Config.Preview.BaseDomain)
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure lazy policy service: %w", err)
+	}
 	tunnelRepository, err := tunnelv1.NewRepository(store)
 	if err != nil {
 		_ = store.Close()
@@ -177,8 +186,10 @@ func New(opts Options) (*App, error) {
 		return nil, fmt.Errorf("configure tunnel endpoint builder: %w", err)
 	}
 	tunnelService, err := tunnelv1.NewService(tunnelRepository, tunnelv1.Config{
-		EndpointBuilder: tunnelEndpointBuilder,
-		CursorKey:       cursorKey[:],
+		EndpointBuilder:  tunnelEndpointBuilder,
+		CursorKey:        cursorKey[:],
+		PublicTCPPortMin: int32(opts.Config.Tunnel.PublicTCPPortMin),
+		PublicTCPPortMax: int32(opts.Config.Tunnel.PublicTCPPortMax),
 	})
 	if err != nil {
 		_ = store.Close()
@@ -186,6 +197,7 @@ func New(opts Options) (*App, error) {
 	}
 	tunnelResourceService, err := tunnelv1.NewResourceService(tunnelRepository, tunnelv1.ResourceConfig{
 		CursorKey: cursorKey[:], ChallengeZone: opts.Config.Certificates.ChallengeZone, AllowInsecureDevelopment: opts.Config.Environment == config.EnvironmentDevelopment,
+		PublicTCPPortMin: int32(opts.Config.Tunnel.PublicTCPPortMin), PublicTCPPortMax: int32(opts.Config.Tunnel.PublicTCPPortMax),
 	})
 	if err != nil {
 		_ = store.Close()
@@ -204,7 +216,18 @@ func New(opts Options) (*App, error) {
 	billingRepo := billing.NewRepository(store)
 	catalogRepo := catalog.NewRepository(store)
 	flyProvider := flyClient(opts.Config)
-	authService := auth.NewService(store, auditWriter, workOSVerifier(opts.Config), opts.Config.Secrets.SessionKeys, publicURLSecure(opts.Config.HTTP.PublicBaseURL))
+	trustedLoginOrigin := opts.Config.HTTP.BrowserLoginOrigin
+	if trustedLoginOrigin == "" && len(opts.Config.HTTP.AllowedOrigins) == 1 {
+		trustedLoginOrigin = opts.Config.HTTP.AllowedOrigins[0]
+	}
+	secureAuthCookies := publicURLSecure(opts.Config.HTTP.PublicBaseURL)
+	if trustedLoginOrigin != "" {
+		secureAuthCookies = publicURLSecure(trustedLoginOrigin)
+	}
+	if opts.Config.Environment == config.EnvironmentProduction {
+		secureAuthCookies = true
+	}
+	authService := auth.NewService(store, auditWriter, workOSVerifier(opts.Config), opts.Config.Secrets.SessionKeys, secureAuthCookies, trustedLoginOrigin)
 	deviceAuthService := auth.NewDeviceService(store, auditWriter, opts.Config.CLIAuth, opts.Config.Secrets.SessionKeys)
 	billingService := billing.NewService(billingRepo, polarClient(opts.Config), auditWriter)
 	billingService.SetAutoTopupRetryCooldown(opts.Config.Billing.AutoTopupRetryCooldown)
@@ -528,7 +551,7 @@ func New(opts Options) (*App, error) {
 	}
 	// ENV Injection reuses only the public account-root resolver. The general
 	// server encryption key is deliberately never passed to ENV code.
-	environmentVariableService := environment.NewService(store, auditWriter, peerIdentityService)
+	environmentVariableService := environment.NewService(store, auditWriter, peerIdentityService, config.NormalizeIssuer(opts.Config.HTTP.PublicBaseURL))
 	peerSessionRepository, err := peersessions.NewSQLRepository(store, auditWriter, controlplane.ControlTunnelNodeStaleAfter(), opts.Config.Secrets.EncryptionKey)
 	if err != nil {
 		return nil, err
@@ -606,6 +629,8 @@ func New(opts Options) (*App, error) {
 		_ = store.Close()
 		return nil, fmt.Errorf("configure preview carrier host handler: %w", err)
 	}
+	lazyActivator := &lazyaccess.Activator{DB: store, Leases: previewLeaseService}
+	var browserAccessHandlers *httpapi.BrowserAccessHandlers
 	var previewEdgeAttachmentHandler http.Handler
 	var privateAccessAuthorizeHandler http.Handler
 	var privateAccessGrantHandler http.Handler
@@ -615,6 +640,18 @@ func New(opts Options) (*App, error) {
 		if verifierErr != nil {
 			_ = store.Close()
 			return nil, fmt.Errorf("configure preview carrier edge verifier: %w", verifierErr)
+		}
+		if trustedLoginOrigin != "" {
+			newBrowserService := browseraccess.NewService
+			if opts.Config.Environment != config.EnvironmentProduction {
+				newBrowserService = browseraccess.NewDevelopmentService
+			}
+			browserService, browserErr := newBrowserService(store, trustedLoginOrigin)
+			if browserErr != nil {
+				_ = store.Close()
+				return nil, fmt.Errorf("configure browser authority: %w", browserErr)
+			}
+			browserAccessHandlers = &httpapi.BrowserAccessHandlers{Lazy: lazyActivator, Access: browserService, Ingress: &browseringress.Service{DB: store, Access: browserService}, Edge: previewEdgeVerifier, Machine: previewAttachmentMachineVerifier}
 		}
 		previewEdgeHandler, edgeHandlerErr := previewattachment.NewEdgeHTTPHandler(previewAttachmentProduction.Service, previewAttachmentProduction.Repository, previewEdgeVerifier)
 		err = edgeHandlerErr
@@ -711,6 +748,7 @@ func New(opts Options) (*App, error) {
 		GitHub:                    githubService,
 		Projects:                  projectService,
 		EnvironmentVariables:      environmentVariableService,
+		Teams:                     teams.NewService(store),
 		TerminalSessions:          terminalSessionService,
 		CodexSessions:             codexSessionService,
 		EnvironmentAccess:         accessService,
@@ -744,6 +782,8 @@ func New(opts Options) (*App, error) {
 		ReleaseFiles:              releaseFileHandler,
 		ReleaseAuthority:          releaseAuthorityService,
 		PreviewTunnelAPI:          previewTunnelAPI,
+		LazyPolicies:              lazyPolicyService,
+		LazyActivation:            lazyActivator,
 		PreviewLeases:             previewLeaseService,
 		PreviewDomains:            previewDomainService,
 		Tunnels:                   tunnelService,
@@ -751,6 +791,7 @@ func New(opts Options) (*App, error) {
 		PreviewLogs:               tunnelResourceService,
 		PreviewCarrierAttachment:  previewAttachmentHandler,
 		PreviewCarrierEdge:        previewEdgeAttachmentHandler,
+		BrowserAccess:             browserAccessHandlers,
 		PrivateAccessAuthorize:    privateAccessAuthorizeHandler,
 		PrivateAccessGrant:        privateAccessGrantHandler,
 		PrivateAccessRoutes:       privateAccessRoutesHandler,
@@ -781,6 +822,14 @@ func New(opts Options) (*App, error) {
 	if edgeControlService != nil {
 		serverWorkers = append(serverWorkers, edgeControlService.TunnelEdgeAssignmentWorker(opts.Config.TerminalSessions.WorkerInterval, 100))
 		serverWorkers = append(serverWorkers, edgeControlService.StaleNodeWorker(opts.Config.TerminalSessions.WorkerInterval, controlplane.ControlTunnelNodeStaleAfter()))
+	}
+	if opts.Config.Certificates.Enabled {
+		dnsWorker, dnsErr := newEdgeDNSWorker(store, opts.Config)
+		if dnsErr != nil {
+			_ = store.Close()
+			return nil, dnsErr
+		}
+		serverWorkers = append(serverWorkers, dnsWorker)
 	}
 	if diagnosticUploadService != nil {
 		serverWorkers = append(serverWorkers, diagnosticUploadService.Worker(time.Minute, opts.Logger))

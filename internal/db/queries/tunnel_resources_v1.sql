@@ -24,7 +24,7 @@ SELECT r.id, r.tunnel_id, r.name, r.protocol, r.match_type, r.match_hostname,
        r.ca_reference, r.mtls_credential_reference, r.connect_timeout_ms,
        r.idle_timeout_ms, r.max_concurrent_streams, r.desired_state, r.generation,
        r.created_by_actor_id, r.updated_by_actor_id, r.created_at, r.updated_at,
-       r.deleted_at
+       r.deleted_at, r.public_tcp_listener_id, r.public_tcp_port
 FROM tunnel_routes AS r
 JOIN tunnels AS t ON t.id = r.tunnel_id
 WHERE r.tunnel_id = sqlc.arg(tunnel_id)
@@ -47,7 +47,8 @@ SELECT r.id, r.tunnel_id, r.name, r.protocol, r.match_type, r.match_hostname,
        r.tls_server_name, r.ca_reference, r.mtls_credential_reference,
        r.connect_timeout_ms, r.idle_timeout_ms, r.max_concurrent_streams,
        r.desired_state, r.generation, r.created_by_actor_id,
-       r.updated_by_actor_id, r.created_at, r.updated_at, r.deleted_at
+       r.updated_by_actor_id, r.created_at, r.updated_at, r.deleted_at,
+       r.public_tcp_listener_id, r.public_tcp_port
 FROM tunnel_routes AS r
 JOIN tunnels AS t ON t.id = r.tunnel_id
 WHERE r.id = sqlc.arg(route_id)
@@ -61,12 +62,17 @@ SELECT id, tunnel_id, name, protocol, match_type, match_hostname,
        ca_reference, mtls_credential_reference, connect_timeout_ms,
        idle_timeout_ms, max_concurrent_streams, desired_state, generation,
        created_by_actor_id, updated_by_actor_id, created_at, updated_at,
-       deleted_at
+       deleted_at, public_tcp_listener_id, public_tcp_port
 FROM tunnel_routes
 WHERE tunnel_id = sqlc.arg(tunnel_id)
   AND desired_state = 'active'
   AND deleted_at IS NULL
 ORDER BY priority ASC, name ASC, id ASC;
+
+-- name: DeleteAllTunnelRoutesV1 :exec
+UPDATE tunnel_routes
+SET desired_state = 'deleted', deleted_at = sqlc.arg(now), updated_at = sqlc.arg(now), generation = generation + 1
+WHERE tunnel_id = sqlc.arg(tunnel_id) AND desired_state <> 'deleted';
 
 -- name: HasConflictingTunnelRouteV1 :one
 SELECT EXISTS (
@@ -89,12 +95,28 @@ SELECT EXISTS (
 ) AS has_conflict;
 
 -- name: CreateTunnelRouteV1 :one
+WITH allocator AS MATERIALIZED (
+  SELECT pg_advisory_xact_lock(1885686836)
+  WHERE sqlc.arg(protocol)::text = 'tcp'
+), public_port AS MATERIALIZED (
+  SELECT candidate::integer AS port
+  FROM generate_series(sqlc.arg(public_tcp_port_min)::integer, sqlc.arg(public_tcp_port_max)::integer) AS candidate
+  WHERE sqlc.arg(protocol)::text = 'tcp'
+    AND (SELECT count(*) FROM allocator) = 1
+    AND NOT EXISTS (
+      SELECT 1 FROM tunnel_routes
+      WHERE public_tcp_port = candidate AND desired_state <> 'deleted'
+    )
+  ORDER BY candidate
+  LIMIT 1
+)
 INSERT INTO tunnel_routes
   (id, tunnel_id, name, protocol, match_type, match_hostname, wildcard_suffix,
    path_prefix, priority, origin_scheme, origin_address, preserve_host,
    host_override, tls_verification, tls_server_name, ca_reference,
    mtls_credential_reference, connect_timeout_ms, idle_timeout_ms,
    max_concurrent_streams, desired_state, created_by_actor_id,
+   public_tcp_listener_id, public_tcp_port,
    updated_by_actor_id, created_at, updated_at)
 VALUES
   (sqlc.arg(id), sqlc.arg(tunnel_id), sqlc.arg(name), sqlc.arg(protocol),
@@ -105,7 +127,8 @@ VALUES
    sqlc.narg(ca_reference), sqlc.narg(mtls_credential_reference),
    sqlc.arg(connect_timeout_ms), sqlc.arg(idle_timeout_ms),
    sqlc.arg(max_concurrent_streams), sqlc.arg(desired_state),
-   sqlc.arg(created_by_actor_id), sqlc.arg(updated_by_actor_id),
+   sqlc.arg(created_by_actor_id), sqlc.narg(public_tcp_listener_id),
+   (SELECT port FROM public_port), sqlc.arg(updated_by_actor_id),
    sqlc.arg(now), sqlc.arg(now))
 RETURNING id, tunnel_id, name, protocol, match_type, match_hostname,
           wildcard_suffix, path_prefix, priority, origin_scheme, origin_address,
@@ -113,7 +136,7 @@ RETURNING id, tunnel_id, name, protocol, match_type, match_hostname,
           ca_reference, mtls_credential_reference, connect_timeout_ms,
           idle_timeout_ms, max_concurrent_streams, desired_state, generation,
           created_by_actor_id, updated_by_actor_id, created_at, updated_at,
-          deleted_at;
+          deleted_at, public_tcp_listener_id, public_tcp_port;
 
 -- name: UpdateTunnelRouteV1 :one
 UPDATE tunnel_routes
@@ -150,7 +173,7 @@ RETURNING id, tunnel_id, name, protocol, match_type, match_hostname,
           ca_reference, mtls_credential_reference, connect_timeout_ms,
           idle_timeout_ms, max_concurrent_streams, desired_state, generation,
           created_by_actor_id, updated_by_actor_id, created_at, updated_at,
-          deleted_at;
+          deleted_at, public_tcp_listener_id, public_tcp_port;
 
 -- name: DeleteTunnelRouteV1 :one
 UPDATE tunnel_routes
@@ -167,7 +190,7 @@ RETURNING id, tunnel_id, name, protocol, match_type, match_hostname,
           ca_reference, mtls_credential_reference, connect_timeout_ms,
           idle_timeout_ms, max_concurrent_streams, desired_state, generation,
           created_by_actor_id, updated_by_actor_id, created_at, updated_at,
-          deleted_at;
+          deleted_at, public_tcp_listener_id, public_tcp_port;
 
 -- name: BumpTunnelGenerationForResourceV1 :one
 UPDATE tunnels
@@ -221,7 +244,9 @@ VALUES
   (sqlc.arg(id), sqlc.arg(account_id), sqlc.arg(tunnel_id), sqlc.arg(route_id),
    sqlc.arg(hostname), sqlc.arg(match_type),
    sqlc.arg(ownership_challenge_reference), 'pending', sqlc.arg(dns_target),
-   sqlc.arg(observed_records)::jsonb, sqlc.arg(certificate_strategy), 'pending', 'unknown', 'clear',
+   sqlc.arg(observed_records)::jsonb, sqlc.arg(certificate_strategy),
+   CASE WHEN sqlc.arg(certificate_strategy) = 'none' THEN 'not_applicable' ELSE 'pending' END,
+   CASE WHEN sqlc.arg(certificate_strategy) = 'none' THEN 'not_applicable' ELSE 'unknown' END, 'clear',
    1, sqlc.arg(now), sqlc.arg(now), sqlc.arg(dns_provider),
    sqlc.arg(expected_records)::jsonb, sqlc.arg(now))
 RETURNING *;

@@ -40,8 +40,8 @@ WITH private_routes AS (
          a.connector_process_generation AS process_generation, a.config_generation, a.assignment_generation,
          a.edge_node_id, a.edge_process_epoch, r.protocol,
 	         CASE WHEN r.protocol = 'http' THEN regexp_replace(COALESCE(r.match_hostname, t.stable_endpoint), '^https://', '') ELSE '' END AS hostname,
-         ARRAY['tls://' || n.carrier_endpoint_host || ':' || n.carrier_endpoint_tcp_port::text,
-               'quic://' || n.carrier_endpoint_host || ':' || n.carrier_endpoint_quic_port::text]::text[] AS edge_endpoints,
+         ARRAY['h2://' || n.carrier_endpoint_host || ':' || n.carrier_endpoint_tcp_port::text,
+               'h3://' || n.carrier_endpoint_host || ':' || n.carrier_endpoint_quic_port::text]::text[] AS edge_endpoints,
          LEAST(COALESCE(t.expires_at, $4 + interval '10 minutes'), s.lease_deadline) AS expires_at,
 	         a.tunnel_id, a.connector_id AS carrier_connector_id,
 	         a.assignment_id, 'sha256:' || encode(a.config_content_hash, 'hex') AS config_content_hash,
@@ -234,8 +234,8 @@ WITH private_routes AS (
          r.protocol,
 	         CASE WHEN r.protocol = 'http' THEN regexp_replace(COALESCE(r.match_hostname, t.stable_endpoint), '^https://', '') ELSE '' END AS hostname,
          ARRAY[
-           'tls://' || n.carrier_endpoint_host || ':' || n.carrier_endpoint_tcp_port::text,
-           'quic://' || n.carrier_endpoint_host || ':' || n.carrier_endpoint_quic_port::text
+           'h2://' || n.carrier_endpoint_host || ':' || n.carrier_endpoint_tcp_port::text,
+           'h3://' || n.carrier_endpoint_host || ':' || n.carrier_endpoint_quic_port::text
          ]::text[] AS edge_endpoints,
          LEAST(COALESCE(t.expires_at, $4 + interval '10 minutes'), s.lease_deadline) AS expires_at,
          a.tunnel_id,

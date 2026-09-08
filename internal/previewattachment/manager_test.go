@@ -298,7 +298,7 @@ func testResolution(now time.Time) Resolution {
 			AccountID: "account-1", HostID: "machine-1", Ephemeral: true,
 			TunnelID: "preview-tunnel-1", ConnectorID: "preview-connector-1", SessionID: "connector-session-1",
 			ProcessGeneration: 1, ConfigGeneration: 1, ConfigContentHash: "sha256:" + strings.Repeat("a", 64),
-			LeaseDeadline: now.Add(5 * time.Minute), EdgeEndpoints: []string{"quic://edge.example:443", "tls://edge.example:443"},
+			LeaseDeadline: now.Add(5 * time.Minute), EdgeEndpoints: []string{"h3://edge.example:443", "h2://edge.example:443"},
 			EdgeNodeID: "edge-node-1", EdgeProcessEpoch: "edge-process-1", EdgeCarrierServerSPKISHA256: "sha256:" + strings.Repeat("b", 64), EdgeCarrierServerCertificateChainPEM: "test-public-certificate-chain", MachineIdentityPublicKey: publicKey, MachineIdentityThumbprint: thumbprint,
 		},
 		Route: RouteSnapshot{AccountID: "account-1", TunnelID: "preview-tunnel-1", RouteID: "route-1", Generation: 1, Protocol: "https", PublicEndpoint: endpoint},

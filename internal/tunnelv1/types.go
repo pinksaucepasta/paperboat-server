@@ -134,7 +134,9 @@ type Config struct {
 	// NewEndpointID allocates the opaque UUID used as the leftmost managed
 	// tunnel hostname label. It is separate from internal resource IDs so
 	// changing the tunnel name can never change the public endpoint.
-	NewEndpointID func() (string, error)
+	NewEndpointID    func() (string, error)
+	PublicTCPPortMin int32
+	PublicTCPPortMax int32
 }
 
 type ExpiryReconcileRequest struct {

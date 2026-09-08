@@ -114,7 +114,7 @@ func (q *Queries) ActivateControlHelper(ctx context.Context, arg ActivateControl
 
 const activateTunnelEdgeRouteAssignmentV1 = `-- name: ActivateTunnelEdgeRouteAssignmentV1 :one
 WITH candidate AS (
-  SELECT a.assignment_id, a.route_id, a.connector_id
+  SELECT a.assignment_id, a.route_id, a.connector_id, a.edge_node_id
   FROM tunnel_edge_route_assignments AS a
   WHERE a.assignment_id = $1
     AND a.route_id = $2
@@ -125,6 +125,7 @@ WITH candidate AS (
   SET state = 'draining', observed_state = 'draining', updated_at = $3
   FROM candidate AS c
   WHERE a.route_id = c.route_id AND a.connector_id = c.connector_id
+    AND a.edge_node_id = c.edge_node_id
     AND a.state = 'active' AND a.assignment_id <> c.assignment_id
   RETURNING a.assignment_id
 ), promoted AS (
@@ -519,8 +520,13 @@ WHERE a.route_id = $3
       AND config.content_hash = a.config_content_hash
       AND node.process_epoch = a.edge_process_epoch
       AND node.state = 'ready' AND node.ready = true
+  AND node.registry_expires_at > $2
+  AND node.roles @> ARRAY['edge']::text[]
+  AND node.transports @> ARRAY['http3','http2']::text[]
+  AND node.drain_deadline IS NULL
+  AND (node.allowed_account_ids IS NULL OR t.account_id = ANY(node.allowed_account_ids))
       AND node.last_heartbeat_at IS NOT NULL
-      AND node.last_heartbeat_at > $2 - interval '2 minutes'
+      AND node.last_heartbeat_at > $2 - interval '15 seconds'
     )
   )
 RETURNING a.assignment_id, a.route_id, a.assignment_generation, a.account_id, a.tunnel_id, a.connector_id, a.host_id, a.machine_identity_public_key, a.machine_identity_thumbprint, a.connector_generation, a.connector_session_id, a.connector_process_generation, a.config_generation, a.config_content_hash, a.access_mode, a.route_generation, a.route_revision, a.edge_node_id, a.edge_process_epoch, a.edge_failure_domain, a.state, a.observed_state, a.assigned_at, a.observed_at, a.released_at, a.created_at, a.updated_at
@@ -1450,7 +1456,7 @@ UPDATE control_tunnel_nodes
 SET state = 'draining', ready = false, drain_deadline = $1,
     version = version + 1, updated_at = $2
 WHERE id = $3 AND version = $4 AND state IN ('registered','ready')
-RETURNING id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port, relay_id, relay_region, relay_name, carrier_endpoint_host, carrier_endpoint_tcp_port, carrier_endpoint_quic_port, carrier_server_spki_sha256, carrier_server_certificate_chain_pem
+RETURNING id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port, relay_id, relay_region, relay_name, carrier_endpoint_host, carrier_endpoint_tcp_port, carrier_endpoint_quic_port, carrier_server_spki_sha256, carrier_server_certificate_chain_pem, node_generation, region, failure_domain, roles, transports, capacity_limit, capacity_used, capacity_observed_at, registry_expires_at, allowed_account_ids, peer_relay_wireguard_public_key, peer_relay_disco_public_key, peer_relay_virtual_address, public_ingress_ipv4, public_ingress_ipv6, public_ingress_verified_at
 `
 
 type DrainControlTunnelNodeParams struct {
@@ -1496,6 +1502,22 @@ func (q *Queries) DrainControlTunnelNode(ctx context.Context, arg DrainControlTu
 		&i.CarrierEndpointQuicPort,
 		&i.CarrierServerSpkiSha256,
 		&i.CarrierServerCertificateChainPem,
+		&i.NodeGeneration,
+		&i.Region,
+		&i.FailureDomain,
+		&i.Roles,
+		&i.Transports,
+		&i.CapacityLimit,
+		&i.CapacityUsed,
+		&i.CapacityObservedAt,
+		&i.RegistryExpiresAt,
+		&i.AllowedAccountIds,
+		&i.PeerRelayWireguardPublicKey,
+		&i.PeerRelayDiscoPublicKey,
+		&i.PeerRelayVirtualAddress,
+		&i.PublicIngressIpv4,
+		&i.PublicIngressIpv6,
+		&i.PublicIngressVerifiedAt,
 	)
 	return i, err
 }
@@ -3272,9 +3294,14 @@ UPDATE control_tunnel_nodes
 SET state = CASE WHEN $1::boolean THEN 'draining' WHEN state = 'registered' AND $2::boolean THEN 'ready' ELSE state END,
     ready = CASE WHEN state = 'draining' OR $1::boolean THEN false ELSE $2 END,
     observation = coalesce($3::jsonb, '{}'::jsonb),
+    capacity_used = CASE WHEN roles @> ARRAY['edge']::text[] THEN LEAST(capacity_limit,
+      (SELECT count(DISTINCT a.connector_id) FROM tunnel_edge_route_assignments a
+       WHERE a.edge_node_id=control_tunnel_nodes.id AND a.edge_process_epoch=control_tunnel_nodes.process_epoch
+         AND a.state IN ('staged','active'))) ELSE capacity_used END,
+    capacity_observed_at = CASE WHEN roles @> ARRAY['edge']::text[] THEN $4 ELSE capacity_observed_at END,
     last_heartbeat_at = $4, version = version + 1, updated_at = $4
 WHERE id = $5 AND process_epoch = $6 AND state NOT IN ('offline','retired')
-RETURNING id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port, relay_id, relay_region, relay_name, carrier_endpoint_host, carrier_endpoint_tcp_port, carrier_endpoint_quic_port, carrier_server_spki_sha256, carrier_server_certificate_chain_pem
+RETURNING id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port, relay_id, relay_region, relay_name, carrier_endpoint_host, carrier_endpoint_tcp_port, carrier_endpoint_quic_port, carrier_server_spki_sha256, carrier_server_certificate_chain_pem, node_generation, region, failure_domain, roles, transports, capacity_limit, capacity_used, capacity_observed_at, registry_expires_at, allowed_account_ids, peer_relay_wireguard_public_key, peer_relay_disco_public_key, peer_relay_virtual_address, public_ingress_ipv4, public_ingress_ipv6, public_ingress_verified_at
 `
 
 type HeartbeatControlTunnelNodeParams struct {
@@ -3324,6 +3351,22 @@ func (q *Queries) HeartbeatControlTunnelNode(ctx context.Context, arg HeartbeatC
 		&i.CarrierEndpointQuicPort,
 		&i.CarrierServerSpkiSha256,
 		&i.CarrierServerCertificateChainPem,
+		&i.NodeGeneration,
+		&i.Region,
+		&i.FailureDomain,
+		&i.Roles,
+		&i.Transports,
+		&i.CapacityLimit,
+		&i.CapacityUsed,
+		&i.CapacityObservedAt,
+		&i.RegistryExpiresAt,
+		&i.AllowedAccountIds,
+		&i.PeerRelayWireguardPublicKey,
+		&i.PeerRelayDiscoPublicKey,
+		&i.PeerRelayVirtualAddress,
+		&i.PublicIngressIpv4,
+		&i.PublicIngressIpv6,
+		&i.PublicIngressVerifiedAt,
 	)
 	return i, err
 }
@@ -4056,7 +4099,7 @@ SELECT t.account_id,
        config.content_hash AS config_content_hash,
        node.id AS edge_node_id,
        node.process_epoch AS edge_process_epoch,
-       node.edge_pool AS edge_failure_domain
+       node.failure_domain::text AS edge_failure_domain
 FROM tunnels AS t
 JOIN tunnel_routes AS r ON r.tunnel_id = t.id
 JOIN tunnel_connectors AS c ON c.tunnel_id = t.id
@@ -4069,29 +4112,58 @@ JOIN user_machines AS m
 JOIN tunnel_config_generations AS config
   ON config.tunnel_id = t.id AND config.generation = session.applied_config_generation
 JOIN LATERAL (
-  SELECT candidate_node.id, candidate_node.edge_pool, candidate_node.protocol_version, candidate_node.process_epoch, candidate_node.endpoint_host, candidate_node.endpoint_tcp_port, candidate_node.endpoint_quic_port, candidate_node.state, candidate_node.ready, candidate_node.capacity, candidate_node.observation, candidate_node.last_heartbeat_at, candidate_node.drain_deadline, candidate_node.version, candidate_node.created_at, candidate_node.updated_at, candidate_node.signaling_host, candidate_node.stun_host, candidate_node.stun_port, candidate_node.relay_id, candidate_node.relay_region, candidate_node.relay_name, candidate_node.carrier_endpoint_host, candidate_node.carrier_endpoint_tcp_port, candidate_node.carrier_endpoint_quic_port, candidate_node.carrier_server_spki_sha256, candidate_node.carrier_server_certificate_chain_pem
-  FROM control_tunnel_nodes AS candidate_node
-  WHERE candidate_node.state = 'ready' AND candidate_node.ready = true
-    AND candidate_node.last_heartbeat_at IS NOT NULL
-    AND candidate_node.last_heartbeat_at > $1::timestamptz - interval '2 minutes'
-  ORDER BY candidate_node.id, candidate_node.process_epoch
-  LIMIT 1
+  SELECT ranked.id, ranked.edge_pool, ranked.protocol_version, ranked.process_epoch, ranked.endpoint_host, ranked.endpoint_tcp_port, ranked.endpoint_quic_port, ranked.state, ranked.ready, ranked.capacity, ranked.observation, ranked.last_heartbeat_at, ranked.drain_deadline, ranked.version, ranked.created_at, ranked.updated_at, ranked.signaling_host, ranked.stun_host, ranked.stun_port, ranked.relay_id, ranked.relay_region, ranked.relay_name, ranked.carrier_endpoint_host, ranked.carrier_endpoint_tcp_port, ranked.carrier_endpoint_quic_port, ranked.carrier_server_spki_sha256, ranked.carrier_server_certificate_chain_pem, ranked.node_generation, ranked.region, ranked.failure_domain, ranked.roles, ranked.transports, ranked.capacity_limit, ranked.capacity_used, ranked.capacity_observed_at, ranked.registry_expires_at, ranked.allowed_account_ids, ranked.peer_relay_wireguard_public_key, ranked.peer_relay_disco_public_key, ranked.peer_relay_virtual_address, ranked.public_ingress_ipv4, ranked.public_ingress_ipv6, ranked.public_ingress_verified_at, ranked.retained FROM (
+    SELECT DISTINCT ON (candidate_node.failure_domain) candidate_node.id, candidate_node.edge_pool, candidate_node.protocol_version, candidate_node.process_epoch, candidate_node.endpoint_host, candidate_node.endpoint_tcp_port, candidate_node.endpoint_quic_port, candidate_node.state, candidate_node.ready, candidate_node.capacity, candidate_node.observation, candidate_node.last_heartbeat_at, candidate_node.drain_deadline, candidate_node.version, candidate_node.created_at, candidate_node.updated_at, candidate_node.signaling_host, candidate_node.stun_host, candidate_node.stun_port, candidate_node.relay_id, candidate_node.relay_region, candidate_node.relay_name, candidate_node.carrier_endpoint_host, candidate_node.carrier_endpoint_tcp_port, candidate_node.carrier_endpoint_quic_port, candidate_node.carrier_server_spki_sha256, candidate_node.carrier_server_certificate_chain_pem, candidate_node.node_generation, candidate_node.region, candidate_node.failure_domain, candidate_node.roles, candidate_node.transports, candidate_node.capacity_limit, candidate_node.capacity_used, candidate_node.capacity_observed_at, candidate_node.registry_expires_at, candidate_node.allowed_account_ids, candidate_node.peer_relay_wireguard_public_key, candidate_node.peer_relay_disco_public_key, candidate_node.peer_relay_virtual_address, candidate_node.public_ingress_ipv4, candidate_node.public_ingress_ipv6, candidate_node.public_ingress_verified_at,
+      EXISTS (SELECT 1 FROM tunnel_edge_route_assignments existing
+              WHERE existing.route_id=r.id AND existing.connector_id=c.id
+                AND existing.edge_node_id=candidate_node.id
+                AND existing.edge_process_epoch=candidate_node.process_epoch
+                AND existing.state IN ('staged','active')) AS retained
+    FROM control_tunnel_nodes AS candidate_node
+    WHERE candidate_node.state = 'ready' AND candidate_node.ready = true
+      AND candidate_node.last_heartbeat_at > $1::timestamptz - interval '15 seconds'
+      AND candidate_node.registry_expires_at > $1
+      AND candidate_node.capacity_observed_at > $1::timestamptz - interval '15 seconds'
+      AND (candidate_node.capacity_used < candidate_node.capacity_limit - candidate_node.capacity_limit/10
+           OR EXISTS (SELECT 1 FROM tunnel_edge_route_assignments admitted
+                      WHERE admitted.route_id=r.id AND admitted.connector_id=c.id
+                        AND admitted.edge_node_id=candidate_node.id AND admitted.edge_process_epoch=candidate_node.process_epoch
+                        AND admitted.state IN ('staged','active')))
+      AND candidate_node.roles @> ARRAY['edge']::text[]
+      AND candidate_node.transports @> ARRAY['http3','http2']::text[]
+      AND candidate_node.drain_deadline IS NULL
+      AND candidate_node.failure_domain IS NOT NULL
+      AND (candidate_node.allowed_account_ids IS NULL OR t.account_id=ANY(candidate_node.allowed_account_ids))
+    ORDER BY candidate_node.failure_domain, retained DESC, candidate_node.id
+  ) ranked
+  ORDER BY ranked.retained DESC, ranked.id
+  LIMIT 2
 ) AS node ON true
 WHERE t.desired_state = 'active'
   AND (t.expires_at IS NULL OR t.expires_at > $1::timestamptz)
   AND r.desired_state = 'active'
-  AND r.protocol IN ('http','private_tcp')
+  AND r.protocol IN ('http','tcp','private_tcp')
   AND c.desired_state = 'active'
   AND c.drain_state = 'accepting'
   AND c.last_session_id IS NOT NULL
   AND session.state IN ('authenticating','ready')
   AND session.last_heartbeat_at IS NOT NULL
-  AND session.last_heartbeat_at > $1::timestamptz - interval '2 minutes'
+  AND session.last_heartbeat_at > $1::timestamptz - interval '15 seconds'
   AND session.lease_deadline > $1::timestamptz
   AND session.applied_config_generation = config.generation
   AND c.last_applied_config_generation = config.generation
   AND config.activation_state = 'active'
-ORDER BY r.id, c.id
+  AND NOT EXISTS (
+    SELECT 1 FROM tunnel_edge_route_assignments current
+    WHERE current.route_id=r.id AND current.connector_id=c.id
+      AND current.edge_node_id=node.id AND current.edge_process_epoch=node.process_epoch
+      AND current.connector_session_id=session.id AND current.connector_generation=c.generation
+      AND current.connector_process_generation=session.process_generation
+      AND current.config_generation=config.generation AND current.config_content_hash=config.content_hash
+      AND current.route_generation=r.generation AND current.access_mode=t.access_mode
+      AND current.state IN ('staged','active')
+  )
+ORDER BY r.id, c.id, node.id
 LIMIT $2
 `
 
@@ -4120,7 +4192,7 @@ type ListReadyTunnelEdgeRouteCandidatesV1Row struct {
 	EdgeFailureDomain          string
 }
 
-// Pick authenticated, config-applied connector sessions and one ready edge
+// Pick authenticated, config-applied connector sessions and up to two ready edges
 // process. A staged assignment bootstraps the data carrier; it cannot become
 // active until connector readiness and an exact edge ready observation.
 func (q *Queries) ListReadyTunnelEdgeRouteCandidatesV1(ctx context.Context, arg ListReadyTunnelEdgeRouteCandidatesV1Params) ([]ListReadyTunnelEdgeRouteCandidatesV1Row, error) {
@@ -4319,7 +4391,7 @@ func (q *Queries) ListRevokedControlSigningKeyIDs(ctx context.Context, rowLimit 
 }
 
 const listStaleControlTunnelNodesForUpdate = `-- name: ListStaleControlTunnelNodesForUpdate :many
-SELECT id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port, relay_id, relay_region, relay_name, carrier_endpoint_host, carrier_endpoint_tcp_port, carrier_endpoint_quic_port, carrier_server_spki_sha256, carrier_server_certificate_chain_pem FROM control_tunnel_nodes
+SELECT id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port, relay_id, relay_region, relay_name, carrier_endpoint_host, carrier_endpoint_tcp_port, carrier_endpoint_quic_port, carrier_server_spki_sha256, carrier_server_certificate_chain_pem, node_generation, region, failure_domain, roles, transports, capacity_limit, capacity_used, capacity_observed_at, registry_expires_at, allowed_account_ids, peer_relay_wireguard_public_key, peer_relay_disco_public_key, peer_relay_virtual_address, public_ingress_ipv4, public_ingress_ipv6, public_ingress_verified_at FROM control_tunnel_nodes
 WHERE state IN ('registered','ready') AND (last_heartbeat_at IS NULL OR last_heartbeat_at <= $1)
 ORDER BY coalesce(last_heartbeat_at, created_at), id
 FOR UPDATE SKIP LOCKED LIMIT $2
@@ -4367,6 +4439,22 @@ func (q *Queries) ListStaleControlTunnelNodesForUpdate(ctx context.Context, arg 
 			&i.CarrierEndpointQuicPort,
 			&i.CarrierServerSpkiSha256,
 			&i.CarrierServerCertificateChainPem,
+			&i.NodeGeneration,
+			&i.Region,
+			&i.FailureDomain,
+			&i.Roles,
+			&i.Transports,
+			&i.CapacityLimit,
+			&i.CapacityUsed,
+			&i.CapacityObservedAt,
+			&i.RegistryExpiresAt,
+			&i.AllowedAccountIds,
+			&i.PeerRelayWireguardPublicKey,
+			&i.PeerRelayDiscoPublicKey,
+			&i.PeerRelayVirtualAddress,
+			&i.PublicIngressIpv4,
+			&i.PublicIngressIpv6,
+			&i.PublicIngressVerifiedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -4399,7 +4487,7 @@ SELECT a.assignment_id,
        a.edge_node_id,
        a.edge_process_epoch,
        a.edge_failure_domain,
-       CASE WHEN r.protocol = 'private_tcp' THEN 'tunnel_private_tcp' ELSE 'tunnel_http_wss' END AS kind,
+       CASE WHEN r.protocol = 'private_tcp' THEN 'tunnel_private_tcp' WHEN r.protocol = 'tcp' THEN 'tunnel_tcp' ELSE 'tunnel_http_wss' END AS kind,
        (CASE WHEN r.match_type = 'one_label_wildcard' THEN '*.' || r.wildcard_suffix ELSE COALESCE(r.match_hostname, '') END)::text AS public_host,
        r.match_type,
        r.match_hostname,
@@ -4407,6 +4495,8 @@ SELECT a.assignment_id,
        r.path_prefix,
        r.priority,
        r.protocol,
+       r.public_tcp_listener_id,
+       r.public_tcp_port,
        r.origin_scheme,
        r.preserve_host,
        r.host_override,
@@ -4447,7 +4537,7 @@ WHERE a.edge_node_id = $1
       t.desired_state = 'active'
       AND (t.expires_at IS NULL OR t.expires_at > $3)
       AND r.desired_state = 'active'
-      AND r.protocol IN ('http','private_tcp')
+      AND r.protocol IN ('http','tcp','private_tcp')
       AND c.desired_state = 'active' AND c.drain_state = 'accepting'
       AND c.generation = a.connector_generation
       AND c.last_session_id = session.id
@@ -4458,13 +4548,18 @@ WHERE a.edge_node_id = $1
         OR (a.state = 'active' AND session.state = 'ready')
       )
       AND session.last_heartbeat_at IS NOT NULL
-      AND session.last_heartbeat_at > $3 - interval '2 minutes'
+      AND session.last_heartbeat_at > $3 - interval '15 seconds'
       AND session.lease_deadline > $3
       AND session.applied_config_generation = a.config_generation
       AND config.activation_state = 'active'
       AND config.content_hash = a.config_content_hash
       AND node.process_epoch = a.edge_process_epoch
       AND node.state = 'ready' AND node.ready = true
+  AND node.registry_expires_at > $3
+  AND node.roles @> ARRAY['edge']::text[]
+  AND node.transports @> ARRAY['http3','http2']::text[]
+  AND node.drain_deadline IS NULL
+  AND (node.allowed_account_ids IS NULL OR t.account_id = ANY(node.allowed_account_ids))
     )
   )
 ORDER BY a.route_id, a.assignment_generation, a.assignment_id
@@ -4505,6 +4600,8 @@ type ListTunnelEdgeRouteAssignmentsForNodeV1Row struct {
 	PathPrefix                 sql.NullString
 	Priority                   int32
 	Protocol                   string
+	PublicTcpListenerID        sql.NullString
+	PublicTcpPort              sql.NullInt32
 	OriginScheme               string
 	PreserveHost               bool
 	HostOverride               sql.NullString
@@ -4555,6 +4652,8 @@ func (q *Queries) ListTunnelEdgeRouteAssignmentsForNodeV1(ctx context.Context, a
 			&i.PathPrefix,
 			&i.Priority,
 			&i.Protocol,
+			&i.PublicTcpListenerID,
+			&i.PublicTcpPort,
 			&i.OriginScheme,
 			&i.PreserveHost,
 			&i.HostOverride,
@@ -5044,7 +5143,7 @@ SET edge_pool = EXCLUDED.edge_pool, relay_id = EXCLUDED.relay_id,
     state = 'registered', ready = false, capacity = EXCLUDED.capacity,
     observation = '{}'::jsonb, last_heartbeat_at = EXCLUDED.last_heartbeat_at,
     drain_deadline = NULL, version = control_tunnel_nodes.version + 1, updated_at = EXCLUDED.last_heartbeat_at
-RETURNING id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port, relay_id, relay_region, relay_name, carrier_endpoint_host, carrier_endpoint_tcp_port, carrier_endpoint_quic_port, carrier_server_spki_sha256, carrier_server_certificate_chain_pem
+RETURNING id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port, relay_id, relay_region, relay_name, carrier_endpoint_host, carrier_endpoint_tcp_port, carrier_endpoint_quic_port, carrier_server_spki_sha256, carrier_server_certificate_chain_pem, node_generation, region, failure_domain, roles, transports, capacity_limit, capacity_used, capacity_observed_at, registry_expires_at, allowed_account_ids, peer_relay_wireguard_public_key, peer_relay_disco_public_key, peer_relay_virtual_address, public_ingress_ipv4, public_ingress_ipv6, public_ingress_verified_at
 `
 
 type RegisterControlTunnelNodeParams struct {
@@ -5122,6 +5221,22 @@ func (q *Queries) RegisterControlTunnelNode(ctx context.Context, arg RegisterCon
 		&i.CarrierEndpointQuicPort,
 		&i.CarrierServerSpkiSha256,
 		&i.CarrierServerCertificateChainPem,
+		&i.NodeGeneration,
+		&i.Region,
+		&i.FailureDomain,
+		&i.Roles,
+		&i.Transports,
+		&i.CapacityLimit,
+		&i.CapacityUsed,
+		&i.CapacityObservedAt,
+		&i.RegistryExpiresAt,
+		&i.AllowedAccountIds,
+		&i.PeerRelayWireguardPublicKey,
+		&i.PeerRelayDiscoPublicKey,
+		&i.PeerRelayVirtualAddress,
+		&i.PublicIngressIpv4,
+		&i.PublicIngressIpv6,
+		&i.PublicIngressVerifiedAt,
 	)
 	return i, err
 }
@@ -5516,6 +5631,43 @@ func (q *Queries) ReserveHostedProviderOperationRecovery(ctx context.Context, ar
 	return i, err
 }
 
+const retireUnavailableTunnelEdgeAssignmentsV1 = `-- name: RetireUnavailableTunnelEdgeAssignmentsV1 :execrows
+UPDATE tunnel_edge_route_assignments a
+SET state='draining', observed_state='draining', updated_at=$1
+WHERE a.state IN ('staged','active') AND NOT EXISTS (
+ SELECT 1 FROM control_tunnel_nodes n
+ JOIN tunnel_connectors c ON c.id=a.connector_id
+ JOIN tunnel_connector_sessions session ON session.id=a.connector_session_id
+ JOIN tunnel_routes r ON r.id=a.route_id
+ JOIN tunnels t ON t.id=a.tunnel_id
+ WHERE n.id=a.edge_node_id AND n.process_epoch=a.edge_process_epoch
+   AND n.state='ready' AND n.ready AND n.drain_deadline IS NULL
+   AND n.last_heartbeat_at>$1::timestamptz-interval '15 seconds'
+   AND n.registry_expires_at>$1
+   AND n.roles @> ARRAY['edge']::text[]
+   AND (n.allowed_account_ids IS NULL OR a.account_id=ANY(n.allowed_account_ids))
+   AND c.desired_state='active' AND c.drain_state='accepting' AND c.revoked_at IS NULL
+   AND c.last_session_id=session.id AND c.generation=a.connector_generation
+   AND c.last_applied_config_generation=a.config_generation
+   AND session.state IN ('authenticating','ready') AND session.lease_deadline>$1
+   AND session.last_heartbeat_at>$1::timestamptz-interval '15 seconds'
+   AND session.process_generation=a.connector_process_generation
+   AND r.desired_state='active' AND r.generation=a.route_generation AND r.deleted_at IS NULL
+   AND t.desired_state='active' AND t.deleted_at IS NULL AND t.access_mode=a.access_mode
+   AND (t.expires_at IS NULL OR t.expires_at>$1)
+)
+`
+
+// Retire authority before replacement selection so a recovered former edge
+// cannot rejoin a placement without a fresh generation and readiness handshake.
+func (q *Queries) RetireUnavailableTunnelEdgeAssignmentsV1(ctx context.Context, now time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, retireUnavailableTunnelEdgeAssignmentsV1, now)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const revokeControlConfigCredentialsForEnvironment = `-- name: RevokeControlConfigCredentialsForEnvironment :execrows
 UPDATE control_config_credentials SET revoked_at = coalesce(revoked_at, $1)
 WHERE environment_id = $2 AND revoked_at IS NULL
@@ -5889,7 +6041,7 @@ func (q *Queries) RevokeUnboundAuthenticatedHostHelperEnrollment(ctx context.Con
 }
 
 const selectReadyControlTunnelNode = `-- name: SelectReadyControlTunnelNode :one
-SELECT id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port, relay_id, relay_region, relay_name, carrier_endpoint_host, carrier_endpoint_tcp_port, carrier_endpoint_quic_port, carrier_server_spki_sha256, carrier_server_certificate_chain_pem FROM control_tunnel_nodes
+SELECT id, edge_pool, protocol_version, process_epoch, endpoint_host, endpoint_tcp_port, endpoint_quic_port, state, ready, capacity, observation, last_heartbeat_at, drain_deadline, version, created_at, updated_at, signaling_host, stun_host, stun_port, relay_id, relay_region, relay_name, carrier_endpoint_host, carrier_endpoint_tcp_port, carrier_endpoint_quic_port, carrier_server_spki_sha256, carrier_server_certificate_chain_pem, node_generation, region, failure_domain, roles, transports, capacity_limit, capacity_used, capacity_observed_at, registry_expires_at, allowed_account_ids, peer_relay_wireguard_public_key, peer_relay_disco_public_key, peer_relay_virtual_address, public_ingress_ipv4, public_ingress_ipv6, public_ingress_verified_at FROM control_tunnel_nodes
 WHERE edge_pool = $1 AND state = 'ready' AND ready = true
   AND last_heartbeat_at > $2
 ORDER BY last_heartbeat_at DESC, id
@@ -5932,6 +6084,22 @@ func (q *Queries) SelectReadyControlTunnelNode(ctx context.Context, arg SelectRe
 		&i.CarrierEndpointQuicPort,
 		&i.CarrierServerSpkiSha256,
 		&i.CarrierServerCertificateChainPem,
+		&i.NodeGeneration,
+		&i.Region,
+		&i.FailureDomain,
+		&i.Roles,
+		&i.Transports,
+		&i.CapacityLimit,
+		&i.CapacityUsed,
+		&i.CapacityObservedAt,
+		&i.RegistryExpiresAt,
+		&i.AllowedAccountIds,
+		&i.PeerRelayWireguardPublicKey,
+		&i.PeerRelayDiscoPublicKey,
+		&i.PeerRelayVirtualAddress,
+		&i.PublicIngressIpv4,
+		&i.PublicIngressIpv6,
+		&i.PublicIngressVerifiedAt,
 	)
 	return i, err
 }
@@ -6117,7 +6285,7 @@ SELECT $1, r.id, $2, t.account_id, r.tunnel_id,
        c.id, c.host_id, m.public_identity_key, $3,
        c.generation, session.id, session.process_generation, config.generation,
        config.content_hash, t.access_mode, r.generation, r.generation, node.id, node.process_epoch,
-       node.edge_pool, 'staged', 'pending', $4, $4
+       node.failure_domain, 'staged', 'pending', $4, $4
 FROM tunnel_routes AS r
 JOIN tunnels AS t ON t.id = r.tunnel_id AND t.account_id = $5
 JOIN tunnel_connectors AS c
@@ -6134,11 +6302,11 @@ JOIN control_tunnel_nodes AS node
   ON node.id = $9 AND node.process_epoch = $10
 WHERE r.id = $11
   AND r.tunnel_id = $12
-  AND r.protocol IN ('http','private_tcp')
+  AND r.protocol IN ('http','tcp','private_tcp')
   AND btrim($1) = $1
   AND $1 ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{2,127}$'
-  AND btrim(node.edge_pool) = node.edge_pool
-  AND node.edge_pool ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
+  AND btrim(node.failure_domain) = node.failure_domain
+  AND node.failure_domain ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
   AND r.desired_state = 'active'
   AND t.desired_state = 'active'
   AND (t.expires_at IS NULL OR t.expires_at > $4)
@@ -6149,14 +6317,24 @@ WHERE r.id = $11
   AND session.process_generation = $14
   AND session.state IN ('authenticating','ready')
   AND session.last_heartbeat_at IS NOT NULL
-  AND session.last_heartbeat_at > $4 - interval '2 minutes'
+  AND session.last_heartbeat_at > $4 - interval '15 seconds'
   AND session.lease_deadline > $4
   AND session.applied_config_generation = config.generation
   AND config.activation_state = 'active'
   AND config.content_hash = $15
   AND node.state = 'ready' AND node.ready = true
+  AND node.registry_expires_at > $4
+  AND node.roles @> ARRAY['edge']::text[]
+  AND node.transports @> ARRAY['http3','http2']::text[]
+  AND node.drain_deadline IS NULL
+  AND (node.allowed_account_ids IS NULL OR t.account_id = ANY(node.allowed_account_ids))
+  AND node.capacity_observed_at > $4 - interval '15 seconds'
+  AND (node.capacity_used < node.capacity_limit-node.capacity_limit/10
+       OR EXISTS (SELECT 1 FROM tunnel_edge_route_assignments admitted
+                  WHERE admitted.route_id=r.id AND admitted.connector_id=c.id AND admitted.edge_node_id=node.id
+                    AND admitted.state IN ('staged','active')))
   AND node.last_heartbeat_at IS NOT NULL
-  AND node.last_heartbeat_at > $4 - interval '2 minutes'
+  AND node.last_heartbeat_at > $4 - interval '15 seconds'
   AND NOT EXISTS (
     SELECT 1
     FROM tunnel_edge_route_assignments AS prior
@@ -6262,22 +6440,23 @@ UPDATE tunnel_edge_route_assignments AS stale
 SET state = 'draining', observed_state = 'draining', updated_at = $1
 WHERE stale.route_id = $2
   AND stale.connector_id = $3
+  AND stale.edge_node_id = $4
   AND stale.state = 'staged'
   AND (
-    stale.account_id IS DISTINCT FROM $4
-    OR stale.tunnel_id IS DISTINCT FROM $5
-    OR stale.host_id IS DISTINCT FROM $6
-    OR stale.machine_identity_public_key IS DISTINCT FROM $7
-    OR stale.machine_identity_thumbprint IS DISTINCT FROM $8
-    OR stale.connector_generation IS DISTINCT FROM $9
-    OR stale.connector_session_id IS DISTINCT FROM $10
-    OR stale.connector_process_generation IS DISTINCT FROM $11
-    OR stale.config_generation IS DISTINCT FROM $12
-    OR stale.config_content_hash IS DISTINCT FROM $13
-    OR stale.access_mode IS DISTINCT FROM $14
-    OR stale.route_generation IS DISTINCT FROM $15
-    OR stale.route_revision IS DISTINCT FROM $16
-    OR stale.edge_node_id IS DISTINCT FROM $17
+    stale.account_id IS DISTINCT FROM $5
+    OR stale.tunnel_id IS DISTINCT FROM $6
+    OR stale.host_id IS DISTINCT FROM $7
+    OR stale.machine_identity_public_key IS DISTINCT FROM $8
+    OR stale.machine_identity_thumbprint IS DISTINCT FROM $9
+    OR stale.connector_generation IS DISTINCT FROM $10
+    OR stale.connector_session_id IS DISTINCT FROM $11
+    OR stale.connector_process_generation IS DISTINCT FROM $12
+    OR stale.config_generation IS DISTINCT FROM $13
+    OR stale.config_content_hash IS DISTINCT FROM $14
+    OR stale.access_mode IS DISTINCT FROM $15
+    OR stale.route_generation IS DISTINCT FROM $16
+    OR stale.route_revision IS DISTINCT FROM $17
+    OR stale.edge_node_id IS DISTINCT FROM $4
     OR stale.edge_process_epoch IS DISTINCT FROM $18
     OR stale.edge_failure_domain IS DISTINCT FROM $19
   )
@@ -6287,6 +6466,7 @@ type SupersedeStaleStagedTunnelEdgeRouteAssignmentV1Params struct {
 	Now                        time.Time
 	RouteID                    string
 	ConnectorID                string
+	EdgeNodeID                 string
 	AccountID                  string
 	TunnelID                   string
 	HostID                     string
@@ -6300,7 +6480,6 @@ type SupersedeStaleStagedTunnelEdgeRouteAssignmentV1Params struct {
 	AccessMode                 string
 	RouteGeneration            int64
 	RouteRevision              int64
-	EdgeNodeID                 string
 	EdgeProcessEpoch           string
 	EdgeFailureDomain          string
 }
@@ -6315,6 +6494,7 @@ func (q *Queries) SupersedeStaleStagedTunnelEdgeRouteAssignmentV1(ctx context.Co
 		arg.Now,
 		arg.RouteID,
 		arg.ConnectorID,
+		arg.EdgeNodeID,
 		arg.AccountID,
 		arg.TunnelID,
 		arg.HostID,
@@ -6328,7 +6508,6 @@ func (q *Queries) SupersedeStaleStagedTunnelEdgeRouteAssignmentV1(ctx context.Co
 		arg.AccessMode,
 		arg.RouteGeneration,
 		arg.RouteRevision,
-		arg.EdgeNodeID,
 		arg.EdgeProcessEpoch,
 		arg.EdgeFailureDomain,
 	)

@@ -169,6 +169,9 @@ func (r *SQLRepository) PatchResourceRoute(ctx context.Context, input RouteRecor
 			return ErrGenerationConflict
 		}
 		candidate := routeCandidateFromRecord(current, input)
+		if input.ProtocolSet && candidate.Protocol != current.Protocol && (candidate.Protocol == "tcp" || current.Protocol == "tcp") {
+			return fmt.Errorf("%w: public TCP protocol cannot be changed in place; replace the route", ErrInvalidInput)
+		}
 		if err := validateEffectiveRouteCandidate(tunnel, candidate); err != nil {
 			return err
 		}
@@ -320,6 +323,7 @@ func createRouteParams(input RouteRecord) dbsqlc.CreateTunnelRouteV1Params {
 		TlsVerification: tlsVerification, TlsServerName: nullableStringPtr(serverName), CaReference: nullableStringPtr(caRef),
 		MtlsCredentialReference: nullableStringPtr(clientRef), ConnectTimeoutMs: input.ConnectTimeoutMS, IdleTimeoutMs: input.IdleTimeoutMS,
 		MaxConcurrentStreams: input.MaxConcurrentStreams, DesiredState: "active", CreatedByActorID: input.ActorID, UpdatedByActorID: input.ActorID, Now: input.Now,
+		PublicTcpListenerID: nullableString(input.PublicTCPListenerID), PublicTcpPortMin: input.PublicTCPPortMin, PublicTcpPortMax: input.PublicTCPPortMax,
 	}
 }
 
@@ -424,6 +428,11 @@ func routeCandidateFromRecord(current dbsqlc.TunnelRoute, input RouteRecord) dbs
 // tunnel-access, host-match, and origin semantics atomic across partial
 // updates.
 func validateEffectiveRouteCandidate(tunnel dbsqlc.Tunnel, candidate dbsqlc.TunnelRoute) error {
+	if candidate.Protocol == "tcp" {
+		if tunnel.AccessMode != AccessPublic || candidate.OriginScheme != "tcp" || candidate.MatchType != "managed" || !candidate.MatchHostname.Valid || candidate.PathPrefix.Valid || candidate.PreserveHost || candidate.HostOverride.Valid {
+			return fmt.Errorf("%w: public TCP routes require a public tunnel, managed hostname, tcp origin, and no path", ErrInvalidInput)
+		}
+	}
 	if candidate.Protocol == "private_tcp" {
 		if tunnel.AccessMode != AccessPrivate || candidate.OriginScheme != "tcp" {
 			return fmt.Errorf("%w: tcp_private routes require a private tunnel and tcp origin", ErrInvalidInput)
@@ -746,7 +755,7 @@ func (r *SQLRepository) CreateResourceDomain(ctx context.Context, input DomainRe
 		if input.CertificateStrategy == "" {
 			input.CertificateStrategy = "managed"
 		}
-		if _, err := normalizeDomainCertificateStrategy(input.CertificateStrategy, input.MatchType); err != nil {
+		if _, err := normalizeDomainCertificateStrategy(input.CertificateStrategy, input.MatchType, route.Protocol); err != nil {
 			return err
 		}
 		if len(input.ExpectedRecords) == 0 {

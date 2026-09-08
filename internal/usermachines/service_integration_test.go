@@ -1488,11 +1488,11 @@ func TestDashboardEnrollmentsStayBoundToTheirOwnTokenAndInstallation(t *testing.
 		}, nil
 	})
 
-	first, err := service.StartEnrollmentWithOptions(ctx, userID, "idem-enrollment-isolation-first-"+suffix, EnrollmentOptions{Role: "host", Shell: "posix"})
+	first, err := service.StartEnrollmentWithOptions(ctx, userID, "idem-enrollment-isolation-first-"+suffix, EnrollmentOptions{Shell: "posix"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := service.StartEnrollmentWithOptions(ctx, userID, "idem-enrollment-isolation-second-"+suffix, EnrollmentOptions{Role: "client", Shell: "powershell"})
+	second, err := service.StartEnrollmentWithOptions(ctx, userID, "idem-enrollment-isolation-second-"+suffix, EnrollmentOptions{Shell: "powershell"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1860,7 +1860,7 @@ func TestExpiredInstallationRecoveryIsCrashSafeConcurrentAndIdentityBound(t *tes
 		grantMu.Unlock()
 		return HelperEnrollmentGrant{EnrollmentID: "henr_recovered_" + suffix, HelperID: "helper_recovered_" + suffix, Credential: strings.Repeat("recovered", 8), ExpiresAt: time.Now().UTC().Add(10 * time.Minute)}, nil
 	})
-	start, err := service.StartEnrollmentWithOptions(ctx, userID, "idem-install-recovery-"+suffix, EnrollmentOptions{Role: "client", Shell: "powershell"})
+	start, err := service.StartEnrollmentWithOptions(ctx, userID, "idem-install-recovery-"+suffix, EnrollmentOptions{Shell: "powershell"})
 	if err != nil {
 		t.Fatal(err)
 	}

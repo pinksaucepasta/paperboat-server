@@ -30,6 +30,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
+	"github.com/pinksaucepasta/paperboat-server/internal/environment"
 	"github.com/pinksaucepasta/paperboat-server/internal/helperruntime"
 	"github.com/pinksaucepasta/paperboat-server/internal/machinealias"
 	"github.com/pinksaucepasta/paperboat-server/internal/mint"
@@ -410,6 +411,11 @@ func (s *Service) ConfigureFileTransfer(policy accessdescriptor.FileTransferPoli
 	s.fileTransferPolicy = policy
 }
 
+// RuntimeFileTransferPolicy exposes the configured policy on authenticated runtime heartbeats.
+func (s *Service) RuntimeFileTransferPolicy() accessdescriptor.FileTransferPolicy {
+	return s.fileTransferPolicy
+}
+
 func (s *Service) ConfigureTerminalSessions(maxActive int, signer *mint.Provider, client *http.Client) {
 	if maxActive > 0 {
 		s.maxSessions = min(maxActive, 20)
@@ -530,12 +536,11 @@ type EnrollmentStart struct {
 }
 
 type EnrollmentOptions struct {
-	Role  string // host or client
 	Shell string // posix or powershell
 }
 
 func (s *Service) StartEnrollment(ctx context.Context, userID, idempotencyKey string) (EnrollmentStart, error) {
-	return s.StartEnrollmentWithOptions(ctx, userID, idempotencyKey, EnrollmentOptions{Role: "host", Shell: "posix"})
+	return s.StartEnrollmentWithOptions(ctx, userID, idempotencyKey, EnrollmentOptions{Shell: "posix"})
 }
 
 func (s *Service) StartEnrollmentWithOptions(ctx context.Context, userID, idempotencyKey string, options EnrollmentOptions) (EnrollmentStart, error) {
@@ -546,7 +551,7 @@ func (s *Service) StartEnrollmentWithOptions(ctx context.Context, userID, idempo
 	if strings.TrimSpace(s.encryptionKey) == "" {
 		return EnrollmentStart{}, errors.New("user-machine enrollment encryption is not configured")
 	}
-	token, err := randomEnrollmentTokenFor(options.Role, options.Shell)
+	token, err := randomEnrollmentTokenFor(options.Shell)
 	if err != nil {
 		return EnrollmentStart{}, err
 	}
@@ -608,14 +613,14 @@ func (s *Service) CancelEnrollment(ctx context.Context, userID, enrollmentID str
 }
 
 func (s *Service) RetryEnrollment(ctx context.Context, userID, enrollmentID string) (EnrollmentStart, error) {
-	return s.RetryEnrollmentWithOptions(ctx, userID, enrollmentID, EnrollmentOptions{Role: "host", Shell: "posix"})
+	return s.RetryEnrollmentWithOptions(ctx, userID, enrollmentID, EnrollmentOptions{Shell: "posix"})
 }
 
 func (s *Service) RetryEnrollmentWithOptions(ctx context.Context, userID, enrollmentID string, options EnrollmentOptions) (EnrollmentStart, error) {
 	if strings.TrimSpace(s.encryptionKey) == "" {
 		return EnrollmentStart{}, errors.New("user-machine enrollment encryption is not configured")
 	}
-	token, err := randomEnrollmentTokenFor(options.Role, options.Shell)
+	token, err := randomEnrollmentTokenFor(options.Shell)
 	if err != nil {
 		return EnrollmentStart{}, err
 	}
@@ -1264,28 +1269,29 @@ func (s *Service) CreatePairing(ctx context.Context, in PairingInput) (Pairing, 
 }
 
 type UserMachine struct {
-	ID                     string              `json:"id"`
-	EnvironmentID          string              `json:"environment_id"`
-	DisplayName            string              `json:"display_name"`
-	Alias                  string              `json:"alias"`
-	Platform               string              `json:"platform"`
-	Architecture           string              `json:"architecture"`
-	WorkspaceRoot          string              `json:"workspace_root"`
-	State                  string              `json:"state"`
-	SeatState              string              `json:"seat_state"`
-	Online                 bool                `json:"online"`
-	RuntimeVersions        json.RawMessage     `json:"runtime_versions"`
-	SetupRoles             []string            `json:"setup_roles"`
-	SetupMode              string              `json:"setup_mode"`
-	Capabilities           MachineCapabilities `json:"capabilities"`
-	MachineKind            string              `json:"machine_kind"`
-	PublicIdentityKey      string              `json:"public_identity_key"`
-	InstallationGeneration int64               `json:"installation_generation"`
-	EnrolledAt             *time.Time          `json:"enrolled_at,omitempty"`
-	LastSeenAt             *time.Time          `json:"last_seen_at,omitempty"`
-	Availability           AvailabilityPolicy  `json:"availability"`
-	RuntimeDiagnostics     RuntimeDiagnostics  `json:"runtime_diagnostics"`
-	Installation           *ClientInstallation `json:"installation,omitempty"`
+	ID                     string                 `json:"id"`
+	EnvironmentID          string                 `json:"environment_id"`
+	DisplayName            string                 `json:"display_name"`
+	Alias                  string                 `json:"alias"`
+	Platform               string                 `json:"platform"`
+	Architecture           string                 `json:"architecture"`
+	WorkspaceRoot          string                 `json:"workspace_root"`
+	State                  string                 `json:"state"`
+	SeatState              string                 `json:"seat_state"`
+	Online                 bool                   `json:"online"`
+	RuntimeVersions        json.RawMessage        `json:"runtime_versions"`
+	SetupRoles             []string               `json:"-"`
+	SetupMode              string                 `json:"-"`
+	Capabilities           MachineCapabilities    `json:"capabilities"`
+	DeviceCapabilities     DeviceCapabilityPolicy `json:"device_capabilities"`
+	MachineKind            string                 `json:"machine_kind"`
+	PublicIdentityKey      string                 `json:"public_identity_key"`
+	InstallationGeneration int64                  `json:"installation_generation"`
+	EnrolledAt             *time.Time             `json:"enrolled_at,omitempty"`
+	LastSeenAt             *time.Time             `json:"last_seen_at,omitempty"`
+	Availability           AvailabilityPolicy     `json:"availability"`
+	RuntimeDiagnostics     RuntimeDiagnostics     `json:"runtime_diagnostics"`
+	Installation           *ClientInstallation    `json:"installation,omitempty"`
 }
 
 type ClientInstallation struct {
@@ -1314,7 +1320,7 @@ func configuredCapabilities(mode string) []string {
 	case "client":
 		return []string{"file_receive", "preview_launch"}
 	case "host":
-		return []string{"file_receive", "preview_launch", "terminal_host", "codex_host", "session_host", "keep_awake", "environment_injection"}
+		return []string{"file_receive", "preview_launch", "terminal_host", "codex_host", "session_host", "ssh_host", "keep_awake", "environment_injection"}
 	default:
 		return []string{}
 	}
@@ -3676,6 +3682,9 @@ func (s *Service) cleanupUserMachineDeviceTx(ctx context.Context, tx *db.Tx, use
 func (s *Service) revokeUserMachineControl(ctx context.Context, userID, userMachineID string, deleted bool) error {
 	now := s.now().UTC()
 	return s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := environment.LockVaultMutationsTx(ctx, tx); err != nil {
+			return err
+		}
 		machine, err := tx.Queries().GetUserMachineForUpdate(ctx, dbsqlc.GetUserMachineForUpdateParams{ID: userMachineID, UserID: userID})
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
@@ -3694,6 +3703,11 @@ func (s *Service) revokeUserMachineControl(ctx context.Context, userID, userMach
 		}
 		if changed != 1 {
 			return ErrNotFound
+		}
+		if machine.State != "disconnected" && machine.State != "deleted" && machine.State != "revoked" {
+			if err := environment.RequirePersonalRotationTx(ctx, tx, userID); err != nil {
+				return err
+			}
 		}
 		if deleted {
 			if err := s.cleanupUserMachineDeviceTx(ctx, tx, userID, machine.ID, now); err != nil {
@@ -4022,7 +4036,7 @@ func mapMachine(row dbsqlc.UserMachine) UserMachine {
 		observed := row.RuntimeDiagnosticsObservedAt.Time
 		diagnostics.ObservedAt = &observed
 	}
-	m := UserMachine{ID: row.ID, EnvironmentID: row.EnvironmentID, DisplayName: row.DisplayName, Alias: row.Alias, Platform: row.Platform, Architecture: row.Architecture, WorkspaceRoot: row.WorkspaceRoot, State: row.State, SeatState: row.SeatState, Online: row.Online, RuntimeVersions: row.RuntimeVersions, SetupRoles: append([]string(nil), row.SetupRoles...), SetupMode: row.SetupMode, Capabilities: mapCapabilities(row.ConfiguredCapabilities, row.ObservedCapabilities), MachineKind: row.MachineKind, PublicIdentityKey: row.PublicIdentityKey.String, InstallationGeneration: row.InstallationGeneration, Availability: mapAvailability(row), RuntimeDiagnostics: diagnostics}
+	m := UserMachine{ID: row.ID, EnvironmentID: row.EnvironmentID, DisplayName: row.DisplayName, Alias: row.Alias, Platform: row.Platform, Architecture: row.Architecture, WorkspaceRoot: row.WorkspaceRoot, State: row.State, SeatState: row.SeatState, Online: row.Online, RuntimeVersions: row.RuntimeVersions, SetupRoles: append([]string(nil), row.SetupRoles...), SetupMode: row.SetupMode, Capabilities: mapCapabilities(row.ConfiguredCapabilities, row.ObservedCapabilities), DeviceCapabilities: mapDeviceCapabilityPolicy(row), MachineKind: row.MachineKind, PublicIdentityKey: row.PublicIdentityKey.String, InstallationGeneration: row.InstallationGeneration, Availability: mapAvailability(row), RuntimeDiagnostics: diagnostics}
 	if row.EnrolledAt.Valid {
 		v := row.EnrolledAt.Time
 		m.EnrolledAt = &v
@@ -4094,7 +4108,7 @@ func enrollmentTokenSecret(token string) (string, bool) {
 			return "", false
 		}
 	}
-	return token[2:], true
+	return token[1:], true
 }
 
 func enrollmentTokenHash(token string) [sha256.Size]byte {
@@ -4103,48 +4117,39 @@ func enrollmentTokenHash(token string) [sha256.Size]byte {
 }
 
 // randomEnrollmentToken returns one URL-safe credential. The first character
-// carries role parity, the second carries shell parity, and the remaining
-// characters carry the secret entropy.
+// carries installer-platform parity and the remaining characters carry the
+// secret entropy.
 func randomEnrollmentToken() (string, error) {
 	const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-	metadata, err := randomCodeFromAlphabet(alphabet, 2)
+	metadata, err := randomCodeFromAlphabet(alphabet, 1)
 	if err != nil {
 		return "", err
 	}
-	rest, err := randomCodeFromAlphabet(alphabet, enrollmentTokenLength-2)
+	rest, err := randomCodeFromAlphabet(alphabet, enrollmentTokenLength-1)
 	if err != nil {
 		return "", err
 	}
 	return metadata + rest, nil
 }
 
-func randomEnrollmentTokenFor(role, shell string) (string, error) {
-	role = strings.ToLower(strings.TrimSpace(role))
+func randomEnrollmentTokenFor(shell string) (string, error) {
 	shell = strings.ToLower(strings.TrimSpace(shell))
-	if role != "host" && role != "client" {
-		return "", errors.New("enrollment role must be host or client")
-	}
 	if shell != "posix" && shell != "powershell" {
 		return "", errors.New("enrollment shell is invalid")
 	}
-	roleEven, shellEven := role == "host", shell == "posix"
-	metadata := make([]byte, 2)
-	for i, even := range []bool{roleEven, shellEven} {
-		chars := "13579ACEGIKMOQSUWY"
-		if even {
-			chars = "02468BDFHJLNPRTVXZ"
-		}
-		value, err := randomCodeFromAlphabet(chars, 1)
-		if err != nil {
-			return "", err
-		}
-		metadata[i] = value[0]
+	chars := "13579ACEGIKMOQSUWY"
+	if shell == "posix" {
+		chars = "02468BDFHJLNPRTVXZ"
 	}
-	rest, err := randomCodeFromAlphabet("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ", enrollmentTokenLength-2)
+	metadata, err := randomCodeFromAlphabet(chars, 1)
 	if err != nil {
 		return "", err
 	}
-	return string(metadata) + rest, nil
+	rest, err := randomCodeFromAlphabet("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ", enrollmentTokenLength-1)
+	if err != nil {
+		return "", err
+	}
+	return metadata + rest, nil
 }
 
 func randomCodeFromAlphabet(alphabet string, length int) (string, error) {

@@ -685,7 +685,7 @@ func (s *EdgeService) Heartbeat(ctx context.Context, r edgeNodeObservation) erro
 		return ErrInvalidUsageReport
 	}
 	observation, _ := json.Marshal(map[string]any{"active_streams": r.ActiveStreams})
-	_, err := s.store.Queries().HeartbeatControlTunnelNode(ctx, dbsqlc.HeartbeatControlTunnelNodeParams{ID: r.NodeID, ProcessEpoch: r.ProcessEpoch, Ready: r.Ready, Draining: r.Draining, Observation: observation, Now: sql.NullTime{Time: r.At, Valid: true}})
+	_, err := s.store.Queries().HeartbeatControlTunnelNode(ctx, dbsqlc.HeartbeatControlTunnelNodeParams{ID: r.NodeID, ProcessEpoch: r.ProcessEpoch, Ready: r.Ready, Draining: r.Draining, Observation: observation, Now: sql.NullTime{Time: s.clock().UTC(), Valid: true}})
 	if err != nil {
 		return err
 	}
@@ -715,6 +715,7 @@ func (s *EdgeService) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/nodes/heartbeat", s.handleHeartbeat)
 	mux.HandleFunc("POST /v1/edge/assignments/current", s.handleAssignment)
 	mux.HandleFunc("POST /v1/edge/routes/desired-state", s.handleRoutes)
+	mux.HandleFunc("POST /v1/edge/ingress/desired-state", s.handleIngress)
 	mux.HandleFunc("POST /v1/edge/routes/observations", s.handleObservedRoutes)
 	mux.HandleFunc("POST /v1/edge/usage-reports", s.handleUsage)
 	mux.HandleFunc("GET /v1/trust/revocations", s.handleRevocations)

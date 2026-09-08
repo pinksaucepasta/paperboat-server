@@ -78,9 +78,11 @@ func newTRK08PostgresFixture(t *testing.T) *trk08PostgresFixture {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := db.Migrate(ctx, database); err != nil {
-		_ = database.Close()
-		t.Fatal(err)
+	if os.Getenv("PAPERBOAT_TEST_SCHEMA_READY") != "1" {
+		if err := db.Migrate(ctx, database); err != nil {
+			_ = database.Close()
+			t.Fatal(err)
+		}
 	}
 
 	suffix := fmt.Sprintf("%d_%d", time.Now().UnixNano(), trk08FixtureCounter.Add(1))

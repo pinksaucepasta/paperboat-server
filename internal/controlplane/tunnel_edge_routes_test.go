@@ -105,6 +105,7 @@ func TestTunnelEdgeRouteJSONIsOpaqueAndCarriesExactFence(t *testing.T) {
 		EdgeFailureDomain: "fsn1", Kind: "tunnel_http_wss", PublicHost: "app.example.test",
 		MatchType: "exact", MatchHostname: sql.NullString{String: "app.example.test", Valid: true},
 		Priority: 100, Protocol: "http", OriginScheme: "http", PreserveHost: true, State: "active", ObservedState: "ready",
+		PublicTcpListenerID: sql.NullString{String: "listener_01", Valid: true}, PublicTcpPort: sql.NullInt32{Int32: 24567, Valid: true},
 		DomainBindings: `[{"id":"dom_1","hostname":"*.customer.example","match_type":"one_label_wildcard","generation":2}]`,
 	}
 	value := tunnelEdgeRouteJSON(row)
@@ -116,6 +117,9 @@ func TestTunnelEdgeRouteJSONIsOpaqueAndCarriesExactFence(t *testing.T) {
 	}
 	if _, present := value["origin_address"]; present {
 		t.Fatal("opaque edge projection exposed origin_address")
+	}
+	if value["public_tcp_listener_id"] != "listener_01" || value["public_tcp_port"] != int32(24567) {
+		t.Fatalf("public TCP reservation = %#v", value)
 	}
 	if got, ok := value["domain_bindings"].(json.RawMessage); !ok || !bytes.Equal(got, []byte(row.DomainBindings)) {
 		t.Fatalf("domain bindings = %#v", value["domain_bindings"])

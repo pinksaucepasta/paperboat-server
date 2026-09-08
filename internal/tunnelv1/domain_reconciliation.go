@@ -313,10 +313,16 @@ func (r *DomainReconciler) reconcileOne(ctx context.Context, row dbsqlc.TunnelDo
 		if err != nil {
 			return err
 		}
-		_, err = tx.Queries().AdvanceTunnelDomainCreateOperationsV1(ctx, dbsqlc.AdvanceTunnelDomainCreateOperationsV1Params{
-			Now: now, AccountID: row.AccountID,
-			DomainID: sql.NullString{String: row.ID, Valid: true},
-		})
+		if updated.CertificateStrategy == "none" {
+			_, err = tx.Queries().CompleteTunnelDomainCreateOperationV1(ctx, dbsqlc.CompleteTunnelDomainCreateOperationV1Params{
+				Now: sql.NullTime{Time: now, Valid: true}, AccountID: row.AccountID, DomainID: sql.NullString{String: row.ID, Valid: true},
+			})
+		} else {
+			_, err = tx.Queries().AdvanceTunnelDomainCreateOperationsV1(ctx, dbsqlc.AdvanceTunnelDomainCreateOperationsV1Params{
+				Now: now, AccountID: row.AccountID,
+				DomainID: sql.NullString{String: row.ID, Valid: true},
+			})
+		}
 		return err
 	})
 	if err != nil {

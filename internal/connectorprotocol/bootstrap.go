@@ -18,7 +18,7 @@ import (
 
 const (
 	CarrierBootstrapSchema   = "paperboat.connector-bootstrap/v1"
-	MaximumBootstrapCarriers = 4
+	MaximumBootstrapCarriers = 2
 )
 
 var spkiHashPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -59,7 +59,7 @@ func (n CarrierBootstrapNode) Validate() error {
 			return ErrInvalidInput
 		}
 		switch parsed.Scheme {
-		case "tls", "quic":
+		case "h2", "h3":
 			if seen[parsed.Scheme] {
 				return ErrInvalidInput
 			}
@@ -68,7 +68,7 @@ func (n CarrierBootstrapNode) Validate() error {
 			return ErrInvalidInput
 		}
 	}
-	if !seen["tls"] || !seen["quic"] {
+	if !seen["h2"] || !seen["h3"] {
 		return ErrInvalidInput
 	}
 	return nil
@@ -88,12 +88,13 @@ type CarrierBootstrapDescriptor struct {
 	ConfigGeneration     uint64                 `json:"config_generation"`
 	ConfigContentHash    string                 `json:"config_content_hash"`
 	Carriers             []CarrierBootstrapNode `json:"carriers"`
+	IngressDecisions     []IngressDecision      `json:"ingress_decisions"`
 	IssuedAt             time.Time              `json:"issued_at"`
 	ExpiresAt            time.Time              `json:"expires_at"`
 }
 
 func (d CarrierBootstrapDescriptor) Validate(now time.Time) error {
-	if d.Schema != CarrierBootstrapSchema || d.Kind != "carrier_bootstrap_descriptor" || ValidateIdentifier(d.AccountID) != nil || ValidateIdentifier(d.TunnelID) != nil || ValidateIdentifier(d.ConnectorID) != nil || ValidateIdentifier(d.HostID) != nil || tunnelendpoint.ValidateUUID(d.StableEndpointID) != nil || ValidateIdentifier(d.SessionID) != nil || d.ProcessGeneration == 0 || d.CredentialGeneration == 0 || d.ConfigGeneration == 0 || !hashPattern.MatchString(d.ConfigContentHash) || len(d.Carriers) == 0 || len(d.Carriers) > MaximumBootstrapCarriers || d.IssuedAt.IsZero() || d.ExpiresAt.IsZero() || !d.ExpiresAt.After(d.IssuedAt) || d.ExpiresAt.Sub(d.IssuedAt) > 2*time.Minute {
+	if d.Schema != CarrierBootstrapSchema || d.Kind != "carrier_bootstrap_descriptor" || ValidateIdentifier(d.AccountID) != nil || ValidateIdentifier(d.TunnelID) != nil || ValidateIdentifier(d.ConnectorID) != nil || ValidateIdentifier(d.HostID) != nil || tunnelendpoint.ValidateUUID(d.StableEndpointID) != nil || ValidateIdentifier(d.SessionID) != nil || d.ProcessGeneration == 0 || d.CredentialGeneration == 0 || d.ConfigGeneration == 0 || !hashPattern.MatchString(d.ConfigContentHash) || len(d.Carriers) == 0 || len(d.Carriers) > MaximumBootstrapCarriers || d.IssuedAt.IsZero() || d.ExpiresAt.IsZero() || !d.ExpiresAt.After(d.IssuedAt) || d.ExpiresAt.Sub(d.IssuedAt) > 15*time.Second {
 		return ErrInvalidInput
 	}
 	if !now.IsZero() && (d.IssuedAt.After(now.Add(MaxClockSkew)) || !d.ExpiresAt.After(now)) {
@@ -106,6 +107,18 @@ func (d CarrierBootstrapDescriptor) Validate(now time.Time) error {
 		}
 		seenNodes[carrier.EdgeNodeID+"\x00"+carrier.EdgeProcessEpoch] = true
 		seenDomains[carrier.FailureDomain] = true
+	}
+	if len(d.IngressDecisions) > 4096 {
+		return ErrInvalidInput
+	}
+	for _, ingress := range d.IngressDecisions {
+		at := now
+		if at.IsZero() {
+			at = ingress.IssuedAt
+		}
+		if ingress.Validate(at) != nil || ingress.Binding.AccountID != d.AccountID || ingress.Binding.TunnelID != d.TunnelID || ingress.Binding.HostID != d.HostID || ingress.ConnectorID != d.ConnectorID || ingress.SessionID != d.SessionID || ingress.ProcessGeneration != d.ProcessGeneration || ingress.ConfigGeneration != d.ConfigGeneration {
+			return ErrInvalidInput
+		}
 	}
 	return nil
 }
@@ -131,10 +144,11 @@ func (s SQLCarrierBootstrapSource) Descriptor(ctx context.Context, active Active
 	if s.Clock != nil {
 		now = s.Clock.Now().UTC()
 	}
-	rows, err := s.DB.Queries().ListReadyConnectorCarrierNodesV1(ctx, dbsqlc.ListReadyConnectorCarrierNodesV1Params{Now: now, RowLimit: MaximumBootstrapCarriers})
+	rows, err := s.DB.Queries().ListReadyConnectorCarrierNodesV1(ctx, dbsqlc.ListReadyConnectorCarrierNodesV1Params{Now: now, RowLimit: MaximumBootstrapCarriers, AccountID: active.AccountID, ConnectorID: active.ConnectorID, SessionID: active.SessionID, ConfigGeneration: int64(active.ConfigGeneration)})
 	if err != nil {
 		return CarrierBootstrapDescriptor{}, err
 	}
+	expiresAt := now.Add(15 * time.Second)
 	carriers := make([]CarrierBootstrapNode, 0, len(rows))
 	seenDomains := make(map[string]struct{}, len(rows))
 	for _, row := range rows {
@@ -151,8 +165,8 @@ func (s SQLCarrierBootstrapSource) Descriptor(ctx context.Context, active Active
 		carrier := CarrierBootstrapNode{
 			EdgeNodeID: row.EdgeNodeID, EdgeProcessEpoch: row.EdgeProcessEpoch, FailureDomain: row.FailureDomain.String,
 			Endpoints: []string{
-				"tls://" + net.JoinHostPort(host, fmt.Sprint(row.CarrierEndpointTcpPort.Int32)),
-				"quic://" + net.JoinHostPort(host, fmt.Sprint(row.CarrierEndpointQuicPort.Int32)),
+				"h2://" + net.JoinHostPort(host, fmt.Sprint(row.CarrierEndpointTcpPort.Int32)),
+				"h3://" + net.JoinHostPort(host, fmt.Sprint(row.CarrierEndpointQuicPort.Int32)),
 			},
 			ServerSPKISHA256: row.CarrierServerSpkiSha256.String, ServerCertificateChainPEM: row.CarrierServerCertificateChainPem.String,
 		}
@@ -161,17 +175,24 @@ func (s SQLCarrierBootstrapSource) Descriptor(ctx context.Context, active Active
 		}
 		seenDomains[carrier.FailureDomain] = struct{}{}
 		carriers = append(carriers, carrier)
+		if row.ValidUntil.Before(expiresAt) {
+			expiresAt = row.ValidUntil
+		}
 	}
 	if len(carriers) == 0 {
 		return CarrierBootstrapDescriptor{}, codeError(ErrNotReady, ReasonSnapshotRejected, true, nil)
+	}
+	ingress, err := (SQLIngressSource{DB: s.DB, Clock: s.Clock}).Daemon(ctx, active)
+	if err != nil {
+		return CarrierBootstrapDescriptor{}, err
 	}
 	descriptor := CarrierBootstrapDescriptor{
 		Schema: CarrierBootstrapSchema, Kind: "carrier_bootstrap_descriptor",
 		AccountID: active.AccountID, TunnelID: active.TunnelID, ConnectorID: active.ConnectorID, HostID: active.HostID,
 		StableEndpointID: tunnel.StableEndpointID,
 		SessionID:        active.SessionID, ProcessGeneration: active.ProcessGeneration, CredentialGeneration: active.CredentialGeneration,
-		ConfigGeneration: active.ConfigGeneration, ConfigContentHash: active.ConfigContentHash, Carriers: carriers,
-		IssuedAt: now, ExpiresAt: now.Add(2 * time.Minute),
+		ConfigGeneration: active.ConfigGeneration, ConfigContentHash: active.ConfigContentHash, Carriers: carriers, IngressDecisions: ingress,
+		IssuedAt: now, ExpiresAt: expiresAt,
 	}
 	if err := descriptor.Validate(now); err != nil {
 		return CarrierBootstrapDescriptor{}, err

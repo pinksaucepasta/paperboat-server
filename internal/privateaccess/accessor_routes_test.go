@@ -13,13 +13,13 @@ func TestAdmissionFromValuesRejectsMalformedWireFields(t *testing.T) {
 		endpoints                                                                                  []string
 	}
 	valid := func() wire {
-		return wire{hash: "sha256:" + strings.Repeat("a", 64), hostname: "web.example.test", match: "exact", protocol: "http", kind: "tunnel", tunnelName: "payments", routeName: "postgres", connector: "connector_1", endpoints: []string{"tls://edge.example.test:25001", "quic://edge.example.test:25002"}}
+		return wire{hash: "sha256:" + strings.Repeat("a", 64), hostname: "web.example.test", match: "exact", protocol: "http", kind: "tunnel", tunnelName: "payments", routeName: "postgres", connector: "connector_1", endpoints: []string{"h2://edge.example.test:25001", "h3://edge.example.test:25002"}}
 	}
 	for name, mutate := range map[string]func(*wire){
 		"uppercase hash": func(v *wire) { v.hash = "sha256:" + strings.Repeat("A", 64) },
 		"nonhex hash":    func(v *wire) { v.hash = "sha256:" + strings.Repeat("z", 64) },
-		"missing port":   func(v *wire) { v.endpoints[0] = "tls://edge.example.test" },
-		"zero port":      func(v *wire) { v.endpoints[0] = "tls://edge.example.test:0" },
+		"missing port":   func(v *wire) { v.endpoints[0] = "h2://edge.example.test" },
+		"zero port":      func(v *wire) { v.endpoints[0] = "h2://edge.example.test:0" },
 		"unknown match":  func(v *wire) { v.match = "recursive" },
 		"missing tunnel name": func(v *wire) {
 			v.tunnelName = ""

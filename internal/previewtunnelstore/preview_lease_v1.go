@@ -748,7 +748,7 @@ func validateCreatePreviewLeaseV1(input CreatePreviewLeaseV1Input) error {
 	if len(input.RequestHash) != 32 || !validActorType(input.ActorType) {
 		return ErrInvalidInput
 	}
-	if input.AccessMode != "public" && input.AccessMode != "private" {
+	if input.AccessMode != "public" && input.AccessMode != "private" && input.AccessMode != "team" {
 		return ErrInvalidInput
 	}
 	if !ValidPreviewTargetV1(input.TargetScheme, input.TargetAddress, input.AccessMode) {
