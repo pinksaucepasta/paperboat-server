@@ -242,26 +242,6 @@ func (s *NetworkService) Configuration(ctx context.Context, in NetworkConfigRequ
 	if len(grants) > 128 {
 		return NetworkConfigResult{}, ErrResourceLimit
 	}
-	codexRows, err := tx.QueryContext(ctx, `SELECT s.id,s.cli_client_session_id,s.machine_id,s.lease_expires_at FROM paperboat.codex_sessions s JOIN paperboat.cli_client_sessions c ON c.id=s.cli_client_session_id AND c.user_id=s.user_id AND c.state='active' AND c.revoked_at IS NULL JOIN paperboat.user_machines m ON m.id=s.machine_id AND m.user_id=s.user_id AND m.environment_id=s.environment_id AND m.installation_generation=s.installation_generation AND m.revoked_at IS NULL AND m.deleted_at IS NULL AND m.online AND m.configured_capabilities @> ARRAY['terminal_host','codex_host']::text[] AND m.observed_capabilities @> ARRAY['terminal_host','codex_host']::text[] JOIN paperboat.control_environments e ON e.id=s.environment_id AND e.owner_user_id=s.user_id AND e.desired_state='active' AND e.revoked_at IS NULL JOIN paperboat.users u ON u.id=s.user_id AND u.status='active' WHERE s.user_id=$1 AND s.state IN ('preparing','ready','reconnecting') AND s.lease_expires_at>$2 AND (s.cli_client_session_id=$3 OR s.machine_id=$3) ORDER BY s.id LIMIT 129`, in.UserID, now, in.EndpointID)
-	if err != nil {
-		return NetworkConfigResult{}, err
-	}
-	for codexRows.Next() {
-		g := grantRow{kind: "codex_session", capabilities: []string{"codex"}}
-		if codexRows.Scan(&g.id, &g.cli, &g.machine, &g.expiry) != nil {
-			codexRows.Close()
-			return NetworkConfigResult{}, ErrUnavailable
-		}
-		grants = append(grants, g)
-	}
-	rowErr = codexRows.Err()
-	codexRows.Close()
-	if rowErr != nil {
-		return NetworkConfigResult{}, rowErr
-	}
-	if len(grants) > 128 {
-		return NetworkConfigResult{}, ErrResourceLimit
-	}
 	byPeer := map[string]*networkPeer{}
 	scopes := 0
 	expiry := now.Add(mint.MaxProofTTL)

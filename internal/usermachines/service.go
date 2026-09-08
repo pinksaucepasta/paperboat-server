@@ -1309,7 +1309,6 @@ type MachineCapabilities struct {
 	FileReceive          CapabilityAvailability `json:"file_receive"`
 	PreviewLaunch        CapabilityAvailability `json:"preview_launch"`
 	TerminalHost         CapabilityAvailability `json:"terminal_host"`
-	CodexHost            CapabilityAvailability `json:"codex_host"`
 	SessionHost          CapabilityAvailability `json:"session_host"`
 	KeepAwake            CapabilityAvailability `json:"keep_awake"`
 	EnvironmentInjection CapabilityAvailability `json:"environment_injection"`
@@ -1320,7 +1319,7 @@ func configuredCapabilities(mode string) []string {
 	case "client":
 		return []string{"file_receive", "preview_launch"}
 	case "host":
-		return []string{"file_receive", "preview_launch", "terminal_host", "codex_host", "session_host", "ssh_host", "keep_awake", "environment_injection"}
+		return []string{"file_receive", "preview_launch", "terminal_host", "session_host", "ssh_host", "keep_awake", "environment_injection"}
 	default:
 		return []string{}
 	}
@@ -3559,9 +3558,6 @@ func (s *Service) revokeHostAuthorityTx(ctx context.Context, tx *db.Tx, machineI
 	if _, err := tx.Queries().RevokeControlHelperEnrollmentsForEnvironment(ctx, dbsqlc.RevokeControlHelperEnrollmentsForEnvironmentParams{EnvironmentID: environmentID, RevokedAt: sql.NullTime{Time: now, Valid: true}}); err != nil {
 		return err
 	}
-	if _, err := tx.Queries().StopCodexSessionsForMachine(ctx, dbsqlc.StopCodexSessionsForMachineParams{MachineID: machineID, Now: sql.NullTime{Time: now, Valid: true}}); err != nil {
-		return err
-	}
 	if _, err := tx.Queries().RevokeControlConfigCredentialsForEnvironment(ctx, dbsqlc.RevokeControlConfigCredentialsForEnvironmentParams{EnvironmentID: environmentID, RevokedAt: sql.NullTime{Time: now, Valid: true}}); err != nil {
 		return err
 	}
@@ -3626,9 +3622,6 @@ func (s *Service) cleanupUserMachineDeviceTx(ctx context.Context, tx *db.Tx, use
 		return err
 	}
 	if _, err := queries.ExpireUserMachineDiagnosticUploadIntents(ctx, dbsqlc.ExpireUserMachineDiagnosticUploadIntentsParams{TargetMachineID: machineID, TargetUserID: userID}); err != nil {
-		return err
-	}
-	if _, err := queries.StopCodexSessionsForMachine(ctx, dbsqlc.StopCodexSessionsForMachineParams{MachineID: userMachineID, Now: revocationTime}); err != nil {
 		return err
 	}
 	if _, err := queries.DeleteUserMachineControlSessions(ctx, userMachineID); err != nil {
@@ -4069,7 +4062,7 @@ func mapCapabilities(configured, observed []string) MachineCapabilities {
 	capability := func(name string) CapabilityAvailability {
 		return CapabilityAvailability{Configured: slices.Contains(configured, name), Observed: slices.Contains(observed, name)}
 	}
-	return MachineCapabilities{FileReceive: capability("file_receive"), PreviewLaunch: capability("preview_launch"), TerminalHost: capability("terminal_host"), CodexHost: capability("codex_host"), SessionHost: capability("session_host"), KeepAwake: capability("keep_awake"), EnvironmentInjection: capability("environment_injection")}
+	return MachineCapabilities{FileReceive: capability("file_receive"), PreviewLaunch: capability("preview_launch"), TerminalHost: capability("terminal_host"), SessionHost: capability("session_host"), KeepAwake: capability("keep_awake"), EnvironmentInjection: capability("environment_injection")}
 }
 func newID(prefix string) string {
 	var b [16]byte

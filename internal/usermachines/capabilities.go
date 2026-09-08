@@ -166,7 +166,7 @@ func capabilityNames(value DeviceCapabilitySelection) []string {
 		result = append(result, "preview_launch")
 	}
 	if value.Terminal {
-		result = append(result, "terminal_host", "codex_host", "session_host")
+		result = append(result, "terminal_host", "session_host")
 	}
 	if value.ManagedSSH {
 		result = append(result, "ssh_host")

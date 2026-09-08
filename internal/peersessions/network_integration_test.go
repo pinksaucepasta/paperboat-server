@@ -236,30 +236,6 @@ func TestNetworkAuthorityProductionIdentityAndAccessLifecycle(t *testing.T) {
 	}
 	assertNetworkConfig(t, cliConfig.Configuration, cliID, machineID, "dial", 3)
 	assertNetworkConfig(t, machineConfig.Configuration, machineID, cliID, "accept", 3)
-	if _, err = store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machines SET configured_capabilities=ARRAY['terminal_host','codex_host'],observed_capabilities=ARRAY['terminal_host','codex_host'] WHERE id=$1`, machineID); err != nil {
-		t.Fatal(err)
-	}
-	codexID := "cdx_network_" + suffix
-	if _, err = store.SQL().ExecContext(ctx, `INSERT INTO paperboat.codex_sessions(id,environment_id,machine_id,user_id,cli_client_session_id,idempotency_key,request_hash,installation_generation,connector_generation,edge_pool,edge_node_id,edge_assignment_host,lease_expires_at,last_renewed_at) VALUES($1,$2,$3,$4,$5,$6,decode('00','hex'),1,1,'test','edge_test','edge.test',$7,$8)`, codexID, envID, machineID, userID, cliID, "codex-network-"+suffix, grantExpiry, now); err != nil {
-		t.Fatal(err)
-	}
-	codexConfig, err := service.Configuration(ctx, NetworkConfigRequest{OperationID: "operation_config_codex_" + suffix, UserID: userID, EndpointID: cliID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertNetworkConfig(t, codexConfig.Configuration, cliID, machineID, "dial", 4)
-	assertNetworkScope(t, codexConfig.Configuration, "codex_session", codexID, "codex")
-	if _, err = store.SQL().ExecContext(ctx, `UPDATE paperboat.codex_sessions SET installation_generation=2 WHERE id=$1`, codexID); err != nil {
-		t.Fatal(err)
-	}
-	staleCodex, err := service.Configuration(ctx, NetworkConfigRequest{OperationID: "operation_config_codex_stale_" + suffix, UserID: userID, EndpointID: cliID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertNetworkConfig(t, staleCodex.Configuration, cliID, machineID, "dial", 3)
-	if _, err = store.SQL().ExecContext(ctx, `UPDATE paperboat.codex_sessions SET installation_generation=1,state='stopped' WHERE id=$1`, codexID); err != nil {
-		t.Fatal(err)
-	}
 	if _, err = store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machine_access_sessions SET expires_at=$2,updated_at=$3 WHERE id=$1`, accessID, now.Add(-time.Second), now); err != nil {
 		t.Fatal(err)
 	}

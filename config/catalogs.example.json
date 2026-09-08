@@ -198,17 +198,6 @@
       }
     },
     {
-      "code": "codex",
-      "name": "Codex CLI",
-      "description": "OpenAI's Codex CLI coding agent.",
-      "active": true,
-      "manifest": {
-        "kind": "paperboat.vm_preset",
-        "version": 1,
-        "files": []
-      }
-    },
-    {
       "code": "cursor-cli",
       "name": "Cursor CLI",
       "description": "Cursor's terminal coding agent (cursor-agent).",

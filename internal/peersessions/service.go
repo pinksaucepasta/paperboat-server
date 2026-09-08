@@ -483,6 +483,8 @@ func (s *Service) sign(intent reservation, value grant) (Credential, error) {
 }
 
 func validRequest(value Request) bool {
+	// "codex" remains a v1 wire value so persisted peer attempts can still be
+	// decoded. No production API creates Codex sessions or issues its credentials.
 	validPurpose := value.Purpose == "peer_transport" || value.Purpose == "interactive" || value.Purpose == "private_preview" || value.Purpose == "codex" || value.Purpose == "health_probe" || value.Purpose == "direct_probe" || value.Purpose == "file_transfer_key"
 	validTransfer := validTransferBinding(value.Purpose, value.Transfer)
 	return bounded(value.OperationKey, 16, 256) && bounded(value.UserID, 1, 256) && bounded(value.CLIClientSessionID, 1, 256) && bounded(value.EnvironmentID, 1, 256) && validPurpose && validPurposeConsumer(value.Purpose, value.Consumer) && validTransfer && validAllowedPaths(value.Purpose, value.AllowedPaths) && len(value.ControllingCertificateFingerprint) == sha256.Size && len(value.ControlledCertificateFingerprint) == sha256.Size && !equalBytes(value.ControllingCertificateFingerprint, value.ControlledCertificateFingerprint) && value.AttemptGeneration > 0 && value.NetworkGeneration > 0

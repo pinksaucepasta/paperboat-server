@@ -5050,7 +5050,6 @@
                 "file_receive",
                 "preview_launch",
                 "terminal_host",
-                "codex_host",
                 "session_host",
                 "keep_awake",
                 "environment_injection"
@@ -5082,7 +5081,6 @@
           "file_receive",
           "preview_launch",
           "terminal_host",
-          "codex_host",
           "session_host",
           "keep_awake",
           "environment_injection"
@@ -5095,9 +5093,6 @@
             "$ref": "#/components/schemas/MachineCapabilityAvailability"
           },
           "terminal_host": {
-            "$ref": "#/components/schemas/MachineCapabilityAvailability"
-          },
-          "codex_host": {
             "$ref": "#/components/schemas/MachineCapabilityAvailability"
           },
           "session_host": {
@@ -9396,160 +9391,6 @@
           }
         },
         "operationId": "get_well_known_jwks_json"
-      }
-    },
-    "/v1/codex-sessions": {
-      "post": {
-        "summary": "Create an authenticated remote Codex session",
-        "operationId": "post_v1_codex_sessions",
-        "security": [
-          {
-            "bearerAccess": []
-          }
-        ],
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/IdempotencyKey"
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "environment_id"
-                ],
-                "properties": {
-                  "environment_id": {
-                    "type": "string"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "Codex session created.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "$ref": "#/components/responses/Error"
-          },
-          "429": {
-            "$ref": "#/components/responses/Error"
-          }
-        }
-      }
-    },
-    "/v1/codex-sessions/{session_id}": {
-      "delete": {
-        "summary": "Stop and revoke a Codex session",
-        "operationId": "delete_v1_codex_sessions_session_id",
-        "security": [
-          {
-            "bearerAccess": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "session_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "Stop requested."
-          },
-          "404": {
-            "$ref": "#/components/responses/Error"
-          }
-        }
-      }
-    },
-    "/v1/codex-sessions/{session_id}/descriptor": {
-      "get": {
-        "summary": "Refresh Codex management and connection credentials",
-        "operationId": "get_v1_codex_sessions_session_id_descriptor",
-        "security": [
-          {
-            "bearerAccess": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "session_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Fresh five-minute credentials.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "$ref": "#/components/responses/Error"
-          }
-        }
-      }
-    },
-    "/v1/codex-sessions/{session_id}/renew": {
-      "post": {
-        "summary": "Extend the durable Codex session lease",
-        "operationId": "post_v1_codex_sessions_session_id_renew",
-        "security": [
-          {
-            "bearerAccess": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "session_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Lease extended.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "$ref": "#/components/responses/Error"
-          }
-        }
       }
     },
     "/v1/client-configuration": {
@@ -17757,7 +17598,7 @@
       ],
       "post": {
         "summary": "Downgrade this machine from host to client mode",
-        "description": "Revokes terminal, Codex, session-host, and keep-awake authority and releases its host seat while preserving machine identity, Inbox, file receive, and preview launch authority.",
+        "description": "Revokes terminal, session-host, and keep-awake authority and releases its host seat while preserving machine identity, Inbox, file receive, and preview launch authority.",
         "security": [
           {
             "bearerAccess": []

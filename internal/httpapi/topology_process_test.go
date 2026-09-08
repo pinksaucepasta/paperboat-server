@@ -122,29 +122,6 @@ func TestTopologyPeerAuthorityProcess(t *testing.T) {
 		credentialInput.SessionID = ""
 		credentialInput.SourceMachineID = "endpoint-cli"
 		credentialPath = "/authority/file-credential.json"
-	} else if os.Getenv("PAPERBOAT_TOPOLOGY_AUTHORITY_COMPLETION") == "codex" {
-		credentialInput.JTI = "jti-codex-manage-topology"
-		credentialInput.CredentialClass = "codex_manage"
-		credentialInput.Scopes = []string{"codex:prepare", "codex:browse", "codex:renew", "codex:stop"}
-		credentialInput.SessionID = "cdx_topology"
-		credentialInput.InstallationGeneration = 1
-		credentialInput.ConnectorID = "connector-topology"
-		credentialInput.ConnectorGeneration = 1
-		credentialInput.EdgePool = "relay-topology"
-		credentialInput.EdgeNodeID = "edge-topology"
-		manageCredential, signErr := provider.SignCredential(credentialInput)
-		if signErr != nil {
-			t.Fatal(signErr)
-		}
-		credentialInput.JTI = "jti-codex-connect-topology"
-		credentialInput.CredentialClass = "codex_connect"
-		credentialInput.Scopes = []string{"codex:connect"}
-		connectCredential, signErr := provider.SignCredential(credentialInput)
-		if signErr != nil {
-			t.Fatal(signErr)
-		}
-		writeTopologyAuthorityJSON(t, "/authority/codex-credential.json", map[string]string{"manage_token": manageCredential, "connect_token": connectCredential})
-		credentialPath = ""
 	}
 	if credentialPath != "" {
 		terminalCredential, signErr := provider.SignCredential(credentialInput)
@@ -187,8 +164,6 @@ func TestTopologyPeerAuthorityProcess(t *testing.T) {
 		completionPath = "/authority/ssh-ok.json"
 	case "file":
 		completionPath = "/authority/file-ok.json"
-	case "codex":
-		completionPath = "/authority/codex-ok.json"
 	case "preview":
 		completionPath = "/authority/preview-ok.json"
 	}
@@ -345,16 +320,6 @@ func verifyTopologyPeerPersistence(t *testing.T, ctx context.Context, store *db.
 	if os.Getenv("PAPERBOAT_TOPOLOGY_AUTHORITY_COMPLETION") == "file" {
 		if intents != 1 || grants != 2 || relays != 1 || interactive != 0 || directProbe != 0 || fileTransferKey != 1 {
 			t.Fatalf("persisted intents=%d grants=%d relays=%d interactive=%d direct_probes=%d file_transfer_keys=%d", intents, grants, relays, interactive, directProbe, fileTransferKey)
-		}
-		return
-	}
-	if os.Getenv("PAPERBOAT_TOPOLOGY_AUTHORITY_COMPLETION") == "codex" {
-		expectedProbes := 0
-		if direct {
-			expectedProbes = 1
-		}
-		if intents != 2+expectedProbes || grants != (2+expectedProbes)*2 || relays != 2+expectedProbes || interactive != 0 || directProbe != expectedProbes || fileTransferKey != 0 || codex != 2 {
-			t.Fatalf("persisted intents=%d grants=%d relays=%d interactive=%d direct_probes=%d file_transfer_keys=%d codex=%d", intents, grants, relays, interactive, directProbe, fileTransferKey, codex)
 		}
 		return
 	}

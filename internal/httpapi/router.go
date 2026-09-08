@@ -18,7 +18,6 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/auth"
 	"github.com/pinksaucepasta/paperboat-server/internal/billing"
 	"github.com/pinksaucepasta/paperboat-server/internal/catalog"
-	"github.com/pinksaucepasta/paperboat-server/internal/codexsessions"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
 	"github.com/pinksaucepasta/paperboat-server/internal/diagnosticuploads"
@@ -70,7 +69,6 @@ type Options struct {
 	Projects               *projects.Service
 	EnvironmentVariables   *environment.Service
 	TerminalSessions       *terminalsessions.Service
-	CodexSessions          *codexsessions.Service
 	EnvironmentAccess      *access.Service
 	MeteringRepo           *metering.RuntimeRepository
 	RuntimeIdentity        *controlplane.EnrollmentService
@@ -359,15 +357,6 @@ func NewRouter(opts Options) http.Handler {
 		}
 		if opts.Auth != nil {
 			registerAuthRoutes(mux, opts)
-			if opts.CodexSessions != nil && opts.DeviceAuth != nil {
-				codexAuth := func(next http.Handler) http.Handler {
-					return requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", next))
-				}
-				mux.Handle("POST /v1/codex-sessions", codexAuth(codexSessionCreate(opts.CodexSessions)))
-				mux.Handle("GET /v1/codex-sessions/{session_id}/descriptor", codexAuth(codexSessionDescriptor(opts.CodexSessions)))
-				mux.Handle("POST /v1/codex-sessions/{session_id}/renew", codexAuth(codexSessionRenew(opts.CodexSessions)))
-				mux.Handle("DELETE /v1/codex-sessions/{session_id}", codexAuth(codexSessionDelete(opts.CodexSessions)))
-			}
 			if opts.PeerIdentity != nil && opts.DeviceAuth != nil {
 				peerRead := func(next http.Handler) http.Handler {
 					return requireBearerAuth(opts.DeviceAuth, requireScope("projects:read", next))

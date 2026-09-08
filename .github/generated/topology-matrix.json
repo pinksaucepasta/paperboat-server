@@ -20,10 +20,10 @@
       "run": "^(TestPeerTerminalPingUsesProductionWSSConnector|TestPeerTerminalWorkflowUsesProductionWSSConnector|TestPeerTerminalCancellationUsesProductionWSSConnector|TestPeerTerminalCancellationUsesProductionRelayQUICConnector|TestPeerTerminalCancellationUsesProductionDirectQUICConnector|TestPeerTerminalWorkflowUsesProductionRelayQUICConnector|TestPeerTerminalWorkflowUsesProductionDirectQUICConnector|TestPeerExecUsesProductionWSSConnector|TestPeerExecUsesProductionRelayQUICConnector|TestPeerExecUsesProductionDirectQUICConnector)$"
     },
     {
-      "name": "ssh-codex-preview",
+      "name": "ssh-preview",
       "platform": "linux",
       "timeout_seconds": 1200,
-      "run": "^(TestPeerSSHUsesProductionWSSConnector|TestPeerSSHUsesProductionRelayQUICConnector|TestPeerSSHUsesProductionDirectQUICConnector|TestPeerCodexUsesProductionWSSConnector|TestPeerCodexUsesProductionRelayQUICConnector|TestPeerCodexUsesProductionDirectQUICConnector|TestPeerPrivatePreviewUsesProductionWSSConnector|TestPeerPrivatePreviewUsesProductionRelayQUICConnector|TestPeerPrivatePreviewUsesProductionDirectQUICConnector)$"
+      "run": "^(TestPeerSSHUsesProductionWSSConnector|TestPeerSSHUsesProductionRelayQUICConnector|TestPeerSSHUsesProductionDirectQUICConnector|TestPeerPrivatePreviewUsesProductionWSSConnector|TestPeerPrivatePreviewUsesProductionRelayQUICConnector|TestPeerPrivatePreviewUsesProductionDirectQUICConnector)$"
     },
     {
       "name": "file-transfer",

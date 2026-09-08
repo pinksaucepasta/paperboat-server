@@ -151,7 +151,7 @@ func TestSetupIsIdempotentAndUnpairPreservesInteractiveIdentity(t *testing.T) {
 	if collidingMachine.Alias != "studio-2" {
 		t.Fatalf("collision alias=%q", collidingMachine.Alias)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machines SET setup_mode='host',setup_roles=ARRAY['host','interactive'],configured_capabilities=ARRAY['file_receive','preview_launch','terminal_host','codex_host','session_host','keep_awake'],observed_capabilities=ARRAY['file_receive','preview_launch','terminal_host','codex_host','session_host','keep_awake'],seat_state='occupied' WHERE id=$1`, first.ID); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `UPDATE paperboat.user_machines SET setup_mode='host',setup_roles=ARRAY['host','interactive'],configured_capabilities=ARRAY['file_receive','preview_launch','terminal_host','session_host','keep_awake'],observed_capabilities=ARRAY['file_receive','preview_launch','terminal_host','session_host','keep_awake'],seat_state='occupied' WHERE id=$1`, first.ID); err != nil {
 		t.Fatal(err)
 	}
 	unpaired, err := service.Unpair(ctx, userID, first.ID)
@@ -1016,7 +1016,7 @@ func TestClientRolePairingRevokesAuthenticatedHostAuthority(t *testing.T) {
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machine_entitlements (id,user_id,provider_subscription_id,product_code,state,seat_quantity,allowance_bytes,current_period_start,current_period_end) VALUES ($1,$2,$3,'connected-test','active',1,1048576,now()-interval '1 hour',now()+interval '1 hour')`, "ume_client_pairing_host_"+suffix, userID, "sub_client_pairing_host_"+suffix); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,runtime_versions,setup_roles,setup_mode,configured_capabilities,public_identity_key,installation_generation) VALUES ($1,$2,$3,'Client pairing Host','linux','amd64','/workspace','offline','occupied','{}',ARRAY['host','interactive'],'host',ARRAY['file_receive','preview_launch','terminal_host','codex_host','session_host','keep_awake'],$4,2)`, machineID, userID, environmentID, publicKey); err != nil {
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,seat_state,runtime_versions,setup_roles,setup_mode,configured_capabilities,public_identity_key,installation_generation) VALUES ($1,$2,$3,'Client pairing Host','linux','amd64','/workspace','offline','occupied','{}',ARRAY['host','interactive'],'host',ARRAY['file_receive','preview_launch','terminal_host','session_host','keep_awake'],$4,2)`, machineID, userID, environmentID, publicKey); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id,desired_state) VALUES ($1,$2,$3,'active')`, environmentID, machineID, userID); err != nil {

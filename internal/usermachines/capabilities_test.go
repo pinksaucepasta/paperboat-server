@@ -12,7 +12,7 @@ import (
 
 func TestDeviceCapabilityNamesAreUnifiedAndRelayOptIn(t *testing.T) {
 	defaults := DeviceCapabilitySelection{Terminal: true, ManagedSSH: true, FileReceive: true, PreviewTunnel: true}
-	want := []string{"file_receive", "preview_launch", "terminal_host", "codex_host", "session_host", "ssh_host"}
+	want := []string{"file_receive", "preview_launch", "terminal_host", "session_host", "ssh_host"}
 	if got := capabilityNames(defaults); !reflect.DeepEqual(got, want) {
 		t.Fatalf("default names=%q want=%q", got, want)
 	}

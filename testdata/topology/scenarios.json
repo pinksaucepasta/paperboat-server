@@ -47,16 +47,13 @@
       ]
     },
     {
-      "name": "ssh-codex-preview",
+      "name": "ssh-preview",
       "platform": "linux",
       "timeout_seconds": 1200,
       "tests": [
         "TestPeerSSHUsesProductionWSSConnector",
         "TestPeerSSHUsesProductionRelayQUICConnector",
         "TestPeerSSHUsesProductionDirectQUICConnector",
-        "TestPeerCodexUsesProductionWSSConnector",
-        "TestPeerCodexUsesProductionRelayQUICConnector",
-        "TestPeerCodexUsesProductionDirectQUICConnector",
         "TestPeerPrivatePreviewUsesProductionWSSConnector",
         "TestPeerPrivatePreviewUsesProductionRelayQUICConnector",
         "TestPeerPrivatePreviewUsesProductionDirectQUICConnector"

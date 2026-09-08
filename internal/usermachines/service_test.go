@@ -57,8 +57,8 @@ func TestEnvironmentInjectionRemainsInInternalServiceComposition(t *testing.T) {
 		t.Fatalf("client capabilities = %v, want the unchanged two-capability set", client)
 	}
 	host := configuredCapabilities("host")
-	if !slices.Contains(host, "environment_injection") || len(host) != 8 {
-		t.Fatalf("host capabilities = %v, want environment_injection plus seven existing capabilities", host)
+	if !slices.Contains(host, "environment_injection") || len(host) != 7 {
+		t.Fatalf("host capabilities = %v, want environment_injection plus six existing capabilities", host)
 	}
 
 	resolved := mapCapabilities([]string{"environment_injection"}, []string{"environment_injection"})

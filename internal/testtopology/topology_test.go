@@ -752,33 +752,6 @@ func TestPeerSSHUsesProductionDirectQUICConnector(t *testing.T) {
 	})
 }
 
-func TestPeerCodexUsesProductionWSSConnector(t *testing.T) {
-	runAuthenticatedNoiseRelayTopology(t, relayTopologyConfig{
-		prefix: "pbcodexwss", url: "wss://relay.paperboat.test:9444/v1/peer-relay",
-		initiatorRole: "codex-wss-initiator", responderRole: "codex-wss-responder",
-		initiatorMarker: "PAPERBOAT_TOPOLOGY_PEER_CODEX_OK", responderMarker: "PAPERBOAT_TOPOLOGY_CODEX_HOST_OK",
-		blockUDP: true, hostService: true, terminalPing: true, codexWorkflow: true,
-	})
-}
-
-func TestPeerCodexUsesProductionRelayQUICConnector(t *testing.T) {
-	runAuthenticatedNoiseRelayTopology(t, relayTopologyConfig{
-		prefix: "pbcodexrelay", url: "https://relay.paperboat.test:9443/v1/peer-relay",
-		initiatorRole: "codex-relay-quic-initiator", responderRole: "codex-relay-quic-responder",
-		initiatorMarker: "PAPERBOAT_TOPOLOGY_PEER_CODEX_OK", responderMarker: "PAPERBOAT_TOPOLOGY_CODEX_HOST_OK",
-		hostService: true, terminalPing: true, terminalCarrier: "relay-quic", codexWorkflow: true,
-	})
-}
-
-func TestPeerCodexUsesProductionDirectQUICConnector(t *testing.T) {
-	runAuthenticatedNoiseRelayTopology(t, relayTopologyConfig{
-		prefix: "pbcodexdirect", url: "wss://relay.paperboat.test:9444/v1/peer-relay",
-		initiatorRole: "codex-direct-quic-initiator", responderRole: "codex-direct-quic-responder",
-		initiatorMarker: "PAPERBOAT_TOPOLOGY_PEER_CODEX_OK", responderMarker: "PAPERBOAT_TOPOLOGY_CODEX_HOST_OK",
-		hostService: true, terminalPing: true, terminalCarrier: "direct-quic", forbidRelay: true, codexWorkflow: true,
-	})
-}
-
 func TestPeerPrivatePreviewUsesProductionWSSConnector(t *testing.T) {
 	runAuthenticatedNoiseRelayTopology(t, relayTopologyConfig{
 		prefix: "pbpreviewwss", url: "wss://relay.paperboat.test:9444/v1/peer-relay",
@@ -871,7 +844,6 @@ type relayTopologyConfig struct {
 	cancellation                                                                bool
 	execWorkflow                                                                bool
 	sshWorkflow                                                                 bool
-	codexWorkflow                                                               bool
 	privatePreviewWorkflow                                                      bool
 	fileWorkflow                                                                bool
 	reverseFileWorkflow                                                         bool
@@ -1000,8 +972,6 @@ func runAuthenticatedNoiseRelayTopology(t *testing.T, topology relayTopologyConf
 			authorityCompletion = "exec"
 		} else if topology.sshWorkflow {
 			authorityCompletion = "ssh"
-		} else if topology.codexWorkflow {
-			authorityCompletion = "codex"
 		} else if topology.privatePreviewWorkflow {
 			authorityCompletion = "preview"
 		} else if topology.fileWorkflow || topology.reverseFileWorkflow {

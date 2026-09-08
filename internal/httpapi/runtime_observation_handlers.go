@@ -297,7 +297,7 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 }
 
 func validObservedCapabilities(capabilities []string) bool {
-	allowed := []string{"file_receive", "preview_launch", "terminal_host", "codex_host", "session_host", "ssh_host", "peer_relay", "keep_awake", "environment_injection"}
+	allowed := []string{"file_receive", "preview_launch", "terminal_host", "session_host", "ssh_host", "peer_relay", "keep_awake", "environment_injection"}
 	if len(capabilities) > len(allowed) {
 		return false
 	}

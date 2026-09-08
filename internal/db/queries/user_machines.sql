@@ -486,7 +486,7 @@ RETURNING *;
 -- name: AddUserMachineHostRole :one
 UPDATE user_machines
 SET setup_roles = ARRAY(SELECT DISTINCT role FROM unnest(setup_roles || ARRAY['host']::text[]) role ORDER BY role),
-    setup_mode = 'host', configured_capabilities = ARRAY['file_receive','preview_launch','terminal_host','codex_host','session_host','keep_awake','environment_injection']::text[],
+    setup_mode = 'host', configured_capabilities = ARRAY['file_receive','preview_launch','terminal_host','session_host','keep_awake','environment_injection']::text[],
     display_name = sqlc.arg(display_name), workspace_root = sqlc.arg(workspace_root),
     runtime_versions = sqlc.arg(runtime_versions),
     updated_at = CASE WHEN NOT ('host' = ANY(setup_roles)) OR display_name IS DISTINCT FROM sqlc.arg(display_name) OR workspace_root IS DISTINCT FROM sqlc.arg(workspace_root) OR runtime_versions IS DISTINCT FROM sqlc.arg(runtime_versions) THEN now() ELSE updated_at END,

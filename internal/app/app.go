@@ -19,7 +19,6 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/browseraccess"
 	"github.com/pinksaucepasta/paperboat-server/internal/browseringress"
 	"github.com/pinksaucepasta/paperboat-server/internal/catalog"
-	"github.com/pinksaucepasta/paperboat-server/internal/codexsessions"
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/connectorprotocol"
 	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
@@ -273,7 +272,6 @@ func New(opts Options) (*App, error) {
 	}
 	previewLeaseService.ConfigureDispatcher(previewDispatcher)
 	credentialIssuer := access.CredentialIssuer(access.DisabledCredentialIssuer{})
-	codexSessionService := codexsessions.New(store, mintKeys, normalizeHelperIssuer(opts.Config.HTTP.PublicBaseURL), 4)
 	if opts.Config.Providers.FakeMode {
 		accessProvider = access.FakeClient{}
 		credentialIssuer = access.FakeCredentialIssuer{}
@@ -750,7 +748,6 @@ func New(opts Options) (*App, error) {
 		EnvironmentVariables:      environmentVariableService,
 		Teams:                     teams.NewService(store),
 		TerminalSessions:          terminalSessionService,
-		CodexSessions:             codexSessionService,
 		EnvironmentAccess:         accessService,
 		MeteringRepo:              metering.NewRuntimeRepository(store, opts.Config.Secrets.EncryptionKey, opts.Config.ConfigSync.StaleHeartbeatAfter),
 		RuntimeIdentity:           enrollmentService,
@@ -810,7 +807,6 @@ func New(opts Options) (*App, error) {
 		userMachineService.Worker(opts.Config.TerminalSessions.WorkerInterval),
 		configAssignmentService.WarningReconciliationWorker(opts.Config.TerminalSessions.WorkerInterval),
 		configRepositoryAccessService.RevocationWorker(opts.Config.TerminalSessions.WorkerInterval, 25),
-		codexSessionService.Worker(time.Minute),
 		previewLeaseReconciliationWorker(previewLeaseService, opts.Config.TerminalSessions.WorkerInterval, telemetryProducer),
 		tunnelExpiryReconciliationWorker(tunnelService, opts.Config.TerminalSessions.WorkerInterval),
 		connectorRotationDispatcher.Run,
