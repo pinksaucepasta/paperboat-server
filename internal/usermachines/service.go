@@ -1628,16 +1628,17 @@ func (s *Service) operationDescriptor(ctx context.Context, userID, sourceMachine
 	issuedAt := s.now().UTC()
 	expiresAt := issuedAt.Add(ttl)
 	operationJTI := newID(jtiPrefix)
+	accessSessionID := newID("umas")
 	token, err := s.controlSigner.SignCredential(mint.CredentialInput{
 		Issuer: s.issuer, Audience: "paperboat-machine", Subject: userID, JTI: operationJTI,
 		IssuedAt: issuedAt, ExpiresAt: expiresAt, CredentialClass: credentialClass, Scopes: []string{scope},
-		EnvironmentID: row.EnvironmentID, MachineID: row.ID, UserID: userID, CLIClientSessionID: cliClientSessionID, OperationID: operationID,
+		EnvironmentID: row.EnvironmentID, MachineID: row.ID, UserID: userID, CLIClientSessionID: cliClientSessionID, OperationID: operationID, AssignmentID: accessSessionID,
 	})
 	if err != nil {
 		return ExecDescriptor{}, err
 	}
 	if err := s.db.Queries().CreateUserMachineAccessSession(ctx, dbsqlc.CreateUserMachineAccessSessionParams{
-		ID: newID("umas"), UserMachineID: row.ID, UserID: userID, EnvironmentID: row.EnvironmentID,
+		ID: accessSessionID, UserMachineID: row.ID, UserID: userID, EnvironmentID: row.EnvironmentID,
 		CLIClientSessionID: cliClientSessionID, HttpBaseUrl: "https://" + route.PublicHost,
 		HelperTerminalSessionID: operationJTI, HelperFileSessionID: "", ExpiresAt: expiresAt,
 	}); err != nil {
@@ -1647,7 +1648,7 @@ func (s *Service) operationDescriptor(ctx context.Context, userID, sourceMachine
 		OperationID: operationID,
 		Environment: map[string]any{"id": row.EnvironmentID, "kind": accessdescriptor.EnvironmentBYOD, "resource_id": row.ID, "display_name": row.DisplayName, "state": "ready", "root": row.WorkspaceRoot},
 		Endpoints:   machineTerminalEndpoints("wss://" + route.PublicHost),
-		Auth:        map[string]any{"method": "bearer", "token": token, "expires_at": expiresAt, "scopes": []string{scope}},
+		Auth:        map[string]any{"method": "bearer", "token": token, "expires_at": expiresAt, "scopes": []string{scope}, "access_session_id": accessSessionID},
 		ExpiresAt:   expiresAt,
 	}, nil
 }
@@ -1721,18 +1722,19 @@ func (s *Service) FileTransferDescriptor(ctx context.Context, userID, sourceMach
 	}
 	expiresAt := s.now().UTC().Add(ttl)
 	jti := newID("jti_helper_file_transfer")
+	accessSessionID := newID("umas")
 	token, err := s.controlSigner.SignCredential(mint.CredentialInput{
 		Issuer: s.issuer, Audience: "paperboat-machine", Subject: userID, JTI: jti,
 		IssuedAt: s.now().UTC(), ExpiresAt: expiresAt, CredentialClass: "file_transfer", Scopes: []string{"file:transfer"},
 		EnvironmentID: routeMachine.EnvironmentID, MachineID: routeMachine.ID, SourceMachineID: sourceMachineID,
-		UserID: userID, CLIClientSessionID: cliClientSessionID, SessionID: sessionID,
+		UserID: userID, CLIClientSessionID: cliClientSessionID, SessionID: sessionID, AssignmentID: accessSessionID,
 	})
 	if err != nil {
 		return FileTransferDescriptor{}, err
 	}
 	httpBaseURL := "https://" + route.PublicHost
 	if err := s.db.Queries().CreateUserMachineAccessSession(ctx, dbsqlc.CreateUserMachineAccessSessionParams{
-		ID: newID("umas"), UserMachineID: routeMachine.ID, UserID: userID, EnvironmentID: routeMachine.EnvironmentID,
+		ID: accessSessionID, UserMachineID: routeMachine.ID, UserID: userID, EnvironmentID: routeMachine.EnvironmentID,
 		CLIClientSessionID: cliClientSessionID, HttpBaseUrl: httpBaseURL, HelperFileSessionID: jti, ExpiresAt: expiresAt,
 	}); err != nil {
 		return FileTransferDescriptor{}, err
@@ -1740,7 +1742,7 @@ func (s *Service) FileTransferDescriptor(ctx context.Context, userID, sourceMach
 	return FileTransferDescriptor{
 		Endpoint: httpBaseURL + "/v1/file-transfers", SourceMachineID: sourceMachineID,
 		DestinationMachineID: destination.ID, InitiatingUserID: userID, Policy: s.fileTransferPolicy,
-		Auth: map[string]any{"method": "bearer", "token": token, "expires_at": expiresAt, "scopes": []string{"file:transfer"}},
+		Auth: map[string]any{"method": "bearer", "token": token, "expires_at": expiresAt, "scopes": []string{"file:transfer"}, "access_session_id": accessSessionID},
 	}, nil
 }
 
@@ -1889,6 +1891,8 @@ func (s *Service) ConnectTerminalSession(ctx context.Context, userID, sourceMach
 		response.Reason = "terminal_session_operation_pending"
 		return response, nil
 	}
+	accessSessionID := newID("umas")
+	input.AccessSessionID = accessSessionID
 	credentials, err := s.issueUserMachineCredentials(ctx, input, terminalSession.ID)
 	if err != nil {
 		return ConnectionDescriptor{}, err
@@ -1896,8 +1900,13 @@ func (s *Service) ConnectTerminalSession(ctx context.Context, userID, sourceMach
 	if len(compactSessionIDs(credentials.TerminalSessionID, credentials.FileSessionID)) == 0 {
 		return ConnectionDescriptor{}, errors.New("user-machine credential issuer returned no revocable sessions")
 	}
+	if credentials.TerminalAuth == nil || credentials.FileTransferAuth == nil {
+		return ConnectionDescriptor{}, errors.New("user-machine credential issuer returned incomplete authorization")
+	}
+	credentials.TerminalAuth["access_session_id"] = accessSessionID
+	credentials.FileTransferAuth["access_session_id"] = accessSessionID
 	if err := s.db.Queries().CreateUserMachineAccessSession(ctx, dbsqlc.CreateUserMachineAccessSessionParams{
-		ID: newID("umas"), UserMachineID: row.ID, UserID: userID, EnvironmentID: row.EnvironmentID,
+		ID: accessSessionID, UserMachineID: row.ID, UserID: userID, EnvironmentID: row.EnvironmentID,
 		CLIClientSessionID: cliClientSessionID, HttpBaseUrl: httpBaseURL,
 		HelperTerminalSessionID: credentials.TerminalSessionID, HelperFileSessionID: credentials.FileSessionID,
 		ExpiresAt: expires,
@@ -1941,7 +1950,7 @@ func (s *Service) issueUserMachineCredentials(ctx context.Context, input access.
 		return s.controlSigner.SignCredential(mint.CredentialInput{
 			Issuer: s.issuer, Audience: "paperboat-machine", Subject: input.UserID, JTI: jti,
 			IssuedAt: issuedAt, ExpiresAt: input.ExpiresAt, CredentialClass: class, Scopes: scopes,
-			EnvironmentID: input.EnvironmentID, MachineID: input.ProjectID, SourceMachineID: input.SourceMachineID, UserID: input.UserID, CLIClientSessionID: input.CLIClientSessionID, SessionID: terminalSessionID,
+			EnvironmentID: input.EnvironmentID, MachineID: input.ProjectID, SourceMachineID: input.SourceMachineID, UserID: input.UserID, CLIClientSessionID: input.CLIClientSessionID, SessionID: terminalSessionID, AssignmentID: input.AccessSessionID,
 		})
 	}
 	terminalToken, err := sign("terminal_operation", []string{"terminal:operate"}, terminalJTI)

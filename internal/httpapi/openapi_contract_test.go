@@ -744,6 +744,8 @@ func TestOpenAPIDocumentCoversPublicAndFrozenTargetPaths(t *testing.T) {
 		"/v1/config/conflict-resolutions/pending":                            {"post"},
 		"/v1/config/conflict-resolutions/acknowledge":                        {"post"},
 		"/v1/edge/assignments/current":                                       {"post"},
+		"/v1/relay/nodes/start":                                              {"post"},
+		"/v1/relay/nodes/observe":                                            {"post"},
 		"/v1/nodes/register":                                                 {"post"},
 		"/v1/nodes/heartbeat":                                                {"post"},
 		"/v1/edge/routes/desired-state":                                      {"post"},

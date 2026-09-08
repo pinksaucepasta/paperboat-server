@@ -104,6 +104,9 @@ type CredentialInput struct {
 	CLIClientSessionID string
 	HTTPBaseURL        string
 	ExpiresAt          time.Time
+	// AccessSessionID binds application credentials to the same authoritative
+	// machine-access row used by native network admission.
+	AccessSessionID string
 }
 
 type CLICredentials struct {

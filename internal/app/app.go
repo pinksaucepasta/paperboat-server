@@ -31,6 +31,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/managedssh"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
 	"github.com/pinksaucepasta/paperboat-server/internal/mint"
+	"github.com/pinksaucepasta/paperboat-server/internal/nativeprivateaccess"
 	"github.com/pinksaucepasta/paperboat-server/internal/observability"
 	"github.com/pinksaucepasta/paperboat-server/internal/orchestrator"
 	"github.com/pinksaucepasta/paperboat-server/internal/peeridentity"
@@ -536,6 +537,17 @@ func New(opts Options) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	peerNetworkService, err := peersessions.NewNetworkService(store, mintKeys, config.NormalizeIssuer(opts.Config.HTTP.PublicBaseURL))
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure peer network authority: %w", err)
+	}
+	nativePrivateResolver, err := nativeprivateaccess.NewSQLResolver(store)
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure native private target resolver: %w", err)
+	}
+	nativePrivateService := &nativeprivateaccess.Service{Resolver: nativePrivateResolver, Signer: mintKeys, Issuer: config.NormalizeIssuer(opts.Config.HTTP.PublicBaseURL)}
 	managedSSHRepository, err := managedssh.NewSQLRepository(store, auditWriter)
 	if err != nil {
 		return nil, err
@@ -724,6 +736,8 @@ func New(opts Options) (*App, error) {
 		OperationRecovery:         operationRecovery,
 		PeerIdentity:              peerIdentityService,
 		PeerSessions:              peerSessionService,
+		PeerNetwork:               peerNetworkService,
+		NativePrivateAccess:       nativePrivateService,
 		ManagedSSH:                managedSSHService,
 		DiagnosticUploads:         diagnosticUploadService,
 		HostedProviderRecovery:    hostedProviderRecovery,

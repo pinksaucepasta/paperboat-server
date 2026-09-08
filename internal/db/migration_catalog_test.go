@@ -34,6 +34,18 @@ func TestEmbeddedMigrationVersionsAreUnique(t *testing.T) {
 	}
 }
 
+func TestPeerRelayIdentityMigrationIsAllOrNoneAndAddressBound(t *testing.T) {
+	body, err := migrationsFS.ReadFile("migrations/154_peer_relay_identity.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range [][]byte{[]byte("disco_public_key bytea"), []byte("peer_relay_wireguard_public_key"), []byte("peer_relay_disco_public_key"), []byte("peer_relay_virtual_address"), []byte("fd7a:115c:a1e0::/48"), []byte("roles @> ARRAY['relay','peer_relay']"), []byte("transports @> ARRAY['derp_quic','peer_relay_udp']"), []byte("-- +goose Down")} {
+		if !bytes.Contains(body, required) {
+			t.Fatalf("peer relay identity migration missing %q", required)
+		}
+	}
+}
+
 func TestEnvironmentTransitionOperationMigrationAllowsAtomicMultiScopeStaging(t *testing.T) {
 	body, err := migrationsFS.ReadFile("migrations/148_environment_transition_shared_operation.sql")
 	if err != nil {

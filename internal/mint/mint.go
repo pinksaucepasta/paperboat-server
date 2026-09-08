@@ -13,7 +13,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"slices"
 	"sort"
 	"strconv"
@@ -23,17 +25,198 @@ import (
 )
 
 const (
-	ProofType            = "t3-cloud-mint+jwt"
-	ProofScope           = "environment:connect"
-	RevokeType           = "t3-cloud-revoke+jwt"
-	RevokeScope          = "environment:revoke"
-	HealthType           = "t3-cloud-health+jwt"
-	HealthScope          = "environment:health"
-	TerminalControlType  = "t3-cloud-terminal-control+jwt"
-	TerminalControlScope = "environment:terminal-control"
-	MaxProofTTL          = 5 * time.Minute
-	defaultMaxAge        = 5 * time.Minute
+	ProofType                = "t3-cloud-mint+jwt"
+	ProofScope               = "environment:connect"
+	RevokeType               = "t3-cloud-revoke+jwt"
+	RevokeScope              = "environment:revoke"
+	HealthType               = "t3-cloud-health+jwt"
+	HealthScope              = "environment:health"
+	TerminalControlType      = "t3-cloud-terminal-control+jwt"
+	TerminalControlScope     = "environment:terminal-control"
+	MaxProofTTL              = 5 * time.Minute
+	NetworkConfigurationType = "paperboat-network-config+jwt"
+	RegionalCandidatesType   = "paperboat-regional-candidates+jwt"
+	RelayGrantType           = "paperboat-relay-grant+jwt"
+	defaultMaxAge            = 5 * time.Minute
 )
+
+// SignNetworkConfiguration signs the already validated network-authority
+// document. Keeping this entry point separate prevents network configuration
+// from being minted through the generic operation-credential policy table.
+func (p *Provider) SignNetworkConfiguration(claims map[string]any) (string, error) {
+	if p == nil || claims == nil || claims["version"] != 1 || claims["aud"] != "paperboat-network" {
+		return "", errors.New("network configuration claims are invalid")
+	}
+	issuer, issuerOK := claims["iss"].(string)
+	issuedAt, issuedOK := integerClaim(claims["iat"])
+	expiresAt, expiresOK := integerClaim(claims["exp"])
+	generation, generationOK := integerClaim(claims["generation"])
+	if !issuerOK || strings.TrimSpace(issuer) == "" || !issuedOK || !expiresOK || !generationOK || generation < 1 || expiresAt <= issuedAt || expiresAt-issuedAt > int64(MaxProofTTL/time.Second) {
+		return "", errors.New("network configuration claims are invalid")
+	}
+	if _, ok := claims["self"].(map[string]any); !ok {
+		return "", errors.New("network configuration self binding is required")
+	}
+	if _, ok := claims["peers"]; !ok {
+		return "", errors.New("network configuration peers are required")
+	}
+	return p.signClaims(NetworkConfigurationType, claims)
+}
+
+// SignRelayGrant signs an endpoint- and relay-process-bound routing grant.
+// Relay admission has its own token type so it cannot be confused with endpoint
+// network configuration or the regional discovery projection.
+func (p *Provider) SignRelayGrant(claims map[string]any) (string, error) {
+	if p == nil || claims == nil || claims["version"] != 1 || claims["aud"] != "paperboat-relay" {
+		return "", errors.New("relay grant claims are invalid")
+	}
+	issuedAt, issuedOK := integerClaim(claims["iat"])
+	expiresAt, expiresOK := integerClaim(claims["exp"])
+	configGeneration, configGenerationOK := integerClaim(claims["generation"])
+	nodeGeneration, nodeGenerationOK := integerClaim(claims["node_generation"])
+	issuer, issuerOK := claims["iss"].(string)
+	accountID, accountOK := claims["account_id"].(string)
+	endpointID, endpointOK := claims["endpoint_id"].(string)
+	wgKey, wgOK := claims["wireguard_public_key"].(string)
+	certFingerprint, certOK := claims["quic_certificate_fingerprint"].(string)
+	nodeID, nodeOK := claims["node_id"].(string)
+	processEpoch, epochOK := claims["process_epoch"].(string)
+	peers, peersOK := claims["peers"]
+	decodedWGKey, wgDecodeErr := base64.RawURLEncoding.DecodeString(wgKey)
+	decodedFingerprint, fingerprintDecodeErr := hex.DecodeString(certFingerprint)
+	discoOK := optionalRawKey(claims["disco_public_key"])
+	peerRelayOK := relayDescriptorClaim(claims["peer_relay"])
+	if claims["peer_relay"] != nil && (claims["disco_public_key"] == nil || !relayPeersHaveDisco(peers)) {
+		peerRelayOK = false
+	}
+	if !issuerOK || strings.TrimSpace(issuer) == "" || !accountOK || accountID == "" || !endpointOK || endpointID == "" ||
+		!wgOK || wgDecodeErr != nil || len(decodedWGKey) != 32 || base64.RawURLEncoding.EncodeToString(decodedWGKey) != wgKey ||
+		!certOK || fingerprintDecodeErr != nil || len(decodedFingerprint) != 32 || hex.EncodeToString(decodedFingerprint) != certFingerprint ||
+		!nodeOK || nodeID == "" || !epochOK || processEpoch == "" || !discoOK || !peerRelayOK || !relayPeersClaim(peers, expiresAt) || !peersOK ||
+		!issuedOK || !expiresOK || expiresAt <= issuedAt || expiresAt-issuedAt > 60 || !configGenerationOK || configGeneration < 1 || !nodeGenerationOK || nodeGeneration < 1 {
+		return "", errors.New("relay grant claims are invalid")
+	}
+	return p.signClaims(RelayGrantType, claims)
+}
+
+func relayPeersHaveDisco(value any) bool {
+	raw, err := json.Marshal(value)
+	var peers []struct {
+		DiscoPublicKey string `json:"disco_public_key"`
+	}
+	if err != nil || json.Unmarshal(raw, &peers) != nil || peers == nil {
+		return false
+	}
+	for _, peer := range peers {
+		if peer.DiscoPublicKey == "" || !optionalRawKey(peer.DiscoPublicKey) {
+			return false
+		}
+	}
+	return true
+}
+
+func optionalRawKey(value any) bool {
+	if value == nil {
+		return true
+	}
+	key, ok := value.(string)
+	decoded, err := base64.RawURLEncoding.DecodeString(key)
+	return ok && err == nil && len(decoded) == 32 && base64.RawURLEncoding.EncodeToString(decoded) == key
+}
+
+func relayDescriptorClaim(value any) bool {
+	if value == nil {
+		return true
+	}
+	raw, err := json.Marshal(value)
+	var descriptor struct {
+		WireGuardPublicKey string `json:"wireguard_public_key"`
+		DiscoPublicKey     string `json:"disco_public_key"`
+		VirtualAddress     string `json:"virtual_address"`
+	}
+	if err != nil || json.Unmarshal(raw, &descriptor) != nil || !optionalRawKey(descriptor.WireGuardPublicKey) || !optionalRawKey(descriptor.DiscoPublicKey) || descriptor.WireGuardPublicKey == "" || descriptor.DiscoPublicKey == "" {
+		return false
+	}
+	address, err := netip.ParseAddr(descriptor.VirtualAddress)
+	prefix := netip.MustParsePrefix("fd7a:115c:a1e0::/48")
+	return err == nil && prefix.Contains(address)
+}
+
+func relayPeersClaim(value any, grantExpiry int64) bool {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return false
+	}
+	var peers []struct {
+		WireGuardPublicKey string            `json:"wireguard_public_key"`
+		DiscoPublicKey     string            `json:"disco_public_key,omitempty"`
+		Scopes             []peersRelayScope `json:"scopes"`
+	}
+	if json.Unmarshal(raw, &peers) != nil || peers == nil || len(peers) > 64 {
+		return false
+	}
+	for _, peer := range peers {
+		decoded, err := base64.RawURLEncoding.DecodeString(peer.WireGuardPublicKey)
+		if err != nil || len(decoded) != 32 || base64.RawURLEncoding.EncodeToString(decoded) != peer.WireGuardPublicKey || !optionalRawKey(func() any {
+			if peer.DiscoPublicKey == "" {
+				return nil
+			}
+			return peer.DiscoPublicKey
+		}()) || len(peer.Scopes) == 0 || len(peer.Scopes) > 128 {
+			return false
+		}
+		for _, scope := range peer.Scopes {
+			if scope.ResourceKind == "" || scope.ResourceID == "" || scope.ResourceGeneration < 1 || scope.Capability == "" || (scope.Direction != "dial" && scope.Direction != "accept") || scope.Port < 1 || scope.Port > 65535 || scope.ExpiresAt < grantExpiry {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// peersRelayScope is the structural subset accepted by SignRelayGrant. It is
+// kept private to avoid making mint the owner of peer-session authorization.
+type peersRelayScope struct {
+	ResourceKind       string `json:"resource_kind"`
+	ResourceID         string `json:"resource_id"`
+	ResourceGeneration int64  `json:"resource_generation"`
+	Capability         string `json:"capability"`
+	Direction          string `json:"direction"`
+	Port               int    `json:"port"`
+	ExpiresAt          int64  `json:"expires_at"`
+}
+
+// SignRegionalCandidates signs the endpoint-bound, short-lived registry
+// projection. It deliberately cannot be minted through operation credentials.
+func (p *Provider) SignRegionalCandidates(claims map[string]any) (string, error) {
+	if p == nil || claims == nil || claims["schema"] != "paperboat.regional-candidates.v1" || claims["aud"] != "paperboat-regional-candidates" {
+		return "", errors.New("regional candidate claims are invalid")
+	}
+	issuedAt, issuedOK := integerClaim(claims["iat"])
+	expiresAt, expiresOK := integerClaim(claims["exp"])
+	generation, generationOK := integerClaim(claims["generation"])
+	if _, ok := claims["account_id"].(string); !ok || !issuedOK || !expiresOK || !generationOK || generation < 1 || expiresAt <= issuedAt || expiresAt-issuedAt > 60 {
+		return "", errors.New("regional candidate claims are invalid")
+	}
+	if _, ok := claims["endpoint_id"].(string); !ok {
+		return "", errors.New("regional candidate endpoint is required")
+	}
+	if _, ok := claims["nodes"]; !ok {
+		return "", errors.New("regional candidate nodes are required")
+	}
+	return p.signClaims(RegionalCandidatesType, claims)
+}
+
+func integerClaim(value any) (int64, bool) {
+	switch value := value.(type) {
+	case int64:
+		return value, true
+	case int:
+		return int64(value), true
+	default:
+		return 0, false
+	}
+}
 
 type Key struct {
 	ID         string
@@ -151,6 +334,7 @@ type CredentialInput struct {
 	PeerRole               string
 	RouteAllocation        string
 	RouteGeneration        int64
+	TargetGeneration       int64
 	InitiatorEndpointID    string
 	ResponderEndpointID    string
 	RelayByteLimit         int64
@@ -241,6 +425,7 @@ type CredentialClaims struct {
 	PeerRole               string              `json:"peer_role,omitempty"`
 	RouteAllocation        string              `json:"route_allocation,omitempty"`
 	RouteGeneration        int64               `json:"route_generation,omitempty"`
+	TargetGeneration       int64               `json:"target_generation,omitempty"`
 	InitiatorEndpointID    string              `json:"initiator_endpoint_id,omitempty"`
 	ResponderEndpointID    string              `json:"responder_endpoint_id,omitempty"`
 	RelayByteLimit         int64               `json:"relay_byte_limit,omitempty"`
@@ -266,6 +451,7 @@ var credentialPolicies = map[string]struct {
 	"ssh_operation":       {audience: "paperboat-machine", scopes: []string{"ssh:operate"}, maxTTL: 5 * time.Minute},
 	"preview_launch":      {audience: "paperboat-machine", scopes: []string{"preview:launch"}, maxTTL: 5 * time.Minute},
 	"private_access":      {audience: "paperboat-edge", scopes: []string{"private:access"}, maxTTL: 2 * time.Minute},
+	"native_private":      {audience: "paperboat-machine", scopes: []string{"private:native"}, maxTTL: 5 * time.Minute},
 	"file_transfer":       {audience: "paperboat-machine", scopes: []string{"file:transfer"}, maxTTL: 5 * time.Minute},
 	"codex_manage":        {audience: "paperboat-machine", scopes: []string{"codex:prepare", "codex:browse", "codex:renew", "codex:stop"}, maxTTL: 5 * time.Minute},
 	"codex_connect":       {audience: "paperboat-machine", scopes: []string{"codex:connect"}, maxTTL: 5 * time.Minute},
@@ -472,6 +658,9 @@ func (p *Provider) SignCredential(input CredentialInput) (string, error) {
 			return "", errors.New("machine access bindings are required")
 		}
 		claims["machine_id"], claims["user_id"], claims["cli_client_session_id"], claims["session_id"] = input.MachineID, input.UserID, input.CLIClientSessionID, input.SessionID
+		if input.AssignmentID != "" {
+			claims["assignment_id"] = input.AssignmentID
+		}
 		if input.SourceMachineID != "" {
 			claims["source_machine_id"] = input.SourceMachineID
 		}
@@ -480,11 +669,17 @@ func (p *Provider) SignCredential(input CredentialInput) (string, error) {
 			return "", errors.New("exec operation bindings are required")
 		}
 		claims["machine_id"], claims["user_id"], claims["cli_client_session_id"], claims["operation_id"] = input.MachineID, input.UserID, input.CLIClientSessionID, input.OperationID
+		if input.AssignmentID != "" {
+			claims["assignment_id"] = input.AssignmentID
+		}
 	case "ssh_operation":
 		if input.MachineID == "" || input.UserID == "" || input.CLIClientSessionID == "" || !validOperationID(input.OperationID) {
 			return "", errors.New("ssh operation bindings are required")
 		}
 		claims["machine_id"], claims["user_id"], claims["cli_client_session_id"], claims["operation_id"] = input.MachineID, input.UserID, input.CLIClientSessionID, input.OperationID
+		if input.AssignmentID != "" {
+			claims["assignment_id"] = input.AssignmentID
+		}
 	case "codex_manage", "codex_connect":
 		if input.MachineID == "" || input.UserID == "" || input.CLIClientSessionID == "" || input.SessionID == "" || input.InstallationGeneration < 1 || input.ConnectorID == "" || input.ConnectorGeneration < 1 || input.EdgePool == "" || input.EdgeNodeID == "" {
 			return "", errors.New("codex session bindings are required")
@@ -521,11 +716,23 @@ func (p *Provider) SignCredential(input CredentialInput) (string, error) {
 		claims["method"], claims["host"], claims["path"] = input.Method, input.Host, input.Path
 		claims["idempotency_key"], claims["request_id"], claims["correlation_id"] = input.IdempotencyKey, input.RequestID, input.CorrelationID
 		claims["access_mode"], claims["request_hash"] = input.AccessMode, input.RequestHash
+	case "native_private":
+		if validateNativePrivateInput(input) != nil {
+			return "", errors.New("native private bindings are required")
+		}
+		claims["account_id"], claims["machine_id"], claims["user_id"], claims["operation_id"] = input.AccountID, input.MachineID, input.UserID, input.OperationID
+		claims["cli_client_session_id"], claims["assignment_id"] = input.CLIClientSessionID, input.AssignmentID
+		claims["resource_kind"], claims["resource_id"], claims["route_id"], claims["protocol"] = input.ResourceKind, input.ResourceID, input.RouteID, input.Protocol
+		claims["expected_generation"], claims["route_generation"], claims["target_generation"] = input.ExpectedGeneration, input.RouteGeneration, input.TargetGeneration
+		claims["target_scheme"], claims["target_address"] = input.TargetScheme, input.TargetAddress
 	case "file_transfer":
 		if input.MachineID == "" || input.SourceMachineID == "" || input.UserID == "" || input.CLIClientSessionID == "" {
 			return "", errors.New("machine transfer bindings are required")
 		}
 		claims["machine_id"], claims["source_machine_id"], claims["user_id"], claims["cli_client_session_id"] = input.MachineID, input.SourceMachineID, input.UserID, input.CLIClientSessionID
+		if input.AssignmentID != "" {
+			claims["assignment_id"] = input.AssignmentID
+		}
 		if input.SessionID != "" {
 			claims["session_id"] = input.SessionID
 		}
@@ -657,6 +864,10 @@ func (p *Provider) verifyCredential(token, expectedIssuer, expectedClass string,
 		}
 	case "private_access":
 		if err := validatePrivateAccessClaims(claims); err != nil {
+			return CredentialClaims{}, errors.New("credential claims are invalid")
+		}
+	case "native_private":
+		if validateNativePrivateClaims(claims) != nil {
 			return CredentialClaims{}, errors.New("credential claims are invalid")
 		}
 	case "file_transfer":
@@ -801,6 +1012,30 @@ func validatePrivateAccessClaims(claims CredentialClaims) error {
 		}
 	} else if claims.Method != "" || claims.Host != "" || claims.Path != "" {
 		return errors.New("private access TCP binding is invalid")
+	}
+	return nil
+}
+
+func validateNativePrivateInput(input CredentialInput) error {
+	if input.CLIClientSessionID == "" || input.AssignmentID == "" {
+		return errors.New("native private access session is invalid")
+	}
+	return validateNativePrivateValues(input.AccountID, input.MachineID, input.UserID, input.OperationID, input.ResourceKind, input.ResourceID, input.RouteID, input.Protocol, input.TargetScheme, input.TargetAddress, input.ExpectedGeneration, input.RouteGeneration, input.TargetGeneration)
+}
+
+func validateNativePrivateClaims(claims CredentialClaims) error {
+	if claims.CLIClientSessionID == "" || claims.AssignmentID == "" {
+		return errors.New("native private access session is invalid")
+	}
+	return validateNativePrivateValues(claims.AccountID, claims.MachineID, claims.UserID, claims.OperationID, claims.ResourceKind, claims.ResourceID, claims.RouteID, claims.Protocol, claims.TargetScheme, claims.TargetAddress, claims.ExpectedGeneration, claims.RouteGeneration, claims.TargetGeneration)
+}
+
+func validateNativePrivateValues(account, machine, user, operation, resourceKind, resourceID, routeID, protocol, scheme, address string, resourceGeneration, routeGeneration, targetGeneration int64) error {
+	host, port, err := net.SplitHostPort(address)
+	parsedPort, portErr := strconv.ParseUint(port, 10, 16)
+	validScheme := protocol == "http" && (scheme == "http" || scheme == "https" || scheme == "h2c") || protocol == "tcp" && scheme == "tcp"
+	if account == "" || machine == "" || user == "" || !validOperationID(operation) || resourceKind != "preview" && resourceKind != "tunnel" || resourceKind == "preview" && protocol != "http" || resourceID == "" || routeID == "" || resourceGeneration < 1 || routeGeneration < 1 || targetGeneration < 1 || !validScheme || err != nil || portErr != nil || parsedPort == 0 || strconv.FormatUint(parsedPort, 10) != port || host != "127.0.0.1" && host != "::1" {
+		return errors.New("native private target is invalid")
 	}
 	return nil
 }

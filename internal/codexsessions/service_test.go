@@ -49,3 +49,25 @@ func TestRequireCodexCapability(t *testing.T) {
 		})
 	}
 }
+
+func TestDescriptorCapsCredentialAtSessionLease(t *testing.T) {
+	provider, err := mint.New([]mint.Key{{ID: "codex-test", PrivateKey: ed25519.NewKeyFromSeed(bytes.Repeat([]byte{'k'}, ed25519.SeedSize))}}, "codex-test", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := New(nil, provider, "https://api.paperboat.test", 1)
+	now := time.Unix(2000, 0).UTC()
+	service.now = func() time.Time { return now }
+	row := dbsqlc.CodexSession{ID: "cdx_1", EnvironmentID: "env_1", MachineID: "machine_1", UserID: "user_1", CLIClientSessionID: "cli_1", State: "ready", InstallationGeneration: 7, ConnectorID: "connector_1", ConnectorGeneration: 2, EdgePool: "development", EdgeNodeID: "edge_1", EdgeAssignmentHost: "edge.example.test", LeaseExpiresAt: now.Add(time.Minute)}
+	descriptor, err := service.descriptor(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !descriptor.CredentialsExpireAt.Equal(row.LeaseExpiresAt) {
+		t.Fatalf("credential expiry=%v lease=%v", descriptor.CredentialsExpireAt, row.LeaseExpiresAt)
+	}
+	row.LeaseExpiresAt = now
+	if _, err := service.descriptor(row); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expired descriptor error=%v", err)
+	}
+}

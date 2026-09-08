@@ -100,7 +100,7 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 		}
 		hasEnvironmentCapability := req.RuntimeDiagnostics != nil && slices.Contains(req.RuntimeDiagnostics.Capabilities, "environment_injection")
 		environmentMember, environmentMarshalErr := json.Marshal(req.Environment)
-		if !validEnvironmentObservationShape(body, hasEnvironmentCapability, req.Environment) || environmentMarshalErr != nil || (req.Environment != nil && (len(environmentMember) > 4<<10 || environment.ValidateObservation(*req.Environment) != nil)) {
+		if req.Environment != nil && req.RuntimeDiagnostics == nil || !validEnvironmentObservationShape(body, hasEnvironmentCapability, req.Environment) || environmentMarshalErr != nil || (req.Environment != nil && (len(environmentMember) > 4<<10 || environment.ValidateObservation(*req.Environment) != nil)) {
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "Environment observation is invalid.")
 			return
 		}
@@ -234,11 +234,18 @@ func validEnvironmentObservationShape(body []byte, capability bool, observation 
 		return false
 	}
 	raw, present := outer["environment"]
-	if present != capability {
+	if !present {
+		return !capability
+	}
+	if observation == nil || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return false
 	}
-	if !capability || observation == nil || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return !capability
+	// The first authenticated host observation requests its encrypted bundle
+	// before it can advertise usable environment injection. Accept only that
+	// pending genesis shape without the capability; binding and machine identity
+	// remain validated by the normal authenticated observation path below.
+	if !capability && (observation.State != "pending" || observation.Authority != nil || observation.Global != nil || observation.Machine != nil) {
+		return false
 	}
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(raw, &fields) != nil || fields == nil {

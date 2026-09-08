@@ -9,6 +9,23 @@ configuration generations, and the authenticated edge node/process epoch.
 
 ## Grant issuance
 
+`POST /v1/native/private-access/grants` is the device-authenticated native
+transport boundary. A CLI session may supply either one exact resource/route
+binding or a bounded same-account tunnel/route selector. The server resolves
+that selector without enumerating misses or ambiguous names, binds the grant
+to the current machine access session and exact resource, route, target and
+installation generations, and returns the exact origin only inside that
+short-lived grant response. Native peers reauthorize the access session and
+binding before origin dial; a new grant and native stream are required for
+every raw TCP connection.
+
+Native HTTP uses the same grant and exact binding in one HTTP/3 extended
+CONNECT request on a dedicated preview-class Paperboat QUIC session. That
+session has no `paperboat-tunnel`, edge-assignment, connector, browser-cookie,
+or `ActiveDataCarrier` authority. The host rejects stale or foreign bindings
+before origin dial, and request failure requires an explicitly fresh request;
+arbitrary HTTP bytes are never replayed automatically.
+
 `POST /v1/edge/private-access/grants` is a stable-host-only endpoint. Hostd
 supplies its renewable `machine_control` credential in both `Authorization:
 Bearer` and `X-Paperboat-Machine-Identity`, plus a strict base64url

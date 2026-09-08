@@ -709,6 +709,8 @@ func (s *EdgeService) Usage(ctx context.Context, r edgeUsageRequest) (UsageRecei
 
 func (s *EdgeService) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/relay/nodes/start", s.handleRelayStart)
+	mux.HandleFunc("POST /v1/relay/nodes/observe", s.handleRelayObserve)
 	mux.HandleFunc("POST /v1/nodes/register", s.handleRegister)
 	mux.HandleFunc("POST /v1/nodes/heartbeat", s.handleHeartbeat)
 	mux.HandleFunc("POST /v1/edge/assignments/current", s.handleAssignment)

@@ -47,6 +47,37 @@ func TestSignPublishesFrozenClaims(t *testing.T) {
 	}
 }
 
+func TestSignRelayGrantPublishesFrozenTypeAndRejectsLongLifetime(t *testing.T) {
+	provider, err := New([]Key{{ID: "relay-key", PrivateKey: testKey(31)}}, "relay-key", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := map[string]any{"version": 1, "iss": "https://api.example.test", "aud": "paperboat-relay", "iat": int64(1_700_000_000), "exp": int64(1_700_000_060), "generation": int64(4), "account_id": "account_1", "endpoint_id": "endpoint_1", "wireguard_public_key": strings.Repeat("A", 43), "quic_certificate_fingerprint": strings.Repeat("0", 64), "node_id": "node_1", "node_generation": int64(3), "process_epoch": "epoch_1", "peers": []any{}}
+	token, err := provider.SignRelayGrant(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(token, ".")
+	var header map[string]any
+	decodeJSONPart(t, parts[0], &header)
+	if header["alg"] != "EdDSA" || header["typ"] != RelayGrantType || header["kid"] != "relay-key" {
+		t.Fatalf("header = %#v", header)
+	}
+	claims["exp"] = int64(1_700_000_061)
+	if _, err := provider.SignRelayGrant(claims); err == nil {
+		t.Fatal("accepted relay grant longer than 60 seconds")
+	}
+	claims["exp"] = int64(1_700_000_060)
+	claims["peer_relay"] = map[string]any{"wireguard_public_key": strings.Repeat("A", 43), "disco_public_key": strings.Repeat("A", 43), "virtual_address": "fd7a:115c:a1e0::9"}
+	if _, err := provider.SignRelayGrant(claims); err == nil {
+		t.Fatal("accepted peer relay descriptor without endpoint discovery identity")
+	}
+	claims["disco_public_key"] = strings.Repeat("A", 43)
+	if _, err := provider.SignRelayGrant(claims); err != nil {
+		t.Fatalf("valid peer relay descriptor: %v", err)
+	}
+}
+
 func TestJWKSIncludesRotationOverlapKeys(t *testing.T) {
 	provider, err := New([]Key{{ID: "current", PrivateKey: testKey(3)}, {ID: "previous", PrivateKey: testKey(4)}}, "current", 90*time.Second)
 	if err != nil {
@@ -164,6 +195,37 @@ func TestPrivateAccessCredentialUsesOnlyProtocolAudiences(t *testing.T) {
 		if _, err := provider.SignCredential(invalid); err == nil {
 			t.Fatalf("audience %q accepted for private access", audience)
 		}
+	}
+}
+
+func TestNativePrivateCredentialBindsExactLoopbackTarget(t *testing.T) {
+	provider, err := NewEphemeral(time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	input := CredentialInput{Issuer: "https://api.example.test", Audience: "paperboat-machine", Subject: "usr_1", JTI: "jti_native_private_1", IssuedAt: now, ExpiresAt: now.Add(time.Minute), CredentialClass: "native_private", Scopes: []string{"private:native"}, EnvironmentID: "env_1", AccountID: "acct_1", MachineID: "machine_1", UserID: "usr_1", CLIClientSessionID: "cli_1", AssignmentID: "umas_1", OperationID: "operation_private_1", ResourceKind: "tunnel", ResourceID: "tun_1", RouteID: "route_1", Protocol: "tcp", TargetScheme: "tcp", TargetAddress: "127.0.0.1:22", ExpectedGeneration: 2, RouteGeneration: 3, TargetGeneration: 4}
+	token, err := provider.SignCredential(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := provider.VerifyCredential(token, input.Issuer, input.CredentialClass, now)
+	if err != nil || claims.ResourceID != input.ResourceID || claims.RouteID != input.RouteID || claims.TargetAddress != input.TargetAddress || claims.TargetGeneration != input.TargetGeneration || claims.AssignmentID != input.AssignmentID || claims.CLIClientSessionID != input.CLIClientSessionID {
+		t.Fatalf("claims=%+v err=%v", claims, err)
+	}
+	for name, mutate := range map[string]func(*CredentialInput){
+		"network target":    func(v *CredentialInput) { v.TargetAddress = "192.0.2.1:22" },
+		"protocol":          func(v *CredentialInput) { v.Protocol = "http" },
+		"target generation": func(v *CredentialInput) { v.TargetGeneration = 0 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := input
+			changed.JTI += name
+			mutate(&changed)
+			if _, err := provider.SignCredential(changed); err == nil {
+				t.Fatal("invalid binding signed")
+			}
+		})
 	}
 }
 

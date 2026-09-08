@@ -23,9 +23,11 @@ const (
 )
 
 var (
-	ErrInvalid     = errors.New("peer session request is invalid")
-	ErrConflict    = errors.New("peer session operation conflicts with its original request")
-	ErrUnavailable = errors.New("peer session authority is unavailable")
+	ErrInvalid       = errors.New("peer session request is invalid")
+	ErrConflict      = errors.New("peer session operation conflicts with its original request")
+	ErrUnavailable   = errors.New("peer session authority is unavailable")
+	ErrResourceLimit = errors.New("peer network configuration resource limit exceeded")
+	ErrDenied        = errors.New("peer network authority denied")
 )
 
 type Signer interface {

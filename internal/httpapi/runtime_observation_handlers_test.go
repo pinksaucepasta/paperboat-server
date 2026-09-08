@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -9,10 +10,55 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pinksaucepasta/paperboat-server/internal/controlplane"
 	"github.com/pinksaucepasta/paperboat-server/internal/environment"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
 	"github.com/pinksaucepasta/paperboat-server/internal/usermachines"
 )
+
+func TestRuntimePendingEnvironmentHandshakeDoesNotClaimCapability(t *testing.T) {
+	base := `{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":"2026-09-07T13:40:00Z","runtime_diagnostics":{"capabilities":["terminal_host"],"worker_generation":5,"os_boot_id":"boot-1","worker_service_scope":"user","connector_state":"unavailable","connector_generation":0,"observed_at":"2026-09-07T13:40:00Z"},"environment":{"schema":"` + environment.ObservationSchema + `","observation_seq":1,"host_recipient_key_id":"envk_` + strings.Repeat("A", 43) + `","authority":null,"global":null,"machine":null,"state":"pending","error_code":null,"observed_at":"2026-09-07T13:40:00Z"}}`
+	noDiagnostics := base[:strings.Index(base, `,"runtime_diagnostics"`)] + base[strings.Index(base, `,"environment"`):]
+	for _, test := range []struct {
+		name, body string
+		authErr    error
+		status     int
+	}{
+		{"initial handshake", base, nil, http.StatusAccepted},
+		{"unauthorized machine", base, controlplane.ErrHelperProof, http.StatusUnauthorized},
+		{"missing document member", strings.Replace(base, `,"global":null`, "", 1), nil, http.StatusBadRequest},
+		{"invalid recipient", strings.Replace(base, "envk_", "invalid_", 1), nil, http.StatusBadRequest},
+		{"missing runtime diagnostics", noDiagnostics, nil, http.StatusBadRequest},
+		{"applied without capability", strings.Replace(base, `"state":"pending"`, `"state":"applied"`, 1), nil, http.StatusBadRequest},
+		{"authority without capability", strings.Replace(base, `"authority":null`, `"authority":{"generation":1,"authority_id":"sha256:`+strings.Repeat("a", 64)+`"}`, 1), nil, http.StatusBadRequest},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repo := &fakeRuntimeObservationRepository{}
+			identity := &fakeRuntimeIdentity{err: test.authErr}
+			env := &fakeEnvironmentObservationRepository{}
+			request := httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(test.body))
+			request.Header.Set("Authorization", "Bearer machine-token")
+			request.Header.Set("X-Paperboat-Machine-Proof", base64.RawURLEncoding.EncodeToString([]byte("machine-proof")))
+			response := httptest.NewRecorder()
+			runtimeObservation(repo, identity, 10, env).ServeHTTP(response, request)
+			if response.Code != test.status {
+				t.Fatalf("status=%d want=%d body=%s", response.Code, test.status, response.Body.String())
+			}
+			if test.status == http.StatusAccepted {
+				if repo.recorded == nil || env.calls != 1 || identity.machineID != "machine_test" || identity.projectID != "prj_test" || string(identity.body) != test.body || string(identity.proof) != "machine-proof" {
+					t.Fatal("pending handshake did not retain exact authenticated resource and payload")
+				}
+				for _, capability := range repo.recorded.Capabilities {
+					if capability == "environment_injection" {
+						t.Fatal("pending handshake advertised usable environment injection")
+					}
+				}
+			} else if repo.recorded != nil || env.calls != 0 {
+				t.Fatal("rejected handshake changed runtime or environment state")
+			}
+		})
+	}
+}
 
 type fakeRuntimeObservationRepository struct {
 	verifyErr error

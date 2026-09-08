@@ -6652,6 +6652,289 @@
             "$ref": "#/components/schemas/PreviewDNSInstructions"
           }
         }
+      },
+      "PeerNetworkRegisterRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "operation_id": {
+            "type": "string"
+          },
+          "wireguard_public_key": {
+            "type": "string",
+            "description": "Canonical unpadded base64url encoding of the 32-byte public key."
+          },
+          "disco_public_key": {
+            "type": "string",
+            "description": "Canonical unpadded base64url encoding of the independent 32-byte discovery public key."
+          },
+          "expected_key_generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "quic_certificate_fingerprint": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "SHA-256 fingerprint of endpoint QUIC certificate DER."
+          }
+        },
+        "required": [
+          "operation_id",
+          "wireguard_public_key",
+          "disco_public_key",
+          "expected_key_generation",
+          "quic_certificate_fingerprint"
+        ]
+      },
+      "PeerNetworkConfigRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "operation_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id"
+        ]
+      },
+      "PeerNetworkRegistration": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key_generation": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "virtual_address": {
+            "type": "string",
+            "description": "Authoritative allocated IPv6 address."
+          }
+        },
+        "required": [
+          "key_generation",
+          "virtual_address"
+        ]
+      },
+      "PeerNetworkConfiguration": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "configuration": {
+            "type": "string",
+            "description": "Signed peer configuration JWT; verify issuer, audience, endpoint binding, generation and expiry before installing peers."
+          },
+          "candidate_set": {
+            "type": "string",
+            "description": "Signed regional-candidates JWT."
+          },
+          "relay_grants": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Signed short-lived relay admission JWTs bound to the endpoint certificate, WireGuard/discovery keys, selected node generation/process epoch, and authorized peer scopes. Eligible grants may include the node's peer-relay WireGuard/discovery/service-address descriptor. Credentials must not be logged."
+          }
+        },
+        "required": [
+          "configuration",
+          "candidate_set",
+          "relay_grants"
+        ]
+      },
+      "PeerNetworkRegistrationResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/PeerNetworkRegistration"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      },
+      "PeerNetworkConfigurationResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/PeerNetworkConfiguration"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      },
+      "NativeRelaySubject": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "account_id",
+          "endpoint_id",
+          "generation"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "endpoint_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9223372036854775806
+          }
+        }
+      },
+      "NativeRelayLease": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "node_id",
+          "node_generation",
+          "process_epoch",
+          "expires_at",
+          "capacity_limit",
+          "revocations"
+        ],
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "node_generation": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9223372036854775806
+          },
+          "process_epoch": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "expires_at": {
+            "type": "integer"
+          },
+          "capacity_limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 256
+          },
+          "revocations": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "$ref": "#/components/schemas/NativeRelaySubject"
+            }
+          },
+          "peer_relay": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "wireguard_public_key",
+              "disco_public_key",
+              "virtual_address"
+            ],
+            "properties": {
+              "wireguard_public_key": {
+                "type": "string",
+                "minLength": 43,
+                "maxLength": 43
+              },
+              "disco_public_key": {
+                "type": "string",
+                "minLength": 43,
+                "maxLength": 43
+              },
+              "virtual_address": {
+                "type": "string",
+                "format": "ipv6"
+              }
+            }
+          }
+        }
+      },
+      "NativeRelayStart": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "node_id",
+          "expected_generation",
+          "process_epoch"
+        ],
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "expected_generation": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9223372036854775806
+          },
+          "process_epoch": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        }
+      },
+      "NativeRelayObservation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "node_id",
+          "node_generation",
+          "process_epoch",
+          "ready",
+          "draining",
+          "capacity_used",
+          "subjects"
+        ],
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "node_generation": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9223372036854775806
+          },
+          "process_epoch": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "ready": {
+            "type": "boolean"
+          },
+          "draining": {
+            "type": "boolean"
+          },
+          "capacity_used": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 256
+          },
+          "subjects": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "$ref": "#/components/schemas/NativeRelaySubject"
+            }
+          }
+        }
       }
     },
     "responses": {
@@ -6847,6 +7130,16 @@
     }
   ],
   "paths": {
+    "/v1/native-private-access/grants": {
+      "post": {
+        "summary": "Issue an exact native private route credential",
+        "description": "CLI-only. Resolves current private preview or tunnel desired state and binds one short-lived native stream credential to its exact loopback target and generations. It never returns edge or connector authority.",
+        "security": [{"bearerAccess": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["operation_id"], "oneOf": [{"required": ["resource_kind", "resource_id", "route_id", "protocol"]}, {"required": ["selector"]}], "properties": {"operation_id": {"type": "string"}, "resource_kind": {"type": "string", "enum": ["preview", "tunnel"]}, "resource_id": {"type": "string"}, "route_id": {"type": "string"}, "protocol": {"type": "string", "enum": ["http", "tcp"]}, "selector": {"type": "string", "maxLength": 256}}}}}},
+        "responses": {"200": {"description": "Current exact native target and short-lived credential."}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}},
+        "operationId": "post_v1_native_private_access_grants"
+      }
+    },
     "/v1/private-access/routes": {
       "post": {
         "summary": "Discover the complete current same-account private route snapshot",
@@ -19187,6 +19480,428 @@
           }
         },
         "operationId": "get_v1_previews_preview_id_domains_domain_id_instructions"
+      }
+    },
+    "/v1/peer-network/register": {
+      "post": {
+        "summary": "Register endpoint peer-network identity",
+        "description": "Requires authenticated CLI endpoint authority; browser session alone is insufficient.",
+        "security": [
+          {
+            "bearerAccess": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PeerNetworkRegisterRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Current authoritative result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PeerNetworkRegistrationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Endpoint authentication or signed machine proof rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Current endpoint authority denied; remove installed peers and reauthorize.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Registration key generation conflict; refresh before retrying rotation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Authority temporarily unavailable; retry before current authority expires.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_peer_network_register"
+      }
+    },
+    "/v1/peer-network/config": {
+      "post": {
+        "summary": "Get current signed peer-network authority",
+        "description": "Requires authenticated CLI endpoint authority; browser session alone is insufficient.",
+        "security": [
+          {
+            "bearerAccess": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PeerNetworkConfigRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Current authoritative result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PeerNetworkConfigurationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Endpoint authentication or signed machine proof rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Current endpoint authority denied; remove installed peers and reauthorize.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Authority temporarily unavailable; retry before current authority expires.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_peer_network_config"
+      }
+    },
+    "/v1/machine-peer-network/register": {
+      "post": {
+        "summary": "Register endpoint peer-network identity",
+        "description": "Requires machine-control bearer credential and an identity proof covering the exact HTTP method, path, body and operation ID.",
+        "security": [
+          {
+            "bearerMachineControl": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PeerNetworkRegisterRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Current authoritative result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PeerNetworkRegistrationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Endpoint authentication or signed machine proof rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Current endpoint authority denied; remove installed peers and reauthorize.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Registration key generation conflict; refresh before retrying rotation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Authority temporarily unavailable; retry before current authority expires.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-Paperboat-Machine-Proof",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Unpadded base64url signed machine request proof."
+          }
+        ],
+        "operationId": "post_machine_peer_network_register"
+      }
+    },
+    "/v1/machine-peer-network/config": {
+      "post": {
+        "summary": "Get current signed peer-network authority",
+        "description": "Requires machine-control bearer credential and an identity proof covering the exact HTTP method, path, body and operation ID.",
+        "security": [
+          {
+            "bearerMachineControl": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PeerNetworkConfigRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Current authoritative result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PeerNetworkConfigurationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Endpoint authentication or signed machine proof rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Current endpoint authority denied; remove installed peers and reauthorize.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Authority temporarily unavailable; retry before current authority expires.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-Paperboat-Machine-Proof",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Unpadded base64url signed machine request proof."
+          }
+        ],
+        "operationId": "post_machine_peer_network_config"
+      }
+    },
+    "/v1/relay/nodes/start": {
+      "post": {
+        "summary": "Start a preprovisioned native relay incarnation",
+        "operationId": "post_v1_relay_nodes_start",
+        "security": [
+          {
+            "bearerEdgeControl": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeRelayStart"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Exact node generation/process epoch and 15-second control lease; registry remains valid up to 60 seconds and health freshness is 15 seconds.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeRelayLease"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/relay/nodes/observe": {
+      "post": {
+        "summary": "Observe native relay health and synchronize endpoint revocations",
+        "operationId": "post_v1_relay_nodes_observe",
+        "security": [
+          {
+            "bearerEdgeControl": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeRelayObservation"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Exact node generation/process epoch and 15-second control lease; registry remains valid up to 60 seconds and health freshness is 15 seconds.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeRelayLease"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
       }
     }
   }

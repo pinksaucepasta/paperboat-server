@@ -134,6 +134,11 @@ CLI project reads and connects use scoped Paperboat bearer access tokens.
   than its enclosing sample is persisted as a sanitized `status_clock_invalid` error at sample time,
   allowing later clock-corrected status to replace it. Paths and errors are sanitized and bounded;
   file contents, credentials, and raw command output are never accepted or persisted.
+- An initial environment observation may accompany runtime diagnostics before
+  `environment_injection` is advertised. It must be `pending` with null authority,
+  global, and machine cursors and every required observation member. Normal machine
+  proof and environment binding validation still apply; the capability is advertised
+  only after the host verifies its encrypted bundle.
 
 ### Signed Updates and Maintenance
 

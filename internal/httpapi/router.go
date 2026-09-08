@@ -29,6 +29,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/managedssh"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
 	"github.com/pinksaucepasta/paperboat-server/internal/mint"
+	"github.com/pinksaucepasta/paperboat-server/internal/nativeprivateaccess"
 	"github.com/pinksaucepasta/paperboat-server/internal/observability"
 	"github.com/pinksaucepasta/paperboat-server/internal/peeridentity"
 	"github.com/pinksaucepasta/paperboat-server/internal/peersessions"
@@ -90,6 +91,8 @@ type Options struct {
 	OperationRecovery      *controlplane.OperationRecoveryService
 	PeerIdentity           *peeridentity.Service
 	PeerSessions           *peersessions.Service
+	PeerNetwork            *peersessions.NetworkService
+	NativePrivateAccess    *nativeprivateaccess.Service
 	ManagedSSH             *managedssh.Service
 	DiagnosticUploads      *diagnosticuploads.Service
 	HostedProviderRecovery *controlplane.HostedProviderRecoveryService
@@ -392,6 +395,13 @@ func NewRouter(opts Options) http.Handler {
 				mux.Handle("POST /v1/peer-attempts", peerAttempts(peerAttemptCreate(opts.PeerSessions)))
 				mux.Handle("DELETE /v1/peer-attempts/{intent_id}/{attempt_generation}", peerAttempts(peerAttemptDelete(opts.PeerSessions)))
 			}
+			if opts.PeerNetwork != nil && opts.DeviceAuth != nil {
+				peerNetworkAuth := func(next http.Handler) http.Handler {
+					return requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", next))
+				}
+				mux.Handle("POST /v1/peer-network/register", peerNetworkAuth(peerNetworkRegister(opts.PeerNetwork)))
+				mux.Handle("POST /v1/peer-network/config", peerNetworkAuth(peerNetworkConfig(opts.PeerNetwork)))
+			}
 			if opts.ManagedSSH != nil && opts.DeviceAuth != nil {
 				sshRead := func(next http.Handler) http.Handler {
 					return requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope("projects:read", next))
@@ -493,6 +503,9 @@ func NewRouter(opts Options) http.Handler {
 			}
 			mux.HandleFunc("POST /v1/machines/pairings", userMachinePairings(opts.Machines))
 			if opts.DeviceAuth != nil {
+				if opts.NativePrivateAccess != nil {
+					mux.Handle("POST /v1/native-private-access/grants", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", nativePrivateGrant(opts.NativePrivateAccess))))
+				}
 				mux.Handle("POST /v1/machines/setup", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", machineSetup(opts.Machines))))
 				mux.Handle("POST /v1/machines/{machine_id}/host-setup-installations", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", authenticatedHostSetupInstallation(opts.Machines))))
 				mux.Handle("POST /v1/machines/{machine_id}/control-credentials", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", machineControlIssue(opts.Machines))))
@@ -554,6 +567,10 @@ func NewRouter(opts Options) http.Handler {
 		}
 		if opts.PeerSessions != nil && opts.RuntimeIdentity != nil {
 			mux.HandleFunc("POST /v1/machine-peer-attempts/next", controlledPeerAttemptNext(opts.PeerSessions, opts.RuntimeIdentity))
+		}
+		if opts.PeerNetwork != nil && opts.RuntimeIdentity != nil {
+			mux.HandleFunc("POST /v1/machine-peer-network/register", machinePeerNetworkRegister(opts.PeerNetwork, opts.RuntimeIdentity))
+			mux.HandleFunc("POST /v1/machine-peer-network/config", machinePeerNetworkConfig(opts.PeerNetwork, opts.RuntimeIdentity))
 		}
 		if opts.Billing != nil {
 			mux.HandleFunc("POST /v1/webhooks/polar", polarWebhook(opts.Billing, opts.Config.Secrets.PolarWebhookSecret, opts.Config.Billing.PolarWebhookTolerance))

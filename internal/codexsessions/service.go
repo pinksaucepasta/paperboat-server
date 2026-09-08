@@ -205,6 +205,12 @@ func (s *Service) descriptor(row dbsqlc.CodexSession) (Descriptor, error) {
 	}
 	now := s.now()
 	expires := now.Add(CredentialLifetime)
+	if row.LeaseExpiresAt.Before(expires) {
+		expires = row.LeaseExpiresAt
+	}
+	if !expires.After(now) {
+		return Descriptor{}, ErrNotFound
+	}
 	base := mint.CredentialInput{Issuer: s.issuer, Audience: "paperboat-machine", Subject: row.UserID, IssuedAt: now, ExpiresAt: expires, EnvironmentID: row.EnvironmentID, MachineID: row.MachineID, UserID: row.UserID, CLIClientSessionID: row.CLIClientSessionID, SessionID: row.ID, InstallationGeneration: row.InstallationGeneration, ConnectorID: row.ConnectorID, ConnectorGeneration: row.ConnectorGeneration, EdgePool: row.EdgePool, EdgeNodeID: row.EdgeNodeID}
 	base.JTI = newID("jti")
 	base.CredentialClass = "codex_manage"

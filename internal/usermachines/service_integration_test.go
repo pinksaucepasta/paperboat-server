@@ -2352,12 +2352,16 @@ func TestConnectIssuesEnvironmentBoundDescriptor(t *testing.T) {
 	}
 	terminalAuth := response.Terminal["auth"].(map[string]any)
 	transferAuth := response.FileTransfer["auth"].(map[string]any)
+	accessSessionID, _ := terminalAuth["access_session_id"].(string)
+	if accessSessionID == "" || transferAuth["access_session_id"] != accessSessionID {
+		t.Fatalf("application credentials do not share access session: terminal=%#v transfer=%#v", terminalAuth, transferAuth)
+	}
 	for class, token := range map[string]string{"terminal_operation": terminalAuth["token"].(string), "file_transfer": transferAuth["token"].(string)} {
 		claims, verifyErr := signer.VerifyCredential(token, "https://api.paperboat.test", class, time.Now().UTC())
 		if verifyErr != nil {
 			t.Fatalf("verify %s credential: %v", class, verifyErr)
 		}
-		if claims.EnvironmentID != environmentID || claims.UserID != userID || claims.CLIClientSessionID != "cls_1" || claims.SessionID != terminalSessionID || class == "file_transfer" && claims.SourceMachineID != sourceMachineID {
+		if claims.EnvironmentID != environmentID || claims.UserID != userID || claims.CLIClientSessionID != "cls_1" || claims.SessionID != terminalSessionID || claims.AssignmentID != accessSessionID || class == "file_transfer" && claims.SourceMachineID != sourceMachineID {
 			t.Fatalf("%s credential bindings = %#v", class, claims)
 		}
 	}
@@ -2470,7 +2474,8 @@ func TestExecDescriptorPersistsExactRevocableCredential(t *testing.T) {
 		t.Fatalf("claims=%#v err=%v", claims, err)
 	}
 	var sessionID, state string
-	if err := store.SQL().QueryRowContext(ctx, `SELECT helper_terminal_session_id,state FROM paperboat.user_machine_access_sessions WHERE user_machine_id=$1`, machineID).Scan(&sessionID, &state); err != nil || sessionID != claims.JTI || state != "active" {
+	var accessSessionID string
+	if err := store.SQL().QueryRowContext(ctx, `SELECT id,helper_terminal_session_id,state FROM paperboat.user_machine_access_sessions WHERE user_machine_id=$1`, machineID).Scan(&accessSessionID, &sessionID, &state); err != nil || sessionID != claims.JTI || state != "active" || claims.AssignmentID != accessSessionID || descriptor.Auth["access_session_id"] != accessSessionID {
 		t.Fatalf("session id=%q state=%q err=%v", sessionID, state, err)
 	}
 	if err := service.RevokeUserMachineSessions(ctx, machineID, "test_revocation"); err != nil {
@@ -2576,7 +2581,7 @@ func TestTransferDefaultsAndBrokerPreserveMachineOwnershipAndRouteHost(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if claims.MachineID != host.id || claims.SourceMachineID != source.id || claims.SessionID != sessionID || claims.UserID != userID {
+	if claims.MachineID != host.id || claims.SourceMachineID != source.id || claims.SessionID != sessionID || claims.UserID != userID || claims.AssignmentID == "" || session.Auth["access_session_id"] != claims.AssignmentID {
 		t.Fatalf("session credential bindings = %+v", claims)
 	}
 	if _, err := service.FileTransferDescriptor(ctx, userID, foreign.id, destination.id, "cli_1", ""); !errors.Is(err, ErrNotFound) {

@@ -45,11 +45,12 @@ type Helper struct {
 }
 
 type Auth struct {
-	Method    string    `json:"method"`
-	Ticket    string    `json:"ticket,omitempty"`
-	Token     string    `json:"token,omitempty"`
-	ExpiresAt time.Time `json:"expires_at"`
-	Scopes    []string  `json:"scopes"`
+	Method          string    `json:"method"`
+	Ticket          string    `json:"ticket,omitempty"`
+	Token           string    `json:"token,omitempty"`
+	ExpiresAt       time.Time `json:"expires_at"`
+	Scopes          []string  `json:"scopes"`
+	AccessSessionID string    `json:"access_session_id,omitempty"`
 }
 
 type Terminal struct {
