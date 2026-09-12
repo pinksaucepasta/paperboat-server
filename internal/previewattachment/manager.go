@@ -116,7 +116,7 @@ func (m *Manager) Allocate(ctx context.Context, proof MachineProof, req Request)
 	if err := attachment.Validate(now); err != nil {
 		return Attachment{}, err
 	}
-	r := &record{attachment: attachment, actorID: resolution.Lease.ActorID}
+	r := &record{attachment: attachment, actorID: resolution.Lease.MachineAccountID}
 	m.byOperation[opKey] = r
 	m.byPreview[previewKey] = r
 	return cloneAttachment(attachment), nil
@@ -545,7 +545,7 @@ func validateRequestProof(proof MachineProof, req Request) error {
 }
 
 func authorizeResolution(proof MachineProof, req Request, resolution Resolution) error {
-	if resolution.Lease.ActorID != proof.UserID || resolution.Lease.OwnerDeviceID != proof.MachineID || resolution.Lease.OperationID != proof.OperationID || resolution.Lease.OwnerSessionID != req.OwnerSessionID {
+	if resolution.Lease.MachineAccountID != proof.UserID || resolution.Lease.OwnerDeviceID != proof.MachineID || resolution.Lease.OperationID != proof.OperationID || resolution.Lease.OwnerSessionID != req.OwnerSessionID {
 		return fmt.Errorf("%w: authoritative lease does not match proof or owner session", ErrUnauthorized)
 	}
 	return nil

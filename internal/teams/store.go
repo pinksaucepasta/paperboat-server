@@ -20,11 +20,15 @@ func Lock(ctx context.Context, tx *db.Tx) error {
 	return err
 }
 func AuditTx(ctx context.Context, tx *db.Tx, account, team, action, operation string, metadata map[string]any) error {
+	metadata, err := activityMetadata(metadata, true)
+	if err != nil {
+		return err
+	}
 	return audit.NewWriter(nil).WriteTx(ctx, tx, audit.Event{ActorUserID: account, ActorType: audit.ActorUser, EventType: "team." + action, ResourceType: "team", ResourceID: team, IdempotencyKey: account + ":" + operation, Metadata: metadata})
 }
 func ReadTx(ctx context.Context, tx *db.Tx, id string) (Team, error) {
 	out := Team{TeamID: id, Members: []Member{}, Grants: []Grant{}}
-	err := tx.QueryRow(ctx, `SELECT owner_account,generation,deleted_at IS NOT NULL FROM teams WHERE team_id=$1 FOR UPDATE`, id).Scan(&out.OwnerAccount, &out.Generation, &out.Deleted)
+	err := tx.QueryRow(ctx, `SELECT owner_account,generation,deleted_at IS NOT NULL,CASE WHEN deleted_at IS NOT NULL THEN 'deleted' ELSE coalesce((SELECT CASE WHEN rotation_required THEN 'rotation_pending' ELSE 'ready' END FROM environment_vault_teams WHERE team_id=$1),'not_initialized') END FROM teams WHERE team_id=$1 FOR UPDATE`, id).Scan(&out.OwnerAccount, &out.Generation, &out.Deleted, &out.ENVStatus)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, ErrNotFound
 	}
@@ -60,12 +64,38 @@ func ReadTx(ctx context.Context, tx *db.Tx, id string) (Team, error) {
 		}
 		out.Grants = append(out.Grants, g)
 	}
-	return out, rows.Err()
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return out, err
+	}
+	rows, err = tx.Query(ctx, `SELECT terminal_session_id,audience,coalesce(account_id,''),role,generation,active FROM team_terminal_session_grants WHERE team_id=$1 ORDER BY terminal_session_id,audience,account_id`, id)
+	if err != nil {
+		return out, err
+	}
+	for rows.Next() {
+		var g TerminalSessionGrant
+		if err = rows.Scan(&g.TerminalSessionID, &g.Audience, &g.AccountID, &g.Role, &g.Generation, &g.Active); err != nil {
+			rows.Close()
+			return out, err
+		}
+		out.TerminalSessionGrants = append(out.TerminalSessionGrants, g)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return out, err
+	}
+	err = readMachinesTx(ctx, tx, id, &out)
+	return out, err
 }
 
 // AuthorizeTx requires Lock first. Decisions describe current authoritative state;
 // consumers must revalidate generations before forwarding or using cached access.
 func AuthorizeTx(ctx context.Context, tx *db.Tx, account, team, kind, id, permission string) (Decision, error) {
+	if kind == "machine" {
+		return AuthorizeMachineTx(ctx, tx, account, team, id, permission)
+	}
 	var d Decision
 	t, err := ReadTx(ctx, tx, team)
 	if err != nil {
@@ -139,11 +169,15 @@ func RemoveMemberTx(ctx context.Context, tx *db.Tx, team, account string) error 
 	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM environment_vault_team_members WHERE team_id=$1 AND account_id=$2 AND grant_epoch>0)`, team, account).Scan(&held); err != nil {
 		return err
 	}
-	for _, q := range []string{`UPDATE team_members SET active=false,membership_generation=membership_generation+1 WHERE team_id=$1 AND account_id=$2 AND active`, `UPDATE team_resource_grants SET active=false,generation=generation+1 WHERE team_id=$1 AND account_id=$2 AND active`, `UPDATE environment_vault_team_members SET grant_epoch=0 WHERE team_id=$1 AND account_id=$2`, `DELETE FROM environment_vault_team_grants WHERE team_id=$1 AND account_id=$2`, `UPDATE team_invitations SET cancelled_at=now() WHERE team_id=$1 AND (recipient_account=$2 OR created_by=$2) AND accepted_at IS NULL AND cancelled_at IS NULL`} {
+	for _, q := range []string{`UPDATE team_resource_bindings SET active=false,generation=generation+1 WHERE team_id=$1 AND resource_kind='terminal_session' AND owner_account=$2 AND active`, `UPDATE team_terminal_session_grants SET active=false,generation=generation+1 WHERE team_id=$1 AND account_id=$2 AND active`, `UPDATE team_machine_grants SET active=false,generation=generation+1 WHERE team_id=$1 AND account_id=$2 AND active`, `UPDATE team_resource_bindings b SET active=false,generation=b.generation+1 FROM user_machines m WHERE b.team_id=$1 AND b.resource_kind='machine' AND b.resource_id=m.id AND m.user_id=$2 AND m.owner_team_id IS NULL AND b.active`, `UPDATE team_machine_grants g SET active=false,generation=g.generation+1 FROM user_machines m WHERE g.team_id=$1 AND g.machine_id=m.id AND m.user_id=$2 AND m.owner_team_id IS NULL AND g.active`, `UPDATE team_members SET active=false,membership_generation=membership_generation+1 WHERE team_id=$1 AND account_id=$2 AND active`, `UPDATE team_resource_grants SET active=false,generation=generation+1 WHERE team_id=$1 AND account_id=$2 AND active`, `UPDATE environment_vault_team_members SET grant_epoch=0 WHERE team_id=$1 AND account_id=$2`, `DELETE FROM environment_vault_team_grants WHERE team_id=$1 AND account_id=$2`, `UPDATE team_invitations SET cancelled_at=now() WHERE team_id=$1 AND (recipient_account=$2 OR created_by=$2) AND accepted_at IS NULL AND cancelled_at IS NULL`} {
 		if _, err := tx.Exec(ctx, q, team, account); err != nil {
 			return err
 		}
 	}
+	if err := revokeDepartingResourcesTx(ctx, tx, team, account); err != nil {
+		return err
+	}
+
 	if held {
 		return FenceENVTx(ctx, tx, team)
 	}
@@ -179,6 +213,9 @@ func save(ctx context.Context, tx *db.Tx, account, op string, digest []byte, out
 	if t, ok := out.(Team); ok {
 		t.Members = []Member{}
 		t.Grants = []Grant{}
+		t.Machines = []MachineBinding{}
+		t.MachineGrants = []MachineGrant{}
+		t.TerminalSessionGrants = []TerminalSessionGrant{}
 		out = t
 	}
 	raw, err := json.Marshal(out)

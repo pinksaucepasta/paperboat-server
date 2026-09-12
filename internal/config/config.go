@@ -42,6 +42,7 @@ type Config struct {
 	Fly               Fly              `json:"fly"`
 	Access            Access           `json:"access"`
 	Diagnostics       Diagnostics      `json:"diagnostics"`
+	Notifications     Notifications    `json:"notifications"`
 	Providers         Providers        `json:"providers"`
 	Secrets           Secrets          `json:"secrets"`
 	ReleaseDirectory  string           `json:"release_directory"`
@@ -279,6 +280,11 @@ type Diagnostics struct {
 	Retention      time.Duration `json:"retention"`
 }
 
+type Notifications struct {
+	ReceiptEmailEndpoint string `json:"receipt_email_endpoint"`
+	ReceiptEmailFrom     string `json:"receipt_email_from"`
+}
+
 // ReleaseAuthority holds only public verification material. The independent
 // release authority keeps the threshold private signing keys outside this
 // service and submits already signed policy bundles for audit and visibility.
@@ -303,6 +309,7 @@ type Secrets struct {
 	MintSigningKeys       []string `json:"mint_signing_keys"`
 	DiagnosticsAccessKey  string   `json:"diagnostics_access_key"`
 	DiagnosticsSecretKey  string   `json:"diagnostics_secret_key"`
+	ReceiptEmailToken     string   `json:"receipt_email_token"`
 }
 
 type LoadOptions struct {
@@ -621,6 +628,13 @@ func (c Config) Validate() error {
 	} else if c.Environment == EnvironmentProduction {
 		errs = append(errs, fmt.Errorf("diagnostics object storage is required in production"))
 	}
+	receiptEmailConfigured := strings.TrimSpace(c.Notifications.ReceiptEmailEndpoint) != "" || strings.TrimSpace(c.Notifications.ReceiptEmailFrom) != "" || strings.TrimSpace(c.Secrets.ReceiptEmailToken) != ""
+	if receiptEmailConfigured {
+		endpoint, err := url.Parse(c.Notifications.ReceiptEmailEndpoint)
+		if err != nil || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || endpoint.Scheme != "https" && !(c.Environment != EnvironmentProduction && endpoint.Scheme == "http") || strings.TrimSpace(c.Notifications.ReceiptEmailFrom) == "" || strings.ContainsAny(c.Notifications.ReceiptEmailFrom, "\r\n\x00") || len(c.Secrets.ReceiptEmailToken) < 8 {
+			errs = append(errs, fmt.Errorf("receipt email delivery configuration is incomplete or invalid"))
+		}
+	}
 	if strings.TrimSpace(c.GitHub.OAuthAuthorizeURL) == "" || strings.TrimSpace(c.GitHub.OAuthTokenURL) == "" {
 		errs = append(errs, fmt.Errorf("github oauth urls are required"))
 	}
@@ -860,6 +874,8 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 	setString("PAPERBOAT_DIAGNOSTICS_OBJECT_ENDPOINT", &c.Diagnostics.ObjectEndpoint)
 	setString("PAPERBOAT_DIAGNOSTICS_OBJECT_REGION", &c.Diagnostics.ObjectRegion)
 	setString("PAPERBOAT_DIAGNOSTICS_OBJECT_BUCKET", &c.Diagnostics.ObjectBucket)
+	setString("PAPERBOAT_RECEIPT_EMAIL_ENDPOINT", &c.Notifications.ReceiptEmailEndpoint)
+	setString("PAPERBOAT_RECEIPT_EMAIL_FROM", &c.Notifications.ReceiptEmailFrom)
 	setString("PAPERBOAT_RELEASE_DIRECTORY", &c.ReleaseDirectory)
 	setString("PAPERBOAT_RELEASE_BASE_URL", &c.ReleaseBaseURL)
 	if v, ok := lookup("PAPERBOAT_RELEASE_AUTHORITY_PUBLIC_KEYS"); ok {
@@ -1193,6 +1209,9 @@ func overlayEnv(c *Config, lookup func(string) (string, bool), readFile func(str
 		return err
 	}
 	if err := setSecret("PAPERBOAT_DIAGNOSTICS_SECRET_KEY", &c.Secrets.DiagnosticsSecretKey); err != nil {
+		return err
+	}
+	if err := setSecret("PAPERBOAT_RECEIPT_EMAIL_TOKEN", &c.Secrets.ReceiptEmailToken); err != nil {
 		return err
 	}
 	if value, ok := lookup("PAPERBOAT_DIAGNOSTICS_FORCE_PATH_STYLE"); ok {

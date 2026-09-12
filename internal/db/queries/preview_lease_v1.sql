@@ -98,7 +98,7 @@ SELECT p.id, p.endpoint_id, p.endpoint, p.account_id, p.actor_id, p.owner_device
        p.allocation_state, p.edge_state, p.origin_state, p.terminal_state, p.created_at, p.ready_at,
        p.last_renewed_at, p.stopped_at, p.generation, p.owner_last_seen_at
 FROM preview_leases AS p
-WHERE p.account_id = sqlc.arg(account_id)
+WHERE preview_management_allowed(sqlc.arg(account_id), p.id)
   AND (
     sqlc.narg(after_created_at)::timestamptz IS NULL
     OR (p.created_at, p.id) < (sqlc.narg(after_created_at)::timestamptz, sqlc.narg(after_id)::text)

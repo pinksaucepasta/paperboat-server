@@ -65,7 +65,7 @@ func (i *DBPreviewCarrierIssuer) IssuePreviewCarrier(ctx context.Context, in Pre
 	if err := in.Lease.Target.Validate(); err != nil {
 		return PreviewCarrierAllocation{}, err
 	}
-	if !validID(in.EdgeNodeID) || in.Lease.OperationID != in.Request.OperationID || in.Lease.OwnerDeviceID != in.Proof.MachineID || in.Lease.ActorID != in.Proof.UserID {
+	if !validID(in.EdgeNodeID) || in.Lease.OperationID != in.Request.OperationID || in.Lease.OwnerDeviceID != in.Proof.MachineID || in.Lease.MachineAccountID != in.Proof.UserID {
 		return PreviewCarrierAllocation{}, ErrUnauthorized
 	}
 	if len(in.RequestHash) != 64 {
@@ -78,7 +78,7 @@ func (i *DBPreviewCarrierIssuer) IssuePreviewCarrier(ctx context.Context, in Pre
 	now := i.clock()
 	var node previewCarrierEdgeNode
 	err := i.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		row := tx.QueryRow(ctx, getPreviewCarrierEdgeNodeSQL, in.EdgeNodeID, now, in.Lease.AccountID, in.Lease.OwnerDeviceID, in.Proof.InstallationGeneration)
+		row := tx.QueryRow(ctx, getPreviewCarrierEdgeNodeSQL, in.EdgeNodeID, now, in.Lease.AccountID, in.Lease.OwnerDeviceID, in.Proof.InstallationGeneration, in.Lease.MachineAccountID)
 		if err := row.Scan(&node.id, &node.host, &node.tcpPort, &node.quicPort, &node.processEpoch, &node.carrierServerSPKISHA256, &node.carrierServerCertificateChainPEM, &node.state, &node.ready, &node.lastHeartbeat, &node.drainDeadline, &node.workerGeneration); err != nil {
 			if err == pgx.ErrNoRows {
 				return ErrAdmissionUnavailable
@@ -163,10 +163,10 @@ func previewCarrierIDs(in PreviewCarrierAllocationRequest, edgeNodeID string, wo
 	if len(workerGenerations) > 0 && workerGenerations[0] > 0 {
 		workerGeneration = workerGenerations[0]
 	}
-	// One machine runtime identity is shared by all preview routes on the
-	// installation. Route identity remains operation-scoped below. This is
-	// required by the canonical edge peer registry, which maps one machine
-	// certificate to one carrier identity and then multiplexes routes.
+	// A machine shares one carrier per resource-owning account and edge.
+	// The edge authenticates the exact signed carrier identity URN plus
+	// the machine key, so teammates can coexist without copying keys.
+	// Route identity remains operation-scoped below.
 	identitySeed := strings.Join([]string{
 		"paperboat.preview-carrier.identity.v1", in.Lease.AccountID,
 		in.Lease.OwnerDeviceID, fmt.Sprint(in.Proof.InstallationGeneration), edgeNodeID,
@@ -208,7 +208,7 @@ SELECT node.id, COALESCE(node.carrier_endpoint_host, ''), COALESCE(node.carrier_
        machine.worker_generation
 FROM control_tunnel_nodes AS node
 JOIN user_machines AS machine
-  ON machine.id = $4 AND machine.user_id = $3
+  ON machine.id = $4 AND machine.user_id = $6
 WHERE node.id = $1
   AND node.state = 'ready'
   AND node.ready

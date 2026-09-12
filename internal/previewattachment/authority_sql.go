@@ -55,7 +55,7 @@ func (r *DBPreviewLeaseResolver) ResolvePreviewLease(ctx context.Context, in Lea
 		)
 		var publicKey string
 		err := row.Scan(
-			&lease.AccountID, &lease.ActorID, &lease.PreviewID, &lease.OperationID,
+			&lease.AccountID, &lease.ActorID, &lease.MachineAccountID, &lease.PreviewID, &lease.OperationID,
 			&lease.OwnerDeviceID, &lease.OwnerSessionID, &lease.Endpoint,
 			&lease.Target.Scheme, &lease.Target.Address, &lease.AccessMode,
 			&lease.Generation, &lease.LeaseDeadline, &lease.State, &publicKey,
@@ -77,7 +77,7 @@ func (r *DBPreviewLeaseResolver) ResolvePreviewLease(ctx context.Context, in Lea
 	if err != nil {
 		return LeaseSnapshot{}, err
 	}
-	if lease.AccountID != in.UserID || lease.ActorID != in.UserID || lease.OwnerDeviceID != in.MachineID || lease.OwnerSessionID != in.OwnerSessionID || lease.PreviewID != in.PreviewID || lease.OperationID != in.OperationID {
+	if lease.MachineAccountID != in.UserID || lease.OwnerDeviceID != in.MachineID || lease.OwnerSessionID != in.OwnerSessionID || lease.PreviewID != in.PreviewID || lease.OperationID != in.OperationID {
 		return LeaseSnapshot{}, ErrUnauthorized
 	}
 	return lease, nil
@@ -91,7 +91,7 @@ func (r *DBPreviewLeaseResolver) clock() time.Time {
 }
 
 const resolvePreviewLeaseSQL = `
-SELECT p.account_id, p.actor_id, p.id, o.id,
+SELECT p.account_id, p.actor_id, m.user_id, p.id, o.id,
        p.owner_device_id, p.owner_session_id, p.endpoint,
 	p.target_scheme, p.target_address, p.access_mode,
 	       p.generation, p.lease_deadline, p.terminal_state,
@@ -99,7 +99,7 @@ SELECT p.account_id, p.actor_id, p.id, o.id,
 FROM preview_leases AS p
 JOIN user_machines AS m
   ON m.id = p.owner_device_id
- AND m.user_id = p.account_id
+
 JOIN preview_lease_create_operations AS create_operation
   ON create_operation.account_id = p.account_id
  AND create_operation.preview_id = p.id
@@ -107,8 +107,11 @@ JOIN preview_lease_create_operations AS create_operation
 JOIN operations AS o
   ON o.id = create_operation.operation_id
  AND o.account_id = create_operation.account_id
-WHERE p.account_id = $1
-  AND p.actor_id = $1
+WHERE m.user_id = $1
+  AND p.actor_id = p.account_id
+  AND paperboat.machine_capability_allowed(p.account_id,m.id,'preview_manage')
+  AND (p.access_mode<>'public' OR (m.owner_team_id IS NULL AND m.user_id=p.account_id))
+  AND m.configured_capabilities @> ARRAY['preview_launch']::text[]
   AND p.owner_device_id = $2
   AND m.installation_generation = $3
   AND m.state = 'online'
@@ -187,7 +190,7 @@ func (a *EphemeralCarrierAllocator) AllocatePreviewCarrier(ctx context.Context, 
 			return PreviewCarrierAllocation{}, err
 		}
 	}
-	if in.Lease.ActorID != in.Proof.UserID || in.Lease.OwnerDeviceID != in.Proof.MachineID || in.Lease.OwnerSessionID != in.Request.OwnerSessionID || in.Lease.OperationID != in.Request.OperationID {
+	if in.Lease.MachineAccountID != in.Proof.UserID || in.Lease.OwnerDeviceID != in.Proof.MachineID || in.Lease.OwnerSessionID != in.Request.OwnerSessionID || in.Lease.OperationID != in.Request.OperationID {
 		return PreviewCarrierAllocation{}, ErrUnauthorized
 	}
 	if len(in.RequestHash) != 64 {

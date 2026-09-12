@@ -6,6 +6,7 @@
 /bin/
 /dist/
 /.codex-build/
+/.build/
 
 # Test & coverage
 *.out

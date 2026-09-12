@@ -287,7 +287,7 @@ func testResolution(now time.Time) Resolution {
 	digest := sha256.Sum256(make([]byte, 32))
 	thumbprint := "sha256:" + base64.RawURLEncoding.EncodeToString(digest[:])
 	return Resolution{
-		Lease: LeaseSnapshot{
+		Lease: LeaseSnapshot{MachineAccountID: "user-1",
 			AccountID: "account-1", ActorID: "user-1", PreviewID: "preview-1", OperationID: "operation-1",
 			OwnerDeviceID: "machine-1", OwnerSessionID: "owner-session-1", Endpoint: endpoint,
 			Target: Target{Scheme: "http", Address: "127.0.0.1:3000"}, AccessMode: "public", Generation: 1,
@@ -302,5 +302,21 @@ func testResolution(now time.Time) Resolution {
 			EdgeNodeID: "edge-node-1", EdgeProcessEpoch: "edge-process-1", EdgeCarrierServerSPKISHA256: "sha256:" + strings.Repeat("b", 64), EdgeCarrierServerCertificateChainPEM: "test-public-certificate-chain", MachineIdentityPublicKey: publicKey, MachineIdentityThumbprint: thumbprint,
 		},
 		Route: RouteSnapshot{AccountID: "account-1", TunnelID: "preview-tunnel-1", RouteID: "route-1", Generation: 1, Protocol: "https", PublicEndpoint: endpoint},
+	}
+}
+
+func TestSharedPreviewAttachmentBindsMachineIssuerSeparately(t *testing.T) {
+	now := time.Now().UTC()
+	resolution := testResolution(now)
+	proof := testProof()
+	request := testRequest()
+	resolution.Lease.AccountID = "teammate-account"
+	resolution.Lease.ActorID = "teammate-user"
+	if err := authorizeResolution(proof, request, resolution); err != nil {
+		t.Fatalf("separate resource owner rejected: %v", err)
+	}
+	resolution.Lease.MachineAccountID = "wrong-machine-issuer"
+	if err := authorizeResolution(proof, request, resolution); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("wrong issuer accepted: %v", err)
 	}
 }

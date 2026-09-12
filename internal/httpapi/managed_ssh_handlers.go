@@ -383,6 +383,8 @@ func managedSSHError(w http.ResponseWriter, r *http.Request, err error) bool {
 	switch {
 	case errors.Is(err, managedssh.ErrConflict):
 		status, code = http.StatusConflict, "operation_conflict"
+	case errors.Is(err, managedssh.ErrMachineKeyCapacity):
+		writeError(w, r, http.StatusConflict, "managed_ssh_key_capacity", "This machine has more than 64 authorized SSH client keys. Revoke unused client keys or narrow its SSH grants, then retry.")
 	case errors.Is(err, managedssh.ErrUnavailable):
 		status, code = http.StatusNotFound, "not_found"
 	}

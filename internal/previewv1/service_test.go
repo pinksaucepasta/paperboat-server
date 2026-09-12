@@ -23,6 +23,8 @@ import (
 
 type previewLeaseFake struct {
 	owners         map[string]bool
+	shared         map[string]bool
+	issuers        map[string]string
 	leases         map[string]previewtunnelstore.PreviewLeaseRecord
 	operations     map[string]dbsqlc.Operation
 	createKeys     map[string]string
@@ -38,17 +40,21 @@ type previewLeaseFake struct {
 
 func newPreviewLeaseFake() *previewLeaseFake {
 	return &previewLeaseFake{
-		owners: make(map[string]bool), leases: make(map[string]previewtunnelstore.PreviewLeaseRecord),
+		owners: make(map[string]bool), shared: make(map[string]bool), issuers: make(map[string]string), leases: make(map[string]previewtunnelstore.PreviewLeaseRecord),
 		operations: make(map[string]dbsqlc.Operation), createKeys: make(map[string]string), createHashes: make(map[string]string),
 		renewKeys: make(map[string]previewtunnelstore.RenewPreviewLeaseV1Result),
 	}
 }
 
-func (f *previewLeaseFake) VerifyPreviewLeaseOwnerV1(_ context.Context, accountID, ownerDeviceID string) error {
+func (f *previewLeaseFake) VerifyPreviewLeaseOwnerV1(_ context.Context, accountID, ownerDeviceID, accessMode string) (bool, error) {
 	if len(f.owners) > 0 && !f.owners[accountID+":"+ownerDeviceID] {
-		return previewtunnelstore.ErrOwnerNotFound
+		return false, previewtunnelstore.ErrOwnerNotFound
 	}
-	return nil
+	shared := f.shared[accountID+":"+ownerDeviceID]
+	if shared && accessMode == "public" {
+		return false, previewtunnelstore.ErrPreviewPublicationDenied
+	}
+	return shared, nil
 }
 
 func (f *previewLeaseFake) GetPreviewLeaseV1(_ context.Context, accountID, previewID string) (previewtunnelstore.PreviewLeaseRecord, error) {
@@ -815,3 +821,101 @@ func TestPreviewCursorRejectsTunnelCursorAndUnknownFields(t *testing.T) {
 }
 
 var _ io.Reader = (*incrementingReader)(nil)
+
+func (f *previewLeaseFake) ResolvePreviewManagementAccountV1(_ context.Context, actor, preview string) (string, error) {
+	for _, lease := range f.leases {
+		if lease.ID == preview && (lease.AccountID == actor || (f.shared[actor+":"+lease.OwnerDeviceID] && lease.AccessMode != "public")) {
+			return lease.AccountID, nil
+		}
+	}
+	return "", previewtunnelstore.ErrNotFound
+}
+
+func (f *previewLeaseFake) ResolvePreviewLeaseMachineAccountV1(_ context.Context, issuer, machine, preview string) (string, error) {
+
+	for _, lease := range f.leases {
+		if lease.ID == preview && lease.OwnerDeviceID == machine && (lease.AccountID == issuer || f.issuers[machine] == issuer) {
+			return lease.AccountID, nil
+		}
+	}
+	return "", previewtunnelstore.ErrOwnerNotFound
+}
+
+func TestSharedPreviewKeepsRequesterOwnershipAndBoundsRenewal(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	fake := newPreviewLeaseFake()
+	fake.owners["acct_1:machine_1"] = true
+	fake.shared["acct_1:machine_1"] = true
+	fake.issuers["machine_1"] = "enroller"
+	service := testPreviewLeaseService(t, fake, now)
+	input := createInput("machine_1")
+	if _, err := service.Create(context.Background(), browserRequest(), input); !errors.Is(err, previewtunnelstore.ErrPreviewPublicationDenied) {
+		t.Fatalf("default public shared publication: %v", err)
+	}
+	if len(fake.createInput) != 0 {
+		t.Fatal("public denial occurred after persistence")
+	}
+	input.AccessMode = "private"
+	created, err := service.Create(context.Background(), browserRequest(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Preview.AccountID != "acct_1" || created.Preview.ActorID != "user_1" || created.Preview.LeaseDeadline.After(now.Add(5*time.Minute)) {
+		t.Fatalf("shared owner/expiry changed: %+v", created.Preview)
+	}
+	proof := deviceRequest("machine_1")
+	proof.Actor.HostID = "machine_1"
+	proof.Actor.AccountID = "enroller"
+	proof.Actor.ActorID = "enroller"
+	renewed, err := service.Renew(context.Background(), proof, created.Preview.ID, MutationRequest{ExpectedGeneration: 1, OwnerSessionID: "session_1", IdempotencyKey: "shared_renew"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renewed.Preview.AccountID != "acct_1" || renewed.Preview.LeaseDeadline.After(now.Add(5*time.Minute)) {
+		t.Fatal("renewal stole ownership or exceeded revocation bound")
+	}
+	fake.owners["acct_1:machine_1"] = false
+	if _, err = service.Renew(context.Background(), proof, created.Preview.ID, MutationRequest{ExpectedGeneration: 2, OwnerSessionID: "session_1", IdempotencyKey: "shared_revoked"}); !errors.Is(err, previewtunnelstore.ErrOwnerNotFound) {
+		t.Fatalf("revoked member renewal: %v", err)
+	}
+	other := proof
+	other.Actor.DeviceID = "machine_other"
+	if _, err = service.Get(context.Background(), other, created.Preview.ID); !errors.Is(err, ErrOwnerDenied) {
+		t.Fatalf("other machine accessed lease: %v", err)
+	}
+	if _, err = service.Get(context.Background(), proof, created.Preview.ID); err != nil {
+		t.Fatalf("target cannot read revoked lease for cleanup: %v", err)
+	}
+}
+
+func TestSharedManagerReadsAndStopsExistingPreviewWithoutRenewing(t *testing.T) {
+	now := time.Now().UTC()
+	fake := newPreviewLeaseFake()
+	fake.owners["acct_1:machine_1"] = true
+	service := testPreviewLeaseService(t, fake, now)
+	input := createInput("machine_1")
+	input.AccessMode = "private"
+	created, err := service.Create(context.Background(), browserRequest(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := browserRequest()
+	manager.Actor.AccountID, manager.Actor.ActorID, manager.Actor.DeviceID = "member", "member", "cli_session"
+	fake.shared["member:machine_1"] = true
+	view, err := service.Get(context.Background(), manager, created.Preview.ID)
+	if err != nil || view.Preview.AccountID != "acct_1" {
+		t.Fatalf("manager read account=%q err=%v", view.Preview.AccountID, err)
+	}
+	mutation := MutationRequest{ExpectedGeneration: 1, OwnerSessionID: "session_1", IdempotencyKey: "manager_stop"}
+	if _, err := service.Renew(context.Background(), manager, created.Preview.ID, mutation); !errors.Is(err, ErrOwnerDenied) {
+		t.Fatalf("manager renewal: %v", err)
+	}
+	stopped, err := service.Stop(context.Background(), manager, created.Preview.ID, mutation)
+	if err != nil || stopped.Preview.AccountID != "acct_1" {
+		t.Fatalf("manager stop account=%q err=%v", stopped.Preview.AccountID, err)
+	}
+	fake.shared["member:machine_1"] = false
+	if _, err := service.Stop(context.Background(), manager, created.Preview.ID, mutation); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("withdrawn manager replay: %v", err)
+	}
+}

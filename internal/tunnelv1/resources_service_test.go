@@ -20,7 +20,10 @@ import (
 // PostgreSQL. Repository integration tests cover the SQL transaction and
 // constraints; this fake makes the HTTP-facing invariants deterministic.
 type fakeResourceRepository struct {
-	verifyErr error
+	managementOwner  string
+	managementShared bool
+	managementErr    error
+	verifyErr        error
 
 	listRoutes        []dbsqlc.TunnelRoute
 	listRoutesErr     error
@@ -597,4 +600,14 @@ func TestResourceServiceRotationUsesConfiguredOverlapAndReturnsOperationOnly(t *
 	if err != nil || bytes.Contains(encoded, []byte("keychain://")) || strings.Contains(string(encoded), "thumbprint") {
 		t.Fatalf("operation contains credential material: %s (%v)", encoded, err)
 	}
+}
+
+func (f *fakeResourceRepository) ResolveManagementAccount(_ context.Context, actor, tunnel string) (string, bool, error) {
+	if f.managementErr != nil {
+		return "", false, f.managementErr
+	}
+	if f.managementOwner != "" {
+		return f.managementOwner, f.managementShared, nil
+	}
+	return actor, false, nil
 }

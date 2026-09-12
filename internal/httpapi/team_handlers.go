@@ -4,11 +4,16 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/teams"
 )
 
 type teamAPI interface {
+	Activity(context.Context, string, string, string, int) (teams.ActivityPage, error)
+	Machine(context.Context, string, string, teams.MachineRequest) (teams.Team, error)
+	GrantMachine(context.Context, string, string, teams.MachineGrantRequest) (teams.Team, error)
+	GrantTerminalSession(context.Context, string, string, teams.TerminalSessionGrantRequest) (teams.Team, error)
 	List(context.Context, string) ([]teams.Team, error)
 	Get(context.Context, string, string) (teams.Team, error)
 	Create(context.Context, string, teams.CreateRequest) (teams.Team, error)
@@ -34,6 +39,16 @@ func registerTeamRoutes(mux *http.ServeMux, service teamAPI, read, write func(ht
 			switch action {
 			case "list":
 				out, err = service.List(r.Context(), account)
+			case "activity":
+				limit := 0
+				if raw := r.URL.Query().Get("limit"); raw != "" {
+					limit, err = strconv.Atoi(raw)
+					if err != nil || limit < 1 || limit > teams.MaximumActivityLimit {
+						err = teams.ErrInvalid
+						break
+					}
+				}
+				out, err = service.Activity(r.Context(), account, team, r.URL.Query().Get("cursor"), limit)
 			case "get":
 				out, err = service.Get(r.Context(), account, team)
 			case "create":
@@ -72,6 +87,24 @@ func registerTeamRoutes(mux *http.ServeMux, service teamAPI, read, write func(ht
 					return
 				}
 				out, err = service.Grant(r.Context(), account, team, in)
+			case "machine":
+				var in teams.MachineRequest
+				if !decodeStrictJSON(w, r, &in) {
+					return
+				}
+				out, err = service.Machine(r.Context(), account, team, in)
+			case "machine_grant":
+				var in teams.MachineGrantRequest
+				if !decodeStrictJSON(w, r, &in) {
+					return
+				}
+				out, err = service.GrantMachine(r.Context(), account, team, in)
+			case "terminal_session_grant":
+				var in teams.TerminalSessionGrantRequest
+				if !decodeStrictJSON(w, r, &in) {
+					return
+				}
+				out, err = service.GrantTerminalSession(r.Context(), account, team, in)
 			case "attach":
 				var in teams.AttachRequest
 				if !decodeStrictJSON(w, r, &in) {
@@ -84,6 +117,8 @@ func registerTeamRoutes(mux *http.ServeMux, service teamAPI, read, write func(ht
 				writeError(w, r, http.StatusForbidden, "forbidden", "Current team role and exact resource permission are required.")
 			case errors.Is(err, teams.ErrNotFound):
 				writeError(w, r, http.StatusNotFound, "not_found", "Team or resource is unavailable.")
+			case errors.Is(err, teams.ErrMachinePublication):
+				writeError(w, r, http.StatusConflict, "machine_publication_active", teams.ErrMachinePublication.Error())
 			case errors.Is(err, teams.ErrConflict):
 				writeError(w, r, http.StatusConflict, "team_changed", "Team changed. Refresh its current state before retrying.")
 			case errors.Is(err, teams.ErrExpired):
@@ -104,8 +139,12 @@ func registerTeamRoutes(mux *http.ServeMux, service teamAPI, read, write func(ht
 			mux.Handle(pattern, read(h))
 		}
 	}
+	handle("POST /v1/teams/{team_id}/machines", "machine", true)
+	handle("POST /v1/teams/{team_id}/machine-grants", "machine_grant", true)
+	handle("POST /v1/teams/{team_id}/terminal-session-grants", "terminal_session_grant", true)
 	handle("GET /v1/teams", "list", false)
 	handle("POST /v1/teams", "create", true)
+	handle("GET /v1/teams/{team_id}/activity", "activity", false)
 	handle("GET /v1/teams/{team_id}", "get", false)
 	handle("POST /v1/teams/{team_id}/actions", "mutate", true)
 	handle("POST /v1/teams/{team_id}/invitations", "invite", true)

@@ -18,7 +18,7 @@ type recordingRepository struct {
 	request   MachineEndpointRequest
 }
 
-func (r *recordingRepository) Bootstrap(_ context.Context, operation, userID string, root ed25519.PublicKey, value Certificate) (Certificate, error) {
+func (r *recordingRepository) Bootstrap(_ context.Context, operation, userID string, root ed25519.PublicKey, value Certificate, _ time.Time) (Certificate, error) {
 	r.operation, r.userID, r.value = operation, userID, value
 	fingerprint := sha256.Sum256(root)
 	r.root = AccountRoot{Keys: []AccountKey{{KeyID: keyIDForFingerprint(fingerprint), PublicKey: append(ed25519.PublicKey(nil), root...), Fingerprint: fingerprint, Generation: 1}}}
@@ -46,7 +46,7 @@ func (r *recordingRepository) ResolveAccountRoot(context.Context, string) (Accou
 	return r.root, r.err
 }
 
-func (r *recordingRepository) Register(_ context.Context, operation, userID string, value Certificate) (Certificate, error) {
+func (r *recordingRepository) Register(_ context.Context, operation, userID string, value Certificate, _ time.Time) (Certificate, error) {
 	r.operation, r.userID, r.value = operation, userID, value
 	return value, r.err
 }

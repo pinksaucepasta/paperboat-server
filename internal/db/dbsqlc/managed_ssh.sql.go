@@ -481,6 +481,44 @@ func (q *Queries) GetPendingMachineSSHHostKeySetForUpdate(ctx context.Context, u
 	return i, err
 }
 
+const listActiveManagedSSHClientKeysForMachine = `-- name: ListActiveManagedSSHClientKeysForMachine :many
+SELECT k.fingerprint, k.user_id, k.cli_client_session_id, k.algorithm, k.public_key, k.state, k.reconciliation_version, k.created_at, k.revoked_at, k.revocation_reason FROM managed_ssh_client_keys k
+JOIN cli_client_sessions cs ON cs.id=k.cli_client_session_id AND cs.user_id=k.user_id AND cs.state='active' AND cs.revoked_at IS NULL
+WHERE k.state='active' AND machine_capability_allowed(k.user_id,$1,'managed_ssh')
+ORDER BY k.created_at DESC,k.cli_client_session_id DESC LIMIT 65
+`
+
+func (q *Queries) ListActiveManagedSSHClientKeysForMachine(ctx context.Context, machineID string) ([]ManagedSshClientKey, error) {
+	rows, err := q.db.Query(ctx, listActiveManagedSSHClientKeysForMachine, machineID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ManagedSshClientKey
+	for rows.Next() {
+		var i ManagedSshClientKey
+		if err := rows.Scan(
+			&i.Fingerprint,
+			&i.UserID,
+			&i.CLIClientSessionID,
+			&i.Algorithm,
+			&i.PublicKey,
+			&i.State,
+			&i.ReconciliationVersion,
+			&i.CreatedAt,
+			&i.RevokedAt,
+			&i.RevocationReason,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listActiveManagedSSHClientKeysForUser = `-- name: ListActiveManagedSSHClientKeysForUser :many
 SELECT k.fingerprint, k.user_id, k.cli_client_session_id, k.algorithm, k.public_key, k.state, k.reconciliation_version, k.created_at, k.revoked_at, k.revocation_reason FROM managed_ssh_client_keys k
 JOIN cli_client_sessions cs ON cs.id = k.cli_client_session_id AND cs.state = 'active'
@@ -697,6 +735,46 @@ func (q *Queries) ResolveMachineSSHHostKeyAuthorityForUpdate(ctx context.Context
 	var i ResolveMachineSSHHostKeyAuthorityForUpdateRow
 	err := row.Scan(&i.UserMachineID, &i.UserID, &i.InstallationGeneration)
 	return i, err
+}
+
+const resolveMachineSSHManagementAuthorityForUpdate = `-- name: ResolveMachineSSHManagementAuthorityForUpdate :one
+SELECT m.id FROM user_machines m WHERE m.id=$1
+AND m.installation_generation=$2
+AND machine_management_allowed($3,m.id)
+AND m.state NOT IN ('revoked','disconnected','deleted') FOR UPDATE
+`
+
+type ResolveMachineSSHManagementAuthorityForUpdateParams struct {
+	MachineID         string
+	MachineGeneration int64
+	UserID            string
+}
+
+func (q *Queries) ResolveMachineSSHManagementAuthorityForUpdate(ctx context.Context, arg ResolveMachineSSHManagementAuthorityForUpdateParams) (string, error) {
+	row := q.db.QueryRow(ctx, resolveMachineSSHManagementAuthorityForUpdate, arg.MachineID, arg.MachineGeneration, arg.UserID)
+	var id string
+	err := row.Scan(&id)
+	return id, err
+}
+
+const resolveMachineSSHUseAuthorityForUpdate = `-- name: ResolveMachineSSHUseAuthorityForUpdate :one
+SELECT m.id FROM user_machines m WHERE m.id=$1
+AND m.installation_generation=$2
+AND (machine_capability_allowed($3,m.id,'managed_ssh') OR machine_management_allowed($3,m.id))
+AND m.state NOT IN ('revoked','disconnected','deleted') FOR UPDATE
+`
+
+type ResolveMachineSSHUseAuthorityForUpdateParams struct {
+	MachineID         string
+	MachineGeneration int64
+	UserID            string
+}
+
+func (q *Queries) ResolveMachineSSHUseAuthorityForUpdate(ctx context.Context, arg ResolveMachineSSHUseAuthorityForUpdateParams) (string, error) {
+	row := q.db.QueryRow(ctx, resolveMachineSSHUseAuthorityForUpdate, arg.MachineID, arg.MachineGeneration, arg.UserID)
+	var id string
+	err := row.Scan(&id)
+	return id, err
 }
 
 const resolveManagedSSHClientAuthorityForUpdate = `-- name: ResolveManagedSSHClientAuthorityForUpdate :one

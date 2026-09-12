@@ -37,6 +37,8 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/naming"
 	"github.com/pinksaucepasta/paperboat-server/internal/releases"
 	"github.com/pinksaucepasta/paperboat-server/internal/secrets"
+	"github.com/pinksaucepasta/paperboat-server/internal/teaminbox"
+	"github.com/pinksaucepasta/paperboat-server/internal/teams"
 )
 
 var (
@@ -246,6 +248,7 @@ type Service struct {
 	issuer                      string
 	ttl                         time.Duration
 	fileTransferPolicy          accessdescriptor.FileTransferPolicy
+	teamInbox                   *teaminbox.Service
 	maxSessions                 int
 	controlSigner               *mint.Provider
 	controlRuntime              userMachineHelperRuntime
@@ -410,6 +413,8 @@ func (s *Service) ConfigureOneShotCLIAuth(clientID string, scopes []string, acce
 func (s *Service) ConfigureFileTransfer(policy accessdescriptor.FileTransferPolicy) {
 	s.fileTransferPolicy = policy
 }
+
+func (s *Service) ConfigureTeamInbox(service *teaminbox.Service) { s.teamInbox = service }
 
 // RuntimeFileTransferPolicy exposes the configured policy on authenticated runtime heartbeats.
 func (s *Service) RuntimeFileTransferPolicy() accessdescriptor.FileTransferPolicy {
@@ -1054,11 +1059,23 @@ func (s *Service) Setup(ctx context.Context, userID string, in SetupInput) (User
 	var result UserMachine
 	var downgradedFromHost bool
 	err := s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := teams.Lock(ctx, tx); err != nil {
+			return err
+		}
 		key := sql.NullString{String: strings.TrimSpace(in.PublicIdentityKey), Valid: true}
 		row, err := tx.Queries().GetUserMachineByPublicIdentityForUpdate(ctx, key)
 		if err == nil {
 			if row.UserID != userID {
 				return ErrMachineIdentityConflict
+			}
+			if row.OwnerTeamID.Valid {
+				var canManage bool
+				if err := tx.QueryRow(ctx, `SELECT machine_management_allowed($1,$2)`, userID, row.ID).Scan(&canManage); err != nil {
+					return err
+				}
+				if !canManage {
+					return ErrMachineIdentityConflict
+				}
 			}
 			if row.Platform != strings.ToLower(strings.TrimSpace(in.Platform)) || row.Architecture != strings.ToLower(strings.TrimSpace(in.Architecture)) || row.WorkspaceRoot != in.WorkspaceRoot {
 				return ErrInvalidSetup
@@ -1269,6 +1286,12 @@ func (s *Service) CreatePairing(ctx context.Context, in PairingInput) (Pairing, 
 }
 
 type UserMachine struct {
+	Ownership              string                 `json:"ownership"`
+	OwnerAccount           string                 `json:"owner_account,omitempty"`
+	OwnerTeamID            string                 `json:"owner_team_id,omitempty"`
+	Permissions            []string               `json:"permissions"`
+	CanManage              bool                   `json:"can_manage"`
+	Shared                 bool                   `json:"shared"`
 	ID                     string                 `json:"id"`
 	EnvironmentID          string                 `json:"environment_id"`
 	DisplayName            string                 `json:"display_name"`
@@ -1552,6 +1575,7 @@ type ConnectionDescriptor struct {
 	Issuer            string         `json:"issuer,omitempty"`
 	UserMachineID     string         `json:"machine_id"`
 	UserMachineState  string         `json:"machine_state"`
+	MachineGeneration int64          `json:"machine_generation"`
 	Connectable       bool           `json:"connectable"`
 	ExpiresAt         time.Time      `json:"expires_at"`
 	Environment       map[string]any `json:"environment,omitempty"`
@@ -1590,14 +1614,22 @@ func (s *Service) operationDescriptor(ctx context.Context, userID, sourceMachine
 	if _, err := s.db.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: sourceMachineID, UserID: userID}); err != nil {
 		return ExecDescriptor{}, ErrNotFound
 	}
-	row, err := s.db.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: userMachineID, UserID: userID})
+	capability := "exec"
+	if credentialClass == "ssh_operation" {
+		capability = "managed_ssh"
+	}
+	row, err := s.db.Queries().GetUserMachineForCapability(ctx, dbsqlc.GetUserMachineForCapabilityParams{ID: userMachineID, UserID: userID, Capability: capability})
 	if errors.Is(err, sql.ErrNoRows) {
 		return ExecDescriptor{}, ErrNotFound
 	}
 	if err != nil {
 		return ExecDescriptor{}, err
 	}
-	if row.State != "online" || row.SeatState != "occupied" || !row.Online || !slices.Contains(row.ObservedCapabilities, "terminal_host") || !slices.Contains(row.ConfiguredCapabilities, "terminal_host") {
+	incoming := "terminal_host"
+	if capability == "managed_ssh" {
+		incoming = "ssh_host"
+	}
+	if row.State != "online" || row.SeatState != "occupied" || !row.Online || !slices.Contains(row.ObservedCapabilities, incoming) || !slices.Contains(row.ConfiguredCapabilities, incoming) {
 		return ExecDescriptor{}, ErrMachineCapabilityUnavailable
 	}
 	if credentialClass == "ssh_operation" {
@@ -1637,15 +1669,15 @@ func (s *Service) operationDescriptor(ctx context.Context, userID, sourceMachine
 	token, err := s.controlSigner.SignCredential(mint.CredentialInput{
 		Issuer: s.issuer, Audience: "paperboat-machine", Subject: userID, JTI: operationJTI,
 		IssuedAt: issuedAt, ExpiresAt: expiresAt, CredentialClass: credentialClass, Scopes: []string{scope},
-		EnvironmentID: row.EnvironmentID, MachineID: row.ID, UserID: userID, CLIClientSessionID: cliClientSessionID, OperationID: operationID, AssignmentID: accessSessionID,
+		EnvironmentID: row.EnvironmentID, MachineID: row.ID, SourceMachineID: sourceMachineID, UserID: userID, CLIClientSessionID: cliClientSessionID, OperationID: operationID, AssignmentID: accessSessionID,
 	})
 	if err != nil {
 		return ExecDescriptor{}, err
 	}
-	if err := s.db.Queries().CreateUserMachineAccessSession(ctx, dbsqlc.CreateUserMachineAccessSessionParams{
+	if err := s.createAccessSession(ctx, dbsqlc.CreateUserMachineAccessSessionParams{
 		ID: accessSessionID, UserMachineID: row.ID, UserID: userID, EnvironmentID: row.EnvironmentID,
 		CLIClientSessionID: cliClientSessionID, HttpBaseUrl: "https://" + route.PublicHost,
-		HelperTerminalSessionID: operationJTI, HelperFileSessionID: "", ExpiresAt: expiresAt,
+		HelperTerminalSessionID: operationJTI, HelperFileSessionID: "", ExpiresAt: expiresAt, Capabilities: []string{capability}, OperationID: operationID,
 	}); err != nil {
 		return ExecDescriptor{}, err
 	}
@@ -1668,6 +1700,14 @@ type FileTransferDescriptor struct {
 }
 
 func (s *Service) FileTransferDescriptor(ctx context.Context, userID, sourceMachineID, destinationMachineID, cliClientSessionID, sessionID string) (FileTransferDescriptor, error) {
+	return s.fileTransferDescriptor(ctx, userID, sourceMachineID, destinationMachineID, cliClientSessionID, sessionID, "", "")
+}
+
+func (s *Service) FileTransferDescriptorForRequest(ctx context.Context, userID, sourceMachineID, destinationMachineID, cliClientSessionID, sessionID, requestID, manifestDigest string) (FileTransferDescriptor, error) {
+	return s.fileTransferDescriptor(ctx, userID, sourceMachineID, destinationMachineID, cliClientSessionID, sessionID, requestID, manifestDigest)
+}
+
+func (s *Service) fileTransferDescriptor(ctx context.Context, userID, sourceMachineID, destinationMachineID, cliClientSessionID, sessionID, requestID, manifestDigest string) (FileTransferDescriptor, error) {
 	if sourceMachineID == "" || destinationMachineID == "" || sourceMachineID == destinationMachineID || cliClientSessionID == "" || s.controlSigner == nil {
 		return FileTransferDescriptor{}, ErrNotFound
 	}
@@ -1686,7 +1726,7 @@ func (s *Service) FileTransferDescriptor(ctx context.Context, userID, sourceMach
 			return FileTransferDescriptor{}, ErrTerminalSessionNotFound
 		}
 	}
-	destination, err := s.db.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: destinationMachineID, UserID: userID})
+	destination, err := s.db.Queries().GetUserMachineForCapability(ctx, dbsqlc.GetUserMachineForCapabilityParams{ID: destinationMachineID, UserID: userID, Capability: "files"})
 	if errors.Is(err, sql.ErrNoRows) {
 		return FileTransferDescriptor{}, ErrNotFound
 	}
@@ -1701,6 +1741,20 @@ func (s *Service) FileTransferDescriptor(ctx context.Context, userID, sourceMach
 	}
 	if destination.State == "revoked" || destination.State == "disconnected" || destination.State == "deleted" {
 		return FileTransferDescriptor{}, ErrNotFound
+	}
+	var acceptedRequest *teaminbox.Request
+	if destination.UserID != userID {
+		if s.teamInbox == nil || requestID == "" || manifestDigest == "" {
+			return FileTransferDescriptor{}, teaminbox.ErrPending
+		}
+		accepted, acceptErr := s.teamInbox.Consume(ctx, userID, requestID, manifestDigest)
+		if acceptErr != nil {
+			return FileTransferDescriptor{}, acceptErr
+		}
+		if accepted.SourceMachineID != sourceMachineID || accepted.DestinationMachineID != destinationMachineID {
+			return FileTransferDescriptor{}, teaminbox.ErrConflict
+		}
+		acceptedRequest = &accepted
 	}
 	routeMachine := destination
 	if sessionID != "" {
@@ -1728,18 +1782,26 @@ func (s *Service) FileTransferDescriptor(ctx context.Context, userID, sourceMach
 	expiresAt := s.now().UTC().Add(ttl)
 	jti := newID("jti_helper_file_transfer")
 	accessSessionID := newID("umas")
-	token, err := s.controlSigner.SignCredential(mint.CredentialInput{
+	operationID := sessionID
+	if requestID != "" {
+		operationID = requestID
+	}
+	credentialInput := mint.CredentialInput{
 		Issuer: s.issuer, Audience: "paperboat-machine", Subject: userID, JTI: jti,
 		IssuedAt: s.now().UTC(), ExpiresAt: expiresAt, CredentialClass: "file_transfer", Scopes: []string{"file:transfer"},
 		EnvironmentID: routeMachine.EnvironmentID, MachineID: routeMachine.ID, SourceMachineID: sourceMachineID,
-		UserID: userID, CLIClientSessionID: cliClientSessionID, SessionID: sessionID, AssignmentID: accessSessionID,
-	})
+		UserID: userID, CLIClientSessionID: cliClientSessionID, SessionID: sessionID, OperationID: operationID, AssignmentID: accessSessionID,
+	}
+	if acceptedRequest != nil {
+		credentialInput.RequestID, credentialInput.IdempotencyKey, credentialInput.RequestHash = acceptedRequest.RequestID, acceptedRequest.BatchID, acceptedRequest.ManifestDigest
+	}
+	token, err := s.controlSigner.SignCredential(credentialInput)
 	if err != nil {
 		return FileTransferDescriptor{}, err
 	}
 	httpBaseURL := "https://" + route.PublicHost
-	if err := s.db.Queries().CreateUserMachineAccessSession(ctx, dbsqlc.CreateUserMachineAccessSessionParams{
-		ID: accessSessionID, UserMachineID: routeMachine.ID, UserID: userID, EnvironmentID: routeMachine.EnvironmentID,
+	if err := s.createAccessSession(ctx, dbsqlc.CreateUserMachineAccessSessionParams{
+		Capabilities: []string{"files"}, OperationID: operationID, ID: accessSessionID, UserMachineID: routeMachine.ID, UserID: userID, EnvironmentID: routeMachine.EnvironmentID,
 		CLIClientSessionID: cliClientSessionID, HttpBaseUrl: httpBaseURL, HelperFileSessionID: jti, ExpiresAt: expiresAt,
 	}); err != nil {
 		return FileTransferDescriptor{}, err
@@ -1816,9 +1878,146 @@ func machineConnectionState(connectable bool, state string) string {
 }
 
 func setCanonicalMachineIdentity(response *ConnectionDescriptor, row dbsqlc.UserMachine) {
+	response.MachineGeneration = row.InstallationGeneration
 	response.Schema = accessdescriptor.SchemaV1
 	response.Capabilities = []string{accessdescriptor.CapabilityTerminal, accessdescriptor.CapabilityFileTransfer, accessdescriptor.CapabilityPreview}
 	response.Environment = map[string]any{"id": row.EnvironmentID, "kind": accessdescriptor.EnvironmentBYOD, "resource_id": row.ID, "display_name": row.DisplayName, "state": machineConnectionState(response.Connectable, row.State), "root": row.WorkspaceRoot}
+}
+
+// ConnectSharedTerminalSession issues only the exact current session role. It
+// deliberately bypasses machine capability grants: the session grant is the
+// complete authority and confers no file, ENV, exec, or resharing access.
+func (s *Service) ConnectSharedTerminalSession(ctx context.Context, userID, sourceMachineID, cliClientSessionID, sessionID string) (ConnectionDescriptor, error) {
+	if sourceMachineID == "" || cliClientSessionID == "" || sessionID == "" {
+		return ConnectionDescriptor{}, ErrNotFound
+	}
+	if _, err := s.db.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: sourceMachineID, UserID: userID}); err != nil {
+		return ConnectionDescriptor{}, ErrNotFound
+	}
+	decision, err := teams.NewService(s.db).ResolveTerminalSession(ctx, userID, sessionID)
+	if err != nil {
+		return ConnectionDescriptor{}, ErrTerminalSessionNotFound
+	}
+	row, err := s.db.Queries().GetUserMachineForSharedTerminalSession(ctx, dbsqlc.GetUserMachineForSharedTerminalSessionParams{SessionID: sessionID, UserID: userID})
+	if errors.Is(err, sql.ErrNoRows) {
+		return ConnectionDescriptor{}, ErrTerminalSessionNotFound
+	}
+	if err != nil {
+		return ConnectionDescriptor{}, err
+	}
+	if !slices.Contains(row.ConfiguredCapabilities, "terminal_host") {
+		return ConnectionDescriptor{}, ErrMachineCapabilityUnavailable
+	}
+	ttl := s.ttl
+	if ttl <= 0 || ttl > 5*time.Minute {
+		ttl = 5 * time.Minute
+	}
+	expires := s.now().UTC().Add(ttl)
+	response := ConnectionDescriptor{Issuer: s.issuer, UserMachineID: row.ID, UserMachineState: row.State, ExpiresAt: expires, Status: "connector_connecting", Reason: "connector_offline", RetryAfterSeconds: 2}
+	setCanonicalMachineIdentity(&response, row)
+	if row.State == "revoked" || row.State == "disconnected" || row.State == "deleted" {
+		response.Status, response.Reason = "user_machine_revoked", "access_revoked"
+		return response, nil
+	}
+	if !row.Online || !slices.Contains(row.ObservedCapabilities, "terminal_host") {
+		response.Status, response.Reason = "machine_offline", "terminal_host_unavailable"
+		return response, nil
+	}
+	route, err := s.db.Queries().GetActiveHelperRouteForEnvironment(ctx, row.EnvironmentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return response, nil
+	}
+	if err != nil {
+		return ConnectionDescriptor{}, err
+	}
+	if s.controlSigner == nil {
+		return ConnectionDescriptor{}, errors.New("user-machine credential issuer is unavailable")
+	}
+	now := s.now().UTC()
+	snapshotToken, err := s.controlSigner.SignCredential(mint.CredentialInput{Issuer: s.issuer, Audience: "paperboat-machine", Subject: decision.OwnerAccount, JTI: newID("jti_terminal_snapshot"), IssuedAt: now, ExpiresAt: now.Add(time.Minute), CredentialClass: "terminal_operation", Scopes: []string{"terminal:operate"}, EnvironmentID: row.EnvironmentID, MachineID: row.ID, UserID: decision.OwnerAccount, CLIClientSessionID: "control-plane", SessionID: sessionID})
+	if err != nil {
+		return ConnectionDescriptor{}, err
+	}
+	snapshot, err := s.controlRuntime.Terminal(ctx, "https://"+route.PublicHost, snapshotToken, "snapshot", sessionID, newID("op_terminal_snapshot"))
+	if err != nil {
+		return ConnectionDescriptor{}, err
+	}
+	if _, err = s.db.SQL().ExecContext(ctx, `WITH project_updated AS (UPDATE project_terminal_sessions SET runtime_state=$2,launch_cwd=coalesce(nullif($3,''),launch_cwd),last_runtime_sync_at=now(),last_runtime_sequence=$4,updated_at=now() WHERE id=$1 RETURNING id) UPDATE user_machine_terminal_sessions SET runtime_state=$2,launch_cwd=coalesce(nullif($3,''),launch_cwd),last_runtime_sync_at=now(),last_runtime_sequence=$4,updated_at=now() WHERE id=$1`, sessionID, snapshot.State, snapshot.CWD, int64(snapshot.LatestSequence)); err != nil {
+		return ConnectionDescriptor{}, err
+	}
+	if snapshot.State == "closed" || snapshot.State == "exited" || snapshot.State == "deleted" {
+		return ConnectionDescriptor{}, ErrTerminalSessionNotFound
+	}
+	if snapshot.Generation != decision.ProcessGeneration {
+		if fenceErr := s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+			if err := teams.Lock(ctx, tx); err != nil {
+				return err
+			}
+			_, err := tx.Exec(ctx, `UPDATE team_resource_bindings SET active=false,generation=generation+1 WHERE team_id=$1 AND resource_kind='terminal_session' AND resource_id=$2 AND active AND terminal_process_generation=$3`, decision.TeamID, sessionID, decision.ProcessGeneration)
+			return err
+		}); fenceErr != nil {
+			return ConnectionDescriptor{}, fenceErr
+		}
+		return ConnectionDescriptor{}, ErrTerminalSessionNotFound
+	}
+	var terminalID, threadID, cwd string
+	if decision.TargetKind == "machine" {
+		session, e := s.db.Queries().GetSharedUserMachineTerminalSession(ctx, dbsqlc.GetSharedUserMachineTerminalSessionParams{SessionID: sessionID, UserID: userID})
+		if e != nil {
+			return ConnectionDescriptor{}, ErrTerminalSessionNotFound
+		}
+		terminalID, threadID, cwd = session.TerminalID, session.ThreadID, session.LaunchCwd
+	} else {
+		session, e := s.db.Queries().GetSharedProjectTerminalSession(ctx, dbsqlc.GetSharedProjectTerminalSessionParams{SessionID: sessionID, UserID: userID})
+		if e != nil {
+			return ConnectionDescriptor{}, ErrTerminalSessionNotFound
+		}
+		terminalID, threadID, cwd = session.TerminalID, session.ThreadID, session.LaunchCwd
+	}
+	accessID, jti := newID("umas"), newID("jti_helper_terminal")
+	scope := "terminal:view"
+	if decision.Role == "interactive" {
+		scope = "terminal:control"
+	}
+	token, err := s.controlSigner.SignCredential(mint.CredentialInput{Issuer: s.issuer, Audience: "paperboat-machine", Subject: userID, JTI: jti, IssuedAt: s.now().UTC(), ExpiresAt: expires, CredentialClass: "terminal_operation", Scopes: []string{scope}, EnvironmentID: row.EnvironmentID, MachineID: row.ID, SourceMachineID: sourceMachineID, UserID: userID, AccountID: userID, CLIClientSessionID: cliClientSessionID, SessionID: sessionID, AssignmentID: accessID, ExpectedGeneration: int64(decision.ProcessGeneration)})
+	if err != nil {
+		return ConnectionDescriptor{}, err
+	}
+	params := dbsqlc.CreateUserMachineAccessSessionParams{ID: accessID, UserMachineID: row.ID, UserID: userID, EnvironmentID: row.EnvironmentID, CLIClientSessionID: cliClientSessionID, HttpBaseUrl: "https://" + route.PublicHost, HelperTerminalSessionID: jti, ExpiresAt: expires, TeamID: sql.NullString{String: decision.TeamID, Valid: true}, Capabilities: []string{}, OperationID: sessionID, TerminalSessionID: sessionID, TerminalRole: decision.Role, TerminalGrantGeneration: sql.NullInt64{Int64: int64(decision.GrantGeneration), Valid: true}, TerminalBindingGeneration: sql.NullInt64{Int64: int64(decision.BindingGeneration), Valid: true}, TerminalMembershipGeneration: sql.NullInt64{Int64: int64(decision.MembershipGeneration), Valid: true}, TerminalTeamGeneration: sql.NullInt64{Int64: int64(decision.TeamGeneration), Valid: true}}
+	if err = s.createSharedTerminalAccessSession(ctx, params, sourceMachineID, decision); err != nil {
+		cleanupErr := s.revokeCredentialSessions(ctx, machineAccessSession{UserID: userID, UserMachineID: row.ID, EnvironmentID: row.EnvironmentID, CLIClientSessionID: cliClientSessionID, HTTPBaseURL: "https://" + route.PublicHost, TerminalSessionID: jti}, "access_session_persistence_failed")
+		return ConnectionDescriptor{}, errors.Join(err, cleanupErr)
+	}
+	response.Connectable, response.Status, response.Reason, response.RetryAfterSeconds = true, "ready", "ready", 0
+	setCanonicalMachineIdentity(&response, row)
+	auth := map[string]any{"method": "bearer", "token": token, "expires_at": expires, "scopes": []string{scope}, "access_session_id": accessID}
+	response.Terminal = map[string]any{"protocol": "paperboat.terminal.v1", "endpoints": machineTerminalEndpoints("wss://" + route.PublicHost), "session_id": sessionID, "thread_id": threadID, "terminal_id": terminalID, "cwd": cwd, "role": decision.Role, "auth": auth}
+	return response, nil
+}
+
+func (s *Service) createSharedTerminalAccessSession(ctx context.Context, in dbsqlc.CreateUserMachineAccessSessionParams, sourceMachineID string, want teams.TerminalSessionDecision) error {
+	return s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := teams.Lock(ctx, tx); err != nil {
+			return err
+		}
+		var ready bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM user_machines source JOIN cli_client_sessions cli ON cli.id=$3 AND cli.user_id=$1 AND cli.state='active' AND cli.revoked_at IS NULL JOIN user_machines target ON target.id=$4 WHERE source.id=$2 AND source.user_id=$1 AND source.deleted_at IS NULL AND source.revoked_at IS NULL AND target.state='online' AND target.online AND target.deleted_at IS NULL AND target.revoked_at IS NULL AND target.configured_capabilities @> ARRAY['terminal_host'] AND target.observed_capabilities @> ARRAY['terminal_host'])`, in.UserID, sourceMachineID, in.CLIClientSessionID, in.UserMachineID).Scan(&ready); err != nil {
+			return err
+		}
+		if !ready {
+			return ErrTerminalSessionNotFound
+		}
+		var team, role string
+		var tg, mg, bg, gg, pg uint64
+		err := tx.QueryRow(ctx, `SELECT d.team_id,d.role,d.team_generation,d.membership_generation,d.binding_generation,d.grant_generation,d.process_generation FROM (SELECT b.team_id,terminal_session_role($1,$2) role,t.generation team_generation,m.membership_generation,b.generation binding_generation,b.terminal_process_generation process_generation,CASE WHEN sg.account_id IS NOT NULL THEN sg.generation ELSE ag.generation END grant_generation FROM team_resource_bindings b JOIN teams t USING(team_id) JOIN team_members m ON m.team_id=b.team_id AND m.account_id=$1 LEFT JOIN team_terminal_session_grants sg ON sg.team_id=b.team_id AND sg.terminal_session_id=$2 AND sg.audience='selected_member' AND sg.account_id=$1 LEFT JOIN team_terminal_session_grants ag ON ag.team_id=b.team_id AND ag.terminal_session_id=$2 AND ag.audience='all_members' WHERE b.resource_kind='terminal_session' AND b.resource_id=$2 AND b.active AND m.active AND t.deleted_at IS NULL) d WHERE d.role IN ('viewer','interactive') ORDER BY d.team_id LIMIT 1`, in.UserID, want.SessionID).Scan(&team, &role, &tg, &mg, &bg, &gg, &pg)
+		if err != nil || team != want.TeamID || role != want.Role || tg != want.TeamGeneration || mg != want.MembershipGeneration || bg != want.BindingGeneration || gg != want.GrantGeneration || pg != want.ProcessGeneration {
+			return ErrTerminalSessionNotFound
+		}
+		if err := tx.Queries().CreateUserMachineAccessSession(ctx, in); err != nil {
+			return err
+		}
+		return teams.AuditTx(ctx, tx, in.UserID, want.TeamID, "terminal_session_access_authorized", in.ID, map[string]any{"terminal_session_id": want.SessionID, "role": want.Role, "access_session_id": in.ID})
+	})
 }
 
 func (s *Service) Connect(ctx context.Context, userID, sourceMachineID, userMachineID, cliClientSessionID string) (ConnectionDescriptor, error) {
@@ -1832,7 +2031,7 @@ func (s *Service) ConnectTerminalSession(ctx context.Context, userID, sourceMach
 	if _, err := s.db.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: sourceMachineID, UserID: userID}); err != nil {
 		return ConnectionDescriptor{}, ErrNotFound
 	}
-	row, err := s.db.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: userMachineID, UserID: userID})
+	row, err := s.db.Queries().GetUserMachineForCapability(ctx, dbsqlc.GetUserMachineForCapabilityParams{ID: userMachineID, UserID: userID, Capability: "terminal"})
 	if errors.Is(err, sql.ErrNoRows) {
 		return ConnectionDescriptor{}, ErrNotFound
 	}
@@ -1898,20 +2097,31 @@ func (s *Service) ConnectTerminalSession(ctx context.Context, userID, sourceMach
 	}
 	accessSessionID := newID("umas")
 	input.AccessSessionID = accessSessionID
-	credentials, err := s.issueUserMachineCredentials(ctx, input, terminalSession.ID)
+	personal := row.UserID == userID && !row.OwnerTeamID.Valid
+	includeFiles := personal && slices.Contains(row.ConfiguredCapabilities, "file_receive") && slices.Contains(row.ObservedCapabilities, "file_receive")
+	credentials, err := s.issueUserMachineCredentials(ctx, input, terminalSession.ID, includeFiles)
 	if err != nil {
 		return ConnectionDescriptor{}, err
 	}
 	if len(compactSessionIDs(credentials.TerminalSessionID, credentials.FileSessionID)) == 0 {
 		return ConnectionDescriptor{}, errors.New("user-machine credential issuer returned no revocable sessions")
 	}
-	if credentials.TerminalAuth == nil || credentials.FileTransferAuth == nil {
+	if credentials.TerminalAuth == nil || includeFiles && credentials.FileTransferAuth == nil {
 		return ConnectionDescriptor{}, errors.New("user-machine credential issuer returned incomplete authorization")
 	}
 	credentials.TerminalAuth["access_session_id"] = accessSessionID
-	credentials.FileTransferAuth["access_session_id"] = accessSessionID
-	if err := s.db.Queries().CreateUserMachineAccessSession(ctx, dbsqlc.CreateUserMachineAccessSessionParams{
-		ID: accessSessionID, UserMachineID: row.ID, UserID: userID, EnvironmentID: row.EnvironmentID,
+	if credentials.FileTransferAuth != nil {
+		credentials.FileTransferAuth["access_session_id"] = accessSessionID
+	}
+	capabilities := []string{"terminal"}
+	if includeFiles {
+		capabilities = append(capabilities, "files")
+	}
+	if personal && slices.Contains(row.ConfiguredCapabilities, "preview_launch") {
+		capabilities = append(capabilities, "private_access")
+	}
+	if err := s.createAccessSession(ctx, dbsqlc.CreateUserMachineAccessSessionParams{
+		Capabilities: capabilities, OperationID: terminalSession.ID, ID: accessSessionID, UserMachineID: row.ID, UserID: userID, EnvironmentID: row.EnvironmentID,
 		CLIClientSessionID: cliClientSessionID, HttpBaseUrl: httpBaseURL,
 		HelperTerminalSessionID: credentials.TerminalSessionID, HelperFileSessionID: credentials.FileSessionID,
 		ExpiresAt: expires,
@@ -1944,7 +2154,7 @@ func machineTerminalEndpoints(wss string) map[string]any {
 	return map[string]any{"quic": "quic://" + host, "wss": "wss://" + u.Host + "/v1/runtime"}
 }
 
-func (s *Service) issueUserMachineCredentials(ctx context.Context, input access.CredentialInput, terminalSessionID string) (access.CLICredentials, error) {
+func (s *Service) issueUserMachineCredentials(ctx context.Context, input access.CredentialInput, terminalSessionID string, includeFiles bool) (access.CLICredentials, error) {
 	if s.controlSigner == nil {
 		return s.credentials.IssueCLI(ctx, input)
 	}
@@ -1962,6 +2172,9 @@ func (s *Service) issueUserMachineCredentials(ctx context.Context, input access.
 	if err != nil {
 		return access.CLICredentials{}, err
 	}
+	if !includeFiles {
+		return access.CLICredentials{TerminalAuth: map[string]any{"method": "bearer", "token": terminalToken, "expires_at": input.ExpiresAt, "scopes": []string{"terminal:operate"}}, TerminalSessionID: terminalJTI}, nil
+	}
 	transferToken, err := sign("file_transfer", []string{"file:transfer"}, transferJTI)
 	if err != nil {
 		return access.CLICredentials{}, err
@@ -1978,7 +2191,7 @@ func (s *Service) ConnectionReadiness(ctx context.Context, userID, userMachineID
 }
 
 func (s *Service) ConnectionReadinessForTerminalSession(ctx context.Context, userID, userMachineID, terminalSessionID string) (ConnectionDescriptor, error) {
-	row, err := s.db.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: userMachineID, UserID: userID})
+	row, err := s.db.Queries().GetUserMachineForCapability(ctx, dbsqlc.GetUserMachineForCapabilityParams{ID: userMachineID, UserID: userID, Capability: "terminal"})
 	if errors.Is(err, sql.ErrNoRows) {
 		return ConnectionDescriptor{}, ErrNotFound
 	}
@@ -3130,18 +3343,29 @@ func (s *Service) List(ctx context.Context, userID string, limit, offset int) ([
 	for _, row := range rows {
 		out = append(out, mapMachine(row))
 	}
+	items := make([]*UserMachine, len(out))
+	for i := range out {
+		items[i] = &out[i]
+	}
+	if err := s.describeMachineAccess(ctx, userID, items...); err != nil {
+		return nil, 0, err
+	}
 	return out, int(total), nil
 }
 
 func (s *Service) Get(ctx context.Context, userID, userMachineID string) (UserMachine, error) {
-	row, err := s.db.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: userMachineID, UserID: userID})
+	row, err := s.db.Queries().GetVisibleUserMachine(ctx, dbsqlc.GetVisibleUserMachineParams{ID: userMachineID, UserID: userID})
 	if errors.Is(err, sql.ErrNoRows) {
 		return UserMachine{}, ErrNotFound
 	}
 	if err != nil {
 		return UserMachine{}, err
 	}
-	return mapMachine(row), nil
+	item := mapMachine(row)
+	if err := s.describeMachineAccess(ctx, userID, &item); err != nil {
+		return UserMachine{}, err
+	}
+	return item, nil
 }
 
 func (s *Service) Rename(ctx context.Context, userID, userMachineID, displayName string) (UserMachine, error) {
@@ -3151,6 +3375,9 @@ func (s *Service) Rename(ctx context.Context, userID, userMachineID, displayName
 	}
 	var result UserMachine
 	err := s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := teams.Lock(ctx, tx); err != nil {
+			return err
+		}
 		row, err := tx.Queries().RenameUserMachine(ctx, dbsqlc.RenameUserMachineParams{DisplayName: displayName, ID: userMachineID, UserID: userID})
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
@@ -3164,6 +3391,9 @@ func (s *Service) Rename(ctx context.Context, userID, userMachineID, displayName
 		result = mapMachine(row)
 		return s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "user_machine.renamed", ResourceType: "user_machine", ResourceID: userMachineID, IdempotencyKey: "user_machine.renamed:" + userMachineID + ":" + strconv.FormatInt(row.Version, 10), Metadata: map[string]any{"display_name": displayName, "version": row.Version}})
 	})
+	if err == nil {
+		err = s.describeMachineAccess(ctx, userID, &result)
+	}
 	return result, err
 }
 
@@ -3201,6 +3431,9 @@ func (s *Service) CreateTerminalSession(ctx context.Context, userID, userMachine
 	id, terminalID := newID("umts"), newID("term")
 	var evictedSession *TerminalSession
 	err := s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := teams.Lock(ctx, tx); err != nil {
+			return err
+		}
 		_, err := tx.Queries().LockUserMachineTerminalSessions(ctx, dbsqlc.LockUserMachineTerminalSessionsParams{UserMachineID: userMachineID, UserID: userID})
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -3208,7 +3441,7 @@ func (s *Service) CreateTerminalSession(ctx context.Context, userID, userMachine
 			}
 			return err
 		}
-		lockedMachine, err := tx.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: userMachineID, UserID: userID})
+		lockedMachine, err := tx.Queries().GetUserMachineForCapability(ctx, dbsqlc.GetUserMachineForCapabilityParams{ID: userMachineID, UserID: userID, Capability: "terminal"})
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrNotFound
@@ -3229,7 +3462,7 @@ func (s *Service) CreateTerminalSession(ctx context.Context, userID, userMachine
 			return err
 		}
 		if int(count) >= maxActive {
-			evicted, selectErr := tx.Queries().SelectUserMachineTerminalSessionForEviction(ctx, userMachineID)
+			evicted, selectErr := tx.Queries().SelectUserMachineTerminalSessionForEviction(ctx, dbsqlc.SelectUserMachineTerminalSessionForEvictionParams{UserMachineID: userMachineID, OwnerAccount: userID})
 			if selectErr != nil {
 				if errors.Is(selectErr, sql.ErrNoRows) {
 					return ErrTerminalSessionLimit
@@ -3257,7 +3490,7 @@ func (s *Service) CreateTerminalSession(ctx context.Context, userID, userMachine
 			if requestedName == "" {
 				sessionName = naming.Session(ordinal)
 			}
-			created, createErr := tx.Queries().CreateUserMachineTerminalSession(ctx, dbsqlc.CreateUserMachineTerminalSessionParams{ID: id, UserMachineID: userMachineID, TerminalID: terminalID, Name: sessionName, AutoNameOrdinal: ordinal, IdempotencyKey: sql.NullString{String: idempotencyKey, Valid: true}, LaunchCwd: lockedMachine.WorkspaceRoot})
+			created, createErr := tx.Queries().CreateUserMachineTerminalSession(ctx, dbsqlc.CreateUserMachineTerminalSessionParams{OwnerAccount: userID, ID: id, UserMachineID: userMachineID, TerminalID: terminalID, Name: sessionName, AutoNameOrdinal: ordinal, IdempotencyKey: sql.NullString{String: idempotencyKey, Valid: true}, LaunchCwd: lockedMachine.WorkspaceRoot})
 			if createErr != nil {
 				return createErr
 			}
@@ -3317,28 +3550,39 @@ func (s *Service) RenameTerminalSession(ctx context.Context, userID, userMachine
 	if !validUserMachineTerminalSessionName(name) {
 		return TerminalSession{}, ErrTerminalSessionInvalidName
 	}
-	n, err := s.db.Queries().RenameUserMachineTerminalSession(ctx, dbsqlc.RenameUserMachineTerminalSessionParams{UserMachineID: userMachineID, ID: id, Name: name})
-	if err != nil {
-		return TerminalSession{}, err
-	}
-	if n == 0 {
-		row, lookupErr := s.db.Queries().GetUserMachineTerminalSession(ctx, dbsqlc.GetUserMachineTerminalSessionParams{ID: id, UserMachineID: userMachineID, UserID: userID})
-		if errors.Is(lookupErr, sql.ErrNoRows) {
-			return TerminalSession{}, ErrTerminalSessionNotFound
+	var result TerminalSession
+	err := s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := teams.Lock(ctx, tx); err != nil {
+			return err
 		}
-		if lookupErr != nil {
-			return TerminalSession{}, lookupErr
+		row, err := tx.Queries().GetUserMachineTerminalSession(ctx, dbsqlc.GetUserMachineTerminalSessionParams{ID: id, UserMachineID: userMachineID, UserID: userID})
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrTerminalSessionNotFound
+		}
+		if err != nil {
+			return err
 		}
 		if row.IsDefault {
-			return TerminalSession{}, ErrTerminalSessionReserved
+			return ErrTerminalSessionReserved
 		}
-		return TerminalSession{}, ErrTerminalSessionConflict
+		n, err := tx.Queries().RenameUserMachineTerminalSession(ctx, dbsqlc.RenameUserMachineTerminalSessionParams{ID: id, UserMachineID: userMachineID, Name: name})
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return ErrTerminalSessionConflict
+		}
+		row, err = tx.Queries().GetUserMachineTerminalSession(ctx, dbsqlc.GetUserMachineTerminalSessionParams{ID: id, UserMachineID: userMachineID, UserID: userID})
+		if err != nil {
+			return err
+		}
+		result = mapTerminalSession(row)
+		return nil
+	})
+	if userMachineTerminalSessionUniqueViolation(err) {
+		err = ErrTerminalSessionConflict
 	}
-	row, err := s.db.Queries().GetUserMachineTerminalSession(ctx, dbsqlc.GetUserMachineTerminalSessionParams{ID: id, UserMachineID: userMachineID, UserID: userID})
-	if err != nil {
-		return TerminalSession{}, err
-	}
-	return mapTerminalSession(row), nil
+	return result, err
 }
 
 func validUserMachineTerminalSessionName(name string) bool {
@@ -3350,49 +3594,46 @@ func validUserMachineTerminalSessionName(name string) bool {
 // the HTTP handler to report an accepted/pending result instead of discarding
 // the user's request.
 func (s *Service) CloseTerminalSession(ctx context.Context, userID, userMachineID, id string) (bool, error) {
-	if _, err := s.db.Queries().GetUserMachineTerminalSession(ctx, dbsqlc.GetUserMachineTerminalSessionParams{ID: id, UserMachineID: userMachineID, UserID: userID}); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return false, ErrTerminalSessionNotFound
-		}
-		return false, err
-	}
-	n, err := s.db.Queries().CloseUserMachineTerminalSession(ctx, dbsqlc.CloseUserMachineTerminalSessionParams{UserMachineID: userMachineID, ID: id})
-	if err != nil {
-		return false, err
-	}
-	if n > 0 {
-		if err := s.db.Queries().QueueUserMachineTerminalSessionOperation(ctx, dbsqlc.QueueUserMachineTerminalSessionOperationParams{ID: newID("umtso"), UserMachineID: userMachineID, TerminalSessionID: id, Operation: "close"}); err != nil {
-			return false, err
-		}
-	}
-	if err := s.ApplyTerminalSessionOperations(ctx, userMachineID); err != nil {
-		return false, nil
-	}
-	return true, nil
+	return s.transitionTerminalSession(ctx, userID, userMachineID, id, false)
 }
-
 func (s *Service) DeleteTerminalSession(ctx context.Context, userID, userMachineID, id string) (bool, error) {
-	row, err := s.db.Queries().GetUserMachineTerminalSession(ctx, dbsqlc.GetUserMachineTerminalSessionParams{ID: id, UserMachineID: userMachineID, UserID: userID})
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, ErrTerminalSessionNotFound
-	}
+	return s.transitionTerminalSession(ctx, userID, userMachineID, id, true)
+}
+func (s *Service) transitionTerminalSession(ctx context.Context, userID, machine, id string, remove bool) (bool, error) {
+	err := s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := teams.Lock(ctx, tx); err != nil {
+			return err
+		}
+		row, err := tx.Queries().GetUserMachineTerminalSession(ctx, dbsqlc.GetUserMachineTerminalSessionParams{ID: id, UserMachineID: machine, UserID: userID})
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrTerminalSessionNotFound
+		}
+		if err != nil {
+			return err
+		}
+		operation := "close"
+		var n int64
+		if remove {
+			if row.IsDefault {
+				return ErrTerminalSessionReserved
+			}
+			operation = "delete_history"
+			n, err = tx.Queries().DeleteUserMachineTerminalSession(ctx, dbsqlc.DeleteUserMachineTerminalSessionParams{UserMachineID: machine, ID: id})
+		} else {
+			n, err = tx.Queries().CloseUserMachineTerminalSession(ctx, dbsqlc.CloseUserMachineTerminalSessionParams{UserMachineID: machine, ID: id})
+		}
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return nil
+		}
+		return tx.Queries().QueueUserMachineTerminalSessionOperation(ctx, dbsqlc.QueueUserMachineTerminalSessionOperationParams{ID: newID("umtso"), UserMachineID: machine, TerminalSessionID: id, Operation: operation})
+	})
 	if err != nil {
 		return false, err
 	}
-	if row.IsDefault {
-		return false, ErrTerminalSessionReserved
-	}
-	n, err := s.db.Queries().DeleteUserMachineTerminalSession(ctx, dbsqlc.DeleteUserMachineTerminalSessionParams{UserMachineID: userMachineID, ID: id})
-	if err != nil {
-		return false, err
-	}
-	if n == 0 {
-		return false, ErrTerminalSessionNotFound
-	}
-	if err := s.db.Queries().QueueUserMachineTerminalSessionOperation(ctx, dbsqlc.QueueUserMachineTerminalSessionOperationParams{ID: newID("umtso"), UserMachineID: userMachineID, TerminalSessionID: id, Operation: "delete_history"}); err != nil {
-		return false, err
-	}
-	if err := s.ApplyTerminalSessionOperations(ctx, userMachineID); err != nil {
+	if err = s.applyTerminalSessionOperationsForSession(ctx, machine, id); err != nil {
 		return false, nil
 	}
 	return true, nil
@@ -3524,6 +3765,9 @@ func (s *Service) Unpair(ctx context.Context, userID, machineID string) (UserMac
 	}
 	var result UserMachine
 	err := s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := teams.Lock(ctx, tx); err != nil {
+			return err
+		}
 		machine, err := tx.Queries().GetUserMachineForUpdate(ctx, dbsqlc.GetUserMachineForUpdateParams{ID: machineID, UserID: userID})
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
@@ -3581,97 +3825,6 @@ func (s *Service) Delete(ctx context.Context, userID, userMachineID string) erro
 	return errors.Join(auditErr, s.RevokeUserMachineSessions(ctx, userMachineID, "user_machine_deleted"))
 }
 
-// cleanupUserMachineDeviceTx fences every credential and machine-scoped
-// record that is not covered by the user_machines soft-delete itself. It must
-// run in the same transaction as the machine state transition so an offline
-// machine cannot reconnect in the gap between removal and credential cleanup.
-func (s *Service) cleanupUserMachineDeviceTx(ctx context.Context, tx *db.Tx, userID, userMachineID string, now time.Time) error {
-	queries := tx.Queries()
-	machineID := sql.NullString{String: userMachineID, Valid: true}
-	revocationTime := sql.NullTime{Time: now, Valid: true}
-
-	if _, err := queries.RevokeUserMachineE2EEKeys(ctx, dbsqlc.RevokeUserMachineE2EEKeysParams{
-		RevocationTime: now, TargetUserID: userID, TargetMachineID: machineID,
-	}); err != nil {
-		return err
-	}
-	if _, err := queries.RevokeCLIClientSessionsForUserMachine(ctx, dbsqlc.RevokeCLIClientSessionsForUserMachineParams{
-		RevocationTime: revocationTime, RevocationCause: sql.NullString{String: "device_removed", Valid: true}, TargetMachineID: machineID, TargetUserID: userID,
-	}); err != nil {
-		return err
-	}
-	if _, err := queries.RevokeCLIClientAccessTokensForUserMachine(ctx, dbsqlc.RevokeCLIClientAccessTokensForUserMachineParams{
-		RevocationTime: revocationTime, TargetMachineID: machineID, TargetUserID: userID,
-	}); err != nil {
-		return err
-	}
-	if _, err := queries.RevokeCLIClientRefreshTokensForUserMachine(ctx, dbsqlc.RevokeCLIClientRefreshTokensForUserMachineParams{
-		RevocationTime: revocationTime, TargetMachineID: machineID, TargetUserID: userID,
-	}); err != nil {
-		return err
-	}
-	if _, err := queries.RevokeUserMachinePeerAuthority(ctx, dbsqlc.RevokeUserMachinePeerAuthorityParams{
-		TargetMachineID: userMachineID, TargetUserID: userID, RevocationTime: revocationTime,
-	}); err != nil {
-		return err
-	}
-	if _, err := queries.ExpireUserMachinePairings(ctx, dbsqlc.ExpireUserMachinePairingsParams{ExpiredAt: now, TargetMachineID: machineID}); err != nil {
-		return err
-	}
-	if _, err := queries.DeleteUserMachineEnrollments(ctx, dbsqlc.DeleteUserMachineEnrollmentsParams{ExpiredAt: now, TargetMachineID: machineID}); err != nil {
-		return err
-	}
-	if _, err := queries.ExpireUserMachineDiagnosticUploadIntents(ctx, dbsqlc.ExpireUserMachineDiagnosticUploadIntentsParams{TargetMachineID: machineID, TargetUserID: userID}); err != nil {
-		return err
-	}
-	if _, err := queries.DeleteUserMachineControlSessions(ctx, userMachineID); err != nil {
-		return err
-	}
-	if _, err := queries.DeleteUserMachineControlRenewals(ctx, userMachineID); err != nil {
-		return err
-	}
-	if _, err := queries.DeleteUserMachineTransferDestinationDefault(ctx, dbsqlc.DeleteUserMachineTransferDestinationDefaultParams{TargetUserID: userID, TargetMachineID: userMachineID}); err != nil {
-		return err
-	}
-	if _, err := queries.ClearProjectTerminalTransferDestinationsForMachine(ctx, dbsqlc.ClearProjectTerminalTransferDestinationsForMachineParams{ExpiredAt: now, TargetMachineID: machineID}); err != nil {
-		return err
-	}
-	if _, err := queries.ClearUserMachineTerminalTransferDestinationsForMachine(ctx, dbsqlc.ClearUserMachineTerminalTransferDestinationsForMachineParams{ExpiredAt: now, TargetMachineID: machineID}); err != nil {
-		return err
-	}
-	if _, err := queries.DeleteUserMachineTerminalSessionOperations(ctx, userMachineID); err != nil {
-		return err
-	}
-	if _, err := queries.DeleteUserMachineTerminalSessions(ctx, dbsqlc.DeleteUserMachineTerminalSessionsParams{ExpiredAt: now, TargetMachineID: userMachineID}); err != nil {
-		return err
-	}
-	if _, err := queries.DeleteUserMachineAvailabilityOperations(ctx, userMachineID); err != nil {
-		return err
-	}
-	if _, err := queries.DeleteUserMachineUpdateObservation(ctx, userMachineID); err != nil {
-		return err
-	}
-	if _, err := queries.ExpireUserMachineMaintenanceApprovals(ctx, dbsqlc.ExpireUserMachineMaintenanceApprovalsParams{ExpiredAt: now, TargetMachineID: userMachineID}); err != nil {
-		return err
-	}
-	if _, err := queries.DeleteUserMachineRelaySelectionStates(ctx, dbsqlc.DeleteUserMachineRelaySelectionStatesParams{TargetUserID: userID, TargetMachineID: userMachineID}); err != nil {
-		return err
-	}
-	if _, err := queries.DeleteUserMachineSSHHostKeys(ctx, userMachineID); err != nil {
-		return err
-	}
-	if _, err := queries.DeleteUserMachineSSHHostKeySets(ctx, userMachineID); err != nil {
-		return err
-	}
-	if _, err := queries.DeleteUserMachineSSHHostKeyOwners(ctx, userMachineID); err != nil {
-		return err
-	}
-	if _, err := queries.DeleteUserMachineSSHTarget(ctx, userMachineID); err != nil {
-		return err
-	}
-	return nil
-}
-
 func (s *Service) revokeUserMachineControl(ctx context.Context, userID, userMachineID string, deleted bool) error {
 	now := s.now().UTC()
 	return s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
@@ -3698,54 +3851,20 @@ func (s *Service) revokeUserMachineControl(ctx context.Context, userID, userMach
 			return ErrNotFound
 		}
 		if machine.State != "disconnected" && machine.State != "deleted" && machine.State != "revoked" {
-			if err := environment.RequirePersonalRotationTx(ctx, tx, userID); err != nil {
+			if err := environment.RequirePersonalRotationTx(ctx, tx, machine.UserID); err != nil {
 				return err
 			}
 		}
 		if deleted {
-			if err := s.cleanupUserMachineDeviceTx(ctx, tx, userID, machine.ID, now); err != nil {
+			if err := db.CleanupMachineDeviceTx(ctx, tx, machine.UserID, machine.ID, now); err != nil {
 				return err
 			}
 		}
 		if err := expireAuthenticatedHostSetupPairingsTx(ctx, tx, machine.ID, now); err != nil {
 			return err
 		}
-		return s.revokeEnvironmentControlTx(ctx, tx, machine.EnvironmentID, now)
+		return db.RevokeMachineEnvironmentTx(ctx, tx, machine.EnvironmentID, now)
 	})
-}
-
-func (s *Service) revokeEnvironmentControlTx(ctx context.Context, tx *db.Tx, environmentID string, now time.Time) error {
-	environment, err := tx.Queries().GetControlEnvironment(ctx, environmentID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	if err == nil && environment.DesiredState != "revoked" {
-		if _, err := tx.Queries().UpdateControlEnvironmentDesiredState(ctx, dbsqlc.UpdateControlEnvironmentDesiredStateParams{DesiredState: "revoked", Now: now, ID: environmentID, ExpectedVersion: environment.DesiredVersion}); err != nil {
-			return err
-		}
-	}
-	if _, err := tx.Queries().RevokeControlHelpersForEnvironment(ctx, dbsqlc.RevokeControlHelpersForEnvironmentParams{RevokedAt: now, EnvironmentID: environmentID}); err != nil {
-		return err
-	}
-	if _, err := tx.Queries().RevokeControlHelperEnrollmentsForEnvironment(ctx, dbsqlc.RevokeControlHelperEnrollmentsForEnvironmentParams{RevokedAt: sql.NullTime{Time: now, Valid: true}, EnvironmentID: environmentID}); err != nil {
-		return err
-	}
-	if _, err := tx.Queries().RevokeControlConnectorForEnvironment(ctx, dbsqlc.RevokeControlConnectorForEnvironmentParams{RevokedAt: now, EnvironmentID: environmentID}); err != nil {
-		return err
-	}
-	if _, err := tx.Queries().RevokeControlRoutesForEnvironment(ctx, dbsqlc.RevokeControlRoutesForEnvironmentParams{EnvironmentID: environmentID, Now: now}); err != nil {
-		return err
-	}
-	if _, err = tx.Queries().RevokeControlConfigCredentialsForEnvironment(ctx, dbsqlc.RevokeControlConfigCredentialsForEnvironmentParams{EnvironmentID: environmentID, RevokedAt: sql.NullTime{Time: now, Valid: true}}); err != nil {
-		return err
-	}
-	if _, err = tx.Queries().RevokeControlConfigRepositoryAccessForEnvironment(ctx, dbsqlc.RevokeControlConfigRepositoryAccessForEnvironmentParams{EnvironmentID: environmentID, Now: now}); err != nil {
-		return err
-	}
-	if _, err = tx.Queries().RevokeControlConfigRepositoryLeasesForEnvironment(ctx, dbsqlc.RevokeControlConfigRepositoryLeasesForEnvironmentParams{EnvironmentID: sql.NullString{String: environmentID, Valid: true}, Now: sql.NullTime{Time: now, Valid: true}}); err != nil {
-		return err
-	}
-	return nil
 }
 
 // RevokeUserMachineSessions records revocation before attempting the downstream
@@ -3826,7 +3945,7 @@ func (s *Service) ReconcileUserMachineEntitlement(ctx context.Context, userID st
 				if err := expireAuthenticatedHostSetupPairingsTx(ctx, tx, machine.ID, now); err != nil {
 					return err
 				}
-				if err := s.revokeEnvironmentControlTx(ctx, tx, machine.EnvironmentID, now); err != nil {
+				if err := db.RevokeMachineEnvironmentTx(ctx, tx, machine.EnvironmentID, now); err != nil {
 					return err
 				}
 			}
@@ -3840,7 +3959,7 @@ func (s *Service) ReconcileUserMachineEntitlement(ctx context.Context, userID st
 			if err := expireAuthenticatedHostSetupPairingsTx(ctx, tx, environment.ID, now); err != nil {
 				return err
 			}
-			if err := s.revokeEnvironmentControlTx(ctx, tx, environment.EnvironmentID, now); err != nil {
+			if err := db.RevokeMachineEnvironmentTx(ctx, tx, environment.EnvironmentID, now); err != nil {
 				return err
 			}
 		}
@@ -4029,7 +4148,13 @@ func mapMachine(row dbsqlc.UserMachine) UserMachine {
 		observed := row.RuntimeDiagnosticsObservedAt.Time
 		diagnostics.ObservedAt = &observed
 	}
-	m := UserMachine{ID: row.ID, EnvironmentID: row.EnvironmentID, DisplayName: row.DisplayName, Alias: row.Alias, Platform: row.Platform, Architecture: row.Architecture, WorkspaceRoot: row.WorkspaceRoot, State: row.State, SeatState: row.SeatState, Online: row.Online, RuntimeVersions: row.RuntimeVersions, SetupRoles: append([]string(nil), row.SetupRoles...), SetupMode: row.SetupMode, Capabilities: mapCapabilities(row.ConfiguredCapabilities, row.ObservedCapabilities), DeviceCapabilities: mapDeviceCapabilityPolicy(row), MachineKind: row.MachineKind, PublicIdentityKey: row.PublicIdentityKey.String, InstallationGeneration: row.InstallationGeneration, Availability: mapAvailability(row), RuntimeDiagnostics: diagnostics}
+	m := UserMachine{Ownership: "personal", OwnerAccount: row.UserID, Permissions: []string{}, ID: row.ID, EnvironmentID: row.EnvironmentID, DisplayName: row.DisplayName, Alias: row.Alias, Platform: row.Platform, Architecture: row.Architecture, WorkspaceRoot: row.WorkspaceRoot, State: row.State, SeatState: row.SeatState, Online: row.Online, RuntimeVersions: row.RuntimeVersions, SetupRoles: append([]string(nil), row.SetupRoles...), SetupMode: row.SetupMode, Capabilities: mapCapabilities(row.ConfiguredCapabilities, row.ObservedCapabilities), DeviceCapabilities: mapDeviceCapabilityPolicy(row), MachineKind: row.MachineKind, PublicIdentityKey: row.PublicIdentityKey.String, InstallationGeneration: row.InstallationGeneration, Availability: mapAvailability(row), RuntimeDiagnostics: diagnostics}
+	if row.OwnerTeamID.Valid {
+		m.Ownership = "team"
+		m.OwnerTeamID = row.OwnerTeamID.String
+		m.OwnerAccount = ""
+		m.Shared = true
+	}
 	if row.EnrolledAt.Valid {
 		v := row.EnrolledAt.Time
 		m.EnrolledAt = &v

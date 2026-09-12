@@ -30,7 +30,7 @@ func (s *Service) Grant(ctx context.Context, account, team string, r GrantReques
 		if r.ResourceKind == "env" && r.ResourceID != team {
 			return ErrInvalid
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO team_resource_grants(team_id,account_id,resource_kind,resource_id,permission,generation,active) VALUES($1,$2,$3,$4,$5,1,$6) ON CONFLICT(team_id,account_id,resource_kind,resource_id) DO UPDATE SET permission=EXCLUDED.permission,generation=team_resource_grants.generation+1,active=EXCLUDED.active`, team, r.AccountID, r.ResourceKind, r.ResourceID, r.Permission, r.Active)
+		_, err = tx.Exec(ctx, `INSERT INTO team_resource_grants(team_id,account_id,resource_kind,resource_id,permission,generation,active) VALUES($1,$2,$3,$4,$5,1,$6) ON CONFLICT(team_id,account_id,resource_kind,resource_id,permission) DO UPDATE SET generation=team_resource_grants.generation+1,active=EXCLUDED.active`, team, r.AccountID, r.ResourceKind, r.ResourceID, r.Permission, r.Active)
 		if err != nil {
 			return err
 		}

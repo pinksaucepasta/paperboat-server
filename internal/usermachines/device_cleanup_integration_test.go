@@ -230,8 +230,8 @@ VALUES ($1, 1, 'paperboat', 22, $2, $2)`, machineID, now); err != nil {
 	terminalID := "umt_cleanup_" + suffix
 	if _, err := store.SQL().ExecContext(ctx, `
 INSERT INTO paperboat.user_machine_terminal_sessions
-  (id, user_machine_id, terminal_id, name, is_default, launch_cwd, created_at, updated_at)
-VALUES ($1, $2, 'terminal-cleanup', 'cleanup', false, '/workspace', $3, $3)`, terminalID, machineID, now); err != nil {
+  (id, user_machine_id, owner_account, terminal_id, name, is_default, launch_cwd, created_at, updated_at)
+VALUES ($1, $2, (SELECT user_id FROM paperboat.user_machines WHERE id=$2), 'terminal-cleanup', 'cleanup', false, '/workspace', $3, $3)`, terminalID, machineID, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SQL().ExecContext(ctx, `

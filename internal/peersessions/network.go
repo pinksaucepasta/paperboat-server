@@ -208,36 +208,97 @@ func (s *NetworkService) Configuration(ctx context.Context, in NetworkConfigRequ
 	if err != nil {
 		return NetworkConfigResult{}, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT a.id,a.cli_client_session_id,a.user_machine_id,a.expires_at,(a.helper_terminal_session_id IS NOT NULL),(a.helper_file_session_id IS NOT NULL) FROM paperboat.user_machine_access_sessions a JOIN paperboat.cli_client_sessions c ON c.id=a.cli_client_session_id AND c.user_id=a.user_id AND c.state='active' AND c.revoked_at IS NULL JOIN paperboat.user_machines m ON m.id=a.user_machine_id AND m.user_id=a.user_id AND m.environment_id=a.environment_id AND m.revoked_at IS NULL AND m.deleted_at IS NULL JOIN paperboat.control_environments e ON e.id=a.environment_id AND e.owner_user_id=a.user_id AND e.desired_state='active' AND e.revoked_at IS NULL JOIN paperboat.users u ON u.id=a.user_id WHERE a.user_id=$1 AND a.state='active' AND a.revoked_at IS NULL AND a.expires_at>$2 AND (a.cli_client_session_id=$3 OR a.user_machine_id=$3) ORDER BY a.id LIMIT 129`, in.UserID, now, in.EndpointID)
+	rows, err := tx.QueryContext(ctx, `SELECT a.id,a.cli_client_session_id,a.user_machine_id,a.user_id,m.user_id,a.expires_at,array_to_json(a.capabilities),coalesce(a.terminal_session_id,''),coalesce(a.terminal_role,'')
+		FROM paperboat.user_machine_access_sessions a
+		JOIN paperboat.cli_client_sessions c ON c.id=a.cli_client_session_id AND c.user_id=a.user_id AND c.state='active' AND c.revoked_at IS NULL
+		JOIN paperboat.user_machines m ON m.id=a.user_machine_id AND m.environment_id=a.environment_id AND m.revoked_at IS NULL AND m.deleted_at IS NULL
+		JOIN paperboat.control_environments e ON e.id=a.environment_id AND e.owner_user_id=m.user_id AND e.desired_state='active' AND e.revoked_at IS NULL
+		JOIN paperboat.users actor ON actor.id=a.user_id AND actor.status='active'
+		JOIN paperboat.users owner ON owner.id=m.user_id AND owner.status='active'
+		WHERE a.state='active' AND a.revoked_at IS NULL AND a.expires_at>$2
+		AND ((a.cli_client_session_id=$3 AND a.user_id=$1) OR (a.user_machine_id=$3 AND m.user_id=$1))
+		AND ((a.terminal_role IN ('viewer','interactive') AND a.team_id IS NOT NULL AND m.state='online' AND m.online AND m.configured_capabilities @> ARRAY['terminal_host'] AND m.observed_capabilities @> ARRAY['terminal_host']
+		 AND paperboat.terminal_session_role(a.user_id,a.terminal_session_id)=a.terminal_role
+		 AND EXISTS(SELECT 1 FROM paperboat.teams t JOIN paperboat.team_members tm ON tm.team_id=t.team_id AND tm.account_id=a.user_id JOIN paperboat.team_resource_bindings b ON b.team_id=t.team_id AND b.resource_kind='terminal_session' AND b.resource_id=a.terminal_session_id AND b.active LEFT JOIN paperboat.team_terminal_session_grants sg ON sg.team_id=t.team_id AND sg.terminal_session_id=a.terminal_session_id AND sg.audience='selected_member' AND sg.account_id=a.user_id LEFT JOIN paperboat.team_terminal_session_grants ag ON ag.team_id=t.team_id AND ag.terminal_session_id=a.terminal_session_id AND ag.audience='all_members' WHERE t.team_id=a.team_id AND t.deleted_at IS NULL AND tm.active AND tm.membership_generation=a.terminal_membership_generation AND b.generation=a.terminal_binding_generation AND CASE WHEN sg.account_id IS NOT NULL THEN sg.generation ELSE ag.generation END=a.terminal_grant_generation))
+		 OR (coalesce(a.terminal_role,'owner')='owner' AND a.team_id IS NULL AND a.user_id=m.user_id)
+		 OR (coalesce(a.terminal_role,'owner')='owner' AND a.team_id IS NOT NULL AND NOT ('private_access'=ANY(a.capabilities)) AND NOT EXISTS(
+		  SELECT 1 FROM unnest(a.capabilities) capability
+		  WHERE NOT paperboat.team_machine_capability_allowed(a.user_id,a.team_id,a.user_machine_id,capability))))
+		ORDER BY a.id LIMIT 129`, in.UserID, now, in.EndpointID)
 	if err != nil {
 		return NetworkConfigResult{}, err
 	}
 	type grantRow struct {
-		id, cli, machine, kind string
-		expiry                 time.Time
-		capabilities           []string
+		id, cli, machine, cliAccount, machineAccount, kind, terminalSession, terminalRole string
+		expiry                                                                            time.Time
+		capabilities                                                                      []string
 	}
 	grants := make([]grantRow, 0, 128)
 	for rows.Next() {
 		var g grantRow
-		var terminal, file bool
-		if rows.Scan(&g.id, &g.cli, &g.machine, &g.expiry, &terminal, &file) != nil {
+		var rawCapabilities []byte
+		if rows.Scan(&g.id, &g.cli, &g.machine, &g.cliAccount, &g.machineAccount, &g.expiry, &rawCapabilities, &g.terminalSession, &g.terminalRole) != nil {
+			rows.Close()
+			return NetworkConfigResult{}, ErrUnavailable
+		}
+		var storedCapabilities []string
+		if json.Unmarshal(rawCapabilities, &storedCapabilities) != nil {
 			rows.Close()
 			return NetworkConfigResult{}, ErrUnavailable
 		}
 		g.kind = "machine_access"
-		if terminal {
-			g.capabilities = append(g.capabilities, "terminal", "private_access")
+		if g.terminalRole == "viewer" || g.terminalRole == "interactive" {
+			g.capabilities = []string{"terminal"}
+			grants = append(grants, g)
+			continue
 		}
-		if file {
-			g.capabilities = append(g.capabilities, "file_transfer")
+		seenCapabilities := make(map[string]bool, len(storedCapabilities))
+		for _, capability := range storedCapabilities {
+			projected := capability
+			switch capability {
+			case "terminal", "exec", "managed_ssh", "private_access":
+			case "files":
+				projected = "file_transfer"
+			case "preview_manage", "tunnel_manage":
+				continue
+			default:
+				rows.Close()
+				return NetworkConfigResult{}, ErrUnavailable
+			}
+			if !seenCapabilities[projected] {
+				seenCapabilities[projected] = true
+				g.capabilities = append(g.capabilities, projected)
+			}
 		}
+		sort.Strings(g.capabilities)
 		grants = append(grants, g)
 	}
 	rowErr := rows.Err()
 	rows.Close()
 	if rowErr != nil {
 		return NetworkConfigResult{}, rowErr
+	}
+	if len(grants) > 128 {
+		return NetworkConfigResult{}, ErrResourceLimit
+	}
+	inspectorRows, err := tx.QueryContext(ctx, `SELECT credential_id,native_cli_session_id,native_machine_id,account_id,owner_account_id,expires_at FROM paperboat.inspector_native_admissions WHERE (native_cli_session_id=$1 AND account_id=$2) OR (native_machine_id=$1 AND owner_account_id=$2) ORDER BY credential_id LIMIT 129`, in.EndpointID, in.UserID)
+	if err != nil {
+		return NetworkConfigResult{}, err
+	}
+	for inspectorRows.Next() {
+		var g grantRow
+		if err = inspectorRows.Scan(&g.id, &g.cli, &g.machine, &g.cliAccount, &g.machineAccount, &g.expiry); err != nil {
+			inspectorRows.Close()
+			return NetworkConfigResult{}, err
+		}
+		g.kind = "inspector"
+		g.capabilities = []string{"inspector"}
+		grants = append(grants, g)
+	}
+	err = inspectorRows.Err()
+	inspectorRows.Close()
+	if err != nil {
+		return NetworkConfigResult{}, err
 	}
 	if len(grants) > 128 {
 		return NetworkConfigResult{}, ErrResourceLimit
@@ -249,13 +310,16 @@ func (s *NetworkService) Configuration(ctx context.Context, in NetworkConfigRequ
 		expiry = certExpiry
 	}
 	for _, g := range grants {
-		peerID, direction := g.machine, "dial"
+		if len(g.capabilities) == 0 {
+			continue
+		}
+		peerID, peerAccount, direction := g.machine, g.machineAccount, "dial"
 		if in.EndpointID == g.machine {
-			peerID, direction = g.cli, "accept"
+			peerID, peerAccount, direction = g.cli, g.cliAccount, "accept"
 		}
 		p := byPeer[peerID]
 		if p == nil {
-			binding, peerCertExpiry, e := loadNetworkBinding(ctx, tx, in.UserID, peerID, now)
+			binding, peerCertExpiry, e := loadNetworkBinding(ctx, tx, peerAccount, peerID, now)
 			if errors.Is(e, sql.ErrNoRows) || errors.Is(e, ErrUnavailable) {
 				continue
 			}

@@ -1058,22 +1058,7 @@ func allowVaultWritesTx(ctx context.Context, tx *db.Tx, account string) error {
 // encrypted scopes to prepare the one atomic replacement.
 
 func RequirePersonalRotationTx(ctx context.Context, tx *db.Tx, account string) error {
-	if err := lockVaultScopes(ctx, tx); err != nil {
-		return err
-	}
-	command, err := tx.Exec(ctx, `INSERT INTO environment_vault_personal_epochs(account_id,key_epoch,rotation_required) SELECT $1,1,true WHERE EXISTS(SELECT 1 FROM environment_password_vaults WHERE account_id=$1) ON CONFLICT(account_id) DO UPDATE SET rotation_required=true WHERE NOT environment_vault_personal_epochs.rotation_required`, account)
-	if err != nil {
-		return err
-	}
-	if command.RowsAffected() > 0 {
-		if _, err := tx.Exec(ctx, `INSERT INTO environment_vault_projection_fences(machine_id,generation) SELECT id,1 FROM user_machines WHERE user_id=$1 ON CONFLICT(machine_id) DO UPDATE SET generation=environment_vault_projection_fences.generation+1`, account); err != nil {
-			return err
-		}
-	}
-	// A revoked device could have held every currently granted team key in its vault.
-	// Fence each affected team, including projections owned by other team members.
-	_, err = tx.Exec(ctx, `WITH affected AS (UPDATE environment_vault_teams t SET rotation_required=true WHERE NOT rotation_required AND EXISTS(SELECT 1 FROM team_members m JOIN environment_vault_team_members e USING(team_id,account_id) WHERE m.team_id=t.team_id AND m.account_id=$1 AND m.active AND e.grant_epoch=t.key_epoch) RETURNING team_id), advanced AS (UPDATE teams SET generation=generation+1 WHERE team_id IN(SELECT team_id FROM affected)) INSERT INTO environment_vault_projection_fences(machine_id,generation) SELECT DISTINCT p.machine_id,1 FROM environment_vault_projection_sources p JOIN affected a ON p.owner_kind='team' AND p.owner_id=a.team_id ON CONFLICT(machine_id) DO UPDATE SET generation=environment_vault_projection_fences.generation+1`, account)
-	return err
+	return db.RequireVaultRotationTx(ctx, tx, account)
 }
 func allowVaultTeamWritesTx(ctx context.Context, tx *db.Tx, team string) error {
 	var required bool

@@ -15,6 +15,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
+	"github.com/pinksaucepasta/paperboat-server/internal/teams"
 )
 
 var (
@@ -68,6 +69,7 @@ type ConfigStatusReport struct {
 	UpdatedAt        time.Time          `json:"updated_at"`
 	Skipped          []ConfigStatusPath `json:"skipped,omitempty"`
 	Conflicts        []ConfigStatusPath `json:"conflicts,omitempty"`
+	Review           []ConfigStatusPath `json:"review,omitempty"`
 	ErrorCode        string             `json:"error_code,omitempty"`
 	RecoveryActions  []string           `json:"recovery_actions,omitempty"`
 }
@@ -108,6 +110,12 @@ type ConfigAccountEnvironment struct {
 	AssignmentID           string             `json:"assignment_id,omitempty"`
 	AssignmentVersion      int64              `json:"assignment_version,omitempty"`
 	RepositoryID           string             `json:"repository_id,omitempty"`
+	PullRepositoryID       string             `json:"pull_repository_id,omitempty"`
+	PushRepositoryID       string             `json:"push_repository_id,omitempty"`
+	AutomaticUpdates       bool               `json:"automatic_updates"`
+	ApprovedPullRevision   string             `json:"approved_pull_revision,omitempty"`
+	AdoptedTeamID          string             `json:"adopted_team_id,omitempty"`
+	AdoptedDefaultVersion  int64              `json:"adopted_default_version,omitempty"`
 	RepositoryName         string             `json:"repository_name,omitempty"`
 	Mode                   string             `json:"mode,omitempty"`
 	ConsentState           string             `json:"consent_state,omitempty"`
@@ -124,6 +132,7 @@ type ConfigAccountEnvironment struct {
 	LastPublishedRevision  string             `json:"last_published_revision,omitempty"`
 	Skipped                []ConfigStatusPath `json:"skipped"`
 	Conflicts              []ConfigStatusPath `json:"conflicts"`
+	Review                 []ConfigStatusPath `json:"review"`
 	ErrorCode              string             `json:"error_code,omitempty"`
 	RecoveryActions        []string           `json:"recovery_actions"`
 	LastAttemptAt          *time.Time         `json:"last_attempt_at,omitempty"`
@@ -162,8 +171,17 @@ func (s *ConfigStatusService) Account(ctx context.Context, userID string) (Confi
 			EnvironmentState: row.EnvironmentState, State: canonicalAccountState(row, s.clock(), s.policy.StaleHeartbeatAfter),
 			AssignmentID: row.AssignmentID.String, AssignmentVersion: row.AssignmentVersion.Int64,
 			RepositoryID: row.RepositoryID.String, RepositoryName: row.RepositoryName.String,
-			Mode:         row.Mode.String,
-			ConsentState: row.ConsentState.String, WarningRevision: row.WarningRevision.String,
+			PullRepositoryID: func() string {
+				if row.Mode.String == ConfigModePushOnly {
+					return ""
+				}
+				return row.RepositoryID.String
+			}(),
+			PushRepositoryID: row.PushRepositoryID.String, AutomaticUpdates: row.AutomaticUpdates.Bool,
+			ApprovedPullRevision: row.ApprovedPullRevision.String, AdoptedTeamID: row.AdoptedTeamID.String,
+			AdoptedDefaultVersion: row.AdoptedDefaultVersion.Int64,
+			Mode:                  row.Mode.String,
+			ConsentState:          row.ConsentState.String, WarningRevision: row.WarningRevision.String,
 			InstallationGeneration: row.InstallationGeneration,
 			PolicyRevision:         row.PolicyRevision.String,
 			SyncRevision:           row.SyncRevision.Int64, RemoteRevision: row.RemoteRevision.String,
@@ -171,8 +189,8 @@ func (s *ConfigStatusService) Account(ctx context.Context, userID string) (Confi
 			ManagedPathCount: row.ManagedPathCount.Int32, PendingCleanPathCount: row.PendingCleanPathCount.Int32,
 			LastAppliedRevision: row.LastAppliedRevision.String, LastPublishedRevision: row.LastPublishedRevision.String,
 			ErrorCode: row.ErrorCode.String,
-			Skipped:   []ConfigStatusPath{},
-			Conflicts: []ConfigStatusPath{}, RecoveryActions: []string{},
+			Skipped:   []ConfigStatusPath{}, Conflicts: []ConfigStatusPath{},
+			Review: []ConfigStatusPath{}, RecoveryActions: []string{},
 		}
 		if s.policy.Mode == "disabled" ||
 			(item.Profile == "byod" && !s.policy.BYODEnabled) ||
@@ -181,6 +199,7 @@ func (s *ConfigStatusService) Account(ctx context.Context, userID string) (Confi
 		}
 		decodeAccountStatusJSON(row.Skipped, &item.Skipped, s.limit)
 		decodeAccountStatusJSON(row.Conflicts, &item.Conflicts, s.limit)
+		decodeAccountStatusJSON(row.Review, &item.Review, s.limit)
 		decodeAccountStatusJSON(row.RecoveryActions, &item.RecoveryActions, 8)
 		item.LastAttemptAt = nullTimePointer(row.LastAttemptAt)
 		item.LastSuccessfulAt = nullTimePointer(row.LastSuccessfulAt)
@@ -274,13 +293,39 @@ func (s *ConfigStatusService) Record(ctx context.Context, identityToken string, 
 	if err != nil {
 		return errors.Join(ErrConfigStatusInvalid, errConfigStatusReport)
 	}
+	review, err := marshalConfigStatusList(report.Review)
+	if err != nil {
+		return errors.Join(ErrConfigStatusInvalid, errConfigStatusReport)
+	}
 	recoveryActions, err := marshalConfigStatusList(report.RecoveryActions)
 	if err != nil {
 		return errors.Join(ErrConfigStatusInvalid, errConfigStatusReport)
 	}
 	now := s.clock().UTC()
 	err = s.store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		_, err := tx.Queries().RecordControlConfigSyncStatus(ctx, dbsqlc.RecordControlConfigSyncStatusParams{
+		currentAssignment, err := tx.Queries().GetControlConfigAssignment(ctx, identity.EnvironmentID)
+		if err != nil || currentAssignment.ID != report.AssignmentID || !currentAssignment.RepositoryID.Valid ||
+			currentAssignment.RepositoryID.String != report.RepositoryID || !currentAssignment.WarningRevision.Valid ||
+			currentAssignment.WarningRevision.String != report.WarningRevision || currentAssignment.Mode != report.Mode {
+			return errors.Join(ErrConfigStatusInvalid, errConfigStatusAssign)
+		}
+		if currentAssignment.AdoptedTeamID.Valid && strings.TrimSpace(report.LastPublishedRevision) != "" {
+			if err := teams.Lock(ctx, tx); err != nil {
+				return err
+			}
+			currentAssignment, err = tx.Queries().GetControlConfigAssignment(ctx, identity.EnvironmentID)
+			if err != nil || currentAssignment.ID != report.AssignmentID || !currentAssignment.RepositoryID.Valid ||
+				currentAssignment.RepositoryID.String != report.RepositoryID || !currentAssignment.WarningRevision.Valid ||
+				currentAssignment.WarningRevision.String != report.WarningRevision || currentAssignment.Mode != report.Mode {
+				return errors.Join(ErrConfigStatusInvalid, errConfigStatusAssign)
+			}
+		}
+		var previousPublished sql.NullString
+		previousErr := tx.QueryRow(ctx, `SELECT last_published_revision FROM control_config_sync_statuses WHERE environment_id=$1 FOR UPDATE`, report.EnvironmentID).Scan(&previousPublished)
+		if previousErr != nil && !errors.Is(previousErr, sql.ErrNoRows) {
+			return previousErr
+		}
+		_, err = tx.Queries().RecordControlConfigSyncStatus(ctx, dbsqlc.RecordControlConfigSyncStatusParams{
 			EnvironmentID: report.EnvironmentID, RepositoryID: report.RepositoryID, AssignmentID: report.AssignmentID,
 			MachineID: report.MachineID, InstallationGeneration: report.InstallationGeneration, WarningRevision: report.WarningRevision,
 			PolicyRevision: report.PolicyRevision, SyncRevision: report.SyncRevision,
@@ -289,7 +334,7 @@ func (s *ConfigStatusService) Record(ctx context.Context, identityToken string, 
 			ManagedPathCount: int32(report.ManagedPathCount), PendingCleanPathCount: int32(report.PendingCleanPathCount),
 			LastAppliedRevision: nullableString(report.LastAppliedRevision), LastPublishedRevision: nullableString(report.LastPublishedRevision),
 			LeaseID: nullableString(report.LeaseID), FencingToken: nullableInt64(report.FencingToken),
-			Skipped: skipped, Conflicts: conflicts,
+			Skipped: skipped, Conflicts: conflicts, Review: review,
 			ErrorCode: nullableString(report.ErrorCode), RecoveryActions: recoveryActions,
 			LastAttemptAt: nullableTimePointer(report.LastAttemptAt), LastSuccessfulAt: nullableTimePointer(report.LastSuccessfulAt),
 			MachineUpdatedAt: report.UpdatedAt.UTC(), ObservedAt: now,
@@ -304,10 +349,20 @@ func (s *ConfigStatusService) Record(ctx context.Context, identityToken string, 
 		}); err != nil {
 			return err
 		}
-		return s.audit.WriteTx(ctx, tx, audit.Event{ActorType: audit.ActorSystem, EventType: "config.status_recorded",
+		if err := s.audit.WriteTx(ctx, tx, audit.Event{ActorType: audit.ActorSystem, EventType: "config.status_recorded",
 			ResourceType: "environment", ResourceID: report.EnvironmentID,
 			IdempotencyKey: "config.status:" + report.EnvironmentID + ":" + strings.TrimSpace(report.AssignmentID) + ":" + formatInt(report.SyncRevision),
-			Metadata:       map[string]any{"repository_id": report.RepositoryID, "assignment_id": report.AssignmentID, "state": report.State, "sync_revision": report.SyncRevision}})
+			Metadata:       map[string]any{"repository_id": report.RepositoryID, "assignment_id": report.AssignmentID, "state": report.State, "sync_revision": report.SyncRevision}}); err != nil {
+			return err
+		}
+		publishedRevision, newlyPublished := newlyPublishedRevision(previousPublished, report.LastPublishedRevision)
+		if !currentAssignment.AdoptedTeamID.Valid || !newlyPublished ||
+			!teamMemberTx(ctx, tx, identity.UserID, currentAssignment.AdoptedTeamID.String) {
+			return nil
+		}
+		return teams.AuditTx(ctx, tx, identity.UserID, currentAssignment.AdoptedTeamID.String, "config_published",
+			"config-published:"+report.AssignmentID+":"+publishedRevision,
+			map[string]any{"repository_id": report.RepositoryID, "assignment_id": report.AssignmentID, "machine_id": report.MachineID, "published_revision": publishedRevision})
 	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrConfigStatusStale
@@ -316,6 +371,11 @@ func (s *ConfigStatusService) Record(ctx context.Context, identityToken string, 
 		return errors.Join(err, errConfigStatusPersist)
 	}
 	return err
+}
+
+func newlyPublishedRevision(previous sql.NullString, reported string) (string, bool) {
+	revision := strings.TrimSpace(reported)
+	return revision, revision != "" && (!previous.Valid || previous.String != revision)
 }
 
 func marshalConfigStatusList[T any](values []T) ([]byte, error) {
@@ -357,7 +417,7 @@ func validateConfigStatus(report ConfigStatusReport, limit int, now time.Time) e
 		len(report.LeaseID) > 128 || report.FencingToken < 0 ||
 		(report.FencingToken > 0 && report.LeaseID == "") || len(report.ErrorCode) > 64 ||
 		(report.ErrorCode != "" && !statusCodePattern.MatchString(report.ErrorCode)) ||
-		len(report.Skipped) > limit || len(report.Conflicts) > limit ||
+		len(report.Skipped) > limit || len(report.Conflicts) > limit || len(report.Review) > limit ||
 		len(report.RecoveryActions) > 8 || (report.State == "conflict" && len(report.Conflicts) == 0) ||
 		(report.State == "sync_uncertain" && report.ErrorCode != "sync_uncertain") {
 		return ErrConfigStatusInvalid
@@ -366,7 +426,7 @@ func validateConfigStatus(report ConfigStatusReport, limit int, now time.Time) e
 		report.ManifestHealth != "missing" && report.ManifestHealth != "invalid" {
 		return ErrConfigStatusInvalid
 	}
-	for _, group := range [][]ConfigStatusPath{report.Skipped, report.Conflicts} {
+	for _, group := range [][]ConfigStatusPath{report.Skipped, report.Conflicts, report.Review} {
 		for _, item := range group {
 			if !safeConfigStatusPath(item.Path) || item.Bytes < 0 || !statusCodePattern.MatchString(item.Reason) ||
 				(item.Revision != "" && !conflictRevisionPattern.MatchString(item.Revision)) {

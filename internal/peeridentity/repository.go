@@ -20,8 +20,8 @@ type SQLRepository struct {
 	audit *audit.Writer
 }
 
-func (r *SQLRepository) Bootstrap(ctx context.Context, operationID, userID string, rootPublic ed25519.PublicKey, proposed Certificate) (Certificate, error) {
-	if r == nil || ctx == nil || len(operationID) < 16 || len(operationID) > 256 || !identifierExpr.MatchString(userID) || len(rootPublic) != ed25519.PublicKeySize || proposed.Role != RoleCLI || proposed.EndpointID == "" || proposed.AccountID != userID {
+func (r *SQLRepository) Bootstrap(ctx context.Context, operationID, userID string, rootPublic ed25519.PublicKey, proposed Certificate, now time.Time) (Certificate, error) {
+	if r == nil || ctx == nil || now.IsZero() || len(operationID) < 16 || len(operationID) > 256 || !identifierExpr.MatchString(userID) || len(rootPublic) != ed25519.PublicKeySize || proposed.Role != RoleCLI || proposed.EndpointID == "" || proposed.AccountID != userID {
 		return Certificate{}, ErrInvalid
 	}
 	rootFingerprint := sha256.Sum256(rootPublic)
@@ -53,7 +53,7 @@ func (r *SQLRepository) Bootstrap(ctx context.Context, operationID, userID strin
 			}
 			key, err = q.CreateAccountE2EEKey(ctx, dbsqlc.CreateAccountE2EEKeyParams{
 				KeyID: keyIDForFingerprint(rootFingerprint), UserID: userID, PublicKey: rootPublic,
-				Fingerprint: rootFingerprint[:], Generation: 1, CreatedAt: proposed.IssuedAt, UpdatedAt: proposed.IssuedAt,
+				Fingerprint: rootFingerprint[:], Generation: 1, CreatedAt: now, UpdatedAt: now,
 			})
 			if errors.Is(err, sql.ErrNoRows) {
 				key, err = q.GetAccountE2EEKeyByFingerprintForUpdate(ctx, dbsqlc.GetAccountE2EEKeyByFingerprintForUpdateParams{UserID: userID, Fingerprint: rootFingerprint[:]})
@@ -65,7 +65,7 @@ func (r *SQLRepository) Bootstrap(ctx context.Context, operationID, userID strin
 		if key.RevokedAt.Valid || !bytes.Equal(key.PublicKey, rootPublic) || !bytes.Equal(key.Fingerprint, rootFingerprint[:]) {
 			return ErrConflict
 		}
-		result, err = r.registerTx(ctx, tx, operationID, userID, proposed, key, false)
+		result, err = r.registerTx(ctx, tx, operationID, userID, proposed, key, false, now)
 		if err != nil {
 			return err
 		}
@@ -82,8 +82,8 @@ func (r *SQLRepository) Bootstrap(ctx context.Context, operationID, userID strin
 // session. The v1 name is retained for compatibility. Active CLI sessions are
 // already the result of account authentication and any required setup
 // approval. Existing identities remain valid until explicitly revoked.
-func (r *SQLRepository) BootstrapFresh(ctx context.Context, operationID, userID, cliSessionID string, rootPublic ed25519.PublicKey, proposed Certificate) (Certificate, error) {
-	if r == nil || ctx == nil || len(operationID) < 16 || len(operationID) > 256 || !identifierExpr.MatchString(userID) || !identifierExpr.MatchString(cliSessionID) || len(rootPublic) != ed25519.PublicKeySize || proposed.Role != RoleCLI || proposed.EndpointID != cliSessionID || proposed.AccountID != userID {
+func (r *SQLRepository) BootstrapFresh(ctx context.Context, operationID, userID, cliSessionID string, rootPublic ed25519.PublicKey, proposed Certificate, now time.Time) (Certificate, error) {
+	if r == nil || ctx == nil || now.IsZero() || len(operationID) < 16 || len(operationID) > 256 || !identifierExpr.MatchString(userID) || !identifierExpr.MatchString(cliSessionID) || len(rootPublic) != ed25519.PublicKeySize || proposed.Role != RoleCLI || proposed.EndpointID != cliSessionID || proposed.AccountID != userID {
 		return Certificate{}, ErrInvalid
 	}
 	rootFingerprint := sha256.Sum256(rootPublic)
@@ -131,7 +131,7 @@ func (r *SQLRepository) BootstrapFresh(ctx context.Context, operationID, userID,
 				KeyID: keyIDForFingerprint(rootFingerprint), UserID: userID, PublicKey: rootPublic,
 				Fingerprint: rootFingerprint[:], Generation: 1,
 				CLIClientSessionID: sql.NullString{String: cliSessionID, Valid: true}, UserMachineID: machineID,
-				CreatedAt: proposed.IssuedAt, UpdatedAt: proposed.IssuedAt,
+				CreatedAt: now, UpdatedAt: now,
 			})
 			if errors.Is(err, sql.ErrNoRows) {
 				key, err = q.GetAccountE2EEKeyByFingerprintForUpdate(ctx, dbsqlc.GetAccountE2EEKeyByFingerprintForUpdateParams{UserID: userID, Fingerprint: rootFingerprint[:]})
@@ -143,7 +143,7 @@ func (r *SQLRepository) BootstrapFresh(ctx context.Context, operationID, userID,
 		if key.RevokedAt.Valid || !bytes.Equal(key.PublicKey, rootPublic) || !bytes.Equal(key.Fingerprint, rootFingerprint[:]) || key.CLIClientSessionID.Valid && key.CLIClientSessionID.String != cliSessionID {
 			return ErrConflict
 		}
-		result, err = r.registerTx(ctx, tx, operationID, userID, proposed, key, false)
+		result, err = r.registerTx(ctx, tx, operationID, userID, proposed, key, false, now)
 		if err != nil {
 			return err
 		}
@@ -427,8 +427,8 @@ func (r *SQLRepository) ListPendingEndpoints(ctx context.Context, userID string,
 	return result, nil
 }
 
-func (r *SQLRepository) Register(ctx context.Context, operationID, userID string, proposed Certificate) (Certificate, error) {
-	if r == nil || ctx == nil || len(operationID) < 16 || len(operationID) > 256 ||
+func (r *SQLRepository) Register(ctx context.Context, operationID, userID string, proposed Certificate, now time.Time) (Certificate, error) {
+	if r == nil || ctx == nil || now.IsZero() || len(operationID) < 16 || len(operationID) > 256 ||
 		!identifierExpr.MatchString(userID) || proposed.AccountID != userID || len(proposed.Raw) == 0 {
 		return Certificate{}, ErrInvalid
 	}
@@ -452,13 +452,13 @@ func (r *SQLRepository) Register(ctx context.Context, operationID, userID string
 		if key.RevokedAt.Valid || len(key.PublicKey) != ed25519.PublicKeySize || len(key.Fingerprint) != sha256.Size || key.KeyID != proposed.KeyID {
 			return ErrConflict
 		}
-		result, err = r.registerTx(ctx, tx, operationID, userID, proposed, key, true)
+		result, err = r.registerTx(ctx, tx, operationID, userID, proposed, key, true, now)
 		return err
 	})
 	return result, err
 }
 
-func (r *SQLRepository) registerTx(ctx context.Context, tx *db.Tx, operationID, userID string, proposed Certificate, key dbsqlc.AccountE2eeKey, requireEnrollment bool) (Certificate, error) {
+func (r *SQLRepository) registerTx(ctx context.Context, tx *db.Tx, operationID, userID string, proposed Certificate, key dbsqlc.AccountE2eeKey, requireEnrollment bool, now time.Time) (Certificate, error) {
 	q := tx.Queries()
 	requestHash := sha256.Sum256(proposed.Raw)
 	var result Certificate
@@ -471,25 +471,28 @@ func (r *SQLRepository) registerTx(ctx context.Context, tx *db.Tx, operationID, 
 		if getErr != nil {
 			return Certificate{}, getErr
 		}
-		return certificateFromRow(row, key, proposed.IssuedAt)
+		return certificateFromRow(row, key, now)
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Certificate{}, err
 	}
+	// The signed not-before time includes clock-skew allowance. Enrollment
+	// freshness and lifecycle timestamps belong to the server request clock,
+	// never to that deliberately backdated certificate field.
 	var enrollment dbsqlc.PeerEndpointEnrollmentRequest
 	if requireEnrollment && (proposed.Role == RoleMachine || proposed.Role == RoleCLI) {
-		enrollment, err = q.GetMatchingPeerEndpointEnrollmentRequestForUpdate(ctx, dbsqlc.GetMatchingPeerEndpointEnrollmentRequestForUpdateParams{UserID: userID, EndpointID: proposed.EndpointID, Generation: int64(proposed.Generation), Now: proposed.IssuedAt})
+		enrollment, err = q.GetMatchingPeerEndpointEnrollmentRequestForUpdate(ctx, dbsqlc.GetMatchingPeerEndpointEnrollmentRequestForUpdateParams{UserID: userID, EndpointID: proposed.EndpointID, Generation: int64(proposed.Generation), Now: now})
 		if errors.Is(err, sql.ErrNoRows) {
 			return Certificate{}, ErrUnavailable
 		}
 		if err != nil {
 			return Certificate{}, err
 		}
-		if roleFromString(enrollment.Role) != proposed.Role || !bytes.Equal(enrollment.NoisePublicKey, proposed.NoisePublicKey[:]) || !bytes.Equal(enrollment.QuicPublicKey, proposed.QUICPublicKey[:]) || proposed.IssuedAt.Before(enrollment.CreatedAt) {
+		if roleFromString(enrollment.Role) != proposed.Role || !bytes.Equal(enrollment.NoisePublicKey, proposed.NoisePublicKey[:]) || !bytes.Equal(enrollment.QuicPublicKey, proposed.QUICPublicKey[:]) || now.Before(enrollment.CreatedAt) {
 			return Certificate{}, ErrConflict
 		}
 	}
-	if _, err := q.RevokeSupersededPeerEndpointCertificates(ctx, dbsqlc.RevokeSupersededPeerEndpointCertificatesParams{Now: sql.NullTime{Time: proposed.IssuedAt, Valid: true}, UserID: userID, EndpointID: proposed.EndpointID, Generation: int64(proposed.Generation)}); err != nil {
+	if _, err := q.RevokeSupersededPeerEndpointCertificates(ctx, dbsqlc.RevokeSupersededPeerEndpointCertificatesParams{Now: sql.NullTime{Time: now, Valid: true}, UserID: userID, EndpointID: proposed.EndpointID, Generation: int64(proposed.Generation)}); err != nil {
 		return Certificate{}, err
 	}
 	row, err := q.CreatePeerEndpointCertificate(ctx, dbsqlc.CreatePeerEndpointCertificateParams{
@@ -504,15 +507,15 @@ func (r *SQLRepository) registerTx(ctx context.Context, tx *db.Tx, operationID, 
 	if err != nil {
 		return Certificate{}, err
 	}
-	if _, err := q.CreatePeerEndpointCertificateOperation(ctx, dbsqlc.CreatePeerEndpointCertificateOperationParams{OperationID: operationID, UserID: userID, RequestHash: requestHash[:], CertificateFingerprint: proposed.Fingerprint[:], CreatedAt: proposed.IssuedAt}); err != nil {
+	if _, err := q.CreatePeerEndpointCertificateOperation(ctx, dbsqlc.CreatePeerEndpointCertificateOperationParams{OperationID: operationID, UserID: userID, RequestHash: requestHash[:], CertificateFingerprint: proposed.Fingerprint[:], CreatedAt: now}); err != nil {
 		return Certificate{}, err
 	}
 	if requireEnrollment && (proposed.Role == RoleMachine || proposed.Role == RoleCLI) {
-		if _, err := q.FulfillPeerEndpointEnrollmentRequest(ctx, dbsqlc.FulfillPeerEndpointEnrollmentRequestParams{CertificateFingerprint: proposed.Fingerprint[:], Now: sql.NullTime{Time: proposed.IssuedAt, Valid: true}, ID: enrollment.ID}); err != nil {
+		if _, err := q.FulfillPeerEndpointEnrollmentRequest(ctx, dbsqlc.FulfillPeerEndpointEnrollmentRequestParams{CertificateFingerprint: proposed.Fingerprint[:], Now: sql.NullTime{Time: now, Valid: true}, ID: enrollment.ID}); err != nil {
 			return Certificate{}, err
 		}
 	}
-	result, err = certificateFromRow(row, key, proposed.IssuedAt)
+	result, err = certificateFromRow(row, key, now)
 	if err != nil {
 		return Certificate{}, err
 	}

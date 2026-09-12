@@ -232,6 +232,144 @@ func TestConfigAssignmentHostedDoesNotRequireConsent(t *testing.T) {
 	}
 }
 
+func TestTeamConfigDefaultUsesMemberProviderConnectionAndExplicitReplacement(t *testing.T) {
+	store := openControlPlaneTestDB(t)
+	ctx := context.Background()
+	suffix := strings.ReplaceAll(t.Name(), "/", "_")
+	owner, member, outsider, teamID := "cfg_owner_"+suffix, "cfg_member_"+suffix, "cfg_out_"+suffix, "cfg_team_"+suffix
+	teamID2, environmentID, machineID := teamID+"_two", "cfg_env_"+suffix, "cfg_machine_"+suffix
+	cleanupConfigTeamLifecycleFixture(t, store, []string{owner, member, outsider}, []string{teamID, teamID2}, []string{environmentID}, []string{machineID})
+	for _, user := range []string{owner, member, outsider} {
+		if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.users (id,workos_subject,primary_email,status) VALUES ($1,$2,$3,'active')`, user, "workos_"+user, user+"@example.test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.teams (team_id,owner_account,generation) VALUES ($1,$2,1)`, teamID, owner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.teams (team_id,owner_account,generation) VALUES ($1,$2,1)`, teamID2, owner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.team_members (team_id,account_id,membership_generation,role,active) VALUES ($1,$2,1,'member',true)`, teamID, member); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.team_members (team_id,account_id,membership_generation,role,active) VALUES ($1,$2,1,'member',true)`, teamID2, member); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.control_environments (id,workspace_id,owner_user_id) VALUES ($1,$2,$3)`, environmentID, "workspace_"+suffix, member); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines (id,user_id,environment_id,display_name,platform,architecture,workspace_root,machine_kind) VALUES ($1,$2,$3,'BYOD','linux','arm64','/workspace','personal')`, machineID, member, environmentID); err != nil {
+		t.Fatal(err)
+	}
+	service := NewConfigAssignmentService(store, nil, "warning")
+	service.SetRepositoryResolver(ConfigRepositoryResolverFunc(func(_ context.Context, userID, _, externalID string) (ConfigRepositoryConnection, error) {
+		return ConfigRepositoryConnection{ProviderAccountID: userID, ExternalRepositoryID: externalID, DisplayName: "org/config", CloneURL: "https://github.example/org/config.git", PublishURL: "https://github.example/org/config.git", DefaultBranch: "main", AuthorizationRef: "github-user:" + userID, CredentialCapability: "provider_user_repository"}, nil
+	}))
+	ownerRepo, err := service.ConnectRepository(ctx, owner, "github", "provider-repo", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.SetTeamDefault(ctx, member, teamID, ownerRepo.ID, 0); !errors.Is(err, ErrAssignmentForbidden) {
+		t.Fatalf("member set error=%v", err)
+	}
+	defaultValue, err := service.SetTeamDefault(ctx, owner, teamID, ownerRepo.ID, 0)
+	if err != nil || defaultValue.Version != 1 {
+		t.Fatalf("default=%+v err=%v", defaultValue, err)
+	}
+	if _, err := service.AdoptTeamDefault(ctx, member, teamID, 1); !errors.Is(err, ErrAssignmentConflict) {
+		t.Fatalf("adoption without provider connection=%v", err)
+	}
+	memberRepo, err := service.ConnectRepository(ctx, member, "github", "provider-repo", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adoption, err := service.AdoptTeamDefault(ctx, member, teamID, 1)
+	if err != nil || adoption.RepositoryID != memberRepo.ID || adoption.UpdatePending {
+		t.Fatalf("adoption=%+v err=%v", adoption, err)
+	}
+	assignment, err := store.Queries().GetControlConfigAssignment(ctx, environmentID)
+	if err != nil || !assignment.AdoptedTeamID.Valid || assignment.AdoptedTeamID.String != teamID || assignment.Mode != ConfigModePullOnly {
+		t.Fatalf("adopted assignment=%+v err=%v", assignment, err)
+	}
+	ownerRepo2, err := service.ConnectRepository(ctx, owner, "github", "provider-repo-two", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	memberRepo2, err := service.ConnectRepository(ctx, member, "github", "provider-repo-two", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.SetTeamDefault(ctx, owner, teamID2, ownerRepo2.ID, 0); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := service.AdoptTeamDefault(ctx, member, teamID2, 1)
+	if err != nil || replacement.RepositoryID != memberRepo2.ID {
+		t.Fatalf("replacement=%+v err=%v", replacement, err)
+	}
+	assignment, err = store.Queries().GetControlConfigAssignment(ctx, environmentID)
+	if err != nil || assignment.RepositoryID.String != memberRepo2.ID || assignment.AdoptedTeamID.String != teamID2 || assignment.PushRepositoryID.Valid {
+		t.Fatalf("replacement assignment=%+v err=%v", assignment, err)
+	}
+	updated, err := service.SetTeamDefault(ctx, owner, teamID2, ownerRepo2.ID, 1)
+	if err != nil || updated.Version != 2 {
+		t.Fatalf("updated=%+v err=%v", updated, err)
+	}
+	adoption, err = service.TeamDefaultAdoption(ctx, member)
+	if err != nil || !adoption.UpdatePending || adoption.AdoptedVersion != 1 {
+		t.Fatalf("pending adoption=%+v err=%v", adoption, err)
+	}
+	if _, err := service.TeamDefault(ctx, outsider, teamID); !errors.Is(err, ErrAssignmentForbidden) {
+		t.Fatalf("outsider read=%v", err)
+	}
+	if err := service.UnadoptTeamDefault(ctx, member); err != nil {
+		t.Fatal(err)
+	}
+	assignment, err = service.Assignment(ctx, member, machineID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	personal, err := service.Assign(ctx, member, machineID, memberRepo2.ID, ConfigModePushOnly, "warning", assignment.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Clear(ctx, member, machineID, personal.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.AdoptTeamDefault(ctx, member, teamID2, updated.Version); err != nil {
+		t.Fatalf("re-adoption after personal clear failed: %v", err)
+	}
+	restored, err := service.Assignment(ctx, member, machineID)
+	if err != nil || restored.ConsentState != "pending" || restored.WarningRevision.String != "warning" || restored.AcceptedAt.Valid {
+		t.Fatalf("re-adoption did not restore pending warning: %v", err)
+	}
+	accepted, err := service.AcceptConsent(ctx, member, machineID, "warning", restored.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.AdoptTeamDefault(ctx, member, teamID2, updated.Version); err != nil {
+		t.Fatal(err)
+	}
+	unchanged, err := service.Assignment(ctx, member, machineID)
+	if err != nil || unchanged.ConsentState != "accepted" || unchanged.AcceptedAt != accepted.AcceptedAt {
+		t.Fatalf("same warning lost explicit consent: %v", err)
+	}
+	service.warningRevision = "warning-next"
+	if _, err := service.AdoptTeamDefault(ctx, member, teamID2, updated.Version); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := service.Assignment(ctx, member, machineID)
+	if err != nil || changed.ConsentState != "pending" || changed.WarningRevision.String != "warning-next" || changed.AcceptedAt.Valid {
+		t.Fatalf("new warning retained old consent: %v", err)
+	}
+	if _, err := service.AcceptConsent(ctx, member, machineID, "warning", changed.Version); !errors.Is(err, ErrAssignmentConflict) {
+		t.Fatalf("old warning consent accepted: %v", err)
+	}
+	if _, err := service.AcceptConsent(ctx, member, machineID, "warning-next", changed.Version); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func testConfigRepositoryResolver() ConfigRepositoryResolver {
 	return ConfigRepositoryResolverFunc(func(_ context.Context, userID, provider, externalID string) (ConfigRepositoryConnection, error) {
 		return ConfigRepositoryConnection{

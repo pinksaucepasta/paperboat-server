@@ -63,3 +63,17 @@ func TestLazyRuntimeRegistrationRequiresSignedCurrentMachine(t *testing.T) {
 		})
 	}
 }
+
+func TestAbsentLazyActivatorRejectsRegistrationWithoutPanic(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	body := fmt.Sprintf(`{"environment_id":"prj_test","resource_id":"machine_test","sampled_at":%q,"lazy_runtime":{"schema":"paperboat.lazy-runtime/v1","boot_id":"0123456789abcdef","installation_generation":4,"started_at":%q}}`, now, now)
+	r := httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(body))
+	r.Header.Set("Authorization", "Bearer fixture")
+	r.Header.Set("X-Paperboat-Machine-Proof", base64.RawURLEncoding.EncodeToString([]byte("fixture")))
+	var sink *lazyaccess.Activator
+	w := httptest.NewRecorder()
+	runtimeObservation(&fakeRuntimeObservationRepository{}, &fakeRuntimeIdentity{}, 10, sink).ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("absent lazy activator status=%d", w.Code)
+	}
+}

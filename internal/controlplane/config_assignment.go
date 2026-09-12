@@ -193,11 +193,23 @@ func (s *ConfigAssignmentService) Assignment(ctx context.Context, userID, machin
 }
 
 func (s *ConfigAssignmentService) Assign(ctx context.Context, userID, machineID, repositoryID, mode, warningRevision string, expectedVersion int64) (dbsqlc.ControlConfigAssignment, error) {
+	return s.AssignTargets(ctx, userID, machineID, repositoryID, repositoryID, mode, false, warningRevision, expectedVersion)
+}
+
+func (s *ConfigAssignmentService) AssignTargets(ctx context.Context, userID, machineID, pullRepositoryID, pushRepositoryID, mode string, automaticUpdates bool, warningRevision string, expectedVersion int64) (dbsqlc.ControlConfigAssignment, error) {
 	mode = strings.TrimSpace(mode)
 	if mode == "" {
 		mode = ConfigModePullOnly
 	}
-	if userID == "" || machineID == "" || repositoryID == "" || !validConfigMode(mode) || expectedVersion < 0 {
+	pullRepositoryID, pushRepositoryID = strings.TrimSpace(pullRepositoryID), strings.TrimSpace(pushRepositoryID)
+	if mode == ConfigModePullOnly {
+		pushRepositoryID = ""
+	}
+	if mode == ConfigModePushOnly {
+		pullRepositoryID = ""
+	}
+	if userID == "" || machineID == "" || !validConfigMode(mode) || expectedVersion < 0 ||
+		(mode != ConfigModePushOnly && pullRepositoryID == "") || (mode != ConfigModePullOnly && pushRepositoryID == "") {
 		return dbsqlc.ControlConfigAssignment{}, ErrAssignmentInvalid
 	}
 	environmentID, ok := s.ownedMachineEnvironment(ctx, userID, machineID)
@@ -208,8 +220,13 @@ func (s *ConfigAssignmentService) Assign(ctx context.Context, userID, machineID,
 	if err != nil || !environment.OwnerUserID.Valid || environment.OwnerUserID.String != userID || environment.DesiredState != "active" {
 		return dbsqlc.ControlConfigAssignment{}, ErrAssignmentForbidden
 	}
-	if _, err := s.store.Queries().GetOwnedControlConfigRepository(ctx, dbsqlc.GetOwnedControlConfigRepositoryParams{ID: repositoryID, OwnerUserID: userID}); err != nil {
-		return dbsqlc.ControlConfigAssignment{}, ErrAssignmentForbidden
+	for _, repositoryID := range []string{pullRepositoryID, pushRepositoryID} {
+		if repositoryID == "" {
+			continue
+		}
+		if _, err := s.store.Queries().GetOwnedControlConfigRepository(ctx, dbsqlc.GetOwnedControlConfigRepositoryParams{ID: repositoryID, OwnerUserID: userID}); err != nil {
+			return dbsqlc.ControlConfigAssignment{}, ErrAssignmentForbidden
+		}
 	}
 	byod, err := s.store.Queries().IsControlEnvironmentBYOD(ctx, environmentID)
 	if err != nil {
@@ -234,7 +251,17 @@ func (s *ConfigAssignmentService) Assign(ctx context.Context, userID, machineID,
 	now := s.clock().UTC()
 	err = s.store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		var err error
-		assignment, err = tx.Queries().SetControlConfigAssignment(ctx, dbsqlc.SetControlConfigAssignmentParams{AssignmentID: assignmentID, EnvironmentID: environmentID, RepositoryID: sql.NullString{String: repositoryID, Valid: true}, Mode: mode, ConsentState: consent, WarningRevision: sql.NullString{String: warningRevision, Valid: true}, ExpectedVersion: expectedVersion, Now: now})
+		primaryRepositoryID := pullRepositoryID
+		if primaryRepositoryID == "" {
+			primaryRepositoryID = pushRepositoryID
+		}
+		assignment, err = tx.Queries().SetControlConfigAssignment(ctx, dbsqlc.SetControlConfigAssignmentParams{
+			AssignmentID: assignmentID, EnvironmentID: environmentID,
+			RepositoryID:     sql.NullString{String: primaryRepositoryID, Valid: true},
+			PushRepositoryID: sql.NullString{String: pushRepositoryID, Valid: pushRepositoryID != ""},
+			Mode:             mode, ConsentState: consent, WarningRevision: sql.NullString{String: warningRevision, Valid: true},
+			AutomaticUpdates: automaticUpdates, ExpectedVersion: expectedVersion, Now: now,
+		})
 		if err != nil {
 			return err
 		}
@@ -247,7 +274,7 @@ func (s *ConfigAssignmentService) Assign(ctx context.Context, userID, machineID,
 		if _, err = tx.Queries().RevokeControlConfigRepositoryLeasesForEnvironment(ctx, dbsqlc.RevokeControlConfigRepositoryLeasesForEnvironmentParams{EnvironmentID: sql.NullString{String: environmentID, Valid: true}, Now: sql.NullTime{Time: now, Valid: true}}); err != nil {
 			return err
 		}
-		return s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "config.assignment_set", ResourceType: "environment", ResourceID: environmentID, IdempotencyKey: "config.assignment:" + environmentID + ":" + strconv.FormatInt(assignment.Version, 10), Metadata: map[string]any{"repository_id": repositoryID, "mode": mode, "consent_state": consent}})
+		return s.audit.WriteTx(ctx, tx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "config.assignment_set", ResourceType: "environment", ResourceID: environmentID, IdempotencyKey: "config.assignment:" + environmentID + ":" + strconv.FormatInt(assignment.Version, 10), Metadata: map[string]any{"pull_repository_id": pullRepositoryID, "push_repository_id": pushRepositoryID, "mode": mode, "automatic_updates": automaticUpdates, "consent_state": consent}})
 	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return dbsqlc.ControlConfigAssignment{}, ErrAssignmentConflict
@@ -277,6 +304,30 @@ func (s *ConfigAssignmentService) AcceptConsent(ctx context.Context, userID, mac
 		return dbsqlc.ControlConfigAssignment{}, err
 	}
 	return assignment, s.audit.Write(ctx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser, EventType: "config.consent_accepted", ResourceType: "environment", ResourceID: environmentID, IdempotencyKey: "config.consent:" + environmentID + ":" + strconv.FormatInt(assignment.Version, 10), Metadata: map[string]any{"warning_revision": warningRevision}})
+}
+
+func (s *ConfigAssignmentService) ApprovePullRevision(ctx context.Context, userID, machineID, revision string, expectedVersion int64) (dbsqlc.ControlConfigAssignment, error) {
+	revision = strings.TrimSpace(revision)
+	if len(revision) != 40 || expectedVersion < 1 {
+		return dbsqlc.ControlConfigAssignment{}, ErrAssignmentInvalid
+	}
+	environmentID, ok := s.ownedMachineEnvironment(ctx, userID, machineID)
+	if !ok {
+		return dbsqlc.ControlConfigAssignment{}, ErrAssignmentForbidden
+	}
+	item, err := s.store.Queries().ApproveControlConfigPullRevision(ctx, dbsqlc.ApproveControlConfigPullRevisionParams{
+		RemoteRevision: sql.NullString{String: revision, Valid: true}, Now: sql.NullTime{Time: s.clock().UTC(), Valid: true}, EnvironmentID: environmentID, ExpectedVersion: expectedVersion,
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return dbsqlc.ControlConfigAssignment{}, ErrAssignmentConflict
+	}
+	if err != nil {
+		return dbsqlc.ControlConfigAssignment{}, err
+	}
+	return item, s.audit.Write(ctx, audit.Event{ActorUserID: userID, ActorType: audit.ActorUser,
+		EventType: "config.pull_revision_approved", ResourceType: "environment", ResourceID: environmentID,
+		IdempotencyKey: "config.pull_revision_approved:" + item.ID + ":" + strconv.FormatInt(item.Version, 10),
+		Metadata:       map[string]any{"remote_revision": revision}})
 }
 
 type ConfigWarningFacts struct {

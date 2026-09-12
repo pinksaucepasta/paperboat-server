@@ -218,6 +218,10 @@ func (s *Service) GetTunnel(ctx context.Context, request previewtunnelapi.Reques
 	if err := s.authorize(request, false, "read"); err != nil {
 		return TunnelView{}, err
 	}
+	ctx, request, _, scopeErr := scopeTunnelManagement(ctx, s.repository, request, tunnelID)
+	if scopeErr != nil {
+		return TunnelView{}, scopeErr
+	}
 	tunnel, err := s.repository.Get(ctx, request.Actor.AccountID, tunnelID)
 	if err != nil {
 		return TunnelView{}, err
@@ -228,6 +232,13 @@ func (s *Service) GetTunnel(ctx context.Context, request previewtunnelapi.Reques
 func (s *Service) PatchTunnel(ctx context.Context, request previewtunnelapi.RequestContext, tunnelID string, input PatchTunnelRequest) (MutationResult, error) {
 	if err := s.authorize(request, false, "write"); err != nil {
 		return MutationResult{}, err
+	}
+	ctx, request, shared, scopeErr := scopeTunnelManagement(ctx, s.repository, request, tunnelID)
+	if scopeErr != nil {
+		return MutationResult{}, scopeErr
+	}
+	if shared && input.AccessMode != nil && strings.TrimSpace(*input.AccessMode) == AccessPublic {
+		return MutationResult{}, ErrMachinePublicationDenied
 	}
 	now := s.now().UTC()
 	if err := validateMutationInput(input.MutationInput, true); err != nil {
@@ -298,6 +309,10 @@ func (s *Service) transition(ctx context.Context, request previewtunnelapi.Reque
 	if err := s.authorize(request, false, "write"); err != nil {
 		return MutationResult{}, err
 	}
+	ctx, request, _, scopeErr := scopeTunnelManagement(ctx, s.repository, request, tunnelID)
+	if scopeErr != nil {
+		return MutationResult{}, scopeErr
+	}
 	if err := validateMutationInput(input, true); err != nil {
 		return MutationResult{}, err
 	}
@@ -329,6 +344,10 @@ func (s *Service) transition(ctx context.Context, request previewtunnelapi.Reque
 func (s *Service) Status(ctx context.Context, request previewtunnelapi.RequestContext, tunnelID string) (HealthView, error) {
 	if err := s.authorize(request, false, "read"); err != nil {
 		return HealthView{}, err
+	}
+	ctx, request, _, scopeErr := scopeTunnelManagement(ctx, s.repository, request, tunnelID)
+	if scopeErr != nil {
+		return HealthView{}, scopeErr
 	}
 	tunnel, err := s.repository.Get(ctx, request.Actor.AccountID, tunnelID)
 	if err != nil {

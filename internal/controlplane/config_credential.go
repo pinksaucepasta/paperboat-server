@@ -53,12 +53,13 @@ func (s *ConfigCredentialService) SetRollout(mode string, byodEnabled bool, envi
 }
 
 type ConfigCredential struct {
-	Credential      string    `json:"credential"`
-	EnvironmentID   string    `json:"environment_id"`
-	MachineID       string    `json:"machine_id"`
-	AssignmentID    string    `json:"assignment_id"`
-	WarningRevision string    `json:"warning_revision"`
-	ExpiresAt       time.Time `json:"expires_at"`
+	Credential        string    `json:"credential"`
+	EnvironmentID     string    `json:"environment_id"`
+	MachineID         string    `json:"machine_id"`
+	AssignmentID      string    `json:"assignment_id"`
+	AssignmentVersion int64     `json:"assignment_version"`
+	WarningRevision   string    `json:"warning_revision"`
+	ExpiresAt         time.Time `json:"expires_at"`
 }
 
 func (s *ConfigCredentialService) Issue(ctx context.Context, identityToken string, proof, body []byte, method, path string) (ConfigCredential, error) {
@@ -116,7 +117,7 @@ func (s *ConfigCredentialService) Issue(ctx context.Context, identityToken strin
 		if err != nil {
 			return err
 		}
-		result = ConfigCredential{Credential: token, EnvironmentID: claims.EnvironmentID, MachineID: claims.MachineID, AssignmentID: assignment.ID, WarningRevision: assignment.WarningRevision.String, ExpiresAt: expiresAt}
+		result = ConfigCredential{Credential: token, EnvironmentID: claims.EnvironmentID, MachineID: claims.MachineID, AssignmentID: assignment.ID, AssignmentVersion: assignment.Version, WarningRevision: assignment.WarningRevision.String, ExpiresAt: expiresAt}
 		encoded, err := json.Marshal(result)
 		if err != nil {
 			return err

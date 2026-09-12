@@ -29,6 +29,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
 	pbgithub "github.com/pinksaucepasta/paperboat-server/internal/github"
 	"github.com/pinksaucepasta/paperboat-server/internal/httpapi"
+	"github.com/pinksaucepasta/paperboat-server/internal/inspectaccess"
 	"github.com/pinksaucepasta/paperboat-server/internal/lazyaccess"
 	"github.com/pinksaucepasta/paperboat-server/internal/managedssh"
 	"github.com/pinksaucepasta/paperboat-server/internal/metering"
@@ -48,6 +49,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 	"github.com/pinksaucepasta/paperboat-server/internal/releaseauthority"
 	"github.com/pinksaucepasta/paperboat-server/internal/releases"
+	"github.com/pinksaucepasta/paperboat-server/internal/teaminbox"
 	"github.com/pinksaucepasta/paperboat-server/internal/teams"
 	"github.com/pinksaucepasta/paperboat-server/internal/telemetry"
 	"github.com/pinksaucepasta/paperboat-server/internal/terminalsessions"
@@ -74,6 +76,10 @@ type Options struct {
 	// transport used by the certificate worker's distributor. It is mounted
 	// only on the edge-control handler and never exposed by the public API.
 	CertificateDistribution http.Handler
+	// ReceiptEmailSender is the existing deployment-owned email delivery
+	// integration. Nil keeps receipt notifications queued and visible without
+	// sending user email.
+	ReceiptEmailSender teaminbox.ReceiptSender
 }
 
 type App struct {
@@ -295,6 +301,18 @@ func New(opts Options) (*App, error) {
 	meteringService.SetDownstreamRevoker(accessService)
 	checker := readinessChecker{cfg: opts.Config, db: store}
 	userMachineService := usermachines.New(store, auditWriter, usermachines.Policy{PairingLifetime: opts.Config.UserMachines.PairingLifetime, OfflineAfter: opts.Config.UserMachines.OfflineAfter, AllowedPlatforms: opts.Config.UserMachines.AllowedPlatforms}, billingService)
+	teamInboxService, err := teaminbox.New(store)
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure Team Inbox: %w", err)
+	}
+	teamInboxService.ConfigureEncryptionKey(opts.Config.Secrets.EncryptionKey)
+	userMachineService.ConfigureTeamInbox(teamInboxService)
+	teamInboxReceiptWorker, err := teaminbox.NewReceiptWorker(teamInboxService, opts.ReceiptEmailSender, time.Second)
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("configure Team Inbox receipt delivery: %w", err)
+	}
 	userMachineService.ConfigureProvisioning(accessProvider, opts.Config.Secrets.EncryptionKey)
 	if len(opts.Config.Secrets.SessionKeys) > 0 {
 		userMachineService.ConfigureOneShotCLIAuth(opts.Config.CLIAuth.ClientID, opts.Config.CLIAuth.AllowedScopes, opts.Config.CLIAuth.AccessTokenLifetime, opts.Config.CLIAuth.RefreshTokenLifetime, opts.Config.Secrets.SessionKeys[0])
@@ -476,15 +494,11 @@ func New(opts Options) (*App, error) {
 		if resolveErr != nil {
 			return controlplane.ConfigRepositoryConnection{}, resolveErr
 		}
-		authorizationRef, accessErr := githubService.ResolveRepositoryAuthorization(ctx, userID, externalID)
-		if accessErr != nil {
-			return controlplane.ConfigRepositoryConnection{}, accessErr
-		}
 		return controlplane.ConfigRepositoryConnection{
 			ProviderAccountID: accountID, ExternalRepositoryID: repository.ID,
 			DisplayName: repository.Owner + "/" + repository.Name, CloneURL: repository.CloneURL, PublishURL: repository.CloneURL,
-			DefaultBranch: repository.DefaultBranch, AuthorizationRef: authorizationRef,
-			CredentialCapability: "github_app_installation_repository_contents_rw",
+			DefaultBranch: repository.DefaultBranch, AuthorizationRef: "github-user:" + userID,
+			CredentialCapability: "provider_user_repository",
 		}, nil
 	}))
 	configAssignmentService.SetRepositoryCatalog(controlplane.ConfigRepositoryCatalogFunc(func(ctx context.Context, userID string) ([]controlplane.ConfigRepositoryCandidate, error) {
@@ -518,11 +532,10 @@ func New(opts Options) (*App, error) {
 	configStatusService.SetAccountPolicy(opts.Config.ConfigSync)
 	configRepositoryAccessService := controlplane.NewConfigRepositoryAccessService(store, configLeaseService,
 		controlplane.ConfigRepositoryAccessIssuerFuncs{
-			Issue: func(ctx context.Context, authorizationRef, repositoryID, contentsPermission string) (controlplane.ScopedRepositoryCredential, error) {
-				issued, issueErr := githubService.IssueRepositoryAccess(ctx, authorizationRef, repositoryID, contentsPermission)
+			Issue: func(ctx context.Context, userID, repositoryID, contentsPermission string) (controlplane.ScopedRepositoryCredential, error) {
+				issued, issueErr := githubService.IssueUserRepositoryAccess(ctx, userID, repositoryID, contentsPermission)
 				return controlplane.ScopedRepositoryCredential{Token: issued.Token, ExpiresAt: issued.ExpiresAt}, issueErr
 			},
-			Revoke: githubService.RevokeRepositoryAccess,
 		}, opts.Config.Secrets.EncryptionKey, auditWriter)
 	configRuntimeService := controlplane.NewConfigRuntimeService(store, configLeaseService, opts.Config.ConfigSync)
 	configConflictService := controlplane.NewConfigConflictService(store, configLeaseService, auditWriter)
@@ -628,6 +641,7 @@ func New(opts Options) (*App, error) {
 		return nil, fmt.Errorf("configure preview carrier host handler: %w", err)
 	}
 	lazyActivator := &lazyaccess.Activator{DB: store, Leases: previewLeaseService}
+	inspectorHandlers := &httpapi.InspectorHandlers{Access: inspectaccess.NewService(store), Machine: previewAttachmentMachineVerifier}
 	var browserAccessHandlers *httpapi.BrowserAccessHandlers
 	var previewEdgeAttachmentHandler http.Handler
 	var privateAccessAuthorizeHandler http.Handler
@@ -747,6 +761,7 @@ func New(opts Options) (*App, error) {
 		Projects:                  projectService,
 		EnvironmentVariables:      environmentVariableService,
 		Teams:                     teams.NewService(store),
+		TeamInbox:                 teamInboxService,
 		TerminalSessions:          terminalSessionService,
 		EnvironmentAccess:         accessService,
 		MeteringRepo:              metering.NewRuntimeRepository(store, opts.Config.Secrets.EncryptionKey, opts.Config.ConfigSync.StaleHeartbeatAfter),
@@ -789,6 +804,7 @@ func New(opts Options) (*App, error) {
 		PreviewCarrierAttachment:  previewAttachmentHandler,
 		PreviewCarrierEdge:        previewEdgeAttachmentHandler,
 		BrowserAccess:             browserAccessHandlers,
+		Inspector:                 inspectorHandlers,
 		PrivateAccessAuthorize:    privateAccessAuthorizeHandler,
 		PrivateAccessGrant:        privateAccessGrantHandler,
 		PrivateAccessRoutes:       privateAccessRoutesHandler,
@@ -814,6 +830,17 @@ func New(opts Options) (*App, error) {
 		domainReconciler.Worker(opts.Config.TerminalSessions.WorkerInterval, 100),
 		previewDomainReconciler.Worker(opts.Config.TerminalSessions.WorkerInterval, 100),
 		previewAttachmentProduction.Repository.OutboxWorker(opts.Config.TerminalSessions.WorkerInterval),
+	}
+	serverWorkers = append(serverWorkers, periodicPreviewTunnelWorker(time.Minute, func(ctx context.Context) error {
+		pruneContext, cancel := context.WithTimeout(ctx, opts.Config.HTTP.RequestTimeout)
+		defer cancel()
+		if _, err := teams.NewService(store).PruneActivity(pruneContext); err != nil && ctx.Err() == nil {
+			opts.Logger.Warn("team activity retention cleanup failed; retrying next interval")
+		}
+		return ctx.Err()
+	}))
+	if teamInboxReceiptWorker != nil {
+		serverWorkers = append(serverWorkers, teamInboxReceiptWorker.Run)
 	}
 	if edgeControlService != nil {
 		serverWorkers = append(serverWorkers, edgeControlService.TunnelEdgeAssignmentWorker(opts.Config.TerminalSessions.WorkerInterval, 100))

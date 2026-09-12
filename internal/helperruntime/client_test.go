@@ -10,6 +10,14 @@ import (
 	"github.com/coder/websocket"
 )
 
+func TestSnapshotStrictlyDecodesTerminalModesAndParticipants(t *testing.T) {
+	var snapshot Snapshot
+	raw := []byte(`{"id":"session_1","terminal_modes":{"bracketed_paste":true,"application_cursor":false,"mouse_tracking":true,"alternate_screen":false},"participants":[{"attachment_id":"attach_1","account_id":"account_1","client_id":"client_1","role":"viewer","connected_at":"2026-09-12T12:00:00Z"}]}`)
+	if err := decodeStrict(raw, &snapshot); err != nil || !snapshot.TerminalModes.BracketedPaste || !snapshot.TerminalModes.MouseTracking || !validParticipants(snapshot.Participants) {
+		t.Fatalf("snapshot=%#v err=%v", snapshot, err)
+	}
+}
+
 func TestTerminalCloseRequiresMatchingCanonicalHelperAcknowledgement(t *testing.T) {
 	requests := make(chan frame, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

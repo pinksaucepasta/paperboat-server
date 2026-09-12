@@ -15,6 +15,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
 	"github.com/pinksaucepasta/paperboat-server/internal/releases"
+	"github.com/pinksaucepasta/paperboat-server/internal/teams"
 )
 
 const (
@@ -179,7 +180,7 @@ func (s *Service) RecordUpdateObservation(ctx context.Context, environmentID, us
 }
 
 func (s *Service) GetUpdateObservation(ctx context.Context, userID, userMachineID string) (UpdateObservation, error) {
-	row, err := s.db.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: userMachineID, UserID: userID})
+	row, err := s.db.Queries().GetVisibleUserMachine(ctx, dbsqlc.GetVisibleUserMachineParams{ID: userMachineID, UserID: userID})
 	if errors.Is(err, sql.ErrNoRows) {
 		return UpdateObservation{}, ErrNotFound
 	}
@@ -243,13 +244,7 @@ func (s *Service) RequestMaintenanceApproval(ctx context.Context, userID, userMa
 	expiresAt := s.now().UTC().Add(ttl)
 	var result MaintenanceApproval
 	err := s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
-		if existing, err := tx.Queries().GetUserMachineMaintenanceApprovalForIdempotency(ctx, dbsqlc.GetUserMachineMaintenanceApprovalForIdempotencyParams{UserID: userID, UserMachineID: userMachineID, IdempotencyKey: idempotencyKey}); err == nil {
-			if !bytes.Equal(existing.RequestHash, requestHash) {
-				return ErrMaintenanceApprovalConflict
-			}
-			result = mapMaintenanceApproval(existing)
-			return nil
-		} else if !errors.Is(err, sql.ErrNoRows) {
+		if err := teams.Lock(ctx, tx); err != nil {
 			return err
 		}
 		machine, err := tx.Queries().GetUserMachineForUpdate(ctx, dbsqlc.GetUserMachineForUpdateParams{ID: userMachineID, UserID: userID})
@@ -261,6 +256,15 @@ func (s *Service) RequestMaintenanceApproval(ctx context.Context, userID, userMa
 		}
 		if machine.State == "revoked" || machine.State == "deleted" || machine.DeletedAt.Valid {
 			return ErrMaintenanceApprovalState
+		}
+		if existing, err := tx.Queries().GetUserMachineMaintenanceApprovalForIdempotency(ctx, dbsqlc.GetUserMachineMaintenanceApprovalForIdempotencyParams{UserID: userID, UserMachineID: userMachineID, IdempotencyKey: idempotencyKey}); err == nil {
+			if !bytes.Equal(existing.RequestHash, requestHash) {
+				return ErrMaintenanceApprovalConflict
+			}
+			result = mapMaintenanceApproval(existing)
+			return nil
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
 		}
 		row, err := tx.Queries().CreateUserMachineMaintenanceApproval(ctx, dbsqlc.CreateUserMachineMaintenanceApprovalParams{
 			ID: newID("uma"), UserMachineID: userMachineID, UserID: userID, Schema: MaintenanceApprovalSchemaV1,
@@ -286,7 +290,7 @@ func (s *Service) RequestMaintenanceApproval(ctx context.Context, userID, userMa
 }
 
 func (s *Service) ListMaintenanceApprovals(ctx context.Context, userID, userMachineID string) ([]MaintenanceApproval, error) {
-	if _, err := s.db.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: userMachineID, UserID: userID}); errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.db.Queries().GetUserMachineForUpdate(ctx, dbsqlc.GetUserMachineForUpdateParams{ID: userMachineID, UserID: userID}); errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	} else if err != nil {
 		return nil, err
@@ -312,6 +316,9 @@ func (s *Service) DecideMaintenanceApproval(ctx context.Context, userID, userMac
 	}
 	var result MaintenanceApproval
 	err := s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := teams.Lock(ctx, tx); err != nil {
+			return err
+		}
 		row, err := tx.Queries().GetUserMachineMaintenanceApprovalForUpdate(ctx, dbsqlc.GetUserMachineMaintenanceApprovalForUpdateParams{ID: approvalID, UserID: userID, UserMachineID: userMachineID})
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrMaintenanceApprovalNotFound

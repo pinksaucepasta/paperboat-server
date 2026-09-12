@@ -363,12 +363,14 @@ func TestRedactedJSONDoesNotExposeSecrets(t *testing.T) {
 	cfg.Secrets.EdgeControlCredential = "edge-control-credential-secret"
 	cfg.Secrets.GitHubClientID = "github-client-id-secret"
 	cfg.Secrets.GitHubClientSecret = "github-client-secret"
+	cfg.Secrets.ReceiptEmailToken = "receipt-email-token-secret"
 	out := cfg.RedactedJSON()
 	if strings.Contains(out, "super-secret-encryption-key") ||
 		strings.Contains(out, "fly-token-secret") ||
 		strings.Contains(out, "edge-control-credential-secret") ||
 		strings.Contains(out, "github-client-id-secret") ||
-		strings.Contains(out, "github-client-secret") {
+		strings.Contains(out, "github-client-secret") ||
+		strings.Contains(out, "receipt-email-token-secret") {
 		t.Fatalf("redacted config leaked secrets: %s", out)
 	}
 	if !strings.Contains(out, "supe") || !strings.Contains(out, "cret") {

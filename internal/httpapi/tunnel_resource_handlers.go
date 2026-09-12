@@ -829,6 +829,8 @@ func writeResourceJSON(w http.ResponseWriter, status int, value any) {
 func writeTunnelResourceError(w http.ResponseWriter, r *http.Request, err error) {
 	status, code, message, outcome, retryable, action := http.StatusInternalServerError, "internal_error", "Internal server error.", "uncertain", true, "retry"
 	switch {
+	case errors.Is(err, tunnelv1.ErrMachinePublicationDenied):
+		status, code, message, outcome, retryable, action = http.StatusForbidden, "publication_not_granted", "Machine management permits existing private/team tunnels. Public publication and connector enrollment require an explicit target-local owner action.", "unchanged", false, "use_target_local_owner"
 	case errors.Is(err, previewtunnelapi.ErrIfMatchRequired):
 		status, code, message, outcome, retryable, action = http.StatusPreconditionRequired, "if_match_required", "If-Match is required for this resource mutation.", "unchanged", false, "fetch_current_resource"
 	case errors.Is(err, previewtunnelapi.ErrInvalidETag):

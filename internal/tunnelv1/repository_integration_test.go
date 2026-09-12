@@ -59,9 +59,9 @@ VALUES ($1, $2, $3, 'active')`, accountID, "workos_"+suffix, "trk06-"+suffix+"@e
 	if _, err := database.SQL().ExecContext(ctx, `
 INSERT INTO paperboat.user_machines
   (id, user_id, environment_id, display_name, platform, architecture, workspace_root,
-   state, seat_state, public_identity_key, setup_roles, setup_mode)
+   state, seat_state, public_identity_key, setup_roles, setup_mode, configured_capabilities)
 VALUES ($1, $2, $3, $4, 'linux', 'amd64', '/workspace', 'online', 'occupied', $5,
-        ARRAY['host']::text[], 'host')`, hostID, accountID, "env_"+suffix, "Host "+suffix, strings.Repeat("A", 43)); err != nil {
+        ARRAY['host']::text[], 'host', ARRAY['preview_launch']::text[])`, hostID, accountID, "env_"+suffix, "Host "+suffix, strings.Repeat("A", 43)); err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _, _ = database.SQL().ExecContext(ctx, `DELETE FROM paperboat.users WHERE id=$1`, accountID) }()
@@ -320,9 +320,9 @@ VALUES ($1, $2, $3, 'active')`, accountID, "workos_"+accountID, accountID+"@exam
 	if _, err := f.database.SQL().ExecContext(ctx, `
 INSERT INTO paperboat.user_machines
   (id, user_id, environment_id, display_name, platform, architecture, workspace_root,
-   state, seat_state, public_identity_key, setup_roles, setup_mode)
+   state, seat_state, public_identity_key, setup_roles, setup_mode, configured_capabilities)
 VALUES ($1, $2, $3, $4, 'linux', 'amd64', '/workspace', 'online', 'occupied', $5,
-        ARRAY['host']::text[], 'host')`, hostID, accountID, "env_"+hostID, label+" host", publicIdentityKey); err != nil {
+        ARRAY['host']::text[], 'host', ARRAY['preview_launch']::text[])`, hostID, accountID, "env_"+hostID, label+" host", publicIdentityKey); err != nil {
 		t.Fatal(err)
 	}
 	f.accounts = append(f.accounts, accountID)

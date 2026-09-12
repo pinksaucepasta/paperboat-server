@@ -370,6 +370,34 @@ func (s *Service) ResolveRepositoryAuthorization(ctx context.Context, userID, re
 	return s.access.ResolveInstallation(ctx, token, repositoryID)
 }
 
+// IssueUserRepositoryAccess leases the connected user's current provider
+// credential to an authenticated config worker after confirming the selected
+// private repository remains visible. Provider permissions and branch rules
+// remain authoritative; contentsPermission cannot elevate the credential.
+func (s *Service) IssueUserRepositoryAccess(ctx context.Context, userID, repositoryID, contentsPermission string) (RepositoryAccess, error) {
+	if contentsPermission != "read" && contentsPermission != "write" {
+		return RepositoryAccess{}, ErrRepositoryAccessUnavailable
+	}
+	token, _, providerExpiry, err := s.githubTokenWithExpiry(ctx, userID)
+	if err != nil {
+		return RepositoryAccess{}, err
+	}
+	repositories, err := s.client.ListRepos(ctx, token)
+	if err != nil {
+		return RepositoryAccess{}, err
+	}
+	for _, repository := range repositories {
+		if repository.ID == repositoryID && repository.Private && repository.CloneURL != "" && repository.DefaultBranch != "" {
+			expiresAt := s.now().UTC().Add(15 * time.Minute)
+			if !providerExpiry.IsZero() && providerExpiry.Before(expiresAt) {
+				expiresAt = providerExpiry
+			}
+			return RepositoryAccess{Token: token, ExpiresAt: expiresAt}, nil
+		}
+	}
+	return RepositoryAccess{}, ErrRepoNotFound
+}
+
 func (s *Service) IssueRepositoryAccess(ctx context.Context, authorizationRef, repositoryID, contentsPermission string) (RepositoryAccess, error) {
 	if s.access == nil {
 		return RepositoryAccess{}, ErrRepositoryAccessUnavailable
@@ -385,15 +413,23 @@ func (s *Service) RevokeRepositoryAccess(ctx context.Context, token string) erro
 }
 
 func (s *Service) githubToken(ctx context.Context, userID string) (string, string, error) {
+	token, login, _, err := s.githubTokenWithExpiry(ctx, userID)
+	return token, login, err
+}
+
+func (s *Service) githubTokenWithExpiry(ctx context.Context, userID string) (string, string, time.Time, error) {
 	row, err := s.db.Queries().GetGitHubToken(ctx, userID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", "", ErrNotConnected
+		return "", "", time.Time{}, ErrNotConnected
 	}
 	if err != nil {
-		return "", "", err
+		return "", "", time.Time{}, err
 	}
 	if missing := missingScopes(row.Scopes, s.requiredOAuthScopes()); len(missing) > 0 {
-		return "", "", ErrMissingScopes
+		return "", "", time.Time{}, ErrMissingScopes
+	}
+	if row.ExpiresAt.Valid && !row.ExpiresAt.Time.After(s.now().UTC().Add(time.Minute)) {
+		return "", "", time.Time{}, ErrNotConnected
 	}
 	token, err := secrets.Decrypt(s.cfg.Secrets.EncryptionKey, row.TokenCiphertext)
 	if errors.Is(err, secrets.ErrDecrypt) {
@@ -402,9 +438,13 @@ func (s *Service) githubToken(ctx context.Context, userID string) (string, strin
 		// not a provider outage — surface it as "not connected" so callers
 		// prompt the user to reconnect GitHub, which re-encrypts the token under
 		// the current key.
-		return "", "", ErrNotConnected
+		return "", "", time.Time{}, ErrNotConnected
 	}
-	return token, row.ProviderAccountLogin, err
+	expiresAt := time.Time{}
+	if row.ExpiresAt.Valid {
+		expiresAt = row.ExpiresAt.Time.UTC()
+	}
+	return token, row.ProviderAccountLogin, expiresAt, err
 }
 
 // GitHub App user access tokens are authorized by the App's configured

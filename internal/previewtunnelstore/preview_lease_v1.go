@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
+	"github.com/pinksaucepasta/paperboat-server/internal/teams"
 	"github.com/pinksaucepasta/paperboat-server/internal/tunnelcert"
 )
 
@@ -96,21 +97,22 @@ type RenewPreviewLeaseV1Result struct {
 }
 
 type StopPreviewLeaseV1Input struct {
-	OperationID        string
-	AuditEventID       string
-	AccountID          string
-	ActorID            string
-	ActorType          string
-	PreviewID          string
-	OwnerDeviceID      string
-	OwnerSessionID     string
-	ExpectedGeneration int64
-	RequestHash        []byte
-	IdempotencyKey     string
-	CorrelationID      string
-	RequestID          string
-	SourceDeviceID     string
-	Now                time.Time
+	ManagementAccountID string
+	OperationID         string
+	AuditEventID        string
+	AccountID           string
+	ActorID             string
+	ActorType           string
+	PreviewID           string
+	OwnerDeviceID       string
+	OwnerSessionID      string
+	ExpectedGeneration  int64
+	RequestHash         []byte
+	IdempotencyKey      string
+	CorrelationID       string
+	RequestID           string
+	SourceDeviceID      string
+	Now                 time.Time
 }
 
 type StopPreviewLeaseV1Result struct {
@@ -166,17 +168,50 @@ type ReconcilePreviewLeasesV1Result struct {
 	HasMore   bool
 }
 
-func (s *Store) VerifyPreviewLeaseOwnerV1(ctx context.Context, accountID, ownerDeviceID string) error {
+var ErrPreviewPublicationDenied = errors.New("machine management does not authorize public publication")
+
+const previewMachineAuthoritySQL = `SELECT m.user_id<>$1 OR m.owner_team_id IS NOT NULL
+ FROM paperboat.user_machines m WHERE m.id=$2 AND m.state='online' AND m.online
+ AND m.deleted_at IS NULL AND m.revoked_at IS NULL
+ AND m.configured_capabilities @> ARRAY['preview_launch']::text[]
+ AND paperboat.machine_capability_allowed($1,m.id,'preview_manage')`
+
+func verifyPreviewMachineAuthority(row interface{ Scan(...any) error }, accessMode string) (bool, error) {
+	var shared bool
+	if err := row.Scan(&shared); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, sql.ErrNoRows) {
+			return false, ErrOwnerNotFound
+		}
+		return false, err
+	}
+	if shared && accessMode == "public" {
+		return false, ErrPreviewPublicationDenied
+	}
+	return shared, nil
+}
+func (s *Store) VerifyPreviewLeaseOwnerV1(ctx context.Context, accountID, ownerDeviceID, accessMode string) (bool, error) {
 	if strings.TrimSpace(accountID) == "" || strings.TrimSpace(ownerDeviceID) == "" {
-		return ErrInvalidInput
+		return false, ErrInvalidInput
 	}
-	_, err := s.db.Queries().VerifyPreviewLeaseOwnerV1(ctx, dbsqlc.VerifyPreviewLeaseOwnerV1Params{
-		AccountID: accountID, OwnerDeviceID: ownerDeviceID,
-	})
+	return verifyPreviewMachineAuthority(s.db.Pool().QueryRow(ctx, previewMachineAuthoritySQL, accountID, ownerDeviceID), accessMode)
+}
+
+// ResolvePreviewLeaseMachineAccountV1 proves the enrollment issuer and exact
+// target before selecting the independent resource owner. It also permits
+// reading/stopping a revoked lease so its machine can clean up.
+func (s *Store) ResolvePreviewLeaseMachineAccountV1(ctx context.Context, issuer, machine, preview string) (string, error) {
+	var account string
+	err := s.db.Pool().QueryRow(ctx, `SELECT p.account_id FROM paperboat.preview_leases p JOIN paperboat.user_machines m ON m.id=p.owner_device_id WHERE p.id=$1 AND m.id=$2 AND m.user_id=$3 AND m.deleted_at IS NULL`, preview, machine, issuer).Scan(&account)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrOwnerNotFound
+		return "", ErrOwnerNotFound
 	}
-	return translate(err)
+	return account, err
+}
+
+func (s *Store) ResolvePreviewManagementAccountV1(ctx context.Context, actor, preview string) (string, error) {
+	var account string
+	err := s.db.Pool().QueryRow(ctx, `SELECT account_id FROM paperboat.preview_leases WHERE id=$2 AND paperboat.preview_management_allowed($1,id)`, actor, preview).Scan(&account)
+	return account, translate(err)
 }
 
 // GetPreviewLeaseV1 returns only the account-scoped row. A missing row and a
@@ -226,6 +261,12 @@ func (s *Store) CreatePreviewLeaseV1(ctx context.Context, input CreatePreviewLea
 	now := input.Now.UTC()
 	var result CreatePreviewLeaseV1Result
 	err := s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := teams.Lock(ctx, tx); err != nil {
+			return err
+		}
+		if _, err := verifyPreviewMachineAuthority(tx.QueryRow(ctx, previewMachineAuthoritySQL, input.AccountID, input.OwnerDeviceID), input.AccessMode); err != nil {
+			return err
+		}
 		q := tx.Queries()
 		operation, err := q.CreatePreviewTunnelOperation(ctx, dbsqlc.CreatePreviewTunnelOperationParams{
 			ID: input.OperationID, AccountID: input.AccountID, IdempotencyKey: input.IdempotencyKey,
@@ -419,6 +460,18 @@ func (s *Store) StopPreviewLeaseV1(ctx context.Context, input StopPreviewLeaseV1
 	now := input.Now.UTC()
 	var result StopPreviewLeaseV1Result
 	err := s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if input.ManagementAccountID != "" {
+			if err := teams.Lock(ctx, tx); err != nil {
+				return err
+			}
+			var allowed bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM preview_leases WHERE id=$1 AND account_id=$2 AND preview_management_allowed($3,id))`, input.PreviewID, input.AccountID, input.ManagementAccountID).Scan(&allowed); err != nil {
+				return err
+			}
+			if !allowed {
+				return ErrNotFound
+			}
+		}
 		q := tx.Queries()
 		operation, err := q.CreatePreviewTunnelOperation(ctx, dbsqlc.CreatePreviewTunnelOperationParams{
 			ID: input.OperationID, AccountID: input.AccountID, IdempotencyKey: input.IdempotencyKey,

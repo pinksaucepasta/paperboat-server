@@ -17,7 +17,14 @@ func TestPermissionImplications(t *testing.T) {
 	for _, tc := range []struct {
 		kind, grant, want string
 		yes               bool
-	}{{"env", "write", "read", true}, {"env", "read", "write", false}, {"env", "write", "manage", false}, {"preview", "use", "manage", false}, {"preview", "manage", "use", true}, {"lazy_policy", "manage", "use", true}, {"lazy_policy", "use", "manage", false}, {"lazy_policy", "manage", "execute", false}, {"tunnel", "manage", "execute", false}, {"tunnel", "write", "use", false}, {"personal", "manage", "use", false}} {
+	}{{"env", "write", "read", true}, {"env", "read", "write", false}, {"env", "write", "manage", false}, {"preview", "use", "manage", false}, {"preview", "manage", "use", true}, {"lazy_policy", "manage", "use", true}, {"lazy_policy", "use", "manage", false}, {"lazy_policy", "manage", "execute", false}, {"tunnel", "manage", "execute", false}, {"tunnel", "write", "use", false}, {"personal", "manage", "use", false},
+		// Inspector actions are exact-match only.
+		{"preview", "inspect", "inspect", true}, {"preview", "replay", "replay", true}, {"tunnel", "inspect", "inspect", true}, {"tunnel", "replay", "replay", true},
+		{"preview", "use", "inspect", false}, {"preview", "use", "replay", false}, {"preview", "manage", "inspect", false}, {"preview", "manage", "replay", false},
+		{"tunnel", "use", "inspect", false}, {"tunnel", "manage", "replay", false},
+		{"preview", "inspect", "replay", false}, {"preview", "replay", "inspect", false}, {"tunnel", "inspect", "replay", false},
+		{"preview", "inspect", "use", false}, {"preview", "inspect", "manage", false},
+		{"env", "write", "inspect", false}, {"lazy_policy", "manage", "inspect", false}, {"personal", "inspect", "inspect", false}} {
 		if got := permits(tc.kind, tc.grant, tc.want); got != tc.yes {
 			t.Errorf("%s %s -> %s: %v", tc.kind, tc.grant, tc.want, got)
 		}

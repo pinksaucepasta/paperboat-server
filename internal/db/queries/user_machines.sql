@@ -491,7 +491,7 @@ SET setup_roles = ARRAY(SELECT DISTINCT role FROM unnest(setup_roles || ARRAY['h
     runtime_versions = sqlc.arg(runtime_versions),
     updated_at = CASE WHEN NOT ('host' = ANY(setup_roles)) OR display_name IS DISTINCT FROM sqlc.arg(display_name) OR workspace_root IS DISTINCT FROM sqlc.arg(workspace_root) OR runtime_versions IS DISTINCT FROM sqlc.arg(runtime_versions) THEN now() ELSE updated_at END,
     version = version + CASE WHEN NOT ('host' = ANY(setup_roles)) OR display_name IS DISTINCT FROM sqlc.arg(display_name) OR workspace_root IS DISTINCT FROM sqlc.arg(workspace_root) OR runtime_versions IS DISTINCT FROM sqlc.arg(runtime_versions) THEN 1 ELSE 0 END
-WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND deleted_at IS NULL
+WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND machine_management_allowed(sqlc.arg(user_id),id) AND deleted_at IS NULL
 RETURNING *;
 
 -- name: AddUserMachineInteractiveRole :one
@@ -506,7 +506,7 @@ SET setup_roles = CASE WHEN sqlc.arg(setup_mode) = 'client' THEN ARRAY['interact
     display_name = sqlc.arg(display_name), runtime_versions = sqlc.arg(runtime_versions),
     updated_at = CASE WHEN setup_mode IS DISTINCT FROM sqlc.arg(setup_mode) OR NOT ('interactive' = ANY(setup_roles)) OR display_name IS DISTINCT FROM sqlc.arg(display_name) OR runtime_versions IS DISTINCT FROM sqlc.arg(runtime_versions) THEN now() ELSE updated_at END,
     version = version + CASE WHEN setup_mode IS DISTINCT FROM sqlc.arg(setup_mode) OR NOT ('interactive' = ANY(setup_roles)) OR display_name IS DISTINCT FROM sqlc.arg(display_name) OR runtime_versions IS DISTINCT FROM sqlc.arg(runtime_versions) THEN 1 ELSE 0 END
-WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND deleted_at IS NULL
+WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND machine_management_allowed(sqlc.arg(user_id),id) AND deleted_at IS NULL
 RETURNING *;
 
 -- name: RemoveUserMachineHostRole :one
@@ -515,7 +515,7 @@ SET setup_roles = array_remove(setup_roles, 'host'), state = 'offline', seat_sta
     setup_mode = 'client', configured_capabilities = ARRAY['file_receive','preview_launch']::text[], observed_capabilities = '{}'::text[],
     online = false, installation_generation = installation_generation + 1,
     updated_at = now(), version = version + 1
-WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND deleted_at IS NULL
+WHERE id = sqlc.arg(id) AND machine_management_allowed(sqlc.arg(user_id),id) AND deleted_at IS NULL
   AND 'host' = ANY(setup_roles)
 RETURNING *;
 
@@ -539,26 +539,26 @@ WHERE id = sqlc.arg(id) AND state = 'pending' AND expires_at > now();
 
 -- name: ListUserMachinesForUser :many
 SELECT * FROM user_machines
-WHERE user_id = sqlc.arg(user_id) AND deleted_at IS NULL
+WHERE (machine_management_allowed(sqlc.arg(user_id),id) OR EXISTS(SELECT 1 FROM unnest(ARRAY['terminal','exec','managed_ssh','files','preview_manage','tunnel_manage']) cap WHERE machine_capability_allowed(sqlc.arg(user_id),id,cap))) AND deleted_at IS NULL
 ORDER BY lower(display_name), id
 LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
 
 -- name: CountUserMachinesForUser :one
 SELECT count(*)::integer FROM user_machines
-WHERE user_id = sqlc.arg(user_id) AND deleted_at IS NULL;
+WHERE (machine_management_allowed(sqlc.arg(user_id),id) OR EXISTS(SELECT 1 FROM unnest(ARRAY['terminal','exec','managed_ssh','files','preview_manage','tunnel_manage']) cap WHERE machine_capability_allowed(sqlc.arg(user_id),id,cap))) AND deleted_at IS NULL;
 
 -- name: GetUserMachineForUser :one
 SELECT * FROM user_machines
-WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND deleted_at IS NULL;
+WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND owner_team_id IS NULL AND deleted_at IS NULL;
 
 -- name: GetUserMachineForUpdate :one
 SELECT * FROM user_machines
-WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND deleted_at IS NULL FOR UPDATE;
+WHERE id = sqlc.arg(id) AND machine_management_allowed(sqlc.arg(user_id),id) AND deleted_at IS NULL FOR UPDATE;
 
 -- name: RenameUserMachine :one
 UPDATE user_machines
 SET display_name = sqlc.arg(display_name), updated_at = now(), version = version + 1
-WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND deleted_at IS NULL
+WHERE id = sqlc.arg(id) AND machine_management_allowed(sqlc.arg(user_id),id) AND deleted_at IS NULL
 RETURNING *;
 
 -- name: GetUserMachineAvailabilityOperation :one
@@ -579,7 +579,7 @@ UPDATE user_machines
 SET availability_mode=sqlc.arg(mode),
     availability_desired_version=availability_desired_version+1,
     availability_status='pending', availability_error_code=NULL, updated_at=now()
-WHERE id=sqlc.arg(id) AND user_id=sqlc.arg(user_id) AND deleted_at IS NULL
+WHERE id=sqlc.arg(id) AND machine_management_allowed(sqlc.arg(user_id),id) AND deleted_at IS NULL
   AND seat_state='occupied' AND state NOT IN ('revoked','disconnected','deleted')
   AND availability_desired_version=sqlc.arg(expected_version);
 
@@ -669,7 +669,7 @@ SET configured_capabilities = sqlc.arg(configured_capabilities),
     capabilities_status = CASE WHEN online THEN 'pending' ELSE 'offline' END,
     capabilities_error_code = NULL,
     updated_at = now(), version = version + 1
-WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id)
+WHERE id = sqlc.arg(id) AND machine_management_allowed(sqlc.arg(user_id),id)
   AND capabilities_desired_version = sqlc.arg(expected_version)
   AND deleted_at IS NULL AND state NOT IN ('revoked','deleted');
 
@@ -862,13 +862,13 @@ SET state = sqlc.arg(state), online = false, seat_state = sqlc.arg(seat_state),
     revoked_at = CASE WHEN sqlc.arg(state) = 'revoked' THEN now() ELSE revoked_at END,
     disconnected_at = CASE WHEN sqlc.arg(state) = 'disconnected' THEN now() ELSE disconnected_at END,
     updated_at = now(), version = version + 1
-WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND deleted_at IS NULL;
+WHERE id = sqlc.arg(id) AND machine_management_allowed(sqlc.arg(user_id),id) AND deleted_at IS NULL;
 
 -- name: DeleteUserMachine :execrows
 UPDATE user_machines
 SET state = 'deleted', online = false, seat_state = 'released', deleted_at = now(),
     updated_at = now(), version = version + 1
-WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND deleted_at IS NULL;
+WHERE id = sqlc.arg(id) AND machine_management_allowed(sqlc.arg(user_id),id) AND deleted_at IS NULL;
 
 -- name: UpsertUserMachineBandwidthPeriod :one
 INSERT INTO user_machine_bandwidth_periods (
@@ -931,10 +931,12 @@ WHERE user_id = sqlc.arg(user_id)
 -- name: CreateUserMachineAccessSession :exec
 INSERT INTO user_machine_access_sessions (
   id, user_machine_id, user_id, environment_id, cli_client_session_id,
-  http_base_url, helper_terminal_session_id, helper_file_session_id, expires_at
+  http_base_url, helper_terminal_session_id, helper_file_session_id, expires_at, team_id, capabilities, operation_id,
+  terminal_session_id,terminal_role,terminal_grant_generation,terminal_binding_generation,terminal_membership_generation,terminal_team_generation
 ) VALUES (
   sqlc.arg(id), sqlc.arg(user_machine_id), sqlc.arg(user_id), sqlc.arg(environment_id), sqlc.arg(cli_client_session_id),
-  sqlc.arg(http_base_url), nullif(sqlc.arg(helper_terminal_session_id), ''), nullif(sqlc.arg(helper_file_session_id), ''), sqlc.arg(expires_at)
+  sqlc.arg(http_base_url), nullif(sqlc.arg(helper_terminal_session_id), ''), nullif(sqlc.arg(helper_file_session_id), ''), sqlc.arg(expires_at), sqlc.narg(team_id), sqlc.arg(capabilities), sqlc.arg(operation_id),
+  nullif(sqlc.arg(terminal_session_id),''),nullif(sqlc.arg(terminal_role),''),sqlc.narg(terminal_grant_generation),sqlc.narg(terminal_binding_generation),sqlc.narg(terminal_membership_generation),sqlc.narg(terminal_team_generation)
 );
 
 -- name: GetUserTransferDestinationDefault :one
@@ -971,13 +973,13 @@ SELECT EXISTS (
   UNION ALL
   SELECT 1 FROM user_machine_terminal_sessions s
   JOIN user_machines m ON m.id = s.user_machine_id
-  WHERE s.id = sqlc.arg(session_id) AND m.user_id = sqlc.arg(user_id) AND s.deleted_at IS NULL
+  WHERE s.id = sqlc.arg(session_id) AND s.owner_account = sqlc.arg(user_id) AND s.deleted_at IS NULL
 ) AS owned;
 
 -- name: GetUserMachineTerminalSessionHostForUser :one
 SELECT m.* FROM user_machine_terminal_sessions s
 JOIN user_machines m ON m.id = s.user_machine_id
-WHERE s.id = sqlc.arg(session_id) AND m.user_id = sqlc.arg(user_id)
+WHERE s.id = sqlc.arg(session_id) AND s.owner_account = sqlc.arg(user_id)
   AND s.deleted_at IS NULL AND m.deleted_at IS NULL;
 
 -- name: GetTerminalSessionTransferDestination :one
@@ -989,7 +991,7 @@ UNION ALL
 SELECT m.* FROM user_machine_terminal_sessions s
 JOIN user_machines owner ON owner.id = s.user_machine_id
 JOIN user_machines m ON m.id = s.transfer_destination_machine_id
-WHERE s.id = sqlc.arg(session_id) AND owner.user_id = sqlc.arg(user_id) AND s.deleted_at IS NULL
+WHERE s.id = sqlc.arg(session_id) AND s.owner_account = sqlc.arg(user_id) AND s.deleted_at IS NULL
 LIMIT 1;
 
 -- name: SetTerminalSessionTransferDestination :one
@@ -1006,7 +1008,7 @@ WITH destination AS (
 ), machine_updated AS (
   UPDATE user_machine_terminal_sessions s SET transfer_destination_machine_id = destination.id, version = s.version + 1, updated_at = now()
   FROM user_machines owner, destination
-  WHERE s.id = sqlc.arg(session_id) AND s.user_machine_id = owner.id AND owner.user_id = sqlc.arg(user_id) AND s.deleted_at IS NULL
+  WHERE s.id = sqlc.arg(session_id) AND s.user_machine_id = owner.id AND s.owner_account = sqlc.arg(user_id) AND s.deleted_at IS NULL
   RETURNING destination.id
 )
 SELECT m.* FROM user_machines m
@@ -1021,25 +1023,25 @@ WITH project_updated AS (
 ), machine_updated AS (
   UPDATE user_machine_terminal_sessions s SET transfer_destination_machine_id = NULL, version = s.version + 1, updated_at = now()
   FROM user_machines owner
-  WHERE s.id = sqlc.arg(session_id) AND s.user_machine_id = owner.id AND owner.user_id = sqlc.arg(user_id) AND s.deleted_at IS NULL
+  WHERE s.id = sqlc.arg(session_id) AND s.user_machine_id = owner.id AND s.owner_account = sqlc.arg(user_id) AND s.deleted_at IS NULL
   RETURNING s.id
 )
 SELECT id FROM project_updated UNION ALL SELECT id FROM machine_updated LIMIT 1;
 
 -- name: RevokeUserMachineAccessSessions :many
 UPDATE user_machine_access_sessions
-SET state = 'revoked', revoked_at = now(), revocation_reason = sqlc.arg(reason), updated_at = now()
+SET state = 'revoked', revoked_at = coalesce(revoked_at, now()), revocation_reason = sqlc.arg(reason), updated_at = now()
 WHERE user_machine_id = sqlc.arg(user_machine_id)
-  AND state = 'active'
+  AND (state = 'active' OR (state = 'revoked' AND helper_revoked_at IS NULL))
 RETURNING id, user_id, user_machine_id, environment_id, cli_client_session_id,
   http_base_url, coalesce(helper_terminal_session_id, '') AS helper_terminal_session_id,
   coalesce(helper_file_session_id, '') AS helper_file_session_id, revocation_reason;
 
 -- name: RevokeUserMachineAccessSessionsForUser :many
 UPDATE user_machine_access_sessions
-SET state = 'revoked', revoked_at = now(), revocation_reason = sqlc.arg(reason), updated_at = now()
+SET state = 'revoked', revoked_at = coalesce(revoked_at, now()), revocation_reason = sqlc.arg(reason), updated_at = now()
 WHERE user_id = sqlc.arg(user_id)
-  AND state = 'active'
+  AND (state = 'active' OR (state = 'revoked' AND helper_revoked_at IS NULL))
 RETURNING id, user_id, user_machine_id, environment_id, cli_client_session_id,
   http_base_url, coalesce(helper_terminal_session_id, '') AS helper_terminal_session_id,
   coalesce(helper_file_session_id, '') AS helper_file_session_id, revocation_reason;
@@ -1061,24 +1063,39 @@ WHERE id = sqlc.arg(id) AND state = 'revoked' AND helper_revoked_at IS NULL;
 SELECT s.* FROM user_machine_terminal_sessions s
 JOIN user_machines m ON m.id=s.user_machine_id
 WHERE s.id=sqlc.arg(id) AND s.user_machine_id=sqlc.arg(user_machine_id)
-  AND m.user_id=sqlc.arg(user_id) AND m.deleted_at IS NULL AND s.deleted_at IS NULL;
+  AND s.owner_account=sqlc.arg(user_id) AND machine_capability_allowed(sqlc.arg(user_id),m.id,'terminal') AND m.deleted_at IS NULL AND s.deleted_at IS NULL;
+
+-- name: GetUserMachineForSharedTerminalSession :one
+WITH target AS (
+ SELECT s.user_machine_id machine_id FROM user_machine_terminal_sessions s WHERE s.id=sqlc.arg(session_id) AND s.deleted_at IS NULL
+ UNION ALL
+ SELECT (SELECT m.id FROM user_machines m WHERE m.environment_id=s.project_id AND m.deleted_at IS NULL ORDER BY m.created_at DESC LIMIT 1) FROM project_terminal_sessions s WHERE s.id=sqlc.arg(session_id) AND s.deleted_at IS NULL
+)
+SELECT m.* FROM target JOIN user_machines m ON m.id=target.machine_id
+WHERE terminal_session_role(sqlc.arg(user_id),sqlc.arg(session_id)) IN ('viewer','interactive') AND m.deleted_at IS NULL;
+
+-- name: GetSharedUserMachineTerminalSession :one
+SELECT s.* FROM user_machine_terminal_sessions s WHERE s.id=sqlc.arg(session_id) AND s.deleted_at IS NULL AND terminal_session_role(sqlc.arg(user_id),s.id) IN ('viewer','interactive');
+
+-- name: GetSharedProjectTerminalSession :one
+SELECT s.* FROM project_terminal_sessions s WHERE s.id=sqlc.arg(session_id) AND s.deleted_at IS NULL AND terminal_session_role(sqlc.arg(user_id),s.id) IN ('viewer','interactive');
 
 -- name: ListUserMachineTerminalSessions :many
 SELECT s.* FROM user_machine_terminal_sessions s
 JOIN user_machines m ON m.id=s.user_machine_id
-WHERE s.user_machine_id=sqlc.arg(user_machine_id) AND m.user_id=sqlc.arg(user_id)
+WHERE s.user_machine_id=sqlc.arg(user_machine_id) AND s.owner_account=sqlc.arg(user_id) AND machine_capability_allowed(sqlc.arg(user_id),m.id,'terminal')
   AND m.deleted_at IS NULL AND s.deleted_at IS NULL
 ORDER BY s.is_default DESC, s.last_activity_at DESC NULLS LAST, s.name;
 
 -- name: GetUserMachineTerminalSessionByIdempotencyKey :one
 SELECT s.* FROM user_machine_terminal_sessions s
 JOIN user_machines m ON m.id=s.user_machine_id
-WHERE s.user_machine_id=sqlc.arg(user_machine_id) AND m.user_id=sqlc.arg(user_id)
+WHERE s.user_machine_id=sqlc.arg(user_machine_id) AND s.owner_account=sqlc.arg(user_id) AND machine_capability_allowed(sqlc.arg(user_id),m.id,'terminal')
   AND s.idempotency_key=sqlc.arg(idempotency_key) AND s.deleted_at IS NULL;
 
 -- name: LockUserMachineTerminalSessions :one
 SELECT id FROM user_machines
-WHERE id=sqlc.arg(user_machine_id) AND user_id=sqlc.arg(user_id) AND deleted_at IS NULL FOR UPDATE;
+WHERE id=sqlc.arg(user_machine_id) AND machine_capability_allowed(sqlc.arg(user_id),id,'terminal') AND deleted_at IS NULL FOR UPDATE;
 
 -- name: CountActiveUserMachineTerminalSessions :one
 SELECT count(*)::integer FROM user_machine_terminal_sessions
@@ -1086,7 +1103,7 @@ WHERE user_machine_id=sqlc.arg(user_machine_id) AND deleted_at IS NULL;
 
 -- name: SelectUserMachineTerminalSessionForEviction :one
 SELECT * FROM user_machine_terminal_sessions
-WHERE user_machine_id=sqlc.arg(user_machine_id) AND deleted_at IS NULL AND NOT is_default
+WHERE user_machine_id=sqlc.arg(user_machine_id) AND owner_account=sqlc.arg(owner_account) AND deleted_at IS NULL AND NOT is_default
 ORDER BY (desired_state='closed') DESC,
          coalesce(last_activity_at,updated_at,created_at) ASC,
          created_at ASC,
@@ -1098,8 +1115,8 @@ SELECT coalesce(max(auto_name_ordinal),0)::integer+1 FROM user_machine_terminal_
 WHERE user_machine_id=sqlc.arg(user_machine_id);
 
 -- name: CreateUserMachineTerminalSession :execrows
-INSERT INTO user_machine_terminal_sessions (id,user_machine_id,terminal_id,name,auto_name_ordinal,idempotency_key,launch_cwd)
-VALUES (sqlc.arg(id),sqlc.arg(user_machine_id),sqlc.arg(terminal_id),sqlc.arg(name),nullif(sqlc.arg(auto_name_ordinal),0),sqlc.arg(idempotency_key),sqlc.arg(launch_cwd))
+INSERT INTO user_machine_terminal_sessions (id,user_machine_id,owner_account,terminal_id,name,auto_name_ordinal,idempotency_key,launch_cwd)
+VALUES (sqlc.arg(id),sqlc.arg(user_machine_id),sqlc.arg(owner_account),sqlc.arg(terminal_id),sqlc.arg(name),nullif(sqlc.arg(auto_name_ordinal),0),sqlc.arg(idempotency_key),sqlc.arg(launch_cwd))
 ON CONFLICT DO NOTHING;
 
 -- name: RenameUserMachineTerminalSession :execrows
@@ -1131,7 +1148,7 @@ SELECT EXISTS (
 
 -- name: ListDueUserMachineTerminalSessionOperations :many
 SELECT o.id,o.user_machine_id,o.terminal_session_id,o.operation,o.attempts,
-  m.user_id,m.environment_id,coalesce((SELECT 'https://' || r.public_host
+  s.owner_account AS user_id,m.environment_id,coalesce((SELECT 'https://' || r.public_host
     FROM control_routes r
     JOIN control_environments e ON e.id = r.environment_id
     JOIN control_connector_generations c ON c.environment_id = r.environment_id AND c.connector_id = r.connector_id
@@ -1151,7 +1168,7 @@ ORDER BY o.created_at LIMIT sqlc.arg(batch_size);
 
 -- name: ListPendingUserMachineTerminalSessionOperations :many
 SELECT o.id,o.user_machine_id,o.terminal_session_id,o.operation,o.attempts,
-  m.user_id,m.environment_id,coalesce((SELECT 'https://' || r.public_host
+  s.owner_account AS user_id,m.environment_id,coalesce((SELECT 'https://' || r.public_host
     FROM control_routes r
     JOIN control_environments e ON e.id = r.environment_id
     JOIN control_connector_generations c ON c.environment_id = r.environment_id AND c.connector_id = r.connector_id
@@ -1193,3 +1210,14 @@ WHERE id = sqlc.arg(id) AND environment_id = sqlc.arg(environment_id)
   AND (relay_latency_worker_generation < sqlc.arg(worker_generation)
     OR (relay_latency_worker_generation = sqlc.arg(worker_generation)
       AND relay_latency_generation < sqlc.arg(vector_generation)));
+
+-- name: GetUserMachineForCapability :one
+SELECT m.* FROM user_machines m
+WHERE m.id=sqlc.arg(id) AND m.deleted_at IS NULL
+AND machine_capability_allowed(sqlc.arg(user_id),m.id,sqlc.arg(capability));
+
+-- name: GetVisibleUserMachine :one
+SELECT m.* FROM user_machines m WHERE m.id=sqlc.arg(id) AND m.deleted_at IS NULL
+AND (machine_management_allowed(sqlc.arg(user_id),m.id) OR EXISTS(
+ SELECT 1 FROM unnest(ARRAY['terminal','exec','managed_ssh','files','preview_manage','tunnel_manage']) capability
+ WHERE machine_capability_allowed(sqlc.arg(user_id),m.id,capability)));

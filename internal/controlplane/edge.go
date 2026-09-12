@@ -716,6 +716,7 @@ func (s *EdgeService) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/edge/assignments/current", s.handleAssignment)
 	mux.HandleFunc("POST /v1/edge/routes/desired-state", s.handleRoutes)
 	mux.HandleFunc("POST /v1/edge/ingress/desired-state", s.handleIngress)
+	mux.HandleFunc("POST /v1/edge/inspector/access", s.handleInspectorAccess)
 	mux.HandleFunc("POST /v1/edge/routes/observations", s.handleObservedRoutes)
 	mux.HandleFunc("POST /v1/edge/usage-reports", s.handleUsage)
 	mux.HandleFunc("GET /v1/trust/revocations", s.handleRevocations)

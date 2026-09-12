@@ -28,16 +28,33 @@ type Client struct {
 }
 
 type Snapshot struct {
-	ID                                    string      `json:"id"`
-	Name                                  string      `json:"name"`
-	CWD                                   string      `json:"cwd"`
-	Dimensions                            Dimensions  `json:"dimensions"`
-	State                                 string      `json:"state"`
-	Generation                            uint64      `json:"generation"`
-	EarliestSequence                      uint64      `json:"earliest_sequence"`
-	LatestSequence                        uint64      `json:"latest_sequence"`
-	Exit                                  *ExitResult `json:"exit,omitempty"`
-	EligibleTransferDestinationMachineIDs []string    `json:"eligible_transfer_destination_machine_ids,omitempty"`
+	ID                                    string        `json:"id"`
+	Name                                  string        `json:"name"`
+	CWD                                   string        `json:"cwd"`
+	Dimensions                            Dimensions    `json:"dimensions"`
+	State                                 string        `json:"state"`
+	Generation                            uint64        `json:"generation"`
+	EarliestSequence                      uint64        `json:"earliest_sequence"`
+	LatestSequence                        uint64        `json:"latest_sequence"`
+	Exit                                  *ExitResult   `json:"exit,omitempty"`
+	EligibleTransferDestinationMachineIDs []string      `json:"eligible_transfer_destination_machine_ids,omitempty"`
+	Participants                          []Participant `json:"participants,omitempty"`
+	TerminalModes                         TerminalModes `json:"terminal_modes"`
+}
+
+type TerminalModes struct {
+	BracketedPaste    bool `json:"bracketed_paste"`
+	ApplicationCursor bool `json:"application_cursor"`
+	MouseTracking     bool `json:"mouse_tracking"`
+	AlternateScreen   bool `json:"alternate_screen"`
+}
+
+type Participant struct {
+	AttachmentID string    `json:"attachment_id"`
+	AccountID    string    `json:"account_id"`
+	ClientID     string    `json:"client_id"`
+	Role         string    `json:"role"`
+	ConnectedAt  time.Time `json:"connected_at"`
 }
 
 type Dimensions struct {
@@ -182,11 +199,28 @@ func (c Client) Terminal(ctx context.Context, route, credential, action, session
 			return Snapshot{ID: sessionID, State: "deleted"}, nil
 		}
 		var snapshot Snapshot
-		if decodeStrict(envelope.Result, &snapshot) != nil || snapshot.ID != sessionID {
+		if decodeStrict(envelope.Result, &snapshot) != nil || snapshot.ID != sessionID || !validParticipants(snapshot.Participants) {
 			return Snapshot{}, errors.New("helper runtime returned an invalid terminal snapshot")
 		}
 		return snapshot, nil
 	}
+}
+
+func validParticipants(participants []Participant) bool {
+	if len(participants) > 128 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(participants))
+	for _, participant := range participants {
+		if participant.AttachmentID == "" || participant.AccountID == "" || participant.ClientID == "" || participant.ConnectedAt.IsZero() || (participant.Role != "owner" && participant.Role != "viewer" && participant.Role != "interactive") {
+			return false
+		}
+		if _, ok := seen[participant.AttachmentID]; ok {
+			return false
+		}
+		seen[participant.AttachmentID] = struct{}{}
+	}
+	return true
 }
 
 func runtimeEndpoint(route string) (string, error) {

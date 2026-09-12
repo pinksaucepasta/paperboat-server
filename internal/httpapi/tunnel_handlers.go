@@ -56,7 +56,7 @@ func tunnelCreate(service tunnelv1.API, identities machineRequestVerifier) http.
 				writePreviewTunnelError(w, r, http.StatusUnauthorized, "unauthenticated", "Authentication is required.", "unchanged", false, "authenticate")
 				return
 			}
-			writePreviewTunnelError(w, r, http.StatusUnauthorized, "machine_identity_required", "A signed host identity is required to create a tunnel.", "unchanged", false, "run_on_authorized_host")
+			writePreviewTunnelError(w, r, http.StatusUnauthorized, "machine_identity_required", "Create tunnels on the enrolled target with its local Paperboat runtime. Shared machine grants allow existing private/team tunnel management, not remote creation.", "unchanged", false, "run_on_authorized_host")
 			return
 		}
 		result, err := service.CreateTunnel(r.Context(), request, tunnelv1.CreateTunnelRequest{
@@ -89,7 +89,7 @@ func tunnelMachineHeadersPresent(r *http.Request) bool {
 // manufacture a browser principal or use a CLI client-session ID as HostID.
 func tunnelMachineRequestContext(w http.ResponseWriter, r *http.Request, body []byte, idempotencyKey string, identities machineRequestVerifier) (previewtunnelapi.RequestContext, bool) {
 	if identities == nil {
-		writePreviewTunnelError(w, r, http.StatusUnauthorized, "machine_identity_required", "A signed host identity is required to create a tunnel.", "unchanged", false, "run_on_authorized_host")
+		writePreviewTunnelError(w, r, http.StatusUnauthorized, "machine_identity_required", "Create tunnels on the enrolled target with its local Paperboat runtime. Shared machine grants allow existing private/team tunnel management, not remote creation.", "unchanged", false, "run_on_authorized_host")
 		return previewtunnelapi.RequestContext{}, false
 	}
 	bearer, bearerOK := bearerToken(r)
@@ -420,6 +420,8 @@ func writeTunnelMutation(w http.ResponseWriter, result tunnelv1.MutationResult, 
 
 func writeTunnelError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, tunnelv1.ErrMachinePublicationDenied):
+		writePreviewTunnelError(w, r, http.StatusForbidden, "publication_not_granted", "Machine management permits existing private/team tunnels. Public publication and connector enrollment require an explicit target-local owner action.", "unchanged", false, "use_target_local_owner")
 	case errors.Is(err, previewtunnelapi.ErrIfMatchRequired):
 		writePreviewTunnelError(w, r, http.StatusPreconditionRequired, "if_match_required", "If-Match is required for this tunnel mutation.", "unchanged", false, "fetch_current_tunnel")
 	case errors.Is(err, previewtunnelapi.ErrInvalidETag):

@@ -2321,11 +2321,11 @@ func TestConnectIssuesEnvironmentBoundDescriptor(t *testing.T) {
 		t.Fatal(err)
 	}
 	terminalSessionID := "umts_connect_" + suffix
-	if _, err := store.Queries().CreateUserMachineTerminalSession(ctx, dbsqlc.CreateUserMachineTerminalSessionParams{ID: terminalSessionID, UserMachineID: userMachineID, TerminalID: "term_connect_" + suffix, Name: "bright-beacon", LaunchCwd: "/Users/paperboat"}); err != nil {
+	if _, err := store.Queries().CreateUserMachineTerminalSession(ctx, dbsqlc.CreateUserMachineTerminalSessionParams{OwnerAccount: userID, ID: terminalSessionID, UserMachineID: userMachineID, TerminalID: "term_connect_" + suffix, Name: "bright-beacon", LaunchCwd: "/Users/paperboat"}); err != nil {
 		t.Fatal(err)
 	}
 	staleSessionID := "umts_stale_" + suffix
-	if _, err := store.Queries().CreateUserMachineTerminalSession(ctx, dbsqlc.CreateUserMachineTerminalSessionParams{ID: staleSessionID, UserMachineID: userMachineID, TerminalID: "term_stale_" + suffix, Name: "stale", LaunchCwd: "/Users/paperboat"}); err != nil {
+	if _, err := store.Queries().CreateUserMachineTerminalSession(ctx, dbsqlc.CreateUserMachineTerminalSessionParams{OwnerAccount: userID, ID: staleSessionID, UserMachineID: userMachineID, TerminalID: "term_stale_" + suffix, Name: "stale", LaunchCwd: "/Users/paperboat"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Queries().QueueUserMachineTerminalSessionOperation(ctx, dbsqlc.QueueUserMachineTerminalSessionOperationParams{ID: "umtso_stale_" + suffix, UserMachineID: userMachineID, TerminalSessionID: staleSessionID, Operation: "delete_history"}); err != nil {
@@ -2532,7 +2532,7 @@ func TestTransferDefaultsAndBrokerPreserveMachineOwnershipAndRouteHost(t *testin
 	addRoute(destination, "destination-"+suffix+".example.test")
 	addRoute(host, "host-"+suffix+".example.test")
 	sessionID := "umts_transfer_" + suffix
-	if _, err := store.Queries().CreateUserMachineTerminalSession(ctx, dbsqlc.CreateUserMachineTerminalSessionParams{ID: sessionID, UserMachineID: host.id, TerminalID: "term_" + suffix, Name: "transfer", LaunchCwd: "/home/test"}); err != nil {
+	if _, err := store.Queries().CreateUserMachineTerminalSession(ctx, dbsqlc.CreateUserMachineTerminalSessionParams{OwnerAccount: userID, ID: sessionID, UserMachineID: host.id, TerminalID: "term_" + suffix, Name: "transfer", LaunchCwd: "/home/test"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2641,7 +2641,7 @@ func TestDisconnectRevokesMintedHelperSessionsAndRetriesOfflineConnector(t *test
 		t.Fatal(err)
 	}
 	terminalSessionID := "umts_revoke_" + suffix
-	if _, err := store.Queries().CreateUserMachineTerminalSession(ctx, dbsqlc.CreateUserMachineTerminalSessionParams{ID: terminalSessionID, UserMachineID: userMachineID, TerminalID: "term_revoke_" + suffix, Name: "bright-beacon", LaunchCwd: "/Users/paperboat"}); err != nil {
+	if _, err := store.Queries().CreateUserMachineTerminalSession(ctx, dbsqlc.CreateUserMachineTerminalSessionParams{OwnerAccount: userID, ID: terminalSessionID, UserMachineID: userMachineID, TerminalID: "term_revoke_" + suffix, Name: "bright-beacon", LaunchCwd: "/Users/paperboat"}); err != nil {
 		t.Fatal(err)
 	}
 	issuer := &recordingIssuer{}
@@ -2691,8 +2691,14 @@ WHERE e.id=$1`, environmentID).Scan(&environmentState, &helperState, &enrollment
 	if err := store.SQL().QueryRowContext(ctx, `SELECT helper_revoked_at IS NOT NULL FROM paperboat.user_machine_access_sessions WHERE user_machine_id=$1`, userMachineID).Scan(&propagated); err != nil {
 		t.Fatal(err)
 	}
-	if !propagated || len(issuer.revocations) != 2 {
-		t.Fatalf("propagated=%v revocations=%d, want true and 2", propagated, len(issuer.revocations))
+	fixtureRevocations := 0
+	for _, revocation := range issuer.revocations {
+		if revocation.EnvironmentID == environmentID {
+			fixtureRevocations++
+		}
+	}
+	if !propagated || fixtureRevocations != 2 {
+		t.Fatalf("propagated=%v fixture revocations=%d, want true and 2", propagated, fixtureRevocations)
 	}
 }
 

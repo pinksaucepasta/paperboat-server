@@ -14,6 +14,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
+	"github.com/pinksaucepasta/paperboat-server/internal/teams"
 )
 
 const AvailabilityPolicySchemaV1 = "paperboat.availability-policy/v1"
@@ -79,6 +80,16 @@ func (s *Service) SetAvailabilityPolicy(ctx context.Context, userID, userMachine
 	requestHash := sha256.Sum256(requestBody)
 	var result AvailabilityPolicy
 	err := s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := teams.Lock(ctx, tx); err != nil {
+			return err
+		}
+		machine, err := tx.Queries().GetUserMachineForUpdate(ctx, dbsqlc.GetUserMachineForUpdateParams{ID: userMachineID, UserID: userID})
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
 		operation, err := tx.Queries().GetUserMachineAvailabilityOperation(ctx, dbsqlc.GetUserMachineAvailabilityOperationParams{UserID: userID, UserMachineID: userMachineID, IdempotencyKey: idempotencyKey})
 		if err == nil {
 			if !bytes.Equal(operation.RequestHash, requestHash[:]) || json.Unmarshal(operation.Result, &result) != nil {
@@ -87,13 +98,6 @@ func (s *Service) SetAvailabilityPolicy(ctx context.Context, userID, userMachine
 			return nil
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		machine, err := tx.Queries().GetUserMachineForUpdate(ctx, dbsqlc.GetUserMachineForUpdateParams{ID: userMachineID, UserID: userID})
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrNotFound
-		}
-		if err != nil {
 			return err
 		}
 		if machine.AvailabilityDesiredVersion != expectedVersion {

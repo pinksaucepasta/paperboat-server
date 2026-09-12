@@ -60,7 +60,9 @@ type AttachmentReadiness interface {
 // mutations remain transactional in previewtunnelstore, while policy tests
 // can use a deterministic fake without PostgreSQL.
 type Repository interface {
-	VerifyPreviewLeaseOwnerV1(context.Context, string, string) error
+	ResolvePreviewManagementAccountV1(context.Context, string, string) (string, error)
+	VerifyPreviewLeaseOwnerV1(context.Context, string, string, string) (bool, error)
+	ResolvePreviewLeaseMachineAccountV1(context.Context, string, string, string) (string, error)
 	GetPreviewLeaseV1(context.Context, string, string) (previewtunnelstore.PreviewLeaseRecord, error)
 	GetPreviewLeaseCreateOperationV1(context.Context, string, string) (dbsqlc.Operation, error)
 	ListPreviewLeasesV1(context.Context, previewtunnelstore.ListPreviewLeasesV1Input) ([]previewtunnelstore.PreviewLeaseRecord, error)
@@ -280,7 +282,8 @@ func (s *Service) Create(ctx context.Context, request previewtunnelapi.RequestCo
 	if err := ensureCreateOwner(request.Actor, input.OwnerDeviceID, input.OwnerSessionID); err != nil {
 		return CreateResult{}, err
 	}
-	if err := s.repository.VerifyPreviewLeaseOwnerV1(ctx, request.Actor.AccountID, strings.TrimSpace(input.OwnerDeviceID)); err != nil {
+	shared, err := s.repository.VerifyPreviewLeaseOwnerV1(ctx, request.Actor.AccountID, strings.TrimSpace(input.OwnerDeviceID), normalizedAccessMode(input.AccessMode))
+	if err != nil {
 		return CreateResult{}, err
 	}
 	now := s.now().UTC()
@@ -292,6 +295,9 @@ func (s *Service) Create(ctx context.Context, request previewtunnelapi.RequestCo
 		return CreateResult{}, fmt.Errorf("%w: target is not valid for its scheme and access mode", ErrInvalidInput)
 	}
 	leaseDeadline, userDeadline, err := s.deadlines(now, input.ExpiresAt)
+	if shared && leaseDeadline.After(now.Add(5*time.Minute)) {
+		leaseDeadline = now.Add(5 * time.Minute)
+	}
 	if err != nil {
 		return CreateResult{}, err
 	}
@@ -488,6 +494,11 @@ func (s *Service) Get(ctx context.Context, request previewtunnelapi.RequestConte
 	if strings.TrimSpace(previewID) == "" {
 		return PreviewResult{}, fmt.Errorf("%w: preview ID is required", ErrInvalidInput)
 	}
+	request, accountErr := s.managementLeaseRequest(ctx, request, previewID)
+	if accountErr != nil {
+		return PreviewResult{}, accountErr
+	}
+
 	lease, err := s.repository.GetPreviewLeaseV1(ctx, request.Actor.AccountID, previewID)
 	if err != nil {
 		return PreviewResult{}, err
@@ -563,6 +574,11 @@ func (s *Service) Renew(ctx context.Context, request previewtunnelapi.RequestCon
 	if normalizeErr != nil {
 		return RenewResult{}, normalizeErr
 	}
+	request, accountErr := s.machineLeaseRequest(ctx, request, previewID)
+	if accountErr != nil {
+		return RenewResult{}, accountErr
+	}
+
 	current, err := s.repository.GetPreviewLeaseV1(ctx, request.Actor.AccountID, previewID)
 	if err != nil {
 		return RenewResult{}, err
@@ -570,8 +586,15 @@ func (s *Service) Renew(ctx context.Context, request previewtunnelapi.RequestCon
 	if err := ensureRenewCanManage(request, current, mutation.OwnerSessionID); err != nil {
 		return RenewResult{}, err
 	}
+	shared, authorityErr := s.repository.VerifyPreviewLeaseOwnerV1(ctx, current.AccountID, current.OwnerDeviceID, current.AccessMode)
+	if authorityErr != nil {
+		return RenewResult{}, authorityErr
+	}
 	now := s.now().UTC()
 	newDeadline := now.Add(s.leaseDuration)
+	if shared && newDeadline.After(now.Add(5*time.Minute)) {
+		newDeadline = now.Add(5 * time.Minute)
+	}
 	if current.UserDeadline.Valid && newDeadline.After(current.UserDeadline.Time) {
 		newDeadline = current.UserDeadline.Time
 	}
@@ -620,12 +643,23 @@ func (s *Service) Stop(ctx context.Context, request previewtunnelapi.RequestCont
 	if normalizeErr != nil {
 		return StopResult{}, normalizeErr
 	}
+	managementAccount := request.Actor.AccountID
+	if request.Actor.HostID != "" {
+		managementAccount = ""
+	}
+	request, accountErr := s.managementLeaseRequest(ctx, request, previewID)
+	if accountErr != nil {
+		return StopResult{}, accountErr
+	}
+
 	current, err := s.repository.GetPreviewLeaseV1(ctx, request.Actor.AccountID, previewID)
 	if err != nil {
 		return StopResult{}, err
 	}
-	if err := ensureStopCanManage(request, current); err != nil {
-		return StopResult{}, err
+	if managementAccount == "" {
+		if err := ensureStopCanManage(request, current); err != nil {
+			return StopResult{}, err
+		}
 	}
 	operationID, err := s.newID("op")
 	if err != nil {
@@ -640,7 +674,8 @@ func (s *Service) Stop(ctx context.Context, request previewtunnelapi.RequestCont
 		requestHash = hashMutationRequest(previewID, mutation.ExpectedGeneration, nil)
 	}
 	result, err := s.repository.StopPreviewLeaseV1(ctx, previewtunnelstore.StopPreviewLeaseV1Input{
-		OperationID: operationID, AuditEventID: auditID, AccountID: request.Actor.AccountID, ActorID: request.Actor.ActorID, ActorType: actorType(request.Actor),
+		ManagementAccountID: managementAccount,
+		OperationID:         operationID, AuditEventID: auditID, AccountID: request.Actor.AccountID, ActorID: request.Actor.ActorID, ActorType: actorType(request.Actor),
 		PreviewID: previewID, ExpectedGeneration: mutation.ExpectedGeneration, IdempotencyKey: mutation.IdempotencyKey,
 		OwnerDeviceID: current.OwnerDeviceID, OwnerSessionID: current.OwnerSessionID, RequestHash: requestHash[:],
 		CorrelationID: request.CorrelationID, RequestID: request.RequestID, SourceDeviceID: request.Actor.DeviceID, Now: s.now().UTC(),
@@ -757,9 +792,17 @@ func (s *Service) ObserveDeviceReadiness(ctx context.Context, request previewtun
 	if err != nil {
 		return PreviewResult{}, err
 	}
+	request, accountErr := s.machineLeaseRequest(ctx, request, previewID)
+	if accountErr != nil {
+		return PreviewResult{}, accountErr
+	}
+
 	current, err := s.repository.GetPreviewLeaseV1(ctx, request.Actor.AccountID, previewID)
 	if err != nil {
 		return PreviewResult{}, err
+	}
+	if _, authorityErr := s.repository.VerifyPreviewLeaseOwnerV1(ctx, current.AccountID, current.OwnerDeviceID, current.AccessMode); authorityErr != nil {
+		return PreviewResult{}, authorityErr
 	}
 	operation, err := s.repository.GetPreviewLeaseCreateOperationV1(ctx, request.Actor.AccountID, previewID)
 	if err != nil {
@@ -768,7 +811,7 @@ func (s *Service) ObserveDeviceReadiness(ctx context.Context, request previewtun
 	if operation.ID != strings.TrimSpace(operationID) || operation.OperationType != "preview.create" || operation.ResourceKind != "preview_lease" || !operation.ResourceID.Valid || operation.ResourceID.String != previewID {
 		return PreviewResult{}, ErrOwnerDenied
 	}
-	if current.OwnerDeviceID != ownerDeviceID || current.OwnerSessionID != ownerSessionID || current.ActorID != request.Actor.ActorID {
+	if current.OwnerDeviceID != ownerDeviceID || current.OwnerSessionID != ownerSessionID {
 		return PreviewResult{}, ErrOwnerDenied
 	}
 	if s.attachmentReadiness == nil {
@@ -1232,4 +1275,42 @@ func (c *cursorCodec) Decode(raw, accountID string) (previewCursor, error) {
 		return previewCursor{}, previewtunnelapi.ErrInvalidCursor
 	}
 	return value, nil
+}
+
+// Management resolves the persisted owner from the authenticated actor's current
+// machine grant. Machine proofs instead identify the exact target for cleanup.
+func (s *Service) managementLeaseRequest(ctx context.Context, request previewtunnelapi.RequestContext, preview string) (previewtunnelapi.RequestContext, error) {
+	if request.Actor.HostID != "" {
+		return s.machineLeaseRequest(ctx, request, preview)
+	}
+	account, err := s.repository.ResolvePreviewManagementAccountV1(ctx, request.Actor.AccountID, preview)
+	if err != nil {
+		return request, err
+	}
+	request.Actor.AccountID = account
+	return request, nil
+}
+
+// Machine proofs retain the enrollment issuer while the lease retains its
+// creator's account. Resource ownership is never taken from request JSON.
+func (s *Service) machineLeaseRequest(ctx context.Context, request previewtunnelapi.RequestContext, preview string) (previewtunnelapi.RequestContext, error) {
+	machine := request.Actor.DeviceID
+	if request.Actor.HostID != "" {
+		if machine != "" && machine != request.Actor.HostID {
+			return request, ErrOwnerDenied
+		}
+		machine = request.Actor.HostID
+	}
+	if machine == "" {
+		return request, nil
+	}
+	account, err := s.repository.ResolvePreviewLeaseMachineAccountV1(ctx, request.Actor.AccountID, machine, preview)
+	if errors.Is(err, previewtunnelstore.ErrOwnerNotFound) {
+		return request, ErrOwnerDenied
+	}
+	if err != nil {
+		return request, err
+	}
+	request.Actor.AccountID = account
+	return request, nil
 }

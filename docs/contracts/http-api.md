@@ -105,6 +105,27 @@ CLI project reads and connects use scoped Paperboat bearer access tokens.
 - `POST /v1/billing/customer-portal`
 - `POST /v1/webhooks/polar`
 
+### Teams
+
+- `GET /v1/teams/{team_id}` returns the current team state, including `env_status` as
+  `not_initialized`, `ready`, `rotation_pending`, or `deleted`. A role never grants ENV
+  decryption by itself.
+- `GET /v1/teams/{team_id}/activity?cursor={opaque}&limit={integer}` returns
+  `{items,next_cursor}`. Each item contains `id`, `actor_account`, `action`, `created_at`,
+  and allowlisted `metadata`; `action` omits the stored `team.` prefix. `limit` defaults
+  to 50 and is capped at 200. The cursor is opaque and scoped to the selected team.
+- Every activity page rechecks current membership and permits only the active owner or an
+  active admin. Removed members, ordinary members, and deleted teams cannot read activity.
+  Activity remains visible for 90 days and expired rows are physically removed in bounded
+  batches. Payload contents, ENV secrets, terminal contents, keystrokes, and file contents
+  are excluded from activity metadata.
+
+The CLI surfaces these contracts through `pb team get` (`env_status`) and
+`pb team activity TEAM [--limit N] [--cursor CURSOR] [--json]`. The dashboard exposes
+activity only to current owners/admins and shows actionable ENV rotation-pending state.
+Lifecycle details are in the CLI [`team-lifecycle.md`](../../../paperboat/docs/team-lifecycle.md)
+guide.
+
 ### Configuration Sync
 
 - `GET /v1/config-sync/status` requires an authenticated account with an active entitlement and
@@ -112,6 +133,15 @@ CLI project reads and connects use scoped Paperboat bearer access tokens.
   repository, revision, conflict, and recovery state. Stale helper observations are `offline`;
   unassigned environments are `disabled`. Policy reports the server rollout mode
   (`disabled`, `read_only`, or `leased_writes`) and whether BYOD is enabled.
+- `PUT /v1/machines/{machine_id}/config-assignment` accepts independent
+  `pull_repository_id` and `push_repository_id` targets plus explicit `automatic_updates`.
+  Personal targets belong to the authenticated account. `POST .../approve` binds approval
+  to the exact currently observed pull revision and assignment version; stale revisions fail.
+- `GET|PUT|DELETE /v1/teams/{team_id}/config-default` exposes the owner/admin-managed
+  default pull repository identity. `GET|PUT|DELETE /v1/config-sync/team-default-adoption`
+  exposes the current account's single explicit adoption. Adoption succeeds only when the
+  active member has independently connected the same provider repository. Defaults never
+  contain credentials or push targets, and PB membership changes do not revoke provider access.
 - `GET|PUT|DELETE /v1/config-sync/overrides` lists and changes exact account-path overrides.
   Mandatory exclusions return `mandatory_exclusion` and cannot be weakened.
 - `POST /v1/config-sync/recovery-key/export` and `/rotate` require CSRF plus a short-lived,
@@ -134,6 +164,16 @@ CLI project reads and connects use scoped Paperboat bearer access tokens.
   than its enclosing sample is persisted as a sanitized `status_clock_invalid` error at sample time,
   allowing later clock-corrected status to replace it. Paths and errors are sanitized and bounded;
   file contents, credentials, and raw command output are never accepted or persisted.
+- The same endpoint accepts a join-only `terminal_join` observation containing
+  `access_session_id`, `terminal_session_id`, and `attachment_id` alongside the required
+  `environment_id`, `resource_id`, `reporter_version`, and `sampled_at` envelope fields.
+  `environment_id`, `resource_id`, and `sampled_at` are required; the native runtime also
+  sends its `reporter_version`. The observation requires
+  the current signed machine proof and exact current team, membership, binding, grant, access,
+  and terminal-role generations. Success returns HTTP 202 with `{data:{recorded:true}}`.
+  Malformed or mixed observations return 400, invalid current terminal access returns 403,
+  and unavailable durable audit recording returns 503. This metadata-only event is distinct
+  from `terminal_session_access_authorized` and never records terminal contents.
 - An initial environment observation may accompany runtime diagnostics before
   `environment_injection` is advertised. It must be `pending` with null authority,
   global, and machine cursors and every required observation member. Normal machine

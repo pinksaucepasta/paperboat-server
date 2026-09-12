@@ -9,12 +9,13 @@ import (
 )
 
 var (
-	ErrInvalid   = errors.New("invalid team request")
-	ErrForbidden = errors.New("team permission denied")
-	ErrNotFound  = errors.New("team resource not found")
-	ErrConflict  = errors.New("team changed; refresh and retry")
-	ErrExpired   = errors.New("team invitation expired or already used")
-	ErrLimit     = errors.New("team capacity reached")
+	ErrInvalid            = errors.New("invalid team request")
+	ErrForbidden          = errors.New("team permission denied")
+	ErrNotFound           = errors.New("team resource not found")
+	ErrConflict           = errors.New("team changed; refresh and retry")
+	ErrMachinePublication = errors.New("stop public previews and make public tunnels private/team or delete them before transferring this machine")
+	ErrExpired            = errors.New("team invitation expired or already used")
+	ErrLimit              = errors.New("team capacity reached")
 )
 
 const MaximumMembers = 128
@@ -46,12 +47,48 @@ type Grant struct {
 	Active       bool   `json:"active"`
 }
 type Team struct {
-	TeamID       string   `json:"team_id"`
-	OwnerAccount string   `json:"owner_account"`
-	Generation   uint64   `json:"generation"`
-	Deleted      bool     `json:"deleted"`
-	Members      []Member `json:"members"`
-	Grants       []Grant  `json:"grants"`
+	ENVStatus             string                 `json:"env_status"`
+	TeamID                string                 `json:"team_id"`
+	OwnerAccount          string                 `json:"owner_account"`
+	Generation            uint64                 `json:"generation"`
+	Deleted               bool                   `json:"deleted"`
+	Members               []Member               `json:"members"`
+	Grants                []Grant                `json:"grants"`
+	Machines              []MachineBinding       `json:"machines"`
+	MachineGrants         []MachineGrant         `json:"machine_grants"`
+	TerminalSessionGrants []TerminalSessionGrant `json:"terminal_session_grants"`
+}
+type TerminalSessionGrant struct {
+	TerminalSessionID string `json:"terminal_session_id"`
+	Audience          string `json:"audience"`
+	AccountID         string `json:"account_id,omitempty"`
+	Role              string `json:"role"`
+	Generation        uint64 `json:"generation"`
+	Active            bool   `json:"active"`
+}
+type TerminalSessionGrantRequest struct {
+	OperationID        string `json:"operation_id"`
+	ExpectedGeneration uint64 `json:"expected_generation"`
+	TerminalSessionID  string `json:"terminal_session_id"`
+	Audience           string `json:"audience"`
+	AccountID          string `json:"account_id"`
+	Role               string `json:"role"`
+	Active             bool   `json:"active"`
+	RuntimeGeneration  uint64 `json:"-"`
+}
+type TerminalSessionDecision struct {
+	TeamID               string `json:"team_id"`
+	SessionID            string `json:"session_id"`
+	Role                 string `json:"role"`
+	TargetKind           string `json:"target_kind"`
+	TargetID             string `json:"target_id"`
+	MachineID            string `json:"machine_id"`
+	OwnerAccount         string `json:"owner_account"`
+	TeamGeneration       uint64 `json:"team_generation"`
+	MembershipGeneration uint64 `json:"membership_generation"`
+	BindingGeneration    uint64 `json:"binding_generation"`
+	GrantGeneration      uint64 `json:"grant_generation"`
+	ProcessGeneration    uint64 `json:"process_generation"`
 }
 type CreateRequest struct {
 	OperationID string `json:"operation_id"`
@@ -125,9 +162,17 @@ func member(t Team, account string) (Member, bool) {
 	return Member{}, false
 }
 func administrative(role string) bool { return role == "owner" || role == "admin" }
+
+// permits reports whether a stored grant permission satisfies a wanted action.
+// Inspector actions are exact-match only: login, membership, viewing (use),
+// management (manage) and machine connectivity imply neither inspect nor
+// replay, and inspect does not imply replay.
 func permits(kind, granted, wanted string) bool {
 	if kind == "env" {
 		return (wanted == "read" && (granted == "read" || granted == "write")) || (wanted == "write" && granted == "write")
+	}
+	if wanted == "inspect" || wanted == "replay" {
+		return (kind == "preview" || kind == "tunnel") && granted == wanted
 	}
 	return (kind == "preview" || kind == "tunnel" || kind == "lazy_policy") && ((wanted == "use" && (granted == "use" || granted == "manage")) || (wanted == "manage" && granted == "manage"))
 }

@@ -152,18 +152,19 @@ func (t Target) Validate() error {
 // carrier, and route registries. A caller
 // cannot construct these values through Request.
 type LeaseSnapshot struct {
-	AccountID      string
-	ActorID        string
-	PreviewID      string
-	OperationID    string
-	OwnerDeviceID  string
-	OwnerSessionID string
-	Endpoint       string
-	Target         Target
-	AccessMode     string
-	Generation     uint64
-	LeaseDeadline  time.Time
-	State          string
+	MachineAccountID string // Immutable enrollment issuer, independent of resource ownership.
+	AccountID        string
+	ActorID          string
+	PreviewID        string
+	OperationID      string
+	OwnerDeviceID    string
+	OwnerSessionID   string
+	Endpoint         string
+	Target           Target
+	AccessMode       string
+	Generation       uint64
+	LeaseDeadline    time.Time
+	State            string
 	// Public verifier values copied from the authoritative user-machine row.
 	// They let the edge bind the presented machine certificate to the exact
 	// owner without receiving a private key or bearer token.

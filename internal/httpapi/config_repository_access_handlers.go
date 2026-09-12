@@ -22,6 +22,7 @@ func configRepositoryAccessIssue(service *controlplane.ConfigRepositoryAccessSer
 		}
 		var input struct {
 			OperationID string `json:"operation_id"`
+			Direction   string `json:"direction"`
 		}
 		decoder := json.NewDecoder(bytes.NewReader(body))
 		decoder.DisallowUnknownFields()
@@ -36,7 +37,7 @@ func configRepositoryAccessIssue(service *controlplane.ConfigRepositoryAccessSer
 			writeError(w, r, http.StatusUnauthorized, "access_invalid", "Repository access authorization is invalid.")
 			return
 		}
-		access, err := service.Issue(r.Context(), identity, credential, proof, body, r.Method, r.URL.Path, strings.TrimSpace(input.OperationID))
+		access, err := service.Issue(r.Context(), identity, credential, proof, body, r.Method, r.URL.Path, strings.TrimSpace(input.OperationID), strings.TrimSpace(input.Direction))
 		switch {
 		case errors.Is(err, controlplane.ErrConfigRepositoryAccessReplay):
 			writeError(w, r, http.StatusConflict, "operation_conflict", "Repository access operation conflicts with an earlier request.")

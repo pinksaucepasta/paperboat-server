@@ -25,6 +25,10 @@ type runtimeObservationRepository interface {
 	RecordRuntimeObservation(context.Context, metering.RuntimeObservation) error
 }
 
+type terminalJoinRepository interface {
+	RecordTerminalJoin(context.Context, string, string, usermachines.TerminalJoinObservation) error
+}
+
 type runtimeIdentityVerifier interface {
 	VerifyRuntimeObservation(context.Context, string, []byte, []byte, string, string) error
 }
@@ -58,11 +62,28 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 	var lazyRuntime interface {
 		RecordLazyRuntimeObservation(context.Context, string, string, lazyaccess.RuntimeObservation) error
 	}
+	var terminalJoins terminalJoinRepository
 	var availability availabilityObservationRepository
 	var updates updateObservationRepository
 	var deviceCapabilities deviceCapabilitiesRepository
 	var vaultProjectionObservation runtimeVaultProjectionRepository
 	for _, sink := range observationSinks {
+		// Optional router dependencies arrive through interfaces; typed nils
+		// must remain absent rather than exposing methods on a nil receiver.
+		switch candidate := sink.(type) {
+		case *usermachines.Service:
+			if candidate == nil {
+				continue
+			}
+		case *environment.Service:
+			if candidate == nil {
+				continue
+			}
+		case *lazyaccess.Activator:
+			if candidate == nil {
+				continue
+			}
+		}
 		if candidate, ok := sink.(interface {
 			RecordLazyRuntimeObservation(context.Context, string, string, lazyaccess.RuntimeObservation) error
 		}); ok {
@@ -72,6 +93,9 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 			RuntimeFileTransferPolicy() accessdescriptor.FileTransferPolicy
 		}); ok {
 			transferPolicy = candidate
+		}
+		if candidate, ok := sink.(terminalJoinRepository); ok {
+			terminalJoins = candidate
 		}
 		if candidate, ok := sink.(runtimeVaultProjectionRepository); ok {
 			vaultProjectionObservation = candidate
@@ -91,6 +115,7 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 	return func(w http.ResponseWriter, r *http.Request) {
 		noStore(w)
 		var req struct {
+			TerminalJoin       *usermachines.TerminalJoinObservation       `json:"terminal_join,omitempty"`
 			LazyRuntime        *lazyaccess.RuntimeObservation              `json:"lazy_runtime,omitempty"`
 			EnvironmentID      string                                      `json:"environment_id"`
 			ResourceID         string                                      `json:"resource_id"`
@@ -157,6 +182,28 @@ func runtimeObservation(repo runtimeObservationRepository, identities runtimeIde
 				return
 			}
 			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal server error.")
+			return
+		}
+		if req.TerminalJoin != nil {
+			if identities == nil || r.Header.Get("X-Paperboat-Machine-Proof") == "" || terminalJoins == nil {
+				writeError(w, r, http.StatusForbidden, "terminal_join_denied", "Current signed host identity is required to record attachment.")
+				return
+			}
+			if req.LazyRuntime != nil || req.Availability != nil || req.DeviceCapabilities != nil || req.RuntimeDiagnostics != nil || req.RelayLatency != nil || req.Update != nil || len(req.Environment) > 0 {
+				writeError(w, r, http.StatusBadRequest, "invalid_request", "Terminal join must be reported separately from presence.")
+				return
+			}
+			err := terminalJoins.RecordTerminalJoin(r.Context(), req.EnvironmentID, req.ResourceID, *req.TerminalJoin)
+			switch {
+			case errors.Is(err, usermachines.ErrTerminalJoinInvalid):
+				writeError(w, r, http.StatusBadRequest, "invalid_request", "Terminal join identifiers are invalid.")
+			case errors.Is(err, usermachines.ErrTerminalSessionNotFound):
+				writeError(w, r, http.StatusForbidden, "terminal_join_denied", "Terminal access is unavailable; reconnect with current access.")
+			case err != nil:
+				writeError(w, r, http.StatusServiceUnavailable, "terminal_join_unavailable", "Attachment could not be recorded; retry attachment.")
+			default:
+				writeJSON(w, http.StatusAccepted, SuccessResponse{Data: map[string]bool{"recorded": true}})
+			}
 			return
 		}
 		if req.LazyRuntime != nil {

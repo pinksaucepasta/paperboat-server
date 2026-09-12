@@ -18,7 +18,7 @@ SET consent_state = 'accepted', warning_revision = $1, accepted_at = $2,
 WHERE environment_id = $3 AND version = $4
   AND repository_id IS NOT NULL AND consent_state = 'pending'
   AND warning_revision = $1
-RETURNING id, environment_id, repository_id, mode, consent_state, warning_revision, accepted_at, revoked_at, version, created_at, updated_at, machine_id
+RETURNING id, environment_id, repository_id, mode, consent_state, warning_revision, accepted_at, revoked_at, version, created_at, updated_at, machine_id, push_repository_id, automatic_updates, adopted_team_id, adopted_default_version, approved_pull_revision, approved_at
 `
 
 type AcceptControlConfigConsentParams struct {
@@ -49,6 +49,12 @@ func (q *Queries) AcceptControlConfigConsent(ctx context.Context, arg AcceptCont
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.MachineID,
+		&i.PushRepositoryID,
+		&i.AutomaticUpdates,
+		&i.AdoptedTeamID,
+		&i.AdoptedDefaultVersion,
+		&i.ApprovedPullRevision,
+		&i.ApprovedAt,
 	)
 	return i, err
 }
@@ -208,6 +214,41 @@ func (q *Queries) ActivateTunnelEdgeRouteAssignmentV1(ctx context.Context, arg A
 		&i.ReleasedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const adoptTeamConfigDefault = `-- name: AdoptTeamConfigDefault :one
+INSERT INTO team_config_default_adoptions (team_id,account_id,default_version,repository_id)
+SELECT d.team_id, $1, d.version, r.id
+FROM team_config_defaults d
+JOIN teams t ON t.team_id=d.team_id AND t.deleted_at IS NULL
+LEFT JOIN team_members m ON m.team_id=d.team_id AND m.account_id=$1 AND m.active
+JOIN control_config_repositories r ON r.owner_user_id=$1
+ AND r.provider=d.provider AND r.external_repository_id=d.external_repository_id
+ AND r.state='active' AND r.disconnected_at IS NULL
+WHERE d.team_id=$2 AND d.version=$3
+ AND (t.owner_account=$1 OR m.account_id IS NOT NULL)
+ON CONFLICT (account_id) DO UPDATE SET team_id=EXCLUDED.team_id,
+ default_version=EXCLUDED.default_version, repository_id=EXCLUDED.repository_id, adopted_at=now()
+RETURNING team_id, account_id, default_version, repository_id, adopted_at
+`
+
+type AdoptTeamConfigDefaultParams struct {
+	AccountID      string
+	TeamID         string
+	DefaultVersion int64
+}
+
+func (q *Queries) AdoptTeamConfigDefault(ctx context.Context, arg AdoptTeamConfigDefaultParams) (TeamConfigDefaultAdoption, error) {
+	row := q.db.QueryRow(ctx, adoptTeamConfigDefault, arg.AccountID, arg.TeamID, arg.DefaultVersion)
+	var i TeamConfigDefaultAdoption
+	err := row.Scan(
+		&i.TeamID,
+		&i.AccountID,
+		&i.DefaultVersion,
+		&i.RepositoryID,
+		&i.AdoptedAt,
 	)
 	return i, err
 }
@@ -603,6 +644,57 @@ func (q *Queries) ApplyTunnelEdgeRouteObservationV1(ctx context.Context, arg App
 	return i, err
 }
 
+const approveControlConfigPullRevision = `-- name: ApproveControlConfigPullRevision :one
+UPDATE control_config_assignments a
+SET approved_pull_revision=$1, approved_at=$2,
+    version=version+1, updated_at=$2
+WHERE a.environment_id=$3 AND a.version=$4
+  AND a.revoked_at IS NULL AND EXISTS (
+    SELECT 1 FROM control_config_sync_statuses s
+    WHERE s.environment_id=a.environment_id AND s.assignment_id=a.id
+      AND s.remote_revision=$1
+  )
+RETURNING a.id, a.environment_id, a.repository_id, a.mode, a.consent_state, a.warning_revision, a.accepted_at, a.revoked_at, a.version, a.created_at, a.updated_at, a.machine_id, a.push_repository_id, a.automatic_updates, a.adopted_team_id, a.adopted_default_version, a.approved_pull_revision, a.approved_at
+`
+
+type ApproveControlConfigPullRevisionParams struct {
+	RemoteRevision  sql.NullString
+	Now             sql.NullTime
+	EnvironmentID   string
+	ExpectedVersion int64
+}
+
+func (q *Queries) ApproveControlConfigPullRevision(ctx context.Context, arg ApproveControlConfigPullRevisionParams) (ControlConfigAssignment, error) {
+	row := q.db.QueryRow(ctx, approveControlConfigPullRevision,
+		arg.RemoteRevision,
+		arg.Now,
+		arg.EnvironmentID,
+		arg.ExpectedVersion,
+	)
+	var i ControlConfigAssignment
+	err := row.Scan(
+		&i.ID,
+		&i.EnvironmentID,
+		&i.RepositoryID,
+		&i.Mode,
+		&i.ConsentState,
+		&i.WarningRevision,
+		&i.AcceptedAt,
+		&i.RevokedAt,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.MachineID,
+		&i.PushRepositoryID,
+		&i.AutomaticUpdates,
+		&i.AdoptedTeamID,
+		&i.AdoptedDefaultVersion,
+		&i.ApprovedPullRevision,
+		&i.ApprovedAt,
+	)
+	return i, err
+}
+
 const bYODHelperOwnsMachine = `-- name: BYODHelperOwnsMachine :one
 SELECT EXISTS (
   SELECT 1 FROM control_helpers h
@@ -676,7 +768,7 @@ UPDATE control_config_assignments
 SET repository_id = NULL, consent_state = 'revoked', warning_revision = NULL, accepted_at = NULL,
     revoked_at = $1, version = version + 1, updated_at = $1
 WHERE environment_id = $2 AND version = $3
-RETURNING id, environment_id, repository_id, mode, consent_state, warning_revision, accepted_at, revoked_at, version, created_at, updated_at, machine_id
+RETURNING id, environment_id, repository_id, mode, consent_state, warning_revision, accepted_at, revoked_at, version, created_at, updated_at, machine_id, push_repository_id, automatic_updates, adopted_team_id, adopted_default_version, approved_pull_revision, approved_at
 `
 
 type ClearControlConfigAssignmentParams struct {
@@ -701,6 +793,12 @@ func (q *Queries) ClearControlConfigAssignment(ctx context.Context, arg ClearCon
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.MachineID,
+		&i.PushRepositoryID,
+		&i.AutomaticUpdates,
+		&i.AdoptedTeamID,
+		&i.AdoptedDefaultVersion,
+		&i.ApprovedPullRevision,
+		&i.ApprovedAt,
 	)
 	return i, err
 }
@@ -1304,6 +1402,51 @@ func (q *Queries) CreateHostedHelperIdentityRenewal(ctx context.Context, arg Cre
 		&i.IdentityCiphertext,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const deleteTeamConfigDefault = `-- name: DeleteTeamConfigDefault :one
+DELETE FROM team_config_defaults d USING teams t
+WHERE d.team_id=$1 AND t.team_id=d.team_id
+  AND d.version=$2
+RETURNING d.team_id, d.provider, d.external_repository_id, d.display_name, d.branch, d.version, d.updated_by, d.updated_at
+`
+
+type DeleteTeamConfigDefaultParams struct {
+	TeamID          string
+	ExpectedVersion int64
+}
+
+func (q *Queries) DeleteTeamConfigDefault(ctx context.Context, arg DeleteTeamConfigDefaultParams) (TeamConfigDefault, error) {
+	row := q.db.QueryRow(ctx, deleteTeamConfigDefault, arg.TeamID, arg.ExpectedVersion)
+	var i TeamConfigDefault
+	err := row.Scan(
+		&i.TeamID,
+		&i.Provider,
+		&i.ExternalRepositoryID,
+		&i.DisplayName,
+		&i.Branch,
+		&i.Version,
+		&i.UpdatedBy,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const deleteTeamConfigDefaultAdoption = `-- name: DeleteTeamConfigDefaultAdoption :one
+DELETE FROM team_config_default_adoptions WHERE account_id=$1 RETURNING team_id, account_id, default_version, repository_id, adopted_at
+`
+
+func (q *Queries) DeleteTeamConfigDefaultAdoption(ctx context.Context, accountID string) (TeamConfigDefaultAdoption, error) {
+	row := q.db.QueryRow(ctx, deleteTeamConfigDefaultAdoption, accountID)
+	var i TeamConfigDefaultAdoption
+	err := row.Scan(
+		&i.TeamID,
+		&i.AccountID,
+		&i.DefaultVersion,
+		&i.RepositoryID,
+		&i.AdoptedAt,
 	)
 	return i, err
 }
@@ -2086,7 +2229,7 @@ func (q *Queries) GetConsumedControlHelperEnrollmentForReplay(ctx context.Contex
 }
 
 const getControlConfigAssignment = `-- name: GetControlConfigAssignment :one
-SELECT id, environment_id, repository_id, mode, consent_state, warning_revision, accepted_at, revoked_at, version, created_at, updated_at, machine_id FROM control_config_assignments WHERE environment_id = $1
+SELECT id, environment_id, repository_id, mode, consent_state, warning_revision, accepted_at, revoked_at, version, created_at, updated_at, machine_id, push_repository_id, automatic_updates, adopted_team_id, adopted_default_version, approved_pull_revision, approved_at FROM control_config_assignments WHERE environment_id = $1
 `
 
 func (q *Queries) GetControlConfigAssignment(ctx context.Context, environmentID string) (ControlConfigAssignment, error) {
@@ -2105,6 +2248,12 @@ func (q *Queries) GetControlConfigAssignment(ctx context.Context, environmentID 
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.MachineID,
+		&i.PushRepositoryID,
+		&i.AutomaticUpdates,
+		&i.AdoptedTeamID,
+		&i.AdoptedDefaultVersion,
+		&i.ApprovedPullRevision,
+		&i.ApprovedAt,
 	)
 	return i, err
 }
@@ -2217,12 +2366,17 @@ func (q *Queries) GetControlConfigRepositoryAccessOperation(ctx context.Context,
 }
 
 const getControlConfigSyncRevision = `-- name: GetControlConfigSyncRevision :one
-SELECT sync_revision
+SELECT control_config_sync_statuses.sync_revision
 FROM control_config_sync_statuses
-WHERE environment_id = $1
-  AND assignment_id = $2
-  AND machine_id = $3
-  AND installation_generation = $4
+WHERE control_config_sync_statuses.environment_id = $1
+  AND EXISTS (
+    SELECT 1 FROM control_config_assignments current_assignment
+    WHERE current_assignment.environment_id = control_config_sync_statuses.environment_id
+      AND current_assignment.id = $2
+      AND current_assignment.machine_id = control_config_sync_statuses.machine_id
+  )
+  AND control_config_sync_statuses.machine_id = $3
+  AND control_config_sync_statuses.installation_generation = $4
 `
 
 type GetControlConfigSyncRevisionParams struct {
@@ -2672,7 +2826,7 @@ func (q *Queries) GetControlUsageVerificationKey(ctx context.Context, keyID stri
 }
 
 const getEligibleControlConfigAssignment = `-- name: GetEligibleControlConfigAssignment :one
-SELECT a.id, a.environment_id, a.repository_id, a.mode, a.consent_state, a.warning_revision, a.accepted_at, a.revoked_at, a.version, a.created_at, a.updated_at, a.machine_id FROM control_config_assignments a
+SELECT a.id, a.environment_id, a.repository_id, a.mode, a.consent_state, a.warning_revision, a.accepted_at, a.revoked_at, a.version, a.created_at, a.updated_at, a.machine_id, a.push_repository_id, a.automatic_updates, a.adopted_team_id, a.adopted_default_version, a.approved_pull_revision, a.approved_at FROM control_config_assignments a
 JOIN user_machines m ON m.id = a.machine_id
 JOIN control_environments e ON e.id = a.environment_id
 JOIN users u ON u.id = e.owner_user_id
@@ -2684,6 +2838,14 @@ WHERE a.environment_id = $1 AND m.id = $2
   AND e.desired_state = 'active' AND e.revoked_at IS NULL
   AND u.status = 'active'
   AND r.state = 'active' AND r.disconnected_at IS NULL
+  AND (a.adopted_team_id IS NULL OR EXISTS (
+    SELECT 1 FROM team_config_default_adoptions adoption
+    JOIN teams team ON team.team_id=adoption.team_id AND team.deleted_at IS NULL
+    LEFT JOIN team_members member ON member.team_id=adoption.team_id AND member.account_id=e.owner_user_id AND member.active
+    WHERE adoption.account_id=e.owner_user_id AND adoption.team_id=a.adopted_team_id
+      AND adoption.default_version=a.adopted_default_version
+      AND (team.owner_account=e.owner_user_id OR member.account_id IS NOT NULL)
+  ))
 FOR UPDATE OF a, m, e, u, r
 `
 
@@ -2709,12 +2871,18 @@ func (q *Queries) GetEligibleControlConfigAssignment(ctx context.Context, arg Ge
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.MachineID,
+		&i.PushRepositoryID,
+		&i.AutomaticUpdates,
+		&i.AdoptedTeamID,
+		&i.AdoptedDefaultVersion,
+		&i.ApprovedPullRevision,
+		&i.ApprovedAt,
 	)
 	return i, err
 }
 
 const getEligibleMachineConfigAssignment = `-- name: GetEligibleMachineConfigAssignment :one
-SELECT a.id, a.environment_id, a.repository_id, a.mode, a.consent_state, a.warning_revision, a.accepted_at, a.revoked_at, a.version, a.created_at, a.updated_at, a.machine_id FROM control_config_assignments a
+SELECT a.id, a.environment_id, a.repository_id, a.mode, a.consent_state, a.warning_revision, a.accepted_at, a.revoked_at, a.version, a.created_at, a.updated_at, a.machine_id, a.push_repository_id, a.automatic_updates, a.adopted_team_id, a.adopted_default_version, a.approved_pull_revision, a.approved_at FROM control_config_assignments a
 JOIN user_machines m ON m.id = a.machine_id
 JOIN control_environments e ON e.id = a.environment_id
 JOIN users u ON u.id = e.owner_user_id
@@ -2726,6 +2894,14 @@ WHERE a.machine_id = $1 AND a.environment_id = $2
   AND e.desired_state = 'active' AND e.revoked_at IS NULL
   AND u.status = 'active'
   AND r.state = 'active' AND r.disconnected_at IS NULL
+  AND (a.adopted_team_id IS NULL OR EXISTS (
+    SELECT 1 FROM team_config_default_adoptions adoption
+    JOIN teams team ON team.team_id=adoption.team_id AND team.deleted_at IS NULL
+    LEFT JOIN team_members member ON member.team_id=adoption.team_id AND member.account_id=e.owner_user_id AND member.active
+    WHERE adoption.account_id=e.owner_user_id AND adoption.team_id=a.adopted_team_id
+      AND adoption.default_version=a.adopted_default_version
+      AND (team.owner_account=e.owner_user_id OR member.account_id IS NOT NULL)
+  ))
 FOR UPDATE OF a, m, e, u, r
 `
 
@@ -2751,6 +2927,12 @@ func (q *Queries) GetEligibleMachineConfigAssignment(ctx context.Context, arg Ge
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.MachineID,
+		&i.PushRepositoryID,
+		&i.AutomaticUpdates,
+		&i.AdoptedTeamID,
+		&i.AdoptedDefaultVersion,
+		&i.ApprovedPullRevision,
+		&i.ApprovedAt,
 	)
 	return i, err
 }
@@ -3053,6 +3235,95 @@ func (q *Queries) GetPendingControlHelperForEnvironment(ctx context.Context, env
 		&i.RevokedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getTeamConfigDefault = `-- name: GetTeamConfigDefault :one
+SELECT team_id, provider, external_repository_id, display_name, branch, version, updated_by, updated_at FROM team_config_defaults WHERE team_id = $1
+`
+
+func (q *Queries) GetTeamConfigDefault(ctx context.Context, teamID string) (TeamConfigDefault, error) {
+	row := q.db.QueryRow(ctx, getTeamConfigDefault, teamID)
+	var i TeamConfigDefault
+	err := row.Scan(
+		&i.TeamID,
+		&i.Provider,
+		&i.ExternalRepositoryID,
+		&i.DisplayName,
+		&i.Branch,
+		&i.Version,
+		&i.UpdatedBy,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getTeamConfigDefaultAdoption = `-- name: GetTeamConfigDefaultAdoption :one
+SELECT a.team_id, a.account_id, a.default_version, a.repository_id, a.adopted_at, d.provider, d.external_repository_id, d.display_name, d.branch, d.version AS current_default_version
+FROM team_config_default_adoptions a JOIN team_config_defaults d USING(team_id)
+JOIN teams t ON t.team_id=a.team_id AND t.deleted_at IS NULL
+LEFT JOIN team_members m ON m.team_id=a.team_id AND m.account_id=a.account_id AND m.active
+WHERE a.account_id=$1 AND (t.owner_account=a.account_id OR m.account_id IS NOT NULL)
+`
+
+type GetTeamConfigDefaultAdoptionRow struct {
+	TeamID                string
+	AccountID             string
+	DefaultVersion        int64
+	RepositoryID          string
+	AdoptedAt             time.Time
+	Provider              string
+	ExternalRepositoryID  string
+	DisplayName           string
+	Branch                string
+	CurrentDefaultVersion int64
+}
+
+func (q *Queries) GetTeamConfigDefaultAdoption(ctx context.Context, accountID string) (GetTeamConfigDefaultAdoptionRow, error) {
+	row := q.db.QueryRow(ctx, getTeamConfigDefaultAdoption, accountID)
+	var i GetTeamConfigDefaultAdoptionRow
+	err := row.Scan(
+		&i.TeamID,
+		&i.AccountID,
+		&i.DefaultVersion,
+		&i.RepositoryID,
+		&i.AdoptedAt,
+		&i.Provider,
+		&i.ExternalRepositoryID,
+		&i.DisplayName,
+		&i.Branch,
+		&i.CurrentDefaultVersion,
+	)
+	return i, err
+}
+
+const getTeamConfigDefaultAuthority = `-- name: GetTeamConfigDefaultAuthority :one
+SELECT t.owner_account, t.generation, m.role, m.active
+FROM teams t LEFT JOIN team_members m ON m.team_id=t.team_id AND m.account_id=$1
+WHERE t.team_id=$2 AND t.deleted_at IS NULL
+`
+
+type GetTeamConfigDefaultAuthorityParams struct {
+	AccountID string
+	TeamID    string
+}
+
+type GetTeamConfigDefaultAuthorityRow struct {
+	OwnerAccount string
+	Generation   int64
+	Role         sql.NullString
+	Active       sql.NullBool
+}
+
+func (q *Queries) GetTeamConfigDefaultAuthority(ctx context.Context, arg GetTeamConfigDefaultAuthorityParams) (GetTeamConfigDefaultAuthorityRow, error) {
+	row := q.db.QueryRow(ctx, getTeamConfigDefaultAuthority, arg.AccountID, arg.TeamID)
+	var i GetTeamConfigDefaultAuthorityRow
+	err := row.Scan(
+		&i.OwnerAccount,
+		&i.Generation,
+		&i.Role,
+		&i.Active,
 	)
 	return i, err
 }
@@ -3835,6 +4106,11 @@ SELECT
   environment.desired_state AS environment_state,
   assignment.id AS assignment_id,
   assignment.repository_id,
+	assignment.push_repository_id,
+	assignment.automatic_updates,
+	assignment.approved_pull_revision,
+	assignment.adopted_team_id,
+	assignment.adopted_default_version,
 	assignment.mode,
   assignment.consent_state,
   assignment.warning_revision,
@@ -3858,6 +4134,7 @@ SELECT
   status.last_published_revision,
   COALESCE(status.skipped, '[]'::jsonb)::jsonb AS skipped,
   COALESCE(status.conflicts, '[]'::jsonb)::jsonb AS conflicts,
+  COALESCE(status.review, '[]'::jsonb)::jsonb AS review,
   status.error_code,
   COALESCE(status.recovery_actions, '[]'::jsonb)::jsonb AS recovery_actions,
   status.last_attempt_at,
@@ -3889,6 +4166,11 @@ type ListOwnedControlConfigSyncStatusRow struct {
 	EnvironmentState             string
 	AssignmentID                 sql.NullString
 	RepositoryID                 sql.NullString
+	PushRepositoryID             sql.NullString
+	AutomaticUpdates             sql.NullBool
+	ApprovedPullRevision         sql.NullString
+	AdoptedTeamID                sql.NullString
+	AdoptedDefaultVersion        sql.NullInt64
 	Mode                         sql.NullString
 	ConsentState                 sql.NullString
 	WarningRevision              sql.NullString
@@ -3912,6 +4194,7 @@ type ListOwnedControlConfigSyncStatusRow struct {
 	LastPublishedRevision        sql.NullString
 	Skipped                      []byte
 	Conflicts                    []byte
+	Review                       []byte
 	ErrorCode                    sql.NullString
 	RecoveryActions              []byte
 	LastAttemptAt                sql.NullTime
@@ -3938,6 +4221,11 @@ func (q *Queries) ListOwnedControlConfigSyncStatus(ctx context.Context, ownerUse
 			&i.EnvironmentState,
 			&i.AssignmentID,
 			&i.RepositoryID,
+			&i.PushRepositoryID,
+			&i.AutomaticUpdates,
+			&i.ApprovedPullRevision,
+			&i.AdoptedTeamID,
+			&i.AdoptedDefaultVersion,
 			&i.Mode,
 			&i.ConsentState,
 			&i.WarningRevision,
@@ -3961,6 +4249,7 @@ func (q *Queries) ListOwnedControlConfigSyncStatus(ctx context.Context, ownerUse
 			&i.LastPublishedRevision,
 			&i.Skipped,
 			&i.Conflicts,
+			&i.Review,
 			&i.ErrorCode,
 			&i.RecoveryActions,
 			&i.LastAttemptAt,
@@ -4952,7 +5241,7 @@ INSERT INTO control_config_sync_statuses
    remote_revision, manifest_health, manifest_revision, managed_path_count,
    pending_clean_path_count, last_applied_revision, last_published_revision,
    lease_id, fencing_token,
-   skipped, conflicts, error_code, recovery_actions, last_attempt_at,
+   skipped, conflicts, review, error_code, recovery_actions, last_attempt_at,
    last_successful_at, machine_updated_at, observed_at)
 VALUES
   ($1, $2, $3, $4,
@@ -4962,8 +5251,8 @@ VALUES
    $14, $15,
    $16, $17,
    $18, $19, $20,
-   $21, $22, $23,
-   $24, $25, $26, $27)
+   $21, $22, $23, $24,
+   $25, $26, $27, $28)
 ON CONFLICT (environment_id) DO UPDATE
 SET repository_id = EXCLUDED.repository_id, assignment_id = EXCLUDED.assignment_id,
     machine_id = EXCLUDED.machine_id, installation_generation = EXCLUDED.installation_generation,
@@ -4976,7 +5265,8 @@ SET repository_id = EXCLUDED.repository_id, assignment_id = EXCLUDED.assignment_
     last_applied_revision = EXCLUDED.last_applied_revision,
     last_published_revision = EXCLUDED.last_published_revision,
     lease_id = EXCLUDED.lease_id, fencing_token = EXCLUDED.fencing_token,
-    skipped = EXCLUDED.skipped, conflicts = EXCLUDED.conflicts, error_code = EXCLUDED.error_code,
+    skipped = EXCLUDED.skipped, conflicts = EXCLUDED.conflicts, review = EXCLUDED.review,
+    error_code = EXCLUDED.error_code,
     recovery_actions = EXCLUDED.recovery_actions, last_attempt_at = EXCLUDED.last_attempt_at,
     last_successful_at = EXCLUDED.last_successful_at, machine_updated_at = EXCLUDED.machine_updated_at,
     observed_at = EXCLUDED.observed_at
@@ -4987,10 +5277,15 @@ WHERE (
       AND control_config_sync_statuses.machine_updated_at < EXCLUDED.machine_updated_at
     )
   )
-  AND control_config_sync_statuses.assignment_id = EXCLUDED.assignment_id
+  AND EXISTS (
+    SELECT 1 FROM control_config_assignments current_assignment
+    WHERE current_assignment.environment_id = EXCLUDED.environment_id
+      AND current_assignment.id = EXCLUDED.assignment_id
+      AND current_assignment.machine_id = EXCLUDED.machine_id
+  )
   AND control_config_sync_statuses.machine_id = EXCLUDED.machine_id
   AND control_config_sync_statuses.installation_generation = EXCLUDED.installation_generation
-RETURNING environment_id, repository_id, assignment_id, machine_id, installation_generation, warning_revision, policy_revision, sync_revision, state, mode, remote_revision, manifest_health, manifest_revision, managed_path_count, pending_clean_path_count, last_applied_revision, last_published_revision, lease_id, fencing_token, skipped, conflicts, error_code, recovery_actions, last_attempt_at, last_successful_at, machine_updated_at, observed_at
+RETURNING environment_id, repository_id, assignment_id, machine_id, installation_generation, warning_revision, policy_revision, sync_revision, state, mode, remote_revision, manifest_health, manifest_revision, managed_path_count, pending_clean_path_count, last_applied_revision, last_published_revision, lease_id, fencing_token, skipped, conflicts, error_code, recovery_actions, last_attempt_at, last_successful_at, machine_updated_at, observed_at, review
 `
 
 type RecordControlConfigSyncStatusParams struct {
@@ -5015,6 +5310,7 @@ type RecordControlConfigSyncStatusParams struct {
 	FencingToken           sql.NullInt64
 	Skipped                []byte
 	Conflicts              []byte
+	Review                 []byte
 	ErrorCode              sql.NullString
 	RecoveryActions        []byte
 	LastAttemptAt          sql.NullTime
@@ -5046,6 +5342,7 @@ func (q *Queries) RecordControlConfigSyncStatus(ctx context.Context, arg RecordC
 		arg.FencingToken,
 		arg.Skipped,
 		arg.Conflicts,
+		arg.Review,
 		arg.ErrorCode,
 		arg.RecoveryActions,
 		arg.LastAttemptAt,
@@ -5082,6 +5379,7 @@ func (q *Queries) RecordControlConfigSyncStatus(ctx context.Context, arg RecordC
 		&i.LastSuccessfulAt,
 		&i.MachineUpdatedAt,
 		&i.ObservedAt,
+		&i.Review,
 	)
 	return i, err
 }
@@ -5292,7 +5590,7 @@ SET consent_state = 'pending', warning_revision = $1, accepted_at = NULL,
     revoked_at = NULL, version = version + 1, updated_at = $2
 WHERE environment_id = $3 AND version = $4
   AND repository_id IS NOT NULL AND consent_state = 'accepted'
-RETURNING id, environment_id, repository_id, mode, consent_state, warning_revision, accepted_at, revoked_at, version, created_at, updated_at, machine_id
+RETURNING id, environment_id, repository_id, mode, consent_state, warning_revision, accepted_at, revoked_at, version, created_at, updated_at, machine_id, push_repository_id, automatic_updates, adopted_team_id, adopted_default_version, approved_pull_revision, approved_at
 `
 
 type RemoveControlConfigConsentParams struct {
@@ -5323,6 +5621,12 @@ func (q *Queries) RemoveControlConfigConsent(ctx context.Context, arg RemoveCont
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.MachineID,
+		&i.PushRepositoryID,
+		&i.AutomaticUpdates,
+		&i.AdoptedTeamID,
+		&i.AdoptedDefaultVersion,
+		&i.ApprovedPullRevision,
+		&i.ApprovedAt,
 	)
 	return i, err
 }
@@ -5662,6 +5966,28 @@ WHERE a.state IN ('staged','active') AND NOT EXISTS (
 // cannot rejoin a placement without a fresh generation and readiness handshake.
 func (q *Queries) RetireUnavailableTunnelEdgeAssignmentsV1(ctx context.Context, now time.Time) (int64, error) {
 	result, err := q.db.Exec(ctx, retireUnavailableTunnelEdgeAssignmentsV1, now)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const revokeAdoptedTeamConfigAssignments = `-- name: RevokeAdoptedTeamConfigAssignments :execrows
+UPDATE control_config_assignments a SET consent_state='revoked', revoked_at=$1,
+ approved_pull_revision=NULL, approved_at=NULL, version=a.version+1, updated_at=$1
+FROM user_machines m
+WHERE a.machine_id=m.id AND m.user_id=$2
+ AND a.adopted_team_id=$3 AND a.revoked_at IS NULL
+`
+
+type RevokeAdoptedTeamConfigAssignmentsParams struct {
+	Now       sql.NullTime
+	AccountID string
+	TeamID    sql.NullString
+}
+
+func (q *Queries) RevokeAdoptedTeamConfigAssignments(ctx context.Context, arg RevokeAdoptedTeamConfigAssignmentsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeAdoptedTeamConfigAssignments, arg.Now, arg.AccountID, arg.TeamID)
 	if err != nil {
 		return 0, err
 	}
@@ -6105,28 +6431,32 @@ func (q *Queries) SelectReadyControlTunnelNode(ctx context.Context, arg SelectRe
 }
 
 const setControlConfigAssignment = `-- name: SetControlConfigAssignment :one
-INSERT INTO control_config_assignments (id, machine_id, environment_id, repository_id, mode, consent_state, warning_revision)
+INSERT INTO control_config_assignments (id, machine_id, environment_id, repository_id, push_repository_id, mode, consent_state, warning_revision, automatic_updates)
 SELECT $1, machine.id, $2, $3,
-       $4, $5, $6
+       $4, $5, $6, $7, $8
 FROM user_machines machine
 WHERE machine.environment_id = $2 AND machine.deleted_at IS NULL
 ON CONFLICT (machine_id) DO UPDATE
-SET id = EXCLUDED.id, repository_id = EXCLUDED.repository_id, mode = EXCLUDED.mode, consent_state = EXCLUDED.consent_state,
+SET id = EXCLUDED.id, repository_id = EXCLUDED.repository_id, push_repository_id = EXCLUDED.push_repository_id,
+    mode = EXCLUDED.mode, consent_state = EXCLUDED.consent_state, automatic_updates = EXCLUDED.automatic_updates,
+    adopted_team_id = NULL, adopted_default_version = NULL, approved_pull_revision = NULL, approved_at = NULL,
     warning_revision = EXCLUDED.warning_revision, accepted_at = NULL, revoked_at = NULL,
-    version = control_config_assignments.version + 1, updated_at = $7
-WHERE control_config_assignments.version = $8
-RETURNING id, environment_id, repository_id, mode, consent_state, warning_revision, accepted_at, revoked_at, version, created_at, updated_at, machine_id
+    version = control_config_assignments.version + 1, updated_at = $9
+WHERE control_config_assignments.version = $10
+RETURNING id, environment_id, repository_id, mode, consent_state, warning_revision, accepted_at, revoked_at, version, created_at, updated_at, machine_id, push_repository_id, automatic_updates, adopted_team_id, adopted_default_version, approved_pull_revision, approved_at
 `
 
 type SetControlConfigAssignmentParams struct {
-	AssignmentID    string
-	EnvironmentID   string
-	RepositoryID    sql.NullString
-	Mode            string
-	ConsentState    string
-	WarningRevision sql.NullString
-	Now             time.Time
-	ExpectedVersion int64
+	AssignmentID     string
+	EnvironmentID    string
+	RepositoryID     sql.NullString
+	PushRepositoryID sql.NullString
+	Mode             string
+	ConsentState     string
+	WarningRevision  sql.NullString
+	AutomaticUpdates bool
+	Now              time.Time
+	ExpectedVersion  int64
 }
 
 func (q *Queries) SetControlConfigAssignment(ctx context.Context, arg SetControlConfigAssignmentParams) (ControlConfigAssignment, error) {
@@ -6134,9 +6464,11 @@ func (q *Queries) SetControlConfigAssignment(ctx context.Context, arg SetControl
 		arg.AssignmentID,
 		arg.EnvironmentID,
 		arg.RepositoryID,
+		arg.PushRepositoryID,
 		arg.Mode,
 		arg.ConsentState,
 		arg.WarningRevision,
+		arg.AutomaticUpdates,
 		arg.Now,
 		arg.ExpectedVersion,
 	)
@@ -6154,6 +6486,12 @@ func (q *Queries) SetControlConfigAssignment(ctx context.Context, arg SetControl
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.MachineID,
+		&i.PushRepositoryID,
+		&i.AutomaticUpdates,
+		&i.AdoptedTeamID,
+		&i.AdoptedDefaultVersion,
+		&i.ApprovedPullRevision,
+		&i.ApprovedAt,
 	)
 	return i, err
 }
@@ -6271,6 +6609,51 @@ func (q *Queries) SetControlRouteOperationResult(ctx context.Context, arg SetCon
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const setTeamConfigDefault = `-- name: SetTeamConfigDefault :one
+INSERT INTO team_config_defaults (team_id,provider,external_repository_id,display_name,branch,updated_by)
+VALUES ($1,$2,$3,$4,$5,$6)
+ON CONFLICT (team_id) DO UPDATE SET
+ provider=EXCLUDED.provider, external_repository_id=EXCLUDED.external_repository_id,
+ display_name=EXCLUDED.display_name, branch=EXCLUDED.branch, updated_by=EXCLUDED.updated_by,
+ version=team_config_defaults.version+1, updated_at=now()
+WHERE team_config_defaults.version=$7
+RETURNING team_id, provider, external_repository_id, display_name, branch, version, updated_by, updated_at
+`
+
+type SetTeamConfigDefaultParams struct {
+	TeamID               string
+	Provider             string
+	ExternalRepositoryID string
+	DisplayName          string
+	Branch               string
+	UpdatedBy            string
+	ExpectedVersion      int64
+}
+
+func (q *Queries) SetTeamConfigDefault(ctx context.Context, arg SetTeamConfigDefaultParams) (TeamConfigDefault, error) {
+	row := q.db.QueryRow(ctx, setTeamConfigDefault,
+		arg.TeamID,
+		arg.Provider,
+		arg.ExternalRepositoryID,
+		arg.DisplayName,
+		arg.Branch,
+		arg.UpdatedBy,
+		arg.ExpectedVersion,
+	)
+	var i TeamConfigDefault
+	err := row.Scan(
+		&i.TeamID,
+		&i.Provider,
+		&i.ExternalRepositoryID,
+		&i.DisplayName,
+		&i.Branch,
+		&i.Version,
+		&i.UpdatedBy,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const stageTunnelEdgeRouteAssignmentV1 = `-- name: StageTunnelEdgeRouteAssignmentV1 :one

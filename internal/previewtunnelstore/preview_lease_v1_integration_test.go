@@ -3,6 +3,7 @@ package previewtunnelstore
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -43,6 +44,17 @@ INSERT INTO paperboat.users (id, workos_subject, primary_email, status)
 VALUES ($1, $2, $3, 'active')`, accountID, "workos_preview_"+suffix, "preview-"+suffix+"@example.test"); err != nil {
 		t.Fatal(err)
 	}
+	machineIDs := []string{"device_" + suffix, "device_expire_" + suffix, "device_owner_" + suffix}
+	for _, id := range machineIDs {
+		if _, err := database.SQL().ExecContext(ctx, `INSERT INTO paperboat.user_machines(id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,online,configured_capabilities) VALUES($1,$2,$1,$1,'linux','amd64','/workspace','online',true,ARRAY['preview_launch']::text[])`, id, accountID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer func() {
+		if _, err := database.SQL().ExecContext(context.Background(), `DELETE FROM paperboat.user_machines WHERE id=ANY($1::text[])`, machineIDs); err != nil {
+			t.Error(err)
+		}
+	}()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	requestHash := sha256.Sum256([]byte("preview-create:" + suffix))
 	created, err := store.CreatePreviewLeaseV1(ctx, CreatePreviewLeaseV1Input{
@@ -158,8 +170,20 @@ VALUES ($1, $2, $3, 'active')`, accountID, "workos_preview_"+suffix, "preview-"+
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Reconciliation is global; other integration fixtures may also be due.
+	// Keep exact assertions for every lease owned by this test's account.
+	owned := func(rows []PreviewLeaseRecord) []PreviewLeaseRecord {
+		var result []PreviewLeaseRecord
+		for _, row := range rows {
+			if row.AccountID == accountID {
+				result = append(result, row)
+			}
+		}
+		return result
+	}
+	reconciled.Expired, reconciled.OwnerLost = owned(reconciled.Expired), owned(reconciled.OwnerLost)
 	if len(reconciled.Expired) != 1 || reconciled.Expired[0].ID != expired.Lease.ID || len(reconciled.OwnerLost) != 1 || reconciled.OwnerLost[0].ID != ownerLost.Lease.ID {
-		t.Fatalf("reconciliation expired=%#v owner_lost=%#v", reconciled.Expired, reconciled.OwnerLost)
+		t.Fatalf("reconciliation did not return exact fixture leases: expired=%d owner_lost=%d", len(reconciled.Expired), len(reconciled.OwnerLost))
 	}
 	if reconciled.Expired[0].Generation != 2 || reconciled.OwnerLost[0].Generation != 2 {
 		t.Fatalf("reconciliation did not advance generation: expired=%d owner_lost=%d", reconciled.Expired[0].Generation, reconciled.OwnerLost[0].Generation)
@@ -169,4 +193,78 @@ VALUES ($1, $2, $3, 'active')`, accountID, "workos_preview_"+suffix, "preview-"+
 func sha256Bytes(value string) []byte {
 	hash := sha256.Sum256([]byte(value))
 	return hash[:]
+}
+
+func TestSharedPreviewMachineAuthorityOnPostgres(t *testing.T) {
+	dsn := os.Getenv("PAPERBOAT_TEST_DATABASE_DSN")
+	if dsn == "" {
+		t.Skip("isolated PostgreSQL DSN required")
+	}
+	if err := db.ValidateIsolatedTestDSN(dsn, os.Getenv("PAPERBOAT_DATABASE_DSN")); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	database, err := db.Open(config.Database{Driver: "postgres", DSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err = db.Migrate(ctx, database); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := database.Pool().Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(context.Background())
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	owner, member, team, machine := "sp_owner_"+suffix, "sp_member_"+suffix, "sp_team_"+suffix, "sp_machine_"+suffix
+	for _, account := range []string{owner, member} {
+		if _, err = tx.Exec(ctx, `INSERT INTO paperboat.users(id,workos_subject,primary_email,status) VALUES($1,$1,$1||'@invalid.test','active')`, account); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO paperboat.teams(team_id,owner_account,generation) VALUES($1,$2,1)`, team, owner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO paperboat.team_members(team_id,account_id,membership_generation,role,active) VALUES($1,$2,1,'member',true),($1,$3,1,'member',true)`, team, owner, member); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO paperboat.user_machines(id,user_id,environment_id,display_name,platform,architecture,workspace_root,state,online,configured_capabilities) VALUES($1,$2,$1,$1,'linux','amd64','/workspace','online',true,ARRAY['preview_launch']::text[])`, machine, owner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO paperboat.team_resource_bindings(team_id,resource_kind,resource_id,owner_account) VALUES($1,'machine',$2,$3)`, team, machine, owner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO paperboat.team_machine_grants(team_id,machine_id,audience,account_id,capabilities) VALUES($1,$2,'selected_member',$3,ARRAY['preview_manage']::text[])`, team, machine, member); err != nil {
+		t.Fatal(err)
+	}
+	check := func(actor, mode string, wantShared bool, wantErr error) {
+		t.Helper()
+		shared, e := verifyPreviewMachineAuthority(tx.QueryRow(ctx, previewMachineAuthoritySQL, actor, machine), mode)
+		if shared != wantShared || !errors.Is(e, wantErr) {
+			t.Fatalf("%s %s shared=%v err=%v", actor, mode, shared, e)
+		}
+	}
+	check(owner, "public", false, nil)
+	check(member, "private", true, nil)
+	check(member, "team", true, nil)
+	check(member, "public", false, ErrPreviewPublicationDenied)
+	if _, err = tx.Exec(ctx, `UPDATE paperboat.user_machines SET owner_team_id=$1 WHERE id=$2`, team, machine); err != nil {
+		t.Fatal(err)
+	}
+	check(owner, "private", false, ErrOwnerNotFound)
+	check(member, "private", true, nil)
+	if _, err = tx.Exec(ctx, `UPDATE paperboat.user_machines SET configured_capabilities='{}' WHERE id=$1`, machine); err != nil {
+		t.Fatal(err)
+	}
+	check(member, "private", false, ErrOwnerNotFound)
+	if _, err = tx.Exec(ctx, `UPDATE paperboat.user_machines SET configured_capabilities=ARRAY['preview_launch']::text[] WHERE id=$1`, machine); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(ctx, `UPDATE paperboat.team_members SET active=false WHERE team_id=$1 AND account_id=$2`, team, member); err != nil {
+		t.Fatal(err)
+	}
+	check(member, "private", false, ErrOwnerNotFound)
 }

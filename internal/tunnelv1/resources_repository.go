@@ -49,6 +49,9 @@ func (r *SQLRepository) CreateResourceRoute(ctx context.Context, input RouteReco
 	}
 	var result ResourceMutationRecord
 	err := r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := authorizeTunnelManagementTx(ctx, tx); err != nil {
+			return err
+		}
 		q := tx.Queries()
 		tunnel, err := q.GetTunnelForResourceV1(ctx, dbsqlc.GetTunnelForResourceV1Params{TunnelID: input.TunnelID, AccountID: input.AccountID})
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -132,6 +135,9 @@ func (r *SQLRepository) PatchResourceRoute(ctx context.Context, input RouteRecor
 	}
 	var result ResourceMutationRecord
 	err := r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := authorizeTunnelManagementTx(ctx, tx); err != nil {
+			return err
+		}
 		q := tx.Queries()
 		tunnel, err := q.GetTunnelForResourceV1(ctx, dbsqlc.GetTunnelForResourceV1Params{TunnelID: input.TunnelID, AccountID: input.AccountID})
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -241,6 +247,9 @@ func (r *SQLRepository) DeleteResourceRoute(ctx context.Context, input RouteReco
 	}
 	var result ResourceMutationRecord
 	err := r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := authorizeTunnelManagementTx(ctx, tx); err != nil {
+			return err
+		}
 		q := tx.Queries()
 		_, err := q.GetTunnelForResourceV1(ctx, dbsqlc.GetTunnelForResourceV1Params{TunnelID: input.TunnelID, AccountID: input.AccountID})
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -698,6 +707,9 @@ func (r *SQLRepository) CreateResourceDomain(ctx context.Context, input DomainRe
 	}
 	var result ResourceMutationRecord
 	err := r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := authorizeTunnelManagementTx(ctx, tx); err != nil {
+			return err
+		}
 		q := tx.Queries()
 		tunnel, err := q.GetTunnelForResourceV1(ctx, dbsqlc.GetTunnelForResourceV1Params{TunnelID: input.TunnelID, AccountID: input.AccountID})
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -798,6 +810,9 @@ func (r *SQLRepository) DeleteResourceDomain(ctx context.Context, input DomainRe
 	}
 	var result ResourceMutationRecord
 	err := r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := authorizeTunnelManagementTx(ctx, tx); err != nil {
+			return err
+		}
 		q := tx.Queries()
 		tunnel, err := q.GetTunnelForResourceV1(ctx, dbsqlc.GetTunnelForResourceV1Params{TunnelID: input.TunnelID, AccountID: input.AccountID})
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -865,6 +880,9 @@ func (r *SQLRepository) BeginResourceDomainVerification(ctx context.Context, inp
 	}
 	var result ResourceMutationRecord
 	err := r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := authorizeTunnelManagementTx(ctx, tx); err != nil {
+			return err
+		}
 		q := tx.Queries()
 		tunnel, err := q.GetTunnelForResourceV1(ctx, dbsqlc.GetTunnelForResourceV1Params{TunnelID: input.TunnelID, AccountID: input.AccountID})
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -967,6 +985,9 @@ func (r *SQLRepository) IssueConnectorEnrollment(ctx context.Context, input Enro
 	}
 	var result EnrollmentRecord
 	err := r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := authorizeTunnelManagementTx(ctx, tx); err != nil {
+			return err
+		}
 		q := tx.Queries()
 		tunnel, err := q.GetTunnelForResourceV1(ctx, dbsqlc.GetTunnelForResourceV1Params{TunnelID: input.TunnelID, AccountID: input.AccountID})
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -1027,6 +1048,9 @@ func (r *SQLRepository) ExchangeConnectorEnrollment(ctx context.Context, input E
 	}
 	var result ResourceMutationRecord
 	err := r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := authorizeTunnelManagementTx(ctx, tx); err != nil {
+			return err
+		}
 		q := tx.Queries()
 		enrollment, err := q.GetTunnelConnectorEnrollmentByTokenV1(ctx, input.TokenHash)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -1255,6 +1279,9 @@ func (r *SQLRepository) mutateConnector(ctx context.Context, input ConnectorReco
 	}
 	var result ResourceMutationRecord
 	err := r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := authorizeTunnelManagementTx(ctx, tx); err != nil {
+			return err
+		}
 		q := tx.Queries()
 		tunnel, err := q.GetTunnelForResourceV1(ctx, dbsqlc.GetTunnelForResourceV1Params{TunnelID: input.TunnelID, AccountID: input.AccountID})
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -1345,6 +1372,9 @@ func (r *SQLRepository) RotateResourceCredentials(ctx context.Context, input Rot
 	}
 	var result dbsqlc.Operation
 	err := r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := authorizeTunnelManagementTx(ctx, tx); err != nil {
+			return err
+		}
 		q := tx.Queries()
 		tunnel, err := q.GetTunnelForResourceV1(ctx, dbsqlc.GetTunnelForResourceV1Params{TunnelID: input.TunnelID, AccountID: input.AccountID})
 		if errors.Is(err, pgx.ErrNoRows) {

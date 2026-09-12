@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/pinksaucepasta/paperboat-server/internal/access"
+	"github.com/pinksaucepasta/paperboat-server/internal/teaminbox"
 	"github.com/pinksaucepasta/paperboat-server/internal/usermachines"
 )
 
@@ -594,6 +595,33 @@ func userMachineConnectionDescriptor(service *usermachines.Service) http.Handler
 	}
 }
 
+func sharedTerminalConnectionDescriptor(service *usermachines.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok || p.Client == nil {
+			writeError(w, r, http.StatusUnauthorized, "unauthenticated", "CLI authentication is required.")
+			return
+		}
+		var body struct {
+			SourceMachineID string `json:"source_machine_id"`
+		}
+		if !decodeStrictJSON(w, r, &body) {
+			return
+		}
+		response, err := service.ConnectSharedTerminalSession(r.Context(), p.User.ID, body.SourceMachineID, p.Client.SessionID, r.PathValue("session_id"))
+		switch {
+		case errors.Is(err, usermachines.ErrTerminalSessionNotFound), errors.Is(err, usermachines.ErrNotFound):
+			writeError(w, r, http.StatusNotFound, "terminal_session_not_found", "Terminal session was not found.")
+		case errors.Is(err, usermachines.ErrMachineCapabilityUnavailable):
+			writeError(w, r, http.StatusConflict, "terminal_host_unavailable", "The terminal host is unavailable.")
+		case err != nil:
+			writeError(w, r, http.StatusServiceUnavailable, "connector_unavailable", "Terminal credentials are unavailable.")
+		default:
+			writeJSON(w, http.StatusOK, SuccessResponse{Data: response})
+		}
+	}
+}
+
 func userMachineExecDescriptor(service *usermachines.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := principalFromContext(r.Context())
@@ -680,6 +708,8 @@ func userMachineFileTransferDescriptor(service *usermachines.Service, hosted *ac
 		var body struct {
 			SourceMachineID string `json:"source_machine_id"`
 			SessionID       string `json:"session_id"`
+			RequestID       string `json:"request_id"`
+			ManifestDigest  string `json:"manifest_digest"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeError(w, r, http.StatusBadRequest, "invalid_request", "Request body must be valid JSON.")
@@ -690,7 +720,7 @@ func userMachineFileTransferDescriptor(service *usermachines.Service, hosted *ac
 		if strings.HasPrefix(body.SessionID, "pts_") && hosted != nil {
 			response, err = hosted.FileTransferDescriptor(r.Context(), access.TransferDescriptorRequest{UserID: p.User.ID, SourceMachineID: body.SourceMachineID, DestinationMachineID: r.PathValue("machine_id"), CLIClientSessionID: p.Client.SessionID, SessionID: body.SessionID})
 		} else {
-			response, err = service.FileTransferDescriptor(r.Context(), p.User.ID, body.SourceMachineID, r.PathValue("machine_id"), p.Client.SessionID, body.SessionID)
+			response, err = service.FileTransferDescriptorForRequest(r.Context(), p.User.ID, body.SourceMachineID, r.PathValue("machine_id"), p.Client.SessionID, body.SessionID, body.RequestID, body.ManifestDigest)
 		}
 		if errors.Is(err, usermachines.ErrNotFound) {
 			writeError(w, r, http.StatusNotFound, "user_machine_not_found", "Source or destination machine was not found.")
@@ -706,6 +736,10 @@ func userMachineFileTransferDescriptor(service *usermachines.Service, hosted *ac
 		}
 		if errors.Is(err, usermachines.ErrMachineOffline) {
 			writeError(w, r, http.StatusConflict, "machine_offline", "Destination machine is offline.")
+			return
+		}
+		if errors.Is(err, teaminbox.ErrPending) || errors.Is(err, teaminbox.ErrDeclined) || errors.Is(err, teaminbox.ErrExpired) || errors.Is(err, teaminbox.ErrRevoked) || errors.Is(err, teaminbox.ErrConflict) {
+			teamInboxError(w, r, err)
 			return
 		}
 		if errors.Is(err, access.ErrTerminalSessionNotFound) {

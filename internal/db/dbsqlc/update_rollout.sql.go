@@ -16,6 +16,7 @@ UPDATE user_machine_maintenance_approvals
 SET status = 'consumed', version = version + 1, updated_at = now()
 WHERE id = $1 AND user_machine_id = $2
   AND status = 'approved' AND expires_at > now()
+  AND machine_management_allowed(decided_by_user_id,user_machine_id)
 RETURNING id, user_machine_id, user_id, schema, action, target_version, reason, status,
           idempotency_key, request_hash, expires_at, decided_at, decided_by_user_id,
           version, created_at, updated_at
@@ -195,7 +196,7 @@ const decideUserMachineMaintenanceApproval = `-- name: DecideUserMachineMaintena
 UPDATE user_machine_maintenance_approvals
 SET status = $1, decided_at = now(), decided_by_user_id = $2,
     version = version + 1, updated_at = now()
-WHERE id = $3 AND user_id = $4
+WHERE id = $3 AND machine_management_allowed($4,user_machine_id)
   AND user_machine_id = $5 AND status = 'pending'
   AND version = $6 AND expires_at > now()
 RETURNING id, user_machine_id, user_id, schema, action, target_version, reason, status,
@@ -246,7 +247,7 @@ func (q *Queries) DecideUserMachineMaintenanceApproval(ctx context.Context, arg 
 const expireDueUserMachineMaintenanceApprovals = `-- name: ExpireDueUserMachineMaintenanceApprovals :execrows
 UPDATE user_machine_maintenance_approvals
 SET status = 'expired', version = version + 1, updated_at = now()
-WHERE user_id = $1 AND user_machine_id = $2
+WHERE machine_management_allowed($1,user_machine_id) AND user_machine_id = $2
   AND status = 'pending' AND expires_at <= now()
 `
 
@@ -266,7 +267,7 @@ func (q *Queries) ExpireDueUserMachineMaintenanceApprovals(ctx context.Context, 
 const expireUserMachineMaintenanceApproval = `-- name: ExpireUserMachineMaintenanceApproval :one
 UPDATE user_machine_maintenance_approvals
 SET status = 'expired', version = version + 1, updated_at = now()
-WHERE id = $1 AND user_id = $2
+WHERE id = $1 AND machine_management_allowed($2,user_machine_id)
   AND user_machine_id = $3 AND status = 'pending'
 RETURNING id, user_machine_id, user_id, schema, action, target_version, reason, status,
           idempotency_key, request_hash, expires_at, decided_at, decided_by_user_id,
@@ -348,7 +349,7 @@ SELECT id, user_machine_id, user_id, schema, action, target_version, reason, sta
        idempotency_key, request_hash, expires_at, decided_at, decided_by_user_id,
        version, created_at, updated_at
 FROM user_machine_maintenance_approvals
-WHERE id = $1 AND user_id = $2
+WHERE id = $1 AND machine_management_allowed($2,user_machine_id)
   AND user_machine_id = $3
 FOR UPDATE
 `
@@ -428,7 +429,7 @@ SELECT id, user_machine_id, user_id, schema, action, target_version, reason, sta
        idempotency_key, request_hash, expires_at, decided_at, decided_by_user_id,
        version, created_at, updated_at
 FROM user_machine_maintenance_approvals
-WHERE user_id = $1 AND user_machine_id = $2
+WHERE machine_management_allowed($1,user_machine_id) AND user_machine_id = $2
 ORDER BY created_at DESC, id DESC
 LIMIT $3
 `

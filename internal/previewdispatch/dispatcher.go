@@ -14,7 +14,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 	"time"
 
@@ -22,6 +21,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
 	"github.com/pinksaucepasta/paperboat-server/internal/mint"
+	"github.com/pinksaucepasta/paperboat-server/internal/previewtunnelstore"
 	"github.com/pinksaucepasta/paperboat-server/internal/previewv1"
 )
 
@@ -80,6 +80,7 @@ func IsUncertain(err error) bool {
 // local adapters may use an HTTP base URL, but never a URL with userinfo,
 // query, fragment, or a non-root path.
 type MachineRoute struct {
+	Shared        bool
 	EnvironmentID string
 	BaseURL       string
 }
@@ -161,6 +162,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, request previewv1.DispatchReq
 			return previewv1.DispatchOutcome{}, &DispatchError{Code: "machine_unavailable", Retryable: true, Cause: err}
 		}
 		return previewv1.DispatchOutcome{}, uncertainDispatchError("route_resolution_failed", err)
+	}
+	if route.Shared && request.AccessMode == "public" {
+		return previewv1.DispatchOutcome{}, previewtunnelstore.ErrPreviewPublicationDenied
 	}
 	endpoint, err := dispatchEndpoint(route.BaseURL)
 	if err != nil {
@@ -313,22 +317,22 @@ func (r DBMachineRouteResolver) ResolvePreviewDispatchRoute(ctx context.Context,
 	if r.DB == nil || strings.TrimSpace(accountID) == "" || strings.TrimSpace(machineID) == "" {
 		return MachineRoute{}, ErrRouteUnavailable
 	}
-	machine, err := r.DB.Queries().GetUserMachineForUser(ctx, dbsqlc.GetUserMachineForUserParams{ID: machineID, UserID: accountID})
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return MachineRoute{}, ErrRouteUnavailable
-		}
-		return MachineRoute{}, err
-	}
-	if machine.State != "online" || machine.SeatState != "occupied" || !machine.Online || machine.RevokedAt.Valid || machine.DeletedAt.Valid || machine.DisconnectedAt.Valid || !slices.Contains(machine.ConfiguredCapabilities, "preview_launch") || !slices.Contains(machine.ObservedCapabilities, "preview_launch") {
+	var issuer, environment string
+	var shared bool
+	err := r.DB.SQL().QueryRowContext(ctx, `SELECT user_id,environment_id,m.user_id<>$2 OR m.owner_team_id IS NOT NULL FROM paperboat.user_machines m WHERE m.id=$1 AND paperboat.machine_capability_allowed($2,m.id,'preview_manage') AND m.state='online' AND m.seat_state='occupied' AND m.online AND m.revoked_at IS NULL AND m.deleted_at IS NULL AND m.disconnected_at IS NULL AND m.configured_capabilities @> ARRAY['preview_launch']::text[] AND m.observed_capabilities @> ARRAY['preview_launch']::text[]`, machineID, accountID).Scan(&issuer, &environment, &shared)
+	if errors.Is(err, sql.ErrNoRows) {
 		return MachineRoute{}, ErrMachineOffline
 	}
-	route, err := r.DB.Queries().GetActiveHelperRouteForMachine(ctx, dbsqlc.GetActiveHelperRouteForMachineParams{MachineID: machineID, AccountID: accountID})
+	if err != nil {
+		return MachineRoute{}, err
+	}
+
+	route, err := r.DB.Queries().GetActiveHelperRouteForMachine(ctx, dbsqlc.GetActiveHelperRouteForMachineParams{MachineID: machineID, AccountID: issuer})
 	if errors.Is(err, sql.ErrNoRows) {
 		return MachineRoute{}, ErrRouteUnavailable
 	}
 	if err != nil {
 		return MachineRoute{}, err
 	}
-	return MachineRoute{EnvironmentID: machine.EnvironmentID, BaseURL: "https://" + route.PublicHost}, nil
+	return MachineRoute{Shared: shared, EnvironmentID: environment, BaseURL: "https://" + route.PublicHost}, nil
 }

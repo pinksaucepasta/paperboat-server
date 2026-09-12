@@ -14,6 +14,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
+	"github.com/pinksaucepasta/paperboat-server/internal/teams"
 )
 
 const DeviceCapabilitiesSchemaV1 = "paperboat.device-capabilities/v1"
@@ -63,6 +64,16 @@ func (s *Service) SetDeviceCapabilities(ctx context.Context, userID, machineID, 
 	hash := sha256.Sum256(body)
 	var result DeviceCapabilityPolicy
 	err := s.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := teams.Lock(ctx, tx); err != nil {
+			return err
+		}
+		machine, err := tx.Queries().GetUserMachineForUpdate(ctx, dbsqlc.GetUserMachineForUpdateParams{ID: machineID, UserID: userID})
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
 		op, err := tx.Queries().GetUserMachineCapabilityOperation(ctx, dbsqlc.GetUserMachineCapabilityOperationParams{UserID: userID, UserMachineID: machineID, IdempotencyKey: idempotencyKey})
 		if err == nil {
 			if !bytes.Equal(op.RequestHash, hash[:]) || json.Unmarshal(op.Result, &result) != nil {
@@ -71,13 +82,6 @@ func (s *Service) SetDeviceCapabilities(ctx context.Context, userID, machineID, 
 			return nil
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		machine, err := tx.Queries().GetUserMachineForUpdate(ctx, dbsqlc.GetUserMachineForUpdateParams{ID: machineID, UserID: userID})
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrNotFound
-		}
-		if err != nil {
 			return err
 		}
 		if machine.CapabilitiesDesiredVersion != expectedVersion {

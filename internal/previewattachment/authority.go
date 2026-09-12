@@ -88,7 +88,7 @@ func (a ServerAuthority) ResolvePreviewAttachment(ctx context.Context, in Resolv
 	if err != nil {
 		return Resolution{}, err
 	}
-	if lease.ActorID != in.Proof.UserID || lease.OwnerDeviceID != in.Proof.MachineID || lease.OwnerSessionID != in.Request.OwnerSessionID || lease.PreviewID != in.Request.PreviewID || lease.OperationID != in.Proof.OperationID {
+	if lease.MachineAccountID != in.Proof.UserID || lease.OwnerDeviceID != in.Proof.MachineID || lease.OwnerSessionID != in.Request.OwnerSessionID || lease.PreviewID != in.Request.PreviewID || lease.OperationID != in.Proof.OperationID {
 		return Resolution{}, ErrUnauthorized
 	}
 	hash, err := in.Request.Hash(lease.AccountID)

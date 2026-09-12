@@ -152,6 +152,22 @@ Common environment overrides:
 - `PAPERBOAT_DIAGNOSTICS_RETENTION`
 - `PAPERBOAT_DIAGNOSTICS_ACCESS_KEY` or `PAPERBOAT_DIAGNOSTICS_ACCESS_KEY_FILE`
 - `PAPERBOAT_DIAGNOSTICS_SECRET_KEY` or `PAPERBOAT_DIAGNOSTICS_SECRET_KEY_FILE`
+- `PAPERBOAT_RECEIPT_EMAIL_ENDPOINT` — HTTPS endpoint for the existing email delivery service
+- `PAPERBOAT_RECEIPT_EMAIL_FROM` — fixed sender address for successful Team Inbox receipts
+- `PAPERBOAT_RECEIPT_EMAIL_TOKEN` or `PAPERBOAT_RECEIPT_EMAIL_TOKEN_FILE`
+
+Paperboat delivery is the default. A team owner or admin can instead configure that
+team's SMTP host, encrypted connection (STARTTLS on 587 or implicit TLS on 465), username,
+password, and From address through the Team Inbox dashboard/API. SMTP passwords are
+encrypted with `PAPERBOAT_ENCRYPTION_KEY`, never returned by reads, and removing the team
+configuration immediately restores Paperboat delivery. Only public DNS SMTP endpoints are
+accepted at delivery time; private, loopback, link-local, and plaintext endpoints are denied.
+
+Receipt delivery posts only `from`, `to`, a fixed subject, and a file count; it never
+sends file names, paths, hashes, contents, machine labels, credentials, or download
+authority. The request ID is sent as `Idempotency-Key`, and the delivery service must
+return `{"message_id":"..."}`. Failed notification delivery is retried at most five
+times and does not roll back or duplicate the completed file transfer.
 - `PAPERBOAT_FLY_ORCHESTRATION_LEASE`
 - `PAPERBOAT_FLY_BASE_URL`
 - `PAPERBOAT_FLY_VOLUME_NAME_PREFIX`

@@ -64,6 +64,404 @@
           "data": {}
         }
       },
+      "TerminalSharingMutation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operation_id",
+          "expected_generation"
+        ],
+        "properties": {
+          "operation_id": {
+            "type": "string"
+          },
+          "expected_generation": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "TerminalSharingGrantRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operation_id",
+          "expected_generation",
+          "team_id",
+          "audience",
+          "role",
+          "active"
+        ],
+        "properties": {
+          "operation_id": {
+            "type": "string"
+          },
+          "expected_generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "team_id": {
+            "type": "string"
+          },
+          "audience": {
+            "enum": [
+              "all_members",
+              "selected_member"
+            ]
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "viewer",
+              "interactive"
+            ]
+          },
+          "active": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SharedTerminalSession": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "target",
+          "owner_account",
+          "can_manage",
+          "role",
+          "sharing",
+          "participants",
+          "participants_available"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "owner_account": {
+            "type": "string"
+          },
+          "can_manage": {
+            "type": "boolean"
+          },
+          "role": {
+            "enum": [
+              "owner",
+              "viewer",
+              "interactive"
+            ]
+          },
+          "target": {
+            "type": "object",
+            "required": [
+              "kind",
+              "id",
+              "name",
+              "machine_id",
+              "machine_generation",
+              "status",
+              "reason"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "machine",
+                  "hosted"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "machine_id": {
+                "type": "string"
+              },
+              "machine_generation": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "status": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            }
+          },
+          "sharing": {
+            "type": "object",
+            "required": [
+              "generation",
+              "team_id",
+              "audience",
+              "grants",
+              "recent_output_warning"
+            ],
+            "properties": {
+              "generation": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "team_id": {
+                "type": "string"
+              },
+              "audience": {
+                "enum": [
+                  "none",
+                  "all_members",
+                  "selected_members"
+                ]
+              },
+              "recent_output_warning": {
+                "type": "string"
+              },
+              "grants": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "audience",
+                    "role",
+                    "active",
+                    "generation"
+                  ],
+                  "properties": {
+                    "audience": {
+                      "enum": [
+                        "all_members",
+                        "selected_member"
+                      ]
+                    },
+                    "account_id": {
+                      "type": "string"
+                    },
+                    "role": {
+                      "enum": [
+                        "viewer",
+                        "interactive"
+                      ]
+                    },
+                    "active": {
+                      "type": "boolean"
+                    },
+                    "generation": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "participants": {
+            "type": "array",
+            "maxItems": 128,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "attachment_id",
+                "account_id",
+                "client_id",
+                "role",
+                "connected_at"
+              ],
+              "properties": {
+                "attachment_id": {
+                  "type": "string"
+                },
+                "account_id": {
+                  "type": "string"
+                },
+                "client_id": {
+                  "type": "string"
+                },
+                "role": {
+                  "enum": [
+                    "owner",
+                    "viewer",
+                    "interactive"
+                  ]
+                },
+                "connected_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          },
+          "participants_available": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SharedTerminalSessionResponse": {
+        "type": "object",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/SharedTerminalSession"
+          }
+        }
+      },
+      "SharedTerminalCatalogResponse": {
+        "type": "object",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "sessions"
+            ],
+            "properties": {
+              "sessions": {
+                "type": "array",
+                "maxItems": 512,
+                "items": {
+                  "$ref": "#/components/schemas/SharedTerminalSession"
+                }
+              }
+            }
+          }
+        }
+      },
+      "SharedTerminalDescriptorRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source_machine_id"
+        ],
+        "properties": {
+          "source_machine_id": {
+            "type": "string"
+          }
+        }
+      },
+      "SharedTerminalDescriptorResponse": {
+        "type": "object",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "schema",
+              "capabilities",
+              "machine_id",
+              "machine_generation",
+              "connectable",
+              "terminal",
+              "status",
+              "reason"
+            ],
+            "properties": {
+              "schema": {
+                "const": "paperboat.access-descriptor/v1"
+              },
+              "capabilities": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 1,
+                "items": {
+                  "const": "terminal"
+                }
+              },
+              "machine_id": {
+                "type": "string"
+              },
+              "machine_generation": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "connectable": {
+                "type": "boolean"
+              },
+              "status": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "terminal": {
+                "type": "object",
+                "required": [
+                  "protocol",
+                  "session_id",
+                  "terminal_id",
+                  "role",
+                  "auth"
+                ],
+                "properties": {
+                  "protocol": {
+                    "const": "paperboat.terminal.v1"
+                  },
+                  "session_id": {
+                    "type": "string"
+                  },
+                  "terminal_id": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "enum": [
+                      "viewer",
+                      "interactive"
+                    ]
+                  },
+                  "auth": {
+                    "type": "object",
+                    "required": [
+                      "method",
+                      "token",
+                      "expires_at",
+                      "scopes",
+                      "access_session_id"
+                    ],
+                    "properties": {
+                      "method": {
+                        "const": "bearer"
+                      },
+                      "token": {
+                        "type": "string"
+                      },
+                      "expires_at": {
+                        "type": "string",
+                        "format": "date-time"
+                      },
+                      "scopes": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 1,
+                        "items": {
+                          "enum": [
+                            "terminal:view",
+                            "terminal:control"
+                          ]
+                        }
+                      },
+                      "access_session_id": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "BrowserAccessIssueRequest": {
         "type": "object",
         "additionalProperties": false,
@@ -299,6 +697,186 @@
             "type": "string",
             "format": "date-time",
             "description": "At most five minutes after issuance."
+          }
+        }
+      },
+      "InspectorCredentialRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "resource_kind",
+          "resource_id",
+          "route_id",
+          "action"
+        ],
+        "properties": {
+          "resource_kind": {
+            "type": "string",
+            "enum": [
+              "preview",
+              "tunnel"
+            ]
+          },
+          "resource_id": {
+            "type": "string"
+          },
+          "route_id": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "inspect",
+              "replay"
+            ]
+          },
+          "ttl_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 300
+          }
+        }
+      },
+      "InspectorCredentialResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "credential_id",
+          "token",
+          "expires_at"
+        ],
+        "properties": {
+          "credential_id": {
+            "type": "string",
+            "pattern": "^iac_[A-Za-z0-9_-]{32}$"
+          },
+          "token": {
+            "type": "string",
+            "pattern": "^iat_[A-Za-z0-9_-]{32}$",
+            "writeOnly": true
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "At most five minutes after issuance."
+          }
+        }
+      },
+      "InspectorAuthorizeRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "credential_token",
+          "resource_kind",
+          "resource_id",
+          "route_id",
+          "action"
+        ],
+        "properties": {
+          "credential_token": {
+            "type": "string",
+            "writeOnly": true
+          },
+          "resource_kind": {
+            "type": "string",
+            "enum": [
+              "preview",
+              "tunnel"
+            ]
+          },
+          "resource_id": {
+            "type": "string"
+          },
+          "route_id": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "inspect",
+              "replay"
+            ]
+          }
+        }
+      },
+      "InspectorDecision": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "account_id",
+          "owner_account_id",
+          "resource_kind",
+          "resource_id",
+          "route_id",
+          "resource_generation",
+          "route_generation",
+          "target_generation",
+          "credential_id",
+          "issued_at",
+          "expires_at"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "owner_account_id": {
+            "type": "string"
+          },
+          "resource_kind": {
+            "type": "string",
+            "enum": [
+              "preview",
+              "tunnel"
+            ]
+          },
+          "resource_id": {
+            "type": "string"
+          },
+          "route_id": {
+            "type": "string"
+          },
+          "resource_generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "route_generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "target_generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "team_id": {
+            "type": "string"
+          },
+          "team_generation": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "membership_generation": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "binding_generation": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "grant_generation": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "credential_id": {
+            "type": "string"
+          },
+          "issued_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "At most ten seconds after issuance."
           }
         }
       },
@@ -5115,6 +5693,9 @@
           "sampled_at"
         ],
         "properties": {
+          "terminal_join": {
+            "$ref": "#/components/schemas/TerminalJoinObservation"
+          },
           "reporter_version": {
             "type": "string"
           },
@@ -5152,6 +5733,58 @@
           },
           "lazy_runtime": {
             "$ref": "#/components/schemas/LazyRuntimeObservation"
+          }
+        }
+      },
+      "TerminalJoinObservation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "access_session_id",
+          "terminal_session_id",
+          "attachment_id"
+        ],
+        "properties": {
+          "access_session_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+          },
+          "terminal_session_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+          },
+          "attachment_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+          }
+        },
+        "description": "Join-only metadata; it cannot be mixed with presence, diagnostics, availability, relay, update, lazy-runtime, device-capability, or ENV observations."
+      },
+      "TerminalJoinObservationResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "recorded"
+            ],
+            "properties": {
+              "recorded": {
+                "type": "boolean",
+                "const": true
+              }
+            }
           }
         }
       },
@@ -8453,6 +9086,15 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "env_status": {
+            "type": "string",
+            "enum": [
+              "not_initialized",
+              "ready",
+              "rotation_pending",
+              "deleted"
+            ]
+          },
           "team_id": {
             "type": "string"
           },
@@ -8481,6 +9123,7 @@
           }
         },
         "required": [
+          "env_status",
           "team_id",
           "owner_account",
           "generation",
@@ -8488,6 +9131,58 @@
           "members",
           "grants"
         ]
+      },
+      "TeamActivityItem": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "actor_account",
+          "action",
+          "created_at",
+          "metadata"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "actor_account": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string",
+            "description": "Stored team. prefix removed."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "metadata": {
+            "type": "object",
+            "description": "Allowlisted administrative metadata only; maximum encoded size 4096 bytes. Never contains terminal, file, or ENV contents."
+          }
+        }
+      },
+      "TeamActivityPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 200,
+            "items": {
+              "$ref": "#/components/schemas/TeamActivityItem"
+            }
+          },
+          "next_cursor": {
+            "type": "string",
+            "description": "Opaque team-scoped cursor; empty when no later page exists."
+          }
+        }
       },
       "TeamCreateRequest": {
         "type": "object",
@@ -8860,6 +9555,261 @@
           }
         },
         "additionalProperties": false
+      },
+      "InspectorAccessRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "credential_token",
+          "resource_kind",
+          "resource_id",
+          "route_id",
+          "action",
+          "transport"
+        ],
+        "properties": {
+          "credential_token": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "resource_kind": {
+            "type": "string",
+            "enum": [
+              "preview",
+              "tunnel"
+            ]
+          },
+          "resource_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "route_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "inspect",
+              "replay"
+            ]
+          },
+          "transport": {
+            "type": "string",
+            "enum": [
+              "native",
+              "edge"
+            ]
+          }
+        }
+      },
+      "InspectorTargetRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "selector",
+          "action"
+        ],
+        "properties": {
+          "selector": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "inspect",
+              "replay"
+            ]
+          }
+        }
+      },
+      "InspectorTarget": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "resource_id",
+          "route_id",
+          "route_name"
+        ],
+        "properties": {
+          "resource_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "route_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "route_name": {
+            "type": "string"
+          }
+        }
+      },
+      "InspectorCarrierRoute": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "account_id",
+          "machine_id",
+          "owner_device_id",
+          "tunnel_id",
+          "connector_id",
+          "session_id",
+          "route_id",
+          "edge_node_id",
+          "edge_process_epoch",
+          "assignment_id",
+          "config_content_hash",
+          "lease_generation",
+          "attachment_generation",
+          "process_generation",
+          "generation",
+          "route_generation",
+          "assignment_generation"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "machine_id": {
+            "type": "string"
+          },
+          "owner_device_id": {
+            "type": "string"
+          },
+          "tunnel_id": {
+            "type": "string"
+          },
+          "connector_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "route_id": {
+            "type": "string"
+          },
+          "edge_node_id": {
+            "type": "string"
+          },
+          "edge_process_epoch": {
+            "type": "string"
+          },
+          "assignment_id": {
+            "type": "string"
+          },
+          "config_content_hash": {
+            "type": "string"
+          },
+          "lease_generation": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "attachment_generation": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "process_generation": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "route_generation": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "assignment_generation": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "InspectorAccessResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "credential_id",
+          "owner_account_id",
+          "machine_id",
+          "resource_kind",
+          "resource_id",
+          "route_id",
+          "machine_generation",
+          "resource_generation",
+          "route_generation",
+          "target_generation",
+          "expires_at",
+          "edge_url",
+          "carrier"
+        ],
+        "properties": {
+          "credential_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "owner_account_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "machine_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "resource_kind": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "resource_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "route_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "machine_generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "resource_generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "route_generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "target_generation": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "edge_url": {
+            "type": "string"
+          },
+          "carrier": {
+            "$ref": "#/components/schemas/InspectorCarrierRoute"
+          }
+        }
       }
     },
     "responses": {
@@ -9055,6 +10005,290 @@
     }
   ],
   "paths": {
+    "/v1/terminal-sessions": {
+      "get": {
+        "summary": "List owned and explicitly shared terminal sessions",
+        "description": "Returns a bounded catalog. Team membership or machine access alone does not expose sessions.",
+        "security": [
+          {
+            "bearerAccess": []
+          },
+          {
+            "cookieSession": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:read"
+        ],
+        "responses": {
+          "200": {
+            "description": "Terminal session catalog.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedTerminalCatalogResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "get_v1_terminal_sessions"
+      }
+    },
+    "/v1/terminal-sessions/{session_id}/sharing": {
+      "parameters": [
+        {
+          "name": "session_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "summary": "Get terminal sharing and live participants",
+        "description": "Current grantees can see runtime-derived participants. Owners also see all grants and exclusions.",
+        "security": [
+          {
+            "bearerAccess": []
+          },
+          {
+            "cookieSession": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:read"
+        ],
+        "responses": {
+          "200": {
+            "description": "Sharing state and participant snapshot.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedTerminalSessionResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "get_v1_terminal_session_sharing"
+      },
+      "post": {
+        "summary": "Grant or change exact terminal session access",
+        "description": "Owner-only additive all-member or selected-member viewer/interactive grant. Selected rows override the all-member default.",
+        "security": [
+          {
+            "bearerAccess": []
+          },
+          {
+            "cookieSession": [],
+            "csrfHeader": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TerminalSharingGrantRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated sharing state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedTerminalSessionResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "post_v1_terminal_session_sharing"
+      },
+      "delete": {
+        "summary": "End terminal session sharing",
+        "description": "Owner-only. Revokes all shared attachments while preserving owner access.",
+        "security": [
+          {
+            "bearerAccess": []
+          },
+          {
+            "cookieSession": [],
+            "csrfHeader": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TerminalSharingMutation"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Sharing ended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedTerminalSessionResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "delete_v1_terminal_session_sharing"
+      }
+    },
+    "/v1/terminal-sessions/{session_id}/participants/{account_id}/remove": {
+      "parameters": [
+        {
+          "name": "session_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "account_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "summary": "Remove a terminal participant",
+        "description": "Owner-only. Installs a selected exclusion that overrides all-member access and fences prior credentials.",
+        "security": [
+          {
+            "bearerAccess": []
+          },
+          {
+            "cookieSession": [],
+            "csrfHeader": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TerminalSharingMutation"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated sharing state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedTerminalSessionResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "post_v1_terminal_session_participant_remove"
+      }
+    },
+    "/v1/terminal-sessions/{session_id}/connection-descriptor": {
+      "parameters": [
+        {
+          "name": "session_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "summary": "Issue an exact shared terminal descriptor",
+        "description": "CLI-only. Rechecks the current session grant and issues one short-lived terminal:view or terminal:control credential bound to the session and access ID. The descriptor contains terminal capability only and never file, ENV, machine administration, or resharing authority.",
+        "security": [
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SharedTerminalDescriptorRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Current shared terminal descriptor with an exact singleton role scope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedTerminalDescriptorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "post_v1_shared_terminal_connection_descriptor"
+      }
+    },
     "/v1/native-private-access/grants": {
       "post": {
         "summary": "Issue an exact native private route credential",
@@ -10272,7 +11506,7 @@
     "/v1/config/repository-access": {
       "post": {
         "summary": "Issue repository-scoped short-lived config access",
-        "description": "Requires both the helper identity proof and current config-sync credential. Returns one GitHub App installation token restricted to the assigned repository; provider authorization never reaches the helper.",
+        "description": "Requires both the helper identity proof and current config-sync credential. Issues short-lived access only when the assignment owner still has access to that exact private repository through their connected provider account; stored provider authorization never reaches the helper.",
         "security": [],
         "responses": {
           "200": {
@@ -10642,6 +11876,151 @@
           }
         },
         "operationId": "delete_v1_machines_machine_id_config_assignment_consent"
+      }
+    },
+    "/v1/machines/{machine_id}/config-assignment/approve": {
+      "post": {
+        "summary": "Approve the exact currently observed config pull revision",
+        "security": [
+          {
+            "cookieSession": [],
+            "csrfHeader": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "responses": {
+          "200": {
+            "description": "Revision approval recorded."
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "post_v1_machines_machine_id_config_assignment_approve"
+      }
+    },
+    "/v1/teams/{team_id}/config-default": {
+      "get": {
+        "summary": "Read a team default pull repository",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:read"
+        ],
+        "responses": {
+          "200": {
+            "description": "Team configuration default."
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "get_v1_teams_team_id_config_default"
+      },
+      "put": {
+        "summary": "Set a team default pull repository",
+        "security": [
+          {
+            "cookieSession": [],
+            "csrfHeader": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Team configuration default updated."
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "put_v1_teams_team_id_config_default"
+      },
+      "delete": {
+        "summary": "Delete a team default pull repository",
+        "security": [
+          {
+            "cookieSession": [],
+            "csrfHeader": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Team configuration default deleted."
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "delete_v1_teams_team_id_config_default"
+      }
+    },
+    "/v1/config-sync/team-default-adoption": {
+      "get": {
+        "summary": "Read the authenticated account's adopted team default",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:read"
+        ],
+        "responses": {
+          "200": {
+            "description": "Current explicit adoption."
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "get_v1_config_sync_team_default_adoption"
+      },
+      "put": {
+        "summary": "Explicitly adopt one team default using personal provider access",
+        "security": [
+          {
+            "cookieSession": [],
+            "csrfHeader": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Team default adopted."
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "operationId": "put_v1_config_sync_team_default_adoption"
+      },
+      "delete": {
+        "summary": "Unadopt the current team default without changing personal targets",
+        "security": [
+          {
+            "cookieSession": [],
+            "csrfHeader": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Team default unadopted."
+          }
+        },
+        "operationId": "delete_v1_config_sync_team_default_adoption"
       }
     },
     "/v1/machines/{machine_id}/config-assignment/warning": {
@@ -19222,7 +20601,7 @@
     "/v1/runtime-observations": {
       "post": {
         "summary": "VM heartbeat callback",
-        "description": "Authenticated with the project-machine bearer credential. Config sync summaries are sanitized and retained up to the configured server limit.",
+        "description": "Authenticated with the project-machine bearer credential. Config sync summaries are sanitized and retained up to the configured server limit. terminal_join is a separate join-only envelope that also requires current signed machine proof and exact current terminal/team generations. It records attachment metadata only, never terminal content.",
         "security": [],
         "requestBody": {
           "required": true,
@@ -19236,11 +20615,18 @@
         },
         "responses": {
           "202": {
-            "description": "Heartbeat accepted. Rejected optional availability or update observations are identified by stable code in data.auxiliary_rejections without suppressing authenticated runtime presence.",
+            "description": "Heartbeat accepted, or a join-only observation durably recorded as data.recorded=true. Rejected optional availability or update observations are identified by stable code in data.auxiliary_rejections without suppressing authenticated runtime presence.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RuntimeObservationResponse"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/RuntimeObservationResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TerminalJoinObservationResponse"
+                    }
+                  ]
                 }
               }
             }
@@ -19249,6 +20635,12 @@
             "$ref": "#/components/responses/Error"
           },
           "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
             "$ref": "#/components/responses/Error"
           }
         },
@@ -23162,6 +24554,458 @@
         ]
       }
     },
+    "/v1/teams/{team_id}/receipt-smtp": {
+      "parameters": [
+        {
+          "name": "team_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "get_team_receipt_smtp",
+        "summary": "Read owner/admin-visible team SMTP metadata without its password",
+        "responses": {
+          "200": {
+            "description": "SMTP metadata or Paperboat-delivery default."
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "put": {
+        "operationId": "update_team_receipt_smtp",
+        "summary": "Configure encrypted team-owned SMTP for receipt notifications",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "host",
+                  "port",
+                  "username",
+                  "password",
+                  "from_address",
+                  "tls_mode",
+                  "generation"
+                ],
+                "properties": {
+                  "host": {
+                    "type": "string"
+                  },
+                  "port": {
+                    "enum": [
+                      465,
+                      587
+                    ]
+                  },
+                  "username": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string",
+                    "writeOnly": true
+                  },
+                  "from_address": {
+                    "type": "string",
+                    "format": "email"
+                  },
+                  "tls_mode": {
+                    "enum": [
+                      "implicit",
+                      "starttls"
+                    ]
+                  },
+                  "generation": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Saved metadata; password is never returned."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "delete_team_receipt_smtp",
+        "summary": "Remove team SMTP and return to Paperboat email delivery",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "expected_generation"
+                ],
+                "properties": {
+                  "expected_generation": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Paperboat delivery restored."
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/team-inbox/policy": {
+      "get": {
+        "operationId": "get_team_inbox_policy",
+        "summary": "Read Team Inbox acceptance and receipt-email policy",
+        "responses": {
+          "200": {
+            "description": "Current recipient-controlled policy."
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "put": {
+        "operationId": "update_team_inbox_policy",
+        "summary": "Update Team Inbox acceptance and receipt-email policy",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "acceptance",
+                  "receipt_email",
+                  "expected_generation"
+                ],
+                "properties": {
+                  "acceptance": {
+                    "enum": [
+                      "manual",
+                      "automatic"
+                    ]
+                  },
+                  "receipt_email": {
+                    "type": "boolean"
+                  },
+                  "expected_generation": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated policy."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/team-inbox/requests": {
+      "get": {
+        "operationId": "list_team_inbox_requests",
+        "summary": "List bounded incoming and outgoing Team Inbox requests",
+        "responses": {
+          "200": {
+            "description": "At most 128 recent requests."
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "post": {
+        "operationId": "create_team_inbox_request",
+        "summary": "Create an exact cross-account Team Inbox request",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "request_id",
+                  "operation_id",
+                  "source_machine_id",
+                  "destination_machine_id",
+                  "batch_id",
+                  "files",
+                  "expires_at"
+                ],
+                "properties": {
+                  "request_id": {
+                    "type": "string"
+                  },
+                  "operation_id": {
+                    "type": "string"
+                  },
+                  "source_machine_id": {
+                    "type": "string"
+                  },
+                  "destination_machine_id": {
+                    "type": "string"
+                  },
+                  "batch_id": {
+                    "type": "string"
+                  },
+                  "files": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 10,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "basename",
+                        "size",
+                        "sha256"
+                      ],
+                      "properties": {
+                        "basename": {
+                          "type": "string",
+                          "maxLength": 255
+                        },
+                        "size": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "sha256": {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{64}$"
+                        }
+                      }
+                    }
+                  },
+                  "expires_at": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Pending, automatically approved, or same-account/no-approval result."
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/team-inbox/requests/{request_id}": {
+      "parameters": [
+        {
+          "name": "request_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "get_team_inbox_request",
+        "summary": "Read exact Team Inbox request status",
+        "responses": {
+          "200": {
+            "description": "Request and receipt-notification status."
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/team-inbox/requests/{request_id}/approve": {
+      "parameters": [
+        {
+          "name": "request_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "approve_team_inbox_request",
+        "summary": "Approve exact immutable request metadata",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "expected_generation"
+                ],
+                "properties": {
+                  "expected_generation": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Approved request."
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/team-inbox/requests/{request_id}/decline": {
+      "parameters": [
+        {
+          "name": "request_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "decline_team_inbox_request",
+        "summary": "Decline exact Team Inbox request",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "expected_generation"
+                ],
+                "properties": {
+                  "expected_generation": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Declined request."
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/team-inbox/requests/{request_id}/complete": {
+      "parameters": [
+        {
+          "name": "request_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "complete_team_inbox_request",
+        "summary": "Record hash-verified atomic receipt and enqueue opted-in email",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "manifest_digest"
+                ],
+                "properties": {
+                  "manifest_digest": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Transfer remains successful regardless of later notification delivery."
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
     "/v1/teams": {
       "get": {
         "operationId": "team_list",
@@ -23352,6 +25196,89 @@
             }
           }
         ]
+      }
+    },
+    "/v1/teams/{team_id}/activity": {
+      "get": {
+        "operationId": "team_activity",
+        "summary": "List recent administrative team activity",
+        "description": "Rechecks current authorization on every page. Only the active owner or an active admin may read metadata retained for 90 days. Actions omit the stored team. prefix.",
+        "security": [
+          {
+            "cookieSession": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:read"
+        ],
+        "parameters": [
+          {
+            "name": "team_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Opaque cursor returned by the preceding page.",
+            "schema": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Defaults to 50.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded activity page.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TeamActivityPage"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
       }
     },
     "/v1/teams/{team_id}/actions": {
@@ -24205,6 +26132,331 @@
           }
         },
         "operationId": "delete_lazy_policy"
+      }
+    },
+    "/v1/inspector/credentials": {
+      "post": {
+        "operationId": "inspector_credential_issue",
+        "summary": "Issue an exact inspector credential for self",
+        "description": "Authenticated user operation. Issues a credential valid for at most five minutes and bound to the exact resource, route, principal, generations, and inspect or replay action. The token is shown once. Issue requires current ownership or an explicit team inspect/replay grant; viewing, use/manage grants, membership and login alone are denied.",
+        "security": [
+          {
+            "cookieSession": [],
+            "csrfHeader": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InspectorCredentialRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "One-time-visible scoped inspector credential.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/InspectorCredentialResult"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/inspector/credentials/{credential_id}": {
+      "delete": {
+        "operationId": "inspector_credential_revoke",
+        "summary": "Revoke one inspector credential",
+        "description": "Authenticated user operation. The credential holder or the current resource owner may revoke; anyone else is denied without effect.",
+        "security": [
+          {
+            "cookieSession": [],
+            "csrfHeader": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "responses": {
+          "200": {
+            "description": "Revocation receipt.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "revoked"
+                      ],
+                      "properties": {
+                        "revoked": {
+                          "type": "boolean"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/inspector/authorize": {
+      "post": {
+        "operationId": "inspector_authorize",
+        "summary": "Authorize an inspector credential on the daemon channel",
+        "description": "Machine-authenticated daemon boundary. Re-resolves current owner/team authority for the presented credential and returns a 10-second decision with the current generation triple. The machine account must equal the resource owner. Every drift fails closed.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InspectorAuthorizeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Current inspector decision.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/InspectorDecision"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/inspector/access": {
+      "post": {
+        "operationId": "inspector_access_resolve",
+        "summary": "Resolve current inspector owner routing",
+        "description": "Exact inspect/replay authority is required. Returns bounded routing metadata without granting application use or management. Native access binds the credential to the authenticated CLI and current owner machine without requiring an edge connection.",
+        "security": [
+          {
+            "cookieSession": [],
+            "csrfHeader": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InspectorAccessRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authorized inspector routing metadata; no-store.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/InspectorAccessResult"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/inspector/targets": {
+      "post": {
+        "operationId": "inspector_targets_resolve",
+        "summary": "Resolve tunnel routes with exact inspector authority",
+        "description": "Exact inspect/replay authority is required. Returns bounded routing metadata without granting application use or management. Native access binds the credential to the authenticated CLI and current owner machine without requiring an edge connection.",
+        "security": [
+          {
+            "cookieSession": [],
+            "csrfHeader": []
+          },
+          {
+            "bearerAccess": []
+          }
+        ],
+        "x-required-bearer-scopes": [
+          "projects:connect"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InspectorTargetRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authorized inspector routing metadata; no-store.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "maxItems": 128,
+                      "items": {
+                        "$ref": "#/components/schemas/InspectorTarget"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
       }
     }
   }

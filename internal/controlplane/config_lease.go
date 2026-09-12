@@ -111,8 +111,12 @@ func (s *ConfigLeaseService) Authenticate(ctx context.Context, identityToken, cr
 		(byod && (!s.byodEnabled || s.warningRevision == "" || assignment.WarningRevision.String != s.warningRevision)) {
 		return ConfigLeaseHolder{}, ErrConfigLeaseInvalid
 	}
+	repositoryID := assignment.RepositoryID.String
+	if assignment.Mode != ConfigModePullOnly && assignment.PushRepositoryID.Valid {
+		repositoryID = assignment.PushRepositoryID.String
+	}
 	return ConfigLeaseHolder{
-		RepositoryID: assignment.RepositoryID.String, AssignmentID: assignment.ID, EnvironmentID: identity.EnvironmentID,
+		RepositoryID: repositoryID, AssignmentID: assignment.ID, EnvironmentID: identity.EnvironmentID,
 		MachineID: identity.MachineID, InstallationGeneration: identity.InstallationGeneration,
 	}, nil
 }

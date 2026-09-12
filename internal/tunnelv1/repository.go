@@ -47,6 +47,7 @@ var (
 // service. Keeping it small makes policy tests independent of PostgreSQL while
 // keeping all mutation transactions in the SQL implementation.
 type TunnelRepository interface {
+	ResolveManagementAccount(context.Context, string, string) (string, bool, error)
 	VerifyHost(context.Context, string, string) error
 	Create(context.Context, CreateRecord) (MutationRecord, error)
 	Get(context.Context, string, string) (dbsqlc.Tunnel, error)
@@ -206,7 +207,20 @@ func (r *SQLRepository) Create(ctx context.Context, input CreateRecord) (Mutatio
 	}
 	var result MutationRecord
 	err := r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := authorizeTunnelManagementTx(ctx, tx); err != nil {
+			return err
+		}
 		queries := tx.Queries()
+		// Public publication always requires the personal target owner.
+		if input.AccessMode == AccessPublic {
+			var personal bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM user_machines WHERE id=$1 AND user_id=$2 AND owner_team_id IS NULL)`, input.HostID, input.AccountID).Scan(&personal); err != nil {
+				return err
+			}
+			if !personal {
+				return ErrMachinePublicationDenied
+			}
+		}
 		// Recheck and lock the structural host identity inside the create
 		// transaction. The preflight service check alone would allow a
 		// concurrent revoke/delete to race the durable tunnel insert.
@@ -273,6 +287,9 @@ func (r *SQLRepository) Patch(ctx context.Context, input PatchRecord) (MutationR
 	}
 	var result MutationRecord
 	err := r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := authorizeTunnelManagementTx(ctx, tx); err != nil {
+			return err
+		}
 		queries := tx.Queries()
 		operation, replayed, err := beginOperation(ctx, queries, operationInput{
 			ID: input.OperationID, AccountID: input.AccountID, IdempotencyKey: input.IdempotencyKey,
@@ -357,6 +374,9 @@ func (r *SQLRepository) Transition(ctx context.Context, input StateRecord) (Muta
 	}
 	var result MutationRecord
 	err := r.db.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := authorizeTunnelManagementTx(ctx, tx); err != nil {
+			return err
+		}
 		queries := tx.Queries()
 		operation, replayed, err := beginOperation(ctx, queries, operationInput{
 			ID: input.OperationID, AccountID: input.AccountID, IdempotencyKey: input.IdempotencyKey,
@@ -459,6 +479,9 @@ func (r *SQLRepository) ReconcileExpired(ctx context.Context, input ExpiryRecord
 	}
 	var result []MutationRecord
 	err := r.db.InReadCommittedTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := authorizeTunnelManagementTx(ctx, tx); err != nil {
+			return err
+		}
 		rows, err := tx.Queries().ListExpiredPreviewTunnelsV1(ctx, dbsqlc.ListExpiredPreviewTunnelsV1Params{
 			Now: sql.NullTime{Time: input.Now.UTC(), Valid: true}, RowLimit: int32(input.Limit),
 		})

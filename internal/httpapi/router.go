@@ -38,6 +38,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/privateaccess"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
 	"github.com/pinksaucepasta/paperboat-server/internal/releaseauthority"
+	"github.com/pinksaucepasta/paperboat-server/internal/teaminbox"
 	"github.com/pinksaucepasta/paperboat-server/internal/telemetry"
 	"github.com/pinksaucepasta/paperboat-server/internal/terminalsessions"
 	"github.com/pinksaucepasta/paperboat-server/internal/tunnelv1"
@@ -54,7 +55,9 @@ type ProbeRegionReader interface {
 
 type Options struct {
 	BrowserAccess          *BrowserAccessHandlers
+	Inspector              *InspectorHandlers
 	Teams                  teamAPI
+	TeamInbox              *teaminbox.Service
 	Config                 config.Config
 	Logger                 *slog.Logger
 	ReadinessChecker       ReadinessChecker
@@ -431,6 +434,13 @@ func NewRouter(opts Options) http.Handler {
 				mux.Handle("POST /v1/machines/{machine_id}/config-assignment/consent", requireAuth(opts.Auth, requireCSRF(opts.Auth, configConsent(opts.ConfigAssignments))))
 				mux.Handle("DELETE /v1/machines/{machine_id}/config-assignment/consent", requireAuth(opts.Auth, requireCSRF(opts.Auth, configConsentRemove(opts.ConfigAssignments))))
 				mux.Handle("DELETE /v1/machines/{machine_id}/config-assignment", configAuth("projects:connect", requireCSRF(opts.Auth, configAssignmentClear(opts.ConfigAssignments))))
+				mux.Handle("POST /v1/machines/{machine_id}/config-assignment/approve", configAuth("projects:connect", requireCSRF(opts.Auth, configPullRevisionApprove(opts.ConfigAssignments))))
+				mux.Handle("GET /v1/teams/{team_id}/config-default", configAuth("projects:read", configTeamDefault(opts.ConfigAssignments)))
+				mux.Handle("PUT /v1/teams/{team_id}/config-default", requireAuth(opts.Auth, requireCSRF(opts.Auth, configTeamDefault(opts.ConfigAssignments))))
+				mux.Handle("DELETE /v1/teams/{team_id}/config-default", requireAuth(opts.Auth, requireCSRF(opts.Auth, configTeamDefault(opts.ConfigAssignments))))
+				mux.Handle("GET /v1/config-sync/team-default-adoption", configAuth("projects:read", configTeamDefaultAdoption(opts.ConfigAssignments)))
+				mux.Handle("PUT /v1/config-sync/team-default-adoption", requireAuth(opts.Auth, requireCSRF(opts.Auth, configTeamDefaultAdoption(opts.ConfigAssignments))))
+				mux.Handle("DELETE /v1/config-sync/team-default-adoption", requireAuth(opts.Auth, requireCSRF(opts.Auth, configTeamDefaultAdoption(opts.ConfigAssignments))))
 			}
 			if opts.Teams != nil {
 				secure := func(scope string, next http.Handler) http.Handler {
@@ -440,6 +450,9 @@ func NewRouter(opts Options) http.Handler {
 					return requireAuth(opts.Auth, next)
 				}
 				registerTeamRoutes(mux, opts.Teams, func(h http.Handler) http.Handler { return secure("projects:read", h) }, func(h http.Handler) http.Handler { return secure("projects:connect", requireCSRF(opts.Auth, h)) })
+				if opts.TeamInbox != nil {
+					registerTeamInboxRoutes(mux, opts.TeamInbox, func(h http.Handler) http.Handler { return secure("projects:read", h) }, func(h http.Handler) http.Handler { return secure("projects:connect", requireCSRF(opts.Auth, h)) })
+				}
 			}
 			if opts.EnvironmentVariables != nil {
 				environmentAuth := func(scope string, next http.Handler) http.Handler {
@@ -508,6 +521,18 @@ func NewRouter(opts Options) http.Handler {
 			mux.Handle("PUT /v1/machines/{machine_id}/capabilities", userMachineAuth("projects:connect", requireCSRF(opts.Auth, userMachineCapabilities(opts.Machines))))
 			if opts.DeviceAuth != nil {
 				mux.Handle("POST /v1/machines/{machine_id}/connection-descriptor", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", userMachineConnectionDescriptor(opts.Machines))))
+				mux.Handle("POST /v1/terminal-sessions/{session_id}/connection-descriptor", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", sharedTerminalConnectionDescriptor(opts.Machines))))
+				terminalRead := func(h http.Handler) http.Handler {
+					return requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope("projects:read", h))
+				}
+				terminalWrite := func(h http.Handler) http.Handler {
+					return requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope("projects:connect", requireCSRF(opts.Auth, h)))
+				}
+				mux.Handle("GET /v1/terminal-sessions", terminalRead(terminalSessionCatalog(opts.Machines)))
+				mux.Handle("GET /v1/terminal-sessions/{session_id}/sharing", terminalRead(terminalSessionSharing(opts.Machines)))
+				mux.Handle("POST /v1/terminal-sessions/{session_id}/sharing", terminalWrite(terminalSessionGrant(opts.Machines)))
+				mux.Handle("DELETE /v1/terminal-sessions/{session_id}/sharing", terminalWrite(terminalSessionEndSharing(opts.Machines)))
+				mux.Handle("POST /v1/terminal-sessions/{session_id}/participants/{account_id}/remove", terminalWrite(terminalSessionRemoveParticipant(opts.Machines)))
 				mux.Handle("POST /v1/machines/{machine_id}/exec-descriptor", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", userMachineExecDescriptor(opts.Machines))))
 				mux.Handle("POST /v1/machines/{machine_id}/ssh-descriptor", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", userMachineSSHDescriptor(opts.Machines))))
 				mux.Handle("POST /v1/machines/{machine_id}/file-transfer-descriptor", requireBearerAuth(opts.DeviceAuth, requireScope("projects:connect", userMachineFileTransferDescriptor(opts.Machines, opts.EnvironmentAccess))))
@@ -687,6 +712,13 @@ func registerAuthRoutes(mux *http.ServeMux, opts Options) {
 		mux.Handle("POST /v1/browser-access/issue", requireAuth(opts.Auth, requireCSRF(opts.Auth, http.HandlerFunc(opts.BrowserAccess.Issue))))
 		mux.HandleFunc("POST /v1/edge/browser-access/{operation}", opts.BrowserAccess.EdgeRequest)
 		mux.HandleFunc("POST /v1/browser-access/ingress/authorize", opts.BrowserAccess.MachineRequest)
+	}
+	if opts.Inspector != nil {
+		mux.Handle("POST /v1/inspector/targets", requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope("projects:connect", requireCSRF(opts.Auth, http.HandlerFunc(opts.Inspector.Targets)))))
+		mux.Handle("POST /v1/inspector/access", requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope("projects:connect", requireCSRF(opts.Auth, http.HandlerFunc(opts.Inspector.ResolveAccess)))))
+		mux.Handle("POST /v1/inspector/credentials", requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope("projects:connect", requireCSRF(opts.Auth, http.HandlerFunc(opts.Inspector.IssueCredential)))))
+		mux.Handle("DELETE /v1/inspector/credentials/{credential_id}", requireAnyAuth(opts.Auth, opts.DeviceAuth, requireScope("projects:connect", requireCSRF(opts.Auth, http.HandlerFunc(opts.Inspector.RevokeCredential)))))
+		mux.HandleFunc("POST /v1/inspector/authorize", opts.Inspector.Authorize)
 	}
 	mux.HandleFunc("GET /v1/auth/workos/state", workOSState(opts.Auth))
 	mux.HandleFunc("POST /v1/auth/workos/callback", workOSCallback(opts.Auth))

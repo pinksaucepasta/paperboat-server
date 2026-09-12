@@ -371,6 +371,7 @@ type EnrollmentRecord struct {
 }
 
 type ResourceRepository interface {
+	ResolveManagementAccount(context.Context, string, string) (string, bool, error)
 	VerifyHost(context.Context, string, string) error
 	ListResourceRoutes(context.Context, string, string, *ListPosition, int) ([]dbsqlc.TunnelRoute, error)
 	GetResourceRoute(context.Context, string, string, string) (dbsqlc.TunnelRoute, error)

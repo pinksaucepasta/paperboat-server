@@ -161,6 +161,10 @@ func (s *ResourceService) ListRoutes(ctx context.Context, request previewtunnela
 	if err := s.authorize(request, "read", false); err != nil {
 		return RoutePage{}, err
 	}
+	ctx, request, _, scopeErr := scopeTunnelManagement(ctx, s.repository, request, tunnelID)
+	if scopeErr != nil {
+		return RoutePage{}, scopeErr
+	}
 	if err := validateResourceListLimit(limit); err != nil {
 		return RoutePage{}, err
 	}
@@ -194,6 +198,10 @@ func (s *ResourceService) GetRoute(ctx context.Context, request previewtunnelapi
 	if err := s.authorize(request, "read", false); err != nil {
 		return RouteView{}, err
 	}
+	ctx, request, _, scopeErr := scopeTunnelManagement(ctx, s.repository, request, tunnelID)
+	if scopeErr != nil {
+		return RouteView{}, scopeErr
+	}
 	row, err := s.repository.GetResourceRoute(ctx, request.Actor.AccountID, tunnelID, routeID)
 	if err != nil {
 		return RouteView{}, err
@@ -204,6 +212,10 @@ func (s *ResourceService) GetRoute(ctx context.Context, request previewtunnelapi
 func (s *ResourceService) CreateRoute(ctx context.Context, request previewtunnelapi.RequestContext, tunnelID string, input RouteCreateRequest) (RouteMutationResult, error) {
 	if err := s.authorize(request, "write", false); err != nil {
 		return RouteMutationResult{}, err
+	}
+	ctx, request, _, scopeErr := scopeTunnelManagement(ctx, s.repository, request, tunnelID)
+	if scopeErr != nil {
+		return RouteMutationResult{}, scopeErr
 	}
 	normalized, err := normalizeRouteCreate(input)
 	if err != nil {
@@ -252,6 +264,10 @@ func (s *ResourceService) PatchRoute(ctx context.Context, request previewtunnela
 	if err := s.authorize(request, "write", false); err != nil {
 		return RouteMutationResult{}, err
 	}
+	ctx, request, _, scopeErr := scopeTunnelManagement(ctx, s.repository, request, tunnelID)
+	if scopeErr != nil {
+		return RouteMutationResult{}, scopeErr
+	}
 	normalized, err := normalizeRoutePatch(input)
 	if err != nil {
 		return RouteMutationResult{}, err
@@ -289,6 +305,10 @@ func (s *ResourceService) DeleteRoute(ctx context.Context, request previewtunnel
 	if err := s.authorize(request, "write", false); err != nil {
 		return RouteMutationResult{}, err
 	}
+	ctx, request, _, scopeErr := scopeTunnelManagement(ctx, s.repository, request, tunnelID)
+	if scopeErr != nil {
+		return RouteMutationResult{}, scopeErr
+	}
 	request, err := normalizeRequestContext(request, s.newID)
 	if err != nil {
 		return RouteMutationResult{}, err
@@ -310,6 +330,10 @@ func (s *ResourceService) DeleteRoute(ctx context.Context, request previewtunnel
 func (s *ResourceService) ListDomains(ctx context.Context, request previewtunnelapi.RequestContext, tunnelID, rawCursor string, limit int) (DomainPage, error) {
 	if err := s.authorize(request, "read", false); err != nil {
 		return DomainPage{}, err
+	}
+	ctx, request, _, scopeErr := scopeTunnelManagement(ctx, s.repository, request, tunnelID)
+	if scopeErr != nil {
+		return DomainPage{}, scopeErr
 	}
 	if err := validateResourceListLimit(limit); err != nil {
 		return DomainPage{}, err
@@ -344,6 +368,10 @@ func (s *ResourceService) GetDomain(ctx context.Context, request previewtunnelap
 	if err := s.authorize(request, "read", false); err != nil {
 		return DomainView{}, err
 	}
+	ctx, request, _, scopeErr := scopeTunnelManagement(ctx, s.repository, request, tunnelID)
+	if scopeErr != nil {
+		return DomainView{}, scopeErr
+	}
 	row, err := s.repository.GetResourceDomain(ctx, request.Actor.AccountID, tunnelID, domainID)
 	if err != nil {
 		return DomainView{}, err
@@ -354,6 +382,13 @@ func (s *ResourceService) GetDomain(ctx context.Context, request previewtunnelap
 func (s *ResourceService) CreateDomain(ctx context.Context, request previewtunnelapi.RequestContext, tunnelID string, input DomainCreateRequest) (DomainMutationResult, error) {
 	if err := s.authorize(request, "write", false); err != nil {
 		return DomainMutationResult{}, err
+	}
+	ctx, request, shared, scopeErr := scopeTunnelManagement(ctx, s.repository, request, tunnelID)
+	if scopeErr != nil {
+		return DomainMutationResult{}, scopeErr
+	}
+	if shared {
+		return DomainMutationResult{}, ErrMachinePublicationDenied
 	}
 	hostname, matchType, err := normalizeBindingHostname(input.Hostname)
 	if err != nil {
@@ -419,6 +454,13 @@ func (s *ResourceService) mutateDomain(ctx context.Context, request previewtunne
 	if err := s.authorize(request, "write", false); err != nil {
 		return DomainMutationResult{}, err
 	}
+	ctx, request, shared, scopeErr := scopeTunnelManagement(ctx, s.repository, request, tunnelID)
+	if scopeErr != nil {
+		return DomainMutationResult{}, scopeErr
+	}
+	if shared {
+		return DomainMutationResult{}, ErrMachinePublicationDenied
+	}
 	request, err := normalizeRequestContext(request, s.newID)
 	if err != nil {
 		return DomainMutationResult{}, err
@@ -445,6 +487,10 @@ func (s *ResourceService) mutateDomain(ctx context.Context, request previewtunne
 func (s *ResourceService) DomainInstructions(ctx context.Context, request previewtunnelapi.RequestContext, tunnelID, domainID string) (DNSInstructions, error) {
 	if err := s.authorize(request, "read", false); err != nil {
 		return DNSInstructions{}, err
+	}
+	ctx, request, _, scopeErr := scopeTunnelManagement(ctx, s.repository, request, tunnelID)
+	if scopeErr != nil {
+		return DNSInstructions{}, scopeErr
 	}
 	domain, err := s.repository.GetResourceDomain(ctx, request.Actor.AccountID, tunnelID, domainID)
 	if err != nil {
@@ -553,6 +599,10 @@ func (s *ResourceService) ListConnectors(ctx context.Context, request previewtun
 	if err := s.authorize(request, "read", false); err != nil {
 		return ConnectorPage{}, err
 	}
+	ctx, request, _, scopeErr := scopeTunnelManagement(ctx, s.repository, request, tunnelID)
+	if scopeErr != nil {
+		return ConnectorPage{}, scopeErr
+	}
 	if err := validateResourceListLimit(limit); err != nil {
 		return ConnectorPage{}, err
 	}
@@ -586,6 +636,10 @@ func (s *ResourceService) GetConnector(ctx context.Context, request previewtunne
 	if err := s.authorize(request, "read", false); err != nil {
 		return ConnectorView{}, err
 	}
+	ctx, request, _, scopeErr := scopeTunnelManagement(ctx, s.repository, request, tunnelID)
+	if scopeErr != nil {
+		return ConnectorView{}, scopeErr
+	}
 	row, err := s.repository.GetResourceConnector(ctx, request.Actor.AccountID, tunnelID, connectorID)
 	if err != nil {
 		return ConnectorView{}, err
@@ -596,6 +650,13 @@ func (s *ResourceService) GetConnector(ctx context.Context, request previewtunne
 func (s *ResourceService) IssueEnrollment(ctx context.Context, request previewtunnelapi.RequestContext, tunnelID string, input EnrollmentRequest) (EnrollmentResult, error) {
 	if err := s.authorize(request, "write", false); err != nil {
 		return EnrollmentResult{}, err
+	}
+	ctx, request, shared, scopeErr := scopeTunnelManagement(ctx, s.repository, request, tunnelID)
+	if scopeErr != nil {
+		return EnrollmentResult{}, scopeErr
+	}
+	if shared {
+		return EnrollmentResult{}, ErrMachinePublicationDenied
 	}
 	hostID := strings.TrimSpace(input.HostID)
 	if hostID == "" || len(hostID) > 128 {
@@ -740,6 +801,10 @@ func (s *ResourceService) mutateConnector(ctx context.Context, request previewtu
 	if err := s.authorize(request, "write", false); err != nil {
 		return ConnectorMutationResult{}, err
 	}
+	ctx, request, _, scopeErr := scopeTunnelManagement(ctx, s.repository, request, tunnelID)
+	if scopeErr != nil {
+		return ConnectorMutationResult{}, scopeErr
+	}
 	request, err := normalizeRequestContext(request, s.newID)
 	if err != nil {
 		return ConnectorMutationResult{}, err
@@ -767,6 +832,10 @@ func (s *ResourceService) RotateCredentials(ctx context.Context, request preview
 	if err := s.authorize(request, "write", false); err != nil {
 		return previewtunnelapi.Operation{}, err
 	}
+	ctx, request, _, scopeErr := scopeTunnelManagement(ctx, s.repository, request, tunnelID)
+	if scopeErr != nil {
+		return previewtunnelapi.Operation{}, scopeErr
+	}
 	request, err := normalizeRequestContext(request, s.newID)
 	if err != nil {
 		return previewtunnelapi.Operation{}, err
@@ -788,6 +857,10 @@ func (s *ResourceService) RotateCredentials(ctx context.Context, request preview
 func (s *ResourceService) ListTunnelLogs(ctx context.Context, request previewtunnelapi.RequestContext, tunnelID, rawCursor string, limit int) (LogPage, error) {
 	if err := s.authorize(request, "read", false); err != nil {
 		return LogPage{}, err
+	}
+	ctx, request, _, scopeErr := scopeTunnelManagement(ctx, s.repository, request, tunnelID)
+	if scopeErr != nil {
+		return LogPage{}, scopeErr
 	}
 	if err := validateResourceListLimit(limit); err != nil {
 		return LogPage{}, err

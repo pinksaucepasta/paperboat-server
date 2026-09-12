@@ -112,9 +112,9 @@ func (s *Service) Root(ctx context.Context, userID string) (AccountRoot, error) 
 }
 
 type Repository interface {
-	Bootstrap(context.Context, string, string, ed25519.PublicKey, Certificate) (Certificate, error)
+	Bootstrap(context.Context, string, string, ed25519.PublicKey, Certificate, time.Time) (Certificate, error)
 	ResolveAccountRoot(context.Context, string) (AccountRoot, error)
-	Register(context.Context, string, string, Certificate) (Certificate, error)
+	Register(context.Context, string, string, Certificate, time.Time) (Certificate, error)
 	Get(context.Context, string, string, uint64, time.Time) (Certificate, error)
 	Revoke(context.Context, string, string, string, uint64, uint64, string, time.Time) (Certificate, error)
 	RequestMachineEndpoint(context.Context, MachineEndpointRequest, string, [sha256.Size]byte, time.Time) (EndpointEnrollmentRequest, error)
@@ -190,14 +190,14 @@ func (s *Service) Bootstrap(ctx context.Context, request BootstrapRequest) (Cert
 	certificate.RootFingerprint = rootFingerprint
 	if request.AllowRootReplacement {
 		fresh, ok := s.repository.(interface {
-			BootstrapFresh(context.Context, string, string, string, ed25519.PublicKey, Certificate) (Certificate, error)
+			BootstrapFresh(context.Context, string, string, string, ed25519.PublicKey, Certificate, time.Time) (Certificate, error)
 		})
 		if !ok {
 			return Certificate{}, ErrUnavailable
 		}
-		return fresh.BootstrapFresh(ctx, request.OperationID, request.UserID, request.CLIClientSessionID, append(ed25519.PublicKey(nil), request.RootPublicKey...), certificate)
+		return fresh.BootstrapFresh(ctx, request.OperationID, request.UserID, request.CLIClientSessionID, append(ed25519.PublicKey(nil), request.RootPublicKey...), certificate, request.Now)
 	}
-	return s.repository.Bootstrap(ctx, request.OperationID, request.UserID, append(ed25519.PublicKey(nil), request.RootPublicKey...), certificate)
+	return s.repository.Bootstrap(ctx, request.OperationID, request.UserID, append(ed25519.PublicKey(nil), request.RootPublicKey...), certificate, request.Now)
 }
 
 func (s *Service) Get(ctx context.Context, userID, endpointID string, generation uint64, now time.Time) (Certificate, error) {
@@ -249,7 +249,7 @@ func (s *Service) Register(ctx context.Context, request RegisterRequest) (Certif
 	}
 	certificate.KeyID = key.KeyID
 	certificate.RootFingerprint = key.Fingerprint
-	return s.repository.Register(ctx, request.OperationID, request.UserID, certificate)
+	return s.repository.Register(ctx, request.OperationID, request.UserID, certificate, request.Now)
 }
 
 func validateRegistration(request RegisterRequest, rootPublic ed25519.PublicKey) (Certificate, error) {

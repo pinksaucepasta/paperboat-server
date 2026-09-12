@@ -16,20 +16,23 @@ import (
 )
 
 type fakeTunnelRepository struct {
-	verifyErr     error
-	createErr     error
-	patchErr      error
-	transitionErr error
-	getErr        error
-	listErr       error
-	create        CreateRecord
-	patch         PatchRecord
-	transition    StateRecord
-	tunnel        dbsqlc.Tunnel
-	list          []dbsqlc.Tunnel
-	createResult  MutationRecord
-	patchResult   MutationRecord
-	stateResult   MutationRecord
+	managementOwner  string
+	managementShared bool
+	managementErr    error
+	verifyErr        error
+	createErr        error
+	patchErr         error
+	transitionErr    error
+	getErr           error
+	listErr          error
+	create           CreateRecord
+	patch            PatchRecord
+	transition       StateRecord
+	tunnel           dbsqlc.Tunnel
+	list             []dbsqlc.Tunnel
+	createResult     MutationRecord
+	patchResult      MutationRecord
+	stateResult      MutationRecord
 }
 
 func (f *fakeTunnelRepository) VerifyHost(_ context.Context, accountID, hostID string) error {
@@ -397,4 +400,14 @@ func TestCreateTunnelEndpointUUIDIsStableAcrossIdempotentReplay(t *testing.T) {
 	if repository.create.StableEndpointID != endpointIDs[1] {
 		t.Fatalf("second attempt did not allocate a fresh candidate before repository replay: %q", repository.create.StableEndpointID)
 	}
+}
+
+func (f *fakeTunnelRepository) ResolveManagementAccount(_ context.Context, actor, tunnel string) (string, bool, error) {
+	if f.managementErr != nil {
+		return "", false, f.managementErr
+	}
+	if f.managementOwner != "" {
+		return f.managementOwner, f.managementShared, nil
+	}
+	return actor, false, nil
 }

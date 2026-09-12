@@ -35,6 +35,10 @@ type ConfigRuntimeDescriptor struct {
 	WriteMode              string              `json:"write_mode"`
 	Mode                   string              `json:"mode"`
 	RepositoryID           string              `json:"repository_id"`
+	PullRepositoryID       string              `json:"pull_repository_id,omitempty"`
+	PushRepositoryID       string              `json:"push_repository_id,omitempty"`
+	AutomaticUpdates       bool                `json:"automatic_updates"`
+	ApprovedPullRevision   string              `json:"approved_pull_revision,omitempty"`
 	AssignmentID           string              `json:"assignment_id"`
 	EnvironmentID          string              `json:"environment_id"`
 	MachineID              string              `json:"machine_id"`
@@ -77,7 +81,9 @@ func (s *ConfigRuntimeService) Get(ctx context.Context, identityToken, credentia
 	}
 	return ConfigRuntimeDescriptor{
 		WriteMode: s.policy.Mode, Mode: assignment.Mode,
-		RepositoryID: holder.RepositoryID, AssignmentID: holder.AssignmentID, EnvironmentID: holder.EnvironmentID,
+		RepositoryID: statusRepositoryID(assignment), PullRepositoryID: pullRepositoryID(assignment), PushRepositoryID: pushRepositoryID(assignment),
+		AutomaticUpdates: assignment.AutomaticUpdates, ApprovedPullRevision: nullStringValue(assignment.ApprovedPullRevision),
+		AssignmentID: holder.AssignmentID, EnvironmentID: holder.EnvironmentID,
 		MachineID: holder.MachineID, WarningRevision: assignment.WarningRevision.String,
 		InstallationGeneration: holder.InstallationGeneration, SyncRevisionFloor: syncRevisionFloor,
 		Policy: ConfigRuntimePolicy{
@@ -91,4 +97,35 @@ func (s *ConfigRuntimeService) Get(ctx context.Context, identityToken, credentia
 			SummaryLimit: s.policy.SummaryLimit,
 		},
 	}, nil
+}
+
+func pullRepositoryID(assignment dbsqlc.ControlConfigAssignment) string {
+	if assignment.Mode == ConfigModePushOnly {
+		return ""
+	}
+	return nullStringValue(assignment.RepositoryID)
+}
+
+func pushRepositoryID(assignment dbsqlc.ControlConfigAssignment) string {
+	if assignment.Mode == ConfigModePullOnly {
+		return ""
+	}
+	if assignment.PushRepositoryID.Valid {
+		return assignment.PushRepositoryID.String
+	}
+	return nullStringValue(assignment.RepositoryID)
+}
+
+func statusRepositoryID(assignment dbsqlc.ControlConfigAssignment) string {
+	if pull := pullRepositoryID(assignment); pull != "" {
+		return pull
+	}
+	return pushRepositoryID(assignment)
+}
+
+func nullStringValue(value sql.NullString) string {
+	if value.Valid {
+		return value.String
+	}
+	return ""
 }

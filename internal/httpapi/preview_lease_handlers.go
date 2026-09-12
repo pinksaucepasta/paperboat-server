@@ -450,6 +450,8 @@ func writePreviewLeaseError(w http.ResponseWriter, r *http.Request, err error) {
 		status, code, message, outcome, retryable, action = http.StatusBadRequest, "invalid_cursor", "The preview pagination cursor is invalid.", "unchanged", false, "restart_pagination"
 	case errors.Is(err, previewtunnelapi.ErrIdempotencyRequired), errors.Is(err, previewtunnelapi.ErrInvalidIdempotency):
 		status, code, message, outcome, retryable, action = http.StatusBadRequest, "idempotency_key_required", "A valid Idempotency-Key is required.", "unchanged", false, "retry_with_idempotency_key"
+	case errors.Is(err, previewtunnelstore.ErrPreviewPublicationDenied):
+		status, code, message, outcome, retryable, action = http.StatusForbidden, "publication_not_granted", "Shared machine management does not allow public publication. Explicitly choose private or team access.", "unchanged", false, "choose_private_or_team"
 	case errors.Is(err, previewtunnelapi.ErrForbidden), errors.Is(err, previewtunnelapi.ErrHostActorRequired), errors.Is(err, previewv1.ErrOwnerDenied), errors.Is(err, previewtunnelstore.ErrOwnerNotFound):
 		status, code, message, outcome, retryable, action = http.StatusForbidden, "forbidden", "You are not allowed to access this preview.", "unchanged", false, "authenticate_with_required_scope"
 	case errors.Is(err, previewtunnelstore.ErrNotFound):

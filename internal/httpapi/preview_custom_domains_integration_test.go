@@ -449,13 +449,13 @@ func newPreviewCustomDomainsRepository(now time.Time, account, otherAccount, dev
 	}
 }
 
-func (f *previewCustomDomainsRepository) VerifyPreviewLeaseOwnerV1(_ context.Context, accountID, ownerDeviceID string) error {
+func (f *previewCustomDomainsRepository) VerifyPreviewLeaseOwnerV1(_ context.Context, accountID, ownerDeviceID, accessMode string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if !f.owners[accountID+":"+ownerDeviceID] {
-		return previewtunnelstore.ErrOwnerNotFound
+		return false, previewtunnelstore.ErrOwnerNotFound
 	}
-	return nil
+	return false, nil
 }
 
 func (f *previewCustomDomainsRepository) GetPreviewLeaseV1(_ context.Context, accountID, previewID string) (previewtunnelstore.PreviewLeaseRecord, error) {
@@ -1007,4 +1007,28 @@ func equalPreviewCustomDomainStrings(left, right []string) bool {
 }
 
 var _ previewv1.Repository = (*previewCustomDomainsRepository)(nil)
+
+func (f *previewCustomDomainsRepository) ResolvePreviewManagementAccountV1(_ context.Context, actor, preview string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, lease := range f.leases {
+		if lease.ID == preview && lease.AccountID == actor {
+			return lease.AccountID, nil
+		}
+	}
+	return "", previewtunnelstore.ErrNotFound
+}
+
 var _ previewdomain.PreviewDomainRepository = (*previewCustomDomainsRepository)(nil)
+
+func (f *previewCustomDomainsRepository) ResolvePreviewLeaseMachineAccountV1(_ context.Context, issuer, machine, preview string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	for _, lease := range f.leases {
+		if lease.ID == preview && lease.OwnerDeviceID == machine && lease.AccountID == issuer {
+			return lease.AccountID, nil
+		}
+	}
+	return "", previewtunnelstore.ErrOwnerNotFound
+}

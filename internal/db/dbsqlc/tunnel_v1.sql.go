@@ -15,7 +15,8 @@ const getOwnedActivePreviewTunnelHostV1 = `-- name: GetOwnedActivePreviewTunnelH
 SELECT id
 FROM user_machines
 WHERE id = $1
-  AND user_id = $2
+  AND machine_capability_allowed($2::text,id,'tunnel_manage')
+  AND configured_capabilities @> ARRAY['preview_launch']::text[]
   AND deleted_at IS NULL
   AND revoked_at IS NULL
   AND public_identity_key IS NOT NULL
@@ -112,7 +113,7 @@ const listPreviewTunnelsV1 = `-- name: ListPreviewTunnelsV1 :many
 
 SELECT id, account_id, name, desired_state, access_mode, generation, stable_endpoint_id, stable_endpoint, created_by_host_id, created_by_actor_id, expires_at, summary_code, summary_transitioned_at, created_at, updated_at, deleted_at
 FROM tunnels
-WHERE account_id = $1
+WHERE tunnel_management_allowed($1::text, id)
   AND (
     $2::timestamptz IS NULL
     OR (created_at, id) < (

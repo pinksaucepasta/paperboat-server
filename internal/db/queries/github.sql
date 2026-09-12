@@ -32,7 +32,7 @@ SELECT scopes FROM github_oauth_tokens
 WHERE user_id = $1 AND revoked_at IS NULL ORDER BY updated_at DESC LIMIT 1;
 
 -- name: GetGitHubToken :one
-SELECT token_ciphertext, provider_account_login, scopes FROM github_oauth_tokens
+SELECT token_ciphertext, provider_account_login, scopes, expires_at FROM github_oauth_tokens
 WHERE user_id = $1 AND revoked_at IS NULL ORDER BY updated_at DESC LIMIT 1;
 
 -- name: UpsertGitHubProvisioningAttempt :exec

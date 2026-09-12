@@ -92,7 +92,16 @@ func (s *Service) mutate(ctx context.Context, account, team, op, kind string, ex
 			return err
 		}
 		if done {
-			if err := replayAuthority(t, out, account, kind, request); err != nil {
+			if kind == "terminal_session_grant" || kind == "terminal_session_end" {
+				var session string
+				if r, ok := request.(TerminalSessionGrantRequest); ok {
+					session = r.TerminalSessionID
+				}
+				var owner string
+				if err := tx.QueryRow(ctx, `SELECT owner_account FROM team_resource_bindings WHERE team_id=$1 AND resource_kind='terminal_session' AND resource_id=$2`, team, session).Scan(&owner); err != nil || owner != account {
+					return ErrForbidden
+				}
+			} else if err := replayAuthority(t, out, account, kind, request); err != nil {
 				return err
 			}
 			out = t
@@ -123,6 +132,21 @@ func (s *Service) mutate(ctx context.Context, account, team, op, kind string, ex
 			metadata["resource_id"] = r.ResourceID
 			metadata["permission"] = r.Permission
 			metadata["active"] = r.Active
+		case MachineGrantRequest:
+			metadata["machine_id"] = r.MachineID
+			metadata["target_account"] = r.AccountID
+			metadata["audience"] = r.Audience
+			metadata["capabilities"] = r.Capabilities
+			metadata["active"] = r.Active
+		case TerminalSessionGrantRequest:
+			metadata["terminal_session_id"] = r.TerminalSessionID
+			metadata["target_account"] = r.AccountID
+			metadata["audience"] = r.Audience
+			metadata["role"] = r.Role
+			metadata["active"] = r.Active
+		case MachineRequest:
+			metadata["machine_id"] = r.MachineID
+			metadata["action"] = r.Action
 		case AttachRequest:
 			metadata["resource_kind"] = r.ResourceKind
 			metadata["resource_id"] = r.ResourceID
@@ -188,7 +212,13 @@ func (s *Service) Mutate(ctx context.Context, account, team string, r MutationRe
 			if err := FenceENVTx(ctx, tx, team); err != nil {
 				return err
 			}
-			for _, q := range []string{`UPDATE teams SET deleted_at=now() WHERE team_id=$1`, `UPDATE team_members SET active=false,membership_generation=membership_generation+1 WHERE team_id=$1 AND active`, `UPDATE team_resource_grants SET active=false,generation=generation+1 WHERE team_id=$1 AND active`, `UPDATE team_resource_bindings SET active=false,generation=generation+1 WHERE team_id=$1 AND active`, `UPDATE team_invitations SET cancelled_at=now() WHERE team_id=$1 AND accepted_at IS NULL AND cancelled_at IS NULL`, `DELETE FROM environment_vault_team_grants WHERE team_id=$1`, `DELETE FROM environment_vault_team_members WHERE team_id=$1`, `DELETE FROM environment_vault_scopes WHERE owner_kind='team' AND owner_id=$1`, `DELETE FROM environment_vault_teams WHERE team_id=$1`} {
+			if err := removeTeamMachinesTx(ctx, tx, team); err != nil {
+				return err
+			}
+			if err := revokeDepartingResourcesTx(ctx, tx, team, ""); err != nil {
+				return err
+			}
+			for _, q := range []string{`UPDATE team_terminal_session_grants SET active=false,generation=generation+1 WHERE team_id=$1 AND active`, `UPDATE team_machine_grants SET active=false,generation=generation+1 WHERE team_id=$1 AND active`, `UPDATE teams SET deleted_at=now() WHERE team_id=$1`, `UPDATE team_members SET active=false,membership_generation=membership_generation+1 WHERE team_id=$1 AND active`, `UPDATE team_resource_grants SET active=false,generation=generation+1 WHERE team_id=$1 AND active`, `UPDATE team_resource_bindings SET active=false,generation=generation+1 WHERE team_id=$1 AND active`, `UPDATE team_invitations SET cancelled_at=now() WHERE team_id=$1 AND accepted_at IS NULL AND cancelled_at IS NULL`, `DELETE FROM environment_vault_team_grants WHERE team_id=$1`, `DELETE FROM environment_vault_team_members WHERE team_id=$1`, `DELETE FROM environment_vault_scopes WHERE owner_kind='team' AND owner_id=$1`, `DELETE FROM environment_vault_teams WHERE team_id=$1`} {
 				if _, err := tx.Exec(ctx, q, team); err != nil {
 					return err
 				}

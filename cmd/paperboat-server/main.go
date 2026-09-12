@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -24,6 +25,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/fly"
 	"github.com/pinksaucepasta/paperboat-server/internal/orchestrator"
 	"github.com/pinksaucepasta/paperboat-server/internal/projects"
+	"github.com/pinksaucepasta/paperboat-server/internal/teaminbox"
 )
 
 func main() {
@@ -273,9 +275,17 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	var receiptSender teaminbox.ReceiptSender
+	if cfg.Notifications.ReceiptEmailEndpoint != "" {
+		receiptSender, err = teaminbox.NewHTTPReceiptSender(cfg.Notifications.ReceiptEmailEndpoint, cfg.Secrets.ReceiptEmailToken, cfg.Notifications.ReceiptEmailFrom, &http.Client{Timeout: cfg.HTTP.RequestTimeout})
+		if err != nil {
+			return fmt.Errorf("configure receipt email delivery: %w", err)
+		}
+	}
 	server, err := app.New(app.Options{
-		Config: cfg,
-		Logger: logger,
+		Config:             cfg,
+		Logger:             logger,
+		ReceiptEmailSender: receiptSender,
 	})
 	if err != nil {
 		return err

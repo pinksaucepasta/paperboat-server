@@ -16,6 +16,7 @@ import (
 	"github.com/pinksaucepasta/paperboat-server/internal/audit"
 	"github.com/pinksaucepasta/paperboat-server/internal/db"
 	"github.com/pinksaucepasta/paperboat-server/internal/db/dbsqlc"
+	"github.com/pinksaucepasta/paperboat-server/internal/teams"
 )
 
 type SQLRepository struct {
@@ -158,9 +159,12 @@ func (r *SQLRepository) ListClientKeys(ctx context.Context, request ListClientKe
 		if _, err := tx.Queries().ResolveMachineSSHHostKeyAuthorityForUpdate(ctx, dbsqlc.ResolveMachineSSHHostKeyAuthorityForUpdateParams{UserMachineID: request.UserMachineID, UserID: request.ActorUserID, MachineGeneration: int64(request.MachineGeneration)}); err != nil {
 			return authorityError(err)
 		}
-		rows, err := tx.Queries().ListActiveManagedSSHClientKeysForUser(ctx, request.ActorUserID)
+		rows, err := tx.Queries().ListActiveManagedSSHClientKeysForMachine(ctx, request.UserMachineID)
 		if err != nil {
 			return err
+		}
+		if len(rows) > 64 {
+			return errors.Join(ErrUnavailable, ErrMachineKeyCapacity)
 		}
 		result.Keys = make([]ClientKey, 0, len(rows))
 		for _, row := range rows {
@@ -184,8 +188,11 @@ func (r *SQLRepository) RegisterTarget(ctx context.Context, request RegisterTarg
 		Port       uint16
 	}{request.UserMachineID, request.MachineGeneration, request.OSUser, request.TargetPort})
 	err := r.store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := teams.Lock(ctx, tx); err != nil {
+			return err
+		}
 		q := tx.Queries()
-		if _, err := q.ResolveMachineSSHHostKeyAuthorityForUpdate(ctx, dbsqlc.ResolveMachineSSHHostKeyAuthorityForUpdateParams{UserMachineID: request.UserMachineID, UserID: request.ActorUserID, MachineGeneration: int64(request.MachineGeneration)}); err != nil {
+		if _, err := q.ResolveMachineSSHManagementAuthorityForUpdate(ctx, dbsqlc.ResolveMachineSSHManagementAuthorityForUpdateParams{MachineID: request.UserMachineID, UserID: request.ActorUserID, MachineGeneration: int64(request.MachineGeneration)}); err != nil {
 			return authorityError(err)
 		}
 		operation, err := managedOperationReplay(ctx, q, request.OperationID, request.ActorUserID, "target_register", requestHash)
@@ -242,8 +249,11 @@ func (r *SQLRepository) UpdateTargetPort(ctx context.Context, request UpdateTarg
 		ExpectedVersion uint64
 	}{request.UserMachineID, request.MachineGeneration, request.TargetPort, request.ExpectedReconciliationVersion})
 	err := r.store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := teams.Lock(ctx, tx); err != nil {
+			return err
+		}
 		q := tx.Queries()
-		if _, err := q.ResolveMachineSSHHostKeyAuthorityForUpdate(ctx, dbsqlc.ResolveMachineSSHHostKeyAuthorityForUpdateParams{UserMachineID: request.UserMachineID, UserID: request.ActorUserID, MachineGeneration: int64(request.MachineGeneration)}); err != nil {
+		if _, err := q.ResolveMachineSSHManagementAuthorityForUpdate(ctx, dbsqlc.ResolveMachineSSHManagementAuthorityForUpdateParams{MachineID: request.UserMachineID, UserID: request.ActorUserID, MachineGeneration: int64(request.MachineGeneration)}); err != nil {
 			return authorityError(err)
 		}
 		operation, err := managedOperationReplay(ctx, q, request.OperationID, request.ActorUserID, "target_update", requestHash)
@@ -297,7 +307,7 @@ func (r *SQLRepository) GetTarget(ctx context.Context, request GetTargetRequest)
 	var result MachineTarget
 	err := r.store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		q := tx.Queries()
-		if _, err := q.ResolveMachineSSHHostKeyAuthorityForUpdate(ctx, dbsqlc.ResolveMachineSSHHostKeyAuthorityForUpdateParams{UserMachineID: request.UserMachineID, UserID: request.ActorUserID, MachineGeneration: int64(request.MachineGeneration)}); err != nil {
+		if _, err := q.ResolveMachineSSHUseAuthorityForUpdate(ctx, dbsqlc.ResolveMachineSSHUseAuthorityForUpdateParams{MachineID: request.UserMachineID, UserID: request.ActorUserID, MachineGeneration: int64(request.MachineGeneration)}); err != nil {
 			return authorityError(err)
 		}
 		row, err := q.GetMachineSSHTargetForUpdate(ctx, request.UserMachineID)
@@ -457,8 +467,11 @@ func (r *SQLRepository) PromoteHost(ctx context.Context, request PromoteHostRequ
 		Fingerprint [32]byte
 	}{request.UserMachineID, request.MachineGeneration, request.SetID, request.ExpectedFingerprint})
 	err := r.store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
+		if err := teams.Lock(ctx, tx); err != nil {
+			return err
+		}
 		q := tx.Queries()
-		if _, err := q.ResolveMachineSSHHostKeyAuthorityForUpdate(ctx, dbsqlc.ResolveMachineSSHHostKeyAuthorityForUpdateParams{UserMachineID: request.UserMachineID, UserID: request.ActorUserID, MachineGeneration: int64(request.MachineGeneration)}); err != nil {
+		if _, err := q.ResolveMachineSSHManagementAuthorityForUpdate(ctx, dbsqlc.ResolveMachineSSHManagementAuthorityForUpdateParams{MachineID: request.UserMachineID, UserID: request.ActorUserID, MachineGeneration: int64(request.MachineGeneration)}); err != nil {
 			return authorityError(err)
 		}
 		operation, err := managedOperationReplay(ctx, q, request.OperationID, request.ActorUserID, "host_keys_promote", requestHash)
@@ -521,7 +534,7 @@ func (r *SQLRepository) getHost(ctx context.Context, request GetHostKeySetReques
 	var result HostKeySet
 	err := r.store.InTx(ctx, func(ctx context.Context, tx *db.Tx) error {
 		q := tx.Queries()
-		if _, err := q.ResolveMachineSSHHostKeyAuthorityForUpdate(ctx, dbsqlc.ResolveMachineSSHHostKeyAuthorityForUpdateParams{UserMachineID: request.UserMachineID, UserID: request.ActorUserID, MachineGeneration: int64(request.MachineGeneration)}); err != nil {
+		if _, err := q.ResolveMachineSSHUseAuthorityForUpdate(ctx, dbsqlc.ResolveMachineSSHUseAuthorityForUpdateParams{MachineID: request.UserMachineID, UserID: request.ActorUserID, MachineGeneration: int64(request.MachineGeneration)}); err != nil {
 			return authorityError(err)
 		}
 		var row dbsqlc.MachineSshHostKeySet

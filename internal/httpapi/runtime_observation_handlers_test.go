@@ -433,3 +433,55 @@ func TestRuntimeEnvironmentObservationRejectsPlaintextValueCanary(t *testing.T) 
 		t.Fatalf("plaintext environment canary crossed runtime observation boundary: recorded=%#v body=%s", repository.recorded, recorder.Body.String())
 	}
 }
+
+type fakeTerminalJoinRepository struct {
+	calls                int
+	environment, machine string
+	join                 usermachines.TerminalJoinObservation
+	err                  error
+}
+
+func (s *fakeTerminalJoinRepository) RecordTerminalJoin(_ context.Context, environment, machine string, in usermachines.TerminalJoinObservation) error {
+	s.calls++
+	s.environment = environment
+	s.machine = machine
+	s.join = in
+	return s.err
+}
+func TestRuntimeTerminalJoinRequiresSignedHostAndDurableAudit(t *testing.T) {
+	body := `{"environment_id":"env_a","resource_id":"machine_a","sampled_at":"2026-09-12T10:00:00Z","terminal_join":{"access_session_id":"access_a","terminal_session_id":"session_a","attachment_id":"att_a"}}`
+	for _, tc := range []struct {
+		name                 string
+		proof                bool
+		authErr, errorResult error
+		status               int
+	}{
+		{"legacy token", false, nil, nil, 403}, {"invalid proof", true, controlplane.ErrHelperProof, nil, 401},
+		{"revoked", true, nil, usermachines.ErrTerminalSessionNotFound, 403}, {"storage failure", true, nil, errors.New("storage unavailable"), 503}, {"recorded", true, nil, nil, 202},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &fakeRuntimeObservationRepository{}
+			joins := &fakeTerminalJoinRepository{err: tc.errorResult}
+			identity := &fakeRuntimeIdentity{err: tc.authErr}
+			request := httptest.NewRequest(http.MethodPost, "/v1/runtime-observations", strings.NewReader(body))
+			request.Header.Set("Authorization", "Bearer token")
+			if tc.proof {
+				request.Header.Set("X-Paperboat-Machine-Proof", base64.RawURLEncoding.EncodeToString([]byte("proof")))
+			}
+			w := httptest.NewRecorder()
+			runtimeObservation(repo, identity, 10, joins).ServeHTTP(w, request)
+			if w.Code != tc.status {
+				t.Fatalf("status=%d want=%d", w.Code, tc.status)
+			}
+			if repo.recorded != nil {
+				t.Fatal("join altered heartbeat state")
+			}
+			if tc.status == 202 && (joins.calls != 1 || joins.environment != "env_a" || joins.machine != "machine_a" || joins.join.AccessSessionID != "access_a") {
+				t.Fatal("lost host/access binding")
+			}
+			if (tc.status == 401 || !tc.proof) && joins.calls != 0 {
+				t.Fatal("unauthenticated join reached storage")
+			}
+		})
+	}
+}

@@ -306,18 +306,24 @@ type ConnectorProofReplay struct {
 }
 
 type ControlConfigAssignment struct {
-	ID              string
-	EnvironmentID   string
-	RepositoryID    sql.NullString
-	Mode            string
-	ConsentState    string
-	WarningRevision sql.NullString
-	AcceptedAt      sql.NullTime
-	RevokedAt       sql.NullTime
-	Version         int64
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-	MachineID       string
+	ID                    string
+	EnvironmentID         string
+	RepositoryID          sql.NullString
+	Mode                  string
+	ConsentState          string
+	WarningRevision       sql.NullString
+	AcceptedAt            sql.NullTime
+	RevokedAt             sql.NullTime
+	Version               int64
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	MachineID             string
+	PushRepositoryID      sql.NullString
+	AutomaticUpdates      bool
+	AdoptedTeamID         sql.NullString
+	AdoptedDefaultVersion sql.NullInt64
+	ApprovedPullRevision  sql.NullString
+	ApprovedAt            sql.NullTime
 }
 
 type ControlConfigConflictResolution struct {
@@ -476,6 +482,7 @@ type ControlConfigSyncStatus struct {
 	LastSuccessfulAt       sql.NullTime
 	MachineUpdatedAt       time.Time
 	ObservedAt             time.Time
+	Review                 []byte
 }
 
 type ControlConfigSyncStatusHistory struct {
@@ -1231,6 +1238,28 @@ type HostedReadinessObservation struct {
 	CreatedAt          time.Time
 }
 
+type InspectorCredential struct {
+	CredentialID         string
+	TokenHash            []byte
+	AccountID            string
+	ResourceKind         string
+	ResourceID           string
+	RouteID              string
+	Action               string
+	ResourceGeneration   int64
+	RouteGeneration      int64
+	TargetGeneration     int64
+	OwnerAccountID       string
+	TeamID               sql.NullString
+	TeamGeneration       sql.NullInt64
+	MembershipGeneration sql.NullInt64
+	BindingGeneration    sql.NullInt64
+	GrantGeneration      sql.NullInt64
+	IssuedAt             time.Time
+	ExpiresAt            time.Time
+	RevokedAt            sql.NullTime
+}
+
 type LazyAccessPolicy struct {
 	ID                     string
 	Hostname               string
@@ -1879,6 +1908,7 @@ type ProjectTerminalSession struct {
 	CreatedAt                    time.Time
 	UpdatedAt                    time.Time
 	TransferDestinationMachineID sql.NullString
+	OwnerAccount                 string
 }
 
 type ProviderEvent struct {
@@ -2038,6 +2068,76 @@ type Team struct {
 	DeletedAt    sql.NullTime
 }
 
+type TeamConfigDefault struct {
+	TeamID               string
+	Provider             string
+	ExternalRepositoryID string
+	DisplayName          string
+	Branch               string
+	Version              int64
+	UpdatedBy            string
+	UpdatedAt            time.Time
+}
+
+type TeamConfigDefaultAdoption struct {
+	TeamID         string
+	AccountID      string
+	DefaultVersion int64
+	RepositoryID   string
+	AdoptedAt      time.Time
+}
+
+type TeamInboxPolicy struct {
+	AccountID    string
+	Acceptance   string
+	ReceiptEmail bool
+	Generation   int64
+	UpdatedAt    time.Time
+}
+
+type TeamInboxReceiptOutbox struct {
+	RequestID         string
+	RecipientAccount  string
+	Status            string
+	Attempts          int32
+	NextAttemptAt     time.Time
+	ProviderMessageID sql.NullString
+	LastErrorCode     sql.NullString
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+type TeamInboxRequest struct {
+	RequestID            string
+	OperationID          string
+	TeamID               string
+	SenderAccount        string
+	RecipientAccount     string
+	SourceMachineID      string
+	DestinationMachineID string
+	BatchID              string
+	ManifestDigest       string
+	Manifest             []byte
+	Status               string
+	DecisionKind         string
+	PolicyGeneration     int64
+	DecisionGeneration   int64
+	ExpiresAt            time.Time
+	DecidedAt            sql.NullTime
+	ConsumedAt           sql.NullTime
+	CompletedAt          sql.NullTime
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+}
+
+type TeamInboxSenderPolicy struct {
+	RecipientAccount string
+	SenderAccount    string
+	Acceptance       string
+	Generation       int64
+	UpdatedAt        time.Time
+}
+
 type TeamInvitation struct {
 	InvitationID     string
 	TeamID           string
@@ -2046,6 +2146,17 @@ type TeamInvitation struct {
 	ExpiresAt        time.Time
 	AcceptedAt       sql.NullTime
 	CancelledAt      sql.NullTime
+}
+
+type TeamMachineGrant struct {
+	TeamID       string
+	ResourceKind string
+	MachineID    string
+	Audience     string
+	AccountID    sql.NullString
+	Capabilities []string
+	Generation   int64
+	Active       bool
 }
 
 type TeamMember struct {
@@ -2064,13 +2175,26 @@ type TeamOperation struct {
 	CreatedAt     time.Time
 }
 
+type TeamReceiptSmtp struct {
+	TeamID             string
+	Host               string
+	Port               int32
+	Username           string
+	PasswordCiphertext []byte
+	FromAddress        string
+	TlsMode            string
+	Generation         int64
+	UpdatedAt          time.Time
+}
+
 type TeamResourceBinding struct {
-	TeamID       string
-	ResourceKind string
-	ResourceID   string
-	OwnerAccount string
-	Active       bool
-	Generation   int64
+	TeamID                    string
+	ResourceKind              string
+	ResourceID                string
+	OwnerAccount              string
+	Active                    bool
+	Generation                int64
+	TerminalProcessGeneration sql.NullInt64
 }
 
 type TeamResourceGrant struct {
@@ -2081,6 +2205,17 @@ type TeamResourceGrant struct {
 	Permission   string
 	Generation   int64
 	Active       bool
+}
+
+type TeamTerminalSessionGrant struct {
+	TeamID            string
+	ResourceKind      string
+	TerminalSessionID string
+	Audience          string
+	AccountID         sql.NullString
+	Role              string
+	Generation        int64
+	Active            bool
 }
 
 type TerminalSessionOperation struct {
@@ -2531,24 +2666,34 @@ type UserMachine struct {
 	CapabilitiesObservedVersion   int64
 	CapabilitiesStatus            string
 	CapabilitiesErrorCode         sql.NullString
+	OwnerTeamID                   sql.NullString
 }
 
 type UserMachineAccessSession struct {
-	ID                      string
-	UserMachineID           string
-	UserID                  string
-	EnvironmentID           string
-	CLIClientSessionID      string
-	HttpBaseUrl             string
-	HelperTerminalSessionID sql.NullString
-	HelperFileSessionID     sql.NullString
-	State                   string
-	RevocationReason        sql.NullString
-	RevokedAt               sql.NullTime
-	HelperRevokedAt         sql.NullTime
-	ExpiresAt               time.Time
-	CreatedAt               time.Time
-	UpdatedAt               time.Time
+	ID                           string
+	UserMachineID                string
+	UserID                       string
+	EnvironmentID                string
+	CLIClientSessionID           string
+	HttpBaseUrl                  string
+	HelperTerminalSessionID      sql.NullString
+	HelperFileSessionID          sql.NullString
+	State                        string
+	RevocationReason             sql.NullString
+	RevokedAt                    sql.NullTime
+	HelperRevokedAt              sql.NullTime
+	ExpiresAt                    time.Time
+	CreatedAt                    time.Time
+	UpdatedAt                    time.Time
+	TeamID                       sql.NullString
+	Capabilities                 []string
+	OperationID                  string
+	TerminalSessionID            sql.NullString
+	TerminalRole                 sql.NullString
+	TerminalGrantGeneration      sql.NullInt64
+	TerminalBindingGeneration    sql.NullInt64
+	TerminalMembershipGeneration sql.NullInt64
+	TerminalTeamGeneration       sql.NullInt64
 }
 
 type UserMachineAvailabilityOperation struct {
@@ -2708,6 +2853,7 @@ type UserMachineTerminalSession struct {
 	CreatedAt                    time.Time
 	UpdatedAt                    time.Time
 	TransferDestinationMachineID sql.NullString
+	OwnerAccount                 string
 }
 
 type UserMachineTerminalSessionOperation struct {

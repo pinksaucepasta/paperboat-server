@@ -255,6 +255,53 @@ func TestSignCredentialExecOperationBindsExactOperation(t *testing.T) {
 	}
 }
 
+func TestTerminalOperationRequiresOneExactRoleScope(t *testing.T) {
+	provider, err := NewEphemeral(time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	base := CredentialInput{Issuer: "https://api.example.test", Audience: "paperboat-machine", Subject: "usr_1", JTI: "jti_terminal_1", IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute), CredentialClass: "terminal_operation", EnvironmentID: "env_1", AccountID: "usr_1", MachineID: "machine_1", UserID: "usr_1", CLIClientSessionID: "cli_1", SessionID: "session_1", AssignmentID: "access_1", ExpectedGeneration: 7}
+	for _, scope := range []string{"terminal:view", "terminal:control", "terminal:operate"} {
+		input := base
+		input.Scopes = []string{scope}
+		input.JTI += scope
+		token, signErr := provider.SignCredential(input)
+		if signErr != nil {
+			t.Fatalf("sign %s: %v", scope, signErr)
+		}
+		claims, verifyErr := provider.VerifyCredential(token, input.Issuer, "terminal_operation", now)
+		if verifyErr != nil || len(claims.Scopes) != 1 || claims.Scopes[0] != scope {
+			t.Fatalf("verify %s: %#v %v", scope, claims.Scopes, verifyErr)
+		}
+		if scope != "terminal:operate" && claims.AccountID != input.AccountID {
+			t.Fatalf("shared %s omitted account binding: %#v", scope, claims)
+		}
+		if scope != "terminal:operate" && claims.ExpectedGeneration != input.ExpectedGeneration {
+			t.Fatalf("shared %s omitted process generation: %#v", scope, claims)
+		}
+	}
+	for _, scopes := range [][]string{nil, {"terminal:view", "terminal:control"}, {"terminal:admin"}, {"terminal:operate", "terminal:operate"}} {
+		input := base
+		input.Scopes = scopes
+		if _, err := provider.SignCredential(input); err == nil {
+			t.Fatalf("accepted scopes %#v", scopes)
+		}
+	}
+	missingAccount := base
+	missingAccount.AccountID = ""
+	missingAccount.Scopes = []string{"terminal:view"}
+	if _, err := provider.SignCredential(missingAccount); err == nil {
+		t.Fatal("shared terminal credential accepted without account binding")
+	}
+	mismatchedAccount := base
+	mismatchedAccount.AccountID = "other_account"
+	mismatchedAccount.Scopes = []string{"terminal:control"}
+	if _, err := provider.SignCredential(mismatchedAccount); err == nil {
+		t.Fatal("shared terminal credential accepted a different account and user")
+	}
+}
+
 func TestPreviewLaunchCredentialBindsLeaseAndTraceFields(t *testing.T) {
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
 	provider, err := NewEphemeral(time.Minute)
@@ -618,4 +665,65 @@ func mustDecode(t *testing.T, value string) []byte {
 		t.Fatal(err)
 	}
 	return decoded
+}
+
+func TestFileTransferCredentialApprovalBinding(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	provider, err := New([]Key{{ID: "file-approval", PrivateKey: testKey(12)}}, "file-approval", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := CredentialInput{Issuer: "https://api.example.test", Audience: "paperboat-machine", Subject: "member", JTI: "file-approval-credential", IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute), CredentialClass: "file_transfer", Scopes: []string{"file:transfer"}, EnvironmentID: "environment", MachineID: "destination", SourceMachineID: "source", UserID: "member", CLIClientSessionID: "member-client", RequestID: "inbox_request", IdempotencyKey: "approved_batch", RequestHash: strings.Repeat("a", 64)}
+	t.Run("roundtrip", func(t *testing.T) {
+		for _, binding := range []struct{ request, batch, digest string }{{input.RequestID, input.IdempotencyKey, input.RequestHash}, {"r", "b", input.RequestHash}, {strings.Repeat("r", 256), strings.Repeat("b", 128), input.RequestHash}, {"", "", ""}} {
+			current := input
+			current.RequestID, current.IdempotencyKey, current.RequestHash = binding.request, binding.batch, binding.digest
+			token, err := provider.SignCredential(current)
+			if err != nil {
+				t.Fatal(err)
+			}
+			claims, err := provider.VerifyCredential(token, input.Issuer, "file_transfer", now)
+			if err != nil || claims.RequestID != binding.request || claims.IdempotencyKey != binding.batch || claims.RequestHash != binding.digest {
+				t.Fatal("signed file credential lost or changed its exact approval binding")
+			}
+		}
+	})
+	invalid := map[string]func(*CredentialInput){
+		"missing request":  func(in *CredentialInput) { in.RequestID = "" },
+		"missing batch":    func(in *CredentialInput) { in.IdempotencyKey = "" },
+		"missing digest":   func(in *CredentialInput) { in.RequestHash = "" },
+		"request alone":    func(in *CredentialInput) { in.IdempotencyKey = ""; in.RequestHash = "" },
+		"batch alone":      func(in *CredentialInput) { in.RequestID = ""; in.RequestHash = "" },
+		"digest alone":     func(in *CredentialInput) { in.RequestID = ""; in.IdempotencyKey = "" },
+		"long request":     func(in *CredentialInput) { in.RequestID = strings.Repeat("r", 257) },
+		"long batch":       func(in *CredentialInput) { in.IdempotencyKey = strings.Repeat("b", 129) },
+		"invalid request":  func(in *CredentialInput) { in.RequestID = "request/other" },
+		"invalid batch":    func(in *CredentialInput) { in.IdempotencyKey = " batch" },
+		"short digest":     func(in *CredentialInput) { in.RequestHash = strings.Repeat("a", 63) },
+		"nonhex digest":    func(in *CredentialInput) { in.RequestHash = strings.Repeat("g", 64) },
+		"uppercase digest": func(in *CredentialInput) { in.RequestHash = strings.Repeat("A", 64) },
+	}
+	baseToken, err := provider.SignCredential(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range invalid {
+		t.Run(name, func(t *testing.T) {
+			current := input
+			mutate(&current)
+			if _, err := provider.SignCredential(current); err == nil {
+				t.Error("signer accepted invalid approval binding")
+			}
+			var claims map[string]any
+			decodeJSONPart(t, strings.Split(baseToken, ".")[1], &claims)
+			claims["request_id"], claims["idempotency_key"], claims["request_hash"] = current.RequestID, current.IdempotencyKey, current.RequestHash
+			token, err := provider.signClaims("paperboat-credential+jwt", claims)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := provider.VerifyCredential(token, input.Issuer, "file_transfer", now); err == nil {
+				t.Error("verifier accepted invalid approval binding")
+			}
+		})
+	}
 }

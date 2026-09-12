@@ -17,9 +17,10 @@ import (
 )
 
 var (
-	ErrInvalid     = errors.New("managed SSH request is invalid")
-	ErrConflict    = errors.New("managed SSH key conflicts with current authority")
-	ErrUnavailable = errors.New("managed SSH authority is unavailable")
+	ErrInvalid            = errors.New("managed SSH request is invalid")
+	ErrConflict           = errors.New("managed SSH key conflicts with current authority")
+	ErrUnavailable        = errors.New("managed SSH authority is unavailable")
+	ErrMachineKeyCapacity = errors.New("machine exceeds the managed SSH client-key limit")
 )
 
 type ClientKey struct {

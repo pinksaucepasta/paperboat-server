@@ -4,7 +4,7 @@
 -- name: ListPreviewTunnelsV1 :many
 SELECT *
 FROM tunnels
-WHERE account_id = sqlc.arg(account_id)
+WHERE tunnel_management_allowed(sqlc.arg(account_id)::text, id)
   AND (
     sqlc.narg(after_created_at)::timestamptz IS NULL
     OR (created_at, id) < (
@@ -55,7 +55,8 @@ RETURNING *;
 SELECT id
 FROM user_machines
 WHERE id = sqlc.arg(host_id)
-  AND user_id = sqlc.arg(account_id)
+  AND machine_capability_allowed(sqlc.arg(account_id)::text,id,'tunnel_manage')
+  AND configured_capabilities @> ARRAY['preview_launch']::text[]
   AND deleted_at IS NULL
   AND revoked_at IS NULL
   AND public_identity_key IS NOT NULL

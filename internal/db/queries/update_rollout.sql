@@ -69,14 +69,14 @@ SELECT id, user_machine_id, user_id, schema, action, target_version, reason, sta
        idempotency_key, request_hash, expires_at, decided_at, decided_by_user_id,
        version, created_at, updated_at
 FROM user_machine_maintenance_approvals
-WHERE user_id = sqlc.arg(user_id) AND user_machine_id = sqlc.arg(user_machine_id)
+WHERE machine_management_allowed(sqlc.arg(user_id),user_machine_id) AND user_machine_id = sqlc.arg(user_machine_id)
 ORDER BY created_at DESC, id DESC
 LIMIT sqlc.arg(page_limit);
 
 -- name: ExpireDueUserMachineMaintenanceApprovals :execrows
 UPDATE user_machine_maintenance_approvals
 SET status = 'expired', version = version + 1, updated_at = now()
-WHERE user_id = sqlc.arg(user_id) AND user_machine_id = sqlc.arg(user_machine_id)
+WHERE machine_management_allowed(sqlc.arg(user_id),user_machine_id) AND user_machine_id = sqlc.arg(user_machine_id)
   AND status = 'pending' AND expires_at <= now();
 
 -- name: GetUserMachineMaintenanceApprovalForUpdate :one
@@ -84,14 +84,14 @@ SELECT id, user_machine_id, user_id, schema, action, target_version, reason, sta
        idempotency_key, request_hash, expires_at, decided_at, decided_by_user_id,
        version, created_at, updated_at
 FROM user_machine_maintenance_approvals
-WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id)
+WHERE id = sqlc.arg(id) AND machine_management_allowed(sqlc.arg(user_id),user_machine_id)
   AND user_machine_id = sqlc.arg(user_machine_id)
 FOR UPDATE;
 
 -- name: ExpireUserMachineMaintenanceApproval :one
 UPDATE user_machine_maintenance_approvals
 SET status = 'expired', version = version + 1, updated_at = now()
-WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id)
+WHERE id = sqlc.arg(id) AND machine_management_allowed(sqlc.arg(user_id),user_machine_id)
   AND user_machine_id = sqlc.arg(user_machine_id) AND status = 'pending'
 RETURNING id, user_machine_id, user_id, schema, action, target_version, reason, status,
           idempotency_key, request_hash, expires_at, decided_at, decided_by_user_id,
@@ -101,7 +101,7 @@ RETURNING id, user_machine_id, user_id, schema, action, target_version, reason, 
 UPDATE user_machine_maintenance_approvals
 SET status = sqlc.arg(status), decided_at = now(), decided_by_user_id = sqlc.arg(decided_by_user_id),
     version = version + 1, updated_at = now()
-WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id)
+WHERE id = sqlc.arg(id) AND machine_management_allowed(sqlc.arg(user_id),user_machine_id)
   AND user_machine_id = sqlc.arg(user_machine_id) AND status = 'pending'
   AND version = sqlc.arg(expected_version) AND expires_at > now()
 RETURNING id, user_machine_id, user_id, schema, action, target_version, reason, status,
@@ -113,6 +113,7 @@ UPDATE user_machine_maintenance_approvals
 SET status = 'consumed', version = version + 1, updated_at = now()
 WHERE id = sqlc.arg(id) AND user_machine_id = sqlc.arg(user_machine_id)
   AND status = 'approved' AND expires_at > now()
+  AND machine_management_allowed(decided_by_user_id,user_machine_id)
 RETURNING id, user_machine_id, user_id, schema, action, target_version, reason, status,
           idempotency_key, request_hash, expires_at, decided_at, decided_by_user_id,
           version, created_at, updated_at;

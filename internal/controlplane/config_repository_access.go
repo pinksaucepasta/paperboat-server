@@ -30,19 +30,14 @@ type ScopedRepositoryCredential struct {
 
 type ConfigRepositoryAccessIssuer interface {
 	IssueRepositoryAccess(context.Context, string, string, string) (ScopedRepositoryCredential, error)
-	RevokeRepositoryAccess(context.Context, string) error
 }
 
 type ConfigRepositoryAccessIssuerFuncs struct {
-	Issue  func(context.Context, string, string, string) (ScopedRepositoryCredential, error)
-	Revoke func(context.Context, string) error
+	Issue func(context.Context, string, string, string) (ScopedRepositoryCredential, error)
 }
 
-func (f ConfigRepositoryAccessIssuerFuncs) IssueRepositoryAccess(ctx context.Context, authorizationRef, repositoryID, contentsPermission string) (ScopedRepositoryCredential, error) {
-	return f.Issue(ctx, authorizationRef, repositoryID, contentsPermission)
-}
-func (f ConfigRepositoryAccessIssuerFuncs) RevokeRepositoryAccess(ctx context.Context, token string) error {
-	return f.Revoke(ctx, token)
+func (f ConfigRepositoryAccessIssuerFuncs) IssueRepositoryAccess(ctx context.Context, userID, repositoryID, contentsPermission string) (ScopedRepositoryCredential, error) {
+	return f.Issue(ctx, userID, repositoryID, contentsPermission)
 }
 
 type ConfigRepositoryAccess struct {
@@ -75,7 +70,7 @@ func NewConfigRepositoryAccessService(store *db.DB, leases *ConfigLeaseService, 
 	}
 }
 
-func (s *ConfigRepositoryAccessService) Issue(ctx context.Context, identityToken, configCredential string, proof, body []byte, method, path, operationID string) (ConfigRepositoryAccess, error) {
+func (s *ConfigRepositoryAccessService) Issue(ctx context.Context, identityToken, configCredential string, proof, body []byte, method, path, operationID, direction string) (ConfigRepositoryAccess, error) {
 	if s == nil || s.store == nil || s.leases == nil || s.issuer == nil || s.encryptionKey == "" ||
 		strings.TrimSpace(operationID) == "" || len(operationID) > 256 {
 		return ConfigRepositoryAccess{}, ErrConfigRepositoryAccessInvalid
@@ -84,13 +79,38 @@ func (s *ConfigRepositoryAccessService) Issue(ctx context.Context, identityToken
 	if err != nil {
 		return ConfigRepositoryAccess{}, ErrConfigRepositoryAccessInvalid
 	}
+	direction = strings.TrimSpace(direction)
+	if direction != "" && direction != "pull" && direction != "push" {
+		return ConfigRepositoryAccess{}, ErrConfigRepositoryAccessInvalid
+	}
 	contentsPermission := "write"
 	capability := "repository_contents_write"
 	assignment, err := s.store.Queries().GetControlConfigAssignment(ctx, holder.EnvironmentID)
 	if err != nil || assignment.ID != holder.AssignmentID {
 		return ConfigRepositoryAccess{}, ErrConfigRepositoryAccessInvalid
 	}
-	if s.leases.mode == "read_only" || assignment.Mode == ConfigModePullOnly {
+	if direction == "" {
+		if assignment.Mode == ConfigModePullOnly {
+			direction = "pull"
+		} else {
+			direction = "push"
+		}
+	}
+	if direction == "pull" {
+		if assignment.Mode == ConfigModePushOnly || !assignment.RepositoryID.Valid {
+			return ConfigRepositoryAccess{}, ErrConfigRepositoryAccessInvalid
+		}
+		holder.RepositoryID = assignment.RepositoryID.String
+		contentsPermission, capability = "read", "repository_contents_read"
+	} else {
+		if assignment.Mode == ConfigModePullOnly {
+			return ConfigRepositoryAccess{}, ErrConfigRepositoryAccessInvalid
+		}
+		if assignment.PushRepositoryID.Valid {
+			holder.RepositoryID = assignment.PushRepositoryID.String
+		}
+	}
+	if s.leases.mode == "read_only" {
 		contentsPermission, capability = "read", "repository_contents_read"
 	}
 	requestHash := repositoryAccessRequestHash(operationID, holder, capability)
@@ -105,7 +125,7 @@ func (s *ConfigRepositoryAccessService) Issue(ctx context.Context, identityToken
 	repository, err := s.store.Queries().GetActiveControlConfigRepository(ctx, holder.RepositoryID)
 	if err != nil || !repository.AuthorizationRef.Valid || !repository.ExternalRepositoryID.Valid ||
 		!repository.CloneUrl.Valid || !repository.PublishUrl.Valid || !repository.DefaultBranch.Valid ||
-		repository.CredentialCapability.String != "github_app_installation_repository_contents_rw" ||
+		repository.CredentialCapability.String != "provider_user_repository" ||
 		!safeRepositoryCoordinate(repository.CloneUrl.String) || !safeRepositoryCoordinate(repository.PublishUrl.String) {
 		return ConfigRepositoryAccess{}, ErrConfigRepositoryAccessInvalid
 	}
@@ -125,7 +145,9 @@ func (s *ConfigRepositoryAccessService) Issue(ctx context.Context, identityToken
 		return ConfigRepositoryAccess{}, err
 	}
 
-	issued, issueErr := s.issuer.IssueRepositoryAccess(ctx, repository.AuthorizationRef.String, repository.ExternalRepositoryID.String, contentsPermission)
+	// PB authenticates and fences this helper operation, while Git access
+	// remains authorized by the user who connected the repository.
+	issued, issueErr := s.issuer.IssueRepositoryAccess(ctx, repository.OwnerUserID, repository.ExternalRepositoryID.String, contentsPermission)
 	if issueErr != nil {
 		_, _ = s.store.Queries().MarkControlConfigRepositoryAccessUncertain(ctx, dbsqlc.MarkControlConfigRepositoryAccessUncertainParams{
 			LastErrorCode: sql.NullString{String: "provider_outcome_uncertain", Valid: true}, Now: now, OperationID: operationID,
@@ -252,12 +274,9 @@ func (s *ConfigRepositoryAccessService) revokeProviderAccess(ctx context.Context
 			})
 			continue
 		}
-		if revokeErr := s.issuer.RevokeRepositoryAccess(ctx, access.Password); revokeErr != nil {
-			_, _ = s.store.Queries().RecordControlConfigRepositoryAccessRevokeFailure(ctx, dbsqlc.RecordControlConfigRepositoryAccessRevokeFailureParams{
-				LastErrorCode: sql.NullString{String: "provider_revoke_failed", Valid: true}, Now: now, OperationID: row.OperationID,
-			})
-			continue
-		}
+		// Never revoke the underlying user credential: it can authorize unrelated
+		// provider workflows. Revocation here only retires PB's encrypted helper
+		// copy; the provider owns external access revocation.
 		if _, err := s.store.Queries().MarkControlConfigRepositoryAccessProviderRevoked(ctx, dbsqlc.MarkControlConfigRepositoryAccessProviderRevokedParams{Now: sql.NullTime{Time: now, Valid: true}, OperationID: row.OperationID}); err != nil {
 			return err
 		}

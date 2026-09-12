@@ -19,14 +19,17 @@ type configRepositoryResponse struct {
 }
 
 type configAssignmentResponse struct {
-	ID              string  `json:"id"`
-	MachineID       string  `json:"machine_id"`
-	EnvironmentID   string  `json:"environment_id"`
-	RepositoryID    *string `json:"repository_id,omitempty"`
-	ConsentState    string  `json:"consent_state"`
-	Mode            string  `json:"mode"`
-	WarningRevision *string `json:"warning_revision,omitempty"`
-	Version         int64   `json:"version"`
+	ID               string  `json:"id"`
+	MachineID        string  `json:"machine_id"`
+	EnvironmentID    string  `json:"environment_id"`
+	RepositoryID     *string `json:"repository_id,omitempty"`
+	PullRepositoryID *string `json:"pull_repository_id,omitempty"`
+	PushRepositoryID *string `json:"push_repository_id,omitempty"`
+	AutomaticUpdates bool    `json:"automatic_updates"`
+	ConsentState     string  `json:"consent_state"`
+	Mode             string  `json:"mode"`
+	WarningRevision  *string `json:"warning_revision,omitempty"`
+	Version          int64   `json:"version"`
 }
 
 func repositoryResponse(item dbsqlc.ControlConfigRepository) configRepositoryResponse {
@@ -42,7 +45,16 @@ func assignmentResponse(item dbsqlc.ControlConfigAssignment) configAssignmentRes
 		value := item.WarningRevision.String
 		warning = &value
 	}
-	return configAssignmentResponse{ID: item.ID, MachineID: item.MachineID, EnvironmentID: item.EnvironmentID, RepositoryID: repo, Mode: item.Mode, ConsentState: item.ConsentState, WarningRevision: warning, Version: item.Version}
+	pull := repo
+	if item.Mode == controlplane.ConfigModePushOnly {
+		pull = nil
+	}
+	var push *string
+	if item.PushRepositoryID.Valid {
+		value := item.PushRepositoryID.String
+		push = &value
+	}
+	return configAssignmentResponse{ID: item.ID, MachineID: item.MachineID, EnvironmentID: item.EnvironmentID, RepositoryID: repo, PullRepositoryID: pull, PushRepositoryID: push, AutomaticUpdates: item.AutomaticUpdates, Mode: item.Mode, ConsentState: item.ConsentState, WarningRevision: warning, Version: item.Version}
 }
 
 func configRepositories(service *controlplane.ConfigAssignmentService) http.HandlerFunc {
@@ -144,15 +156,21 @@ func configAssignmentSet(service *controlplane.ConfigAssignmentService) http.Han
 			return
 		}
 		var in struct {
-			RepositoryID    string `json:"repository_id"`
-			Mode            string `json:"mode"`
-			WarningRevision string `json:"warning_revision"`
-			ExpectedVersion int64  `json:"expected_version"`
+			RepositoryID     string `json:"repository_id"`
+			PullRepositoryID string `json:"pull_repository_id"`
+			PushRepositoryID string `json:"push_repository_id"`
+			AutomaticUpdates bool   `json:"automatic_updates"`
+			Mode             string `json:"mode"`
+			WarningRevision  string `json:"warning_revision"`
+			ExpectedVersion  int64  `json:"expected_version"`
 		}
 		if !decodeStrictJSON(w, r, &in) {
 			return
 		}
-		item, err := service.Assign(r.Context(), p.User.ID, r.PathValue("machine_id"), in.RepositoryID, in.Mode, in.WarningRevision, in.ExpectedVersion)
+		if in.PullRepositoryID == "" && in.PushRepositoryID == "" && in.RepositoryID != "" {
+			in.PullRepositoryID, in.PushRepositoryID = in.RepositoryID, in.RepositoryID
+		}
+		item, err := service.AssignTargets(r.Context(), p.User.ID, r.PathValue("machine_id"), in.PullRepositoryID, in.PushRepositoryID, in.Mode, in.AutomaticUpdates, in.WarningRevision, in.ExpectedVersion)
 		if err != nil {
 			status, code := 400, "validation_failed"
 			if errors.Is(err, controlplane.ErrAssignmentConflict) {
@@ -252,5 +270,35 @@ func configAssignmentClear(service *controlplane.ConfigAssignmentService) http.H
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func configPullRevisionApprove(service *controlplane.ConfigAssignmentService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, r, 401, "unauthenticated", "Authentication is required.")
+			return
+		}
+		var in struct {
+			RemoteRevision  string `json:"remote_revision"`
+			ExpectedVersion int64  `json:"expected_version"`
+		}
+		if !decodeStrictJSON(w, r, &in) {
+			return
+		}
+		item, err := service.ApprovePullRevision(r.Context(), p.User.ID, r.PathValue("machine_id"), in.RemoteRevision, in.ExpectedVersion)
+		if err != nil {
+			status, code := 400, "validation_failed"
+			if errors.Is(err, controlplane.ErrAssignmentConflict) {
+				status, code = 409, "stale_revision"
+			}
+			if errors.Is(err, controlplane.ErrAssignmentForbidden) {
+				status, code = 404, "not_found_or_forbidden"
+			}
+			writeError(w, r, status, code, "Configuration revision approval could not be recorded.")
+			return
+		}
+		writeJSON(w, 200, SuccessResponse{Data: assignmentResponse(item)})
 	}
 }

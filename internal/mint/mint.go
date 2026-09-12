@@ -446,7 +446,7 @@ var credentialPolicies = map[string]struct {
 	"peer_relay":          {audience: "paperboat-edge", scopes: []string{"peer:relay"}, maxTTL: 5 * time.Minute},
 	"peer_pmtu":           {audience: "paperboat-edge", scopes: []string{"peer:pmtu"}, maxTTL: 5 * time.Minute},
 	"config_sync":         {audience: "paperboat-machine", scopes: []string{"config:pull", "config:apply", "config:report"}, maxTTL: 5 * time.Minute},
-	"terminal_operation":  {audience: "paperboat-machine", scopes: []string{"terminal:operate"}, maxTTL: 5 * time.Minute},
+	"terminal_operation":  {audience: "paperboat-machine", maxTTL: 5 * time.Minute},
 	"exec_operation":      {audience: "paperboat-machine", scopes: []string{"exec:operate"}, maxTTL: 5 * time.Minute},
 	"ssh_operation":       {audience: "paperboat-machine", scopes: []string{"ssh:operate"}, maxTTL: 5 * time.Minute},
 	"preview_launch":      {audience: "paperboat-machine", scopes: []string{"preview:launch"}, maxTTL: 5 * time.Minute},
@@ -469,6 +469,13 @@ func credentialAudienceAllowed(class, audience, defaultAudience string) bool {
 	default:
 		return false
 	}
+}
+
+func credentialScopesAllowed(class string, scopes, fixed []string) bool {
+	if class == "terminal_operation" {
+		return len(scopes) == 1 && slices.Contains([]string{"terminal:view", "terminal:control", "terminal:operate"}, scopes[0])
+	}
+	return slices.Equal(scopes, fixed)
 }
 
 func New(keys []Key, activeID string, maxAge time.Duration) (*Provider, error) {
@@ -597,7 +604,7 @@ func (p *Provider) SignTerminalControl(input TerminalControlInput) (string, erro
 func (p *Provider) SignCredential(input CredentialInput) (string, error) {
 	policy, ok := credentialPolicies[input.CredentialClass]
 	issuedAt, expiresAt := input.IssuedAt.UTC(), input.ExpiresAt.UTC()
-	if !ok || input.Issuer == "" || input.Subject == "" || input.JTI == "" || input.EnvironmentID == "" || !credentialAudienceAllowed(input.CredentialClass, input.Audience, policy.audience) || !slices.Equal(input.Scopes, policy.scopes) || !expiresAt.After(issuedAt) || expiresAt.Sub(issuedAt) > policy.maxTTL {
+	if !ok || input.Issuer == "" || input.Subject == "" || input.JTI == "" || input.EnvironmentID == "" || !credentialAudienceAllowed(input.CredentialClass, input.Audience, policy.audience) || !credentialScopesAllowed(input.CredentialClass, input.Scopes, policy.scopes) || !expiresAt.After(issuedAt) || expiresAt.Sub(issuedAt) > policy.maxTTL {
 		return "", errors.New("credential claims are invalid")
 	}
 	claims := map[string]any{"iss": input.Issuer, "aud": input.Audience, "sub": input.Subject, "jti": input.JTI, "iat": issuedAt.Unix(), "exp": expiresAt.Unix(), "scope": input.Scopes, "credential_class": input.CredentialClass, "environment_id": input.EnvironmentID}
@@ -652,10 +659,15 @@ func (p *Provider) SignCredential(input CredentialInput) (string, error) {
 		}
 		claims["machine_id"], claims["installation_generation"], claims["assignment_id"], claims["warning_revision"] = input.MachineID, input.InstallationGeneration, input.AssignmentID, input.WarningRevision
 	case "terminal_operation":
-		if input.MachineID == "" || input.UserID == "" || input.CLIClientSessionID == "" || input.SessionID == "" {
+		shared := input.Scopes[0] != "terminal:operate"
+		if input.MachineID == "" || input.UserID == "" || input.CLIClientSessionID == "" || input.SessionID == "" || (shared && (input.AssignmentID == "" || input.AccountID == "" || input.AccountID != input.UserID || input.ExpectedGeneration < 1)) {
 			return "", errors.New("machine access bindings are required")
 		}
 		claims["machine_id"], claims["user_id"], claims["cli_client_session_id"], claims["session_id"] = input.MachineID, input.UserID, input.CLIClientSessionID, input.SessionID
+		if shared {
+			claims["account_id"] = input.AccountID
+			claims["expected_generation"] = input.ExpectedGeneration
+		}
 		if input.AssignmentID != "" {
 			claims["assignment_id"] = input.AssignmentID
 		}
@@ -717,6 +729,12 @@ func (p *Provider) SignCredential(input CredentialInput) (string, error) {
 		claims["expected_generation"], claims["route_generation"], claims["target_generation"] = input.ExpectedGeneration, input.RouteGeneration, input.TargetGeneration
 		claims["target_scheme"], claims["target_address"] = input.TargetScheme, input.TargetAddress
 	case "file_transfer":
+		if !validFileTransferApproval(input.RequestID, input.IdempotencyKey, input.RequestHash) {
+			return "", errors.New("file transfer approval bindings are invalid")
+		}
+		if input.RequestID != "" {
+			claims["request_id"], claims["idempotency_key"], claims["request_hash"] = input.RequestID, input.IdempotencyKey, input.RequestHash
+		}
 		if input.MachineID == "" || input.SourceMachineID == "" || input.UserID == "" || input.CLIClientSessionID == "" {
 			return "", errors.New("machine transfer bindings are required")
 		}
@@ -788,7 +806,7 @@ func (p *Provider) verifyCredential(token, expectedIssuer, expectedClass string,
 		return CredentialClaims{}, errors.New("credential issuer is invalid")
 	case !credentialAudienceAllowed(expectedClass, claims.Audience, policy.audience):
 		return CredentialClaims{}, errors.New("credential audience is invalid")
-	case !slices.Equal(claims.Scopes, policy.scopes):
+	case !credentialScopesAllowed(expectedClass, claims.Scopes, policy.scopes):
 		return CredentialClaims{}, errors.New("credential scopes are invalid")
 	case claims.Subject == "" || claims.JTI == "" || claims.EnvironmentID == "":
 		return CredentialClaims{}, errors.New("credential base bindings are invalid")
@@ -834,7 +852,7 @@ func (p *Provider) verifyCredential(token, expectedIssuer, expectedClass string,
 			return CredentialClaims{}, errors.New("credential claims are invalid")
 		}
 	case "terminal_operation":
-		if claims.MachineID == "" || claims.UserID == "" || claims.CLIClientSessionID == "" || claims.SessionID == "" {
+		if claims.MachineID == "" || claims.UserID == "" || claims.CLIClientSessionID == "" || claims.SessionID == "" || (claims.Scopes[0] != "terminal:operate" && claims.AssignmentID == "") {
 			return CredentialClaims{}, errors.New("credential claims are invalid")
 		}
 	case "exec_operation":
@@ -858,11 +876,36 @@ func (p *Provider) verifyCredential(token, expectedIssuer, expectedClass string,
 			return CredentialClaims{}, errors.New("credential claims are invalid")
 		}
 	case "file_transfer":
+		if !validFileTransferApproval(claims.RequestID, claims.IdempotencyKey, claims.RequestHash) {
+			return CredentialClaims{}, errors.New("credential claims are invalid")
+		}
 		if claims.MachineID == "" || claims.SourceMachineID == "" || claims.UserID == "" || claims.CLIClientSessionID == "" {
 			return CredentialClaims{}, errors.New("credential claims are invalid")
 		}
 	}
 	return claims, nil
+}
+
+// Approval is absent for own-device transfers. Team transfers bind the exact
+// Inbox request, native batch ID and canonical manifest SHA-256 together.
+func validFileTransferApproval(requestID, batchID, digest string) bool {
+	if requestID == "" && batchID == "" && digest == "" {
+		return true
+	}
+	return validFileTransferID(requestID, 256) && validFileTransferID(batchID, 128) && validPreviewLaunchHash(digest)
+}
+
+func validFileTransferID(value string, maximum int) bool {
+	if len(value) == 0 || len(value) > maximum {
+		return false
+	}
+	for i, r := range value {
+		alphanumeric := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9'
+		if !alphanumeric && (i == 0 || r != '_' && r != '.' && r != ':' && r != '-') {
+			return false
+		}
+	}
+	return true
 }
 
 func validatePreviewLaunchInput(input CredentialInput) error {

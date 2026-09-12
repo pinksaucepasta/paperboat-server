@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -10,6 +11,26 @@ import (
 
 	"github.com/pinksaucepasta/paperboat-server/internal/config"
 )
+
+func TestNewlyPublishedRevisionRejectsHeartbeatsAndEmptyReports(t *testing.T) {
+	tests := []struct {
+		previous sql.NullString
+		reported string
+		want     string
+		changed  bool
+	}{
+		{reported: "revision-1", want: "revision-1", changed: true},
+		{previous: sql.NullString{String: "revision-1", Valid: true}, reported: "revision-1", want: "revision-1"},
+		{previous: sql.NullString{String: "revision-1", Valid: true}, reported: " revision-2 ", want: "revision-2", changed: true},
+		{previous: sql.NullString{String: "revision-1", Valid: true}, reported: ""},
+	}
+	for _, test := range tests {
+		got, changed := newlyPublishedRevision(test.previous, test.reported)
+		if got != test.want || changed != test.changed {
+			t.Fatalf("newlyPublishedRevision(%+v, %q) = %q, %v; want %q, %v", test.previous, test.reported, got, changed, test.want, test.changed)
+		}
+	}
+}
 
 func TestMarshalConfigStatusListCanonicalizesNilAsArray(t *testing.T) {
 	for _, encode := range []func() ([]byte, error){

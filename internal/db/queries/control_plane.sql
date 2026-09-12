@@ -147,17 +147,87 @@ SELECT EXISTS (
 SELECT * FROM control_config_assignments WHERE environment_id = $1;
 
 -- name: SetControlConfigAssignment :one
-INSERT INTO control_config_assignments (id, machine_id, environment_id, repository_id, mode, consent_state, warning_revision)
+INSERT INTO control_config_assignments (id, machine_id, environment_id, repository_id, push_repository_id, mode, consent_state, warning_revision, automatic_updates)
 SELECT sqlc.arg(assignment_id), machine.id, sqlc.arg(environment_id), sqlc.arg(repository_id),
-       sqlc.arg(mode), sqlc.arg(consent_state), sqlc.narg(warning_revision)
+       sqlc.narg(push_repository_id), sqlc.arg(mode), sqlc.arg(consent_state), sqlc.narg(warning_revision), sqlc.arg(automatic_updates)
 FROM user_machines machine
 WHERE machine.environment_id = sqlc.arg(environment_id) AND machine.deleted_at IS NULL
 ON CONFLICT (machine_id) DO UPDATE
-SET id = EXCLUDED.id, repository_id = EXCLUDED.repository_id, mode = EXCLUDED.mode, consent_state = EXCLUDED.consent_state,
+SET id = EXCLUDED.id, repository_id = EXCLUDED.repository_id, push_repository_id = EXCLUDED.push_repository_id,
+    mode = EXCLUDED.mode, consent_state = EXCLUDED.consent_state, automatic_updates = EXCLUDED.automatic_updates,
+    adopted_team_id = NULL, adopted_default_version = NULL, approved_pull_revision = NULL, approved_at = NULL,
     warning_revision = EXCLUDED.warning_revision, accepted_at = NULL, revoked_at = NULL,
     version = control_config_assignments.version + 1, updated_at = sqlc.arg(now)
 WHERE control_config_assignments.version = sqlc.arg(expected_version)
 RETURNING *;
+
+-- name: GetTeamConfigDefault :one
+SELECT * FROM team_config_defaults WHERE team_id = sqlc.arg(team_id);
+
+-- name: SetTeamConfigDefault :one
+INSERT INTO team_config_defaults (team_id,provider,external_repository_id,display_name,branch,updated_by)
+VALUES (sqlc.arg(team_id),sqlc.arg(provider),sqlc.arg(external_repository_id),sqlc.arg(display_name),sqlc.arg(branch),sqlc.arg(updated_by))
+ON CONFLICT (team_id) DO UPDATE SET
+ provider=EXCLUDED.provider, external_repository_id=EXCLUDED.external_repository_id,
+ display_name=EXCLUDED.display_name, branch=EXCLUDED.branch, updated_by=EXCLUDED.updated_by,
+ version=team_config_defaults.version+1, updated_at=now()
+WHERE team_config_defaults.version=sqlc.arg(expected_version)
+RETURNING *;
+
+-- name: DeleteTeamConfigDefault :one
+DELETE FROM team_config_defaults d USING teams t
+WHERE d.team_id=sqlc.arg(team_id) AND t.team_id=d.team_id
+  AND d.version=sqlc.arg(expected_version)
+RETURNING d.*;
+
+-- name: GetTeamConfigDefaultAuthority :one
+SELECT t.owner_account, t.generation, m.role, m.active
+FROM teams t LEFT JOIN team_members m ON m.team_id=t.team_id AND m.account_id=sqlc.arg(account_id)
+WHERE t.team_id=sqlc.arg(team_id) AND t.deleted_at IS NULL;
+
+-- name: AdoptTeamConfigDefault :one
+INSERT INTO team_config_default_adoptions (team_id,account_id,default_version,repository_id)
+SELECT d.team_id, sqlc.arg(account_id), d.version, r.id
+FROM team_config_defaults d
+JOIN teams t ON t.team_id=d.team_id AND t.deleted_at IS NULL
+LEFT JOIN team_members m ON m.team_id=d.team_id AND m.account_id=sqlc.arg(account_id) AND m.active
+JOIN control_config_repositories r ON r.owner_user_id=sqlc.arg(account_id)
+ AND r.provider=d.provider AND r.external_repository_id=d.external_repository_id
+ AND r.state='active' AND r.disconnected_at IS NULL
+WHERE d.team_id=sqlc.arg(team_id) AND d.version=sqlc.arg(default_version)
+ AND (t.owner_account=sqlc.arg(account_id) OR m.account_id IS NOT NULL)
+ON CONFLICT (account_id) DO UPDATE SET team_id=EXCLUDED.team_id,
+ default_version=EXCLUDED.default_version, repository_id=EXCLUDED.repository_id, adopted_at=now()
+RETURNING *;
+
+-- name: GetTeamConfigDefaultAdoption :one
+SELECT a.*, d.provider, d.external_repository_id, d.display_name, d.branch, d.version AS current_default_version
+FROM team_config_default_adoptions a JOIN team_config_defaults d USING(team_id)
+JOIN teams t ON t.team_id=a.team_id AND t.deleted_at IS NULL
+LEFT JOIN team_members m ON m.team_id=a.team_id AND m.account_id=a.account_id AND m.active
+WHERE a.account_id=sqlc.arg(account_id) AND (t.owner_account=a.account_id OR m.account_id IS NOT NULL);
+
+-- name: DeleteTeamConfigDefaultAdoption :one
+DELETE FROM team_config_default_adoptions WHERE account_id=sqlc.arg(account_id) RETURNING *;
+
+-- name: RevokeAdoptedTeamConfigAssignments :execrows
+UPDATE control_config_assignments a SET consent_state='revoked', revoked_at=sqlc.arg(now),
+ approved_pull_revision=NULL, approved_at=NULL, version=a.version+1, updated_at=sqlc.arg(now)
+FROM user_machines m
+WHERE a.machine_id=m.id AND m.user_id=sqlc.arg(account_id)
+ AND a.adopted_team_id=sqlc.arg(team_id) AND a.revoked_at IS NULL;
+
+-- name: ApproveControlConfigPullRevision :one
+UPDATE control_config_assignments a
+SET approved_pull_revision=sqlc.arg(remote_revision), approved_at=sqlc.arg(now),
+    version=version+1, updated_at=sqlc.arg(now)
+WHERE a.environment_id=sqlc.arg(environment_id) AND a.version=sqlc.arg(expected_version)
+  AND a.revoked_at IS NULL AND EXISTS (
+    SELECT 1 FROM control_config_sync_statuses s
+    WHERE s.environment_id=a.environment_id AND s.assignment_id=a.id
+      AND s.remote_revision=sqlc.arg(remote_revision)
+  )
+RETURNING a.*;
 
 -- name: GetEligibleControlConfigAssignment :one
 SELECT a.* FROM control_config_assignments a
@@ -172,6 +242,14 @@ WHERE a.environment_id = sqlc.arg(environment_id) AND m.id = sqlc.arg(machine_id
   AND e.desired_state = 'active' AND e.revoked_at IS NULL
   AND u.status = 'active'
   AND r.state = 'active' AND r.disconnected_at IS NULL
+  AND (a.adopted_team_id IS NULL OR EXISTS (
+    SELECT 1 FROM team_config_default_adoptions adoption
+    JOIN teams team ON team.team_id=adoption.team_id AND team.deleted_at IS NULL
+    LEFT JOIN team_members member ON member.team_id=adoption.team_id AND member.account_id=e.owner_user_id AND member.active
+    WHERE adoption.account_id=e.owner_user_id AND adoption.team_id=a.adopted_team_id
+      AND adoption.default_version=a.adopted_default_version
+      AND (team.owner_account=e.owner_user_id OR member.account_id IS NOT NULL)
+  ))
 FOR UPDATE OF a, m, e, u, r;
 
 -- name: GetEligibleMachineConfigAssignment :one
@@ -187,6 +265,14 @@ WHERE a.machine_id = sqlc.arg(machine_id) AND a.environment_id = sqlc.arg(enviro
   AND e.desired_state = 'active' AND e.revoked_at IS NULL
   AND u.status = 'active'
   AND r.state = 'active' AND r.disconnected_at IS NULL
+  AND (a.adopted_team_id IS NULL OR EXISTS (
+    SELECT 1 FROM team_config_default_adoptions adoption
+    JOIN teams team ON team.team_id=adoption.team_id AND team.deleted_at IS NULL
+    LEFT JOIN team_members member ON member.team_id=adoption.team_id AND member.account_id=e.owner_user_id AND member.active
+    WHERE adoption.account_id=e.owner_user_id AND adoption.team_id=a.adopted_team_id
+      AND adoption.default_version=a.adopted_default_version
+      AND (team.owner_account=e.owner_user_id OR member.account_id IS NOT NULL)
+  ))
 FOR UPDATE OF a, m, e, u, r;
 
 -- name: CreateControlConfigCredential :one
@@ -414,7 +500,7 @@ INSERT INTO control_config_sync_statuses
    remote_revision, manifest_health, manifest_revision, managed_path_count,
    pending_clean_path_count, last_applied_revision, last_published_revision,
    lease_id, fencing_token,
-   skipped, conflicts, error_code, recovery_actions, last_attempt_at,
+   skipped, conflicts, review, error_code, recovery_actions, last_attempt_at,
    last_successful_at, machine_updated_at, observed_at)
 VALUES
   (sqlc.arg(environment_id), sqlc.arg(repository_id), sqlc.arg(assignment_id), sqlc.arg(machine_id),
@@ -424,7 +510,7 @@ VALUES
    sqlc.arg(managed_path_count), sqlc.arg(pending_clean_path_count),
    sqlc.narg(last_applied_revision), sqlc.narg(last_published_revision),
    sqlc.narg(lease_id), sqlc.narg(fencing_token), sqlc.arg(skipped),
-   sqlc.arg(conflicts), sqlc.narg(error_code), sqlc.arg(recovery_actions),
+   sqlc.arg(conflicts), sqlc.arg(review), sqlc.narg(error_code), sqlc.arg(recovery_actions),
    sqlc.narg(last_attempt_at), sqlc.narg(last_successful_at), sqlc.arg(machine_updated_at), sqlc.arg(observed_at))
 ON CONFLICT (environment_id) DO UPDATE
 SET repository_id = EXCLUDED.repository_id, assignment_id = EXCLUDED.assignment_id,
@@ -438,7 +524,8 @@ SET repository_id = EXCLUDED.repository_id, assignment_id = EXCLUDED.assignment_
     last_applied_revision = EXCLUDED.last_applied_revision,
     last_published_revision = EXCLUDED.last_published_revision,
     lease_id = EXCLUDED.lease_id, fencing_token = EXCLUDED.fencing_token,
-    skipped = EXCLUDED.skipped, conflicts = EXCLUDED.conflicts, error_code = EXCLUDED.error_code,
+    skipped = EXCLUDED.skipped, conflicts = EXCLUDED.conflicts, review = EXCLUDED.review,
+    error_code = EXCLUDED.error_code,
     recovery_actions = EXCLUDED.recovery_actions, last_attempt_at = EXCLUDED.last_attempt_at,
     last_successful_at = EXCLUDED.last_successful_at, machine_updated_at = EXCLUDED.machine_updated_at,
     observed_at = EXCLUDED.observed_at
@@ -449,18 +536,28 @@ WHERE (
       AND control_config_sync_statuses.machine_updated_at < EXCLUDED.machine_updated_at
     )
   )
-  AND control_config_sync_statuses.assignment_id = EXCLUDED.assignment_id
+  AND EXISTS (
+    SELECT 1 FROM control_config_assignments current_assignment
+    WHERE current_assignment.environment_id = EXCLUDED.environment_id
+      AND current_assignment.id = EXCLUDED.assignment_id
+      AND current_assignment.machine_id = EXCLUDED.machine_id
+  )
   AND control_config_sync_statuses.machine_id = EXCLUDED.machine_id
   AND control_config_sync_statuses.installation_generation = EXCLUDED.installation_generation
 RETURNING *;
 
 -- name: GetControlConfigSyncRevision :one
-SELECT sync_revision
+SELECT control_config_sync_statuses.sync_revision
 FROM control_config_sync_statuses
-WHERE environment_id = sqlc.arg(environment_id)
-  AND assignment_id = sqlc.arg(assignment_id)
-  AND machine_id = sqlc.arg(machine_id)
-  AND installation_generation = sqlc.arg(installation_generation);
+WHERE control_config_sync_statuses.environment_id = sqlc.arg(environment_id)
+  AND EXISTS (
+    SELECT 1 FROM control_config_assignments current_assignment
+    WHERE current_assignment.environment_id = control_config_sync_statuses.environment_id
+      AND current_assignment.id = sqlc.arg(assignment_id)
+      AND current_assignment.machine_id = control_config_sync_statuses.machine_id
+  )
+  AND control_config_sync_statuses.machine_id = sqlc.arg(machine_id)
+  AND control_config_sync_statuses.installation_generation = sqlc.arg(installation_generation);
 
 -- name: InsertControlConfigSyncStatusHistory :exec
 INSERT INTO control_config_sync_status_history
@@ -484,6 +581,11 @@ SELECT
   environment.desired_state AS environment_state,
   assignment.id AS assignment_id,
   assignment.repository_id,
+	assignment.push_repository_id,
+	assignment.automatic_updates,
+	assignment.approved_pull_revision,
+	assignment.adopted_team_id,
+	assignment.adopted_default_version,
 	assignment.mode,
   assignment.consent_state,
   assignment.warning_revision,
@@ -507,6 +609,7 @@ SELECT
   status.last_published_revision,
   COALESCE(status.skipped, '[]'::jsonb)::jsonb AS skipped,
   COALESCE(status.conflicts, '[]'::jsonb)::jsonb AS conflicts,
+  COALESCE(status.review, '[]'::jsonb)::jsonb AS review,
   status.error_code,
   COALESCE(status.recovery_actions, '[]'::jsonb)::jsonb AS recovery_actions,
   status.last_attempt_at,

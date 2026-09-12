@@ -59,7 +59,7 @@ func (q *Queries) GetGitHubScopes(ctx context.Context, userID string) ([]string,
 }
 
 const getGitHubToken = `-- name: GetGitHubToken :one
-SELECT token_ciphertext, provider_account_login, scopes FROM github_oauth_tokens
+SELECT token_ciphertext, provider_account_login, scopes, expires_at FROM github_oauth_tokens
 WHERE user_id = $1 AND revoked_at IS NULL ORDER BY updated_at DESC LIMIT 1
 `
 
@@ -67,12 +67,18 @@ type GetGitHubTokenRow struct {
 	TokenCiphertext      []byte
 	ProviderAccountLogin string
 	Scopes               []string
+	ExpiresAt            sql.NullTime
 }
 
 func (q *Queries) GetGitHubToken(ctx context.Context, userID string) (GetGitHubTokenRow, error) {
 	row := q.db.QueryRow(ctx, getGitHubToken, userID)
 	var i GetGitHubTokenRow
-	err := row.Scan(&i.TokenCiphertext, &i.ProviderAccountLogin, &i.Scopes)
+	err := row.Scan(
+		&i.TokenCiphertext,
+		&i.ProviderAccountLogin,
+		&i.Scopes,
+		&i.ExpiresAt,
+	)
 	return i, err
 }
 
